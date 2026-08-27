@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Directories that are never projects themselves and are never worth
 /// descending into when looking for one.
@@ -720,12 +720,20 @@ pub fn run() {
             term::term_close,
             term::term_list,
             term::term_popout,
+            term::term_drag_preview,
             term::term_dock
         ])
         .on_window_event(|window, event| {
             // The main window going away means the app is going away, so every
             // shell goes with it — a popped-out terminal must never outlive it.
             if matches!(event, tauri::WindowEvent::Destroyed) && window.label() == "main" {
+                // Destroy bypasses each pop-out's close-to-dock handler; there
+                // is no main window left to receive that handoff.
+                for (label, child) in window.app_handle().webview_windows() {
+                    if label.starts_with("term-") {
+                        let _ = child.destroy();
+                    }
+                }
                 term::shutdown();
             }
         });

@@ -121,10 +121,12 @@ async function wireEvents() {
   if (wired) return;
   wired = true;
   await term_listen("term:update", (event) => {
+    window.devhqTerminalChanged?.(event.payload.id);
     const view = views.get(event.payload.id);
     if (view) view.apply(event.payload);
   });
   await term_listen("term:exit", (event) => {
+    window.devhqTerminalChanged?.(event.payload.id);
     const view = views.get(event.payload.id);
     if (view) view.markExited();
   });
@@ -179,11 +181,10 @@ class TermView {
     probe.remove();
   }
 
-  /** JetBrains Mono is a web font, so the first measurement lands on whatever
-   *  fallback was in place at construction time. A cell a fraction of a pixel
-   *  out is invisible at column 1 and a whole character out by column 40, which
-   *  is exactly where the cursor is seen to drift - so measure again once the
-   *  real font is in, and put the cursor and the grid back where they belong. */
+  /** Font availability can settle after construction. A cell a fraction of a
+   *  pixel out is invisible at column 1 and a whole character out by column 40,
+   *  which is exactly where the cursor is seen to drift - so measure again once
+   *  the local font is ready and realign the cursor and grid if needed. */
   remeasureWhenFontLoads() {
     if (!document.fonts?.ready) return;
     document.fonts.ready.then(() => {
@@ -241,6 +242,26 @@ class TermView {
     this.moveCursor(snap.cx, snap.cy, snap.cursorVisible);
     this.toBottom();
     return snap.info;
+  }
+
+  /** Restored output belongs above the new shell's screen. It is deliberately
+   *  plain text: colours and cursor state belonged to the process that exited,
+   *  while the readable command/output history remains useful. */
+  prependRestoredHistory(text) {
+    if (!text) return;
+    const html = text.split("\n").map((line) => `<div>${termEsc(line)}</div>`).join("");
+    this.history.insertAdjacentHTML("afterbegin", html);
+    this.toBottom();
+  }
+
+  /** A bounded text snapshot for persistence between application runs. */
+  exportHistory() {
+    const lines = [
+      ...[...this.history.children].map((row) => row.textContent || ""),
+      ...this.rowEls.map((row) => row.textContent || ""),
+    ];
+    while (lines.length && !lines[lines.length - 1]) lines.pop();
+    return lines.slice(-1500).join("\n").slice(-150000);
   }
 
   buildScreen() {

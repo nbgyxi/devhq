@@ -7,6 +7,8 @@
     "icons": "node scripts/tauri-with-cargo-path.js icon src/devhq-icon.png",
     "dev": "node scripts/tauri-with-cargo-path.js dev",
     "build": "node scripts/tauri-with-cargo-path.js build",
+    "msix": "powershell -ExecutionPolicy Bypass -File ./scripts/package-msix.ps1",
+    "msix:local": "powershell -ExecutionPolicy Bypass -File ./scripts/package-msix.ps1 -SelfSign",
     "tauri": "node scripts/tauri-with-cargo-path.js"
   },
   "devDependencies": {

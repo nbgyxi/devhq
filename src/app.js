@@ -36,7 +36,17 @@ const state = {
   sort: "activity",
   filters: new Set(),
   techFilter: "",
-  groupBy: true,
+  language: "system",
+  languageChosen: false,
+  theme: "dark",
+  compactTechOverview: true,
+  viewMode: "cards",
+  tableSortKey: "project",
+  tableSortDirection: 1,
+  tableColumns: ["version", "lang", "runtime", "framework", "ui", "data", "status", "actions"],
+  tableColumnMenuOpen: false,
+  tableColumnWidths: {},
+  settingsOpen: false,
   selectedPath: null,
   /** What the open project's detail view is showing. Both arrive after the
    *  view does, so both start null and are drawn as skeletons until they land.
@@ -55,6 +65,8 @@ const state = {
 
 /** Everything currently in flight: key -> { label, detail }. */
 const work = new Map();
+let searchCommands = [];
+let searchCommandIndex = 0;
 
 function beginWork(key, label, detail = "") {
   work.set(key, { label, detail });
@@ -87,9 +99,30 @@ function loadPrefs() {
     if (Array.isArray(p.roots)) state.roots = p.roots.filter(Boolean);
     else if (p.root) state.roots = [p.root]; // prefs written before multiple folders
     if (p.sort) state.sort = p.sort;
-    if (typeof p.groupBy === "boolean") state.groupBy = p.groupBy;
     if (Array.isArray(p.filters)) state.filters = new Set(p.filters);
     if (p.techFilter) state.techFilter = p.techFilter;
+    if (["system", "en", "zh", "hi", "es", "fr", "ar", "bn", "pt", "ru", "id"].includes(p.language)) {
+      state.language = p.language;
+      state.languageChosen = true;
+    }
+    if (typeof p.compactTechOverview === "boolean") {
+      state.compactTechOverview = p.compactTechOverview;
+    } else if (p.showTechOverview === false) {
+      // Migrate the short-lived hide/show preference: hidden tech becomes the
+      // new compact presentation, so it is visible without adding card height.
+      state.compactTechOverview = true;
+    }
+    if (["dark", "light"].includes(p.theme)) state.theme = p.theme;
+    if (["cards", "table"].includes(p.viewMode)) state.viewMode = p.viewMode;
+    if (typeof p.tableSortKey === "string") state.tableSortKey = p.tableSortKey;
+    if (p.tableSortDirection === -1) state.tableSortDirection = -1;
+    if (Array.isArray(p.tableColumns)) state.tableColumns = p.tableColumns.filter((column) => typeof column === "string");
+    if (p.tableColumnWidths && typeof p.tableColumnWidths === "object") {
+      state.tableColumnWidths = Object.fromEntries(Object.entries(p.tableColumnWidths)
+        .filter(([, width]) => Number.isFinite(width) && width >= 70 && width <= 800));
+    }
+    applyTheme();
+    applyLanguage();
   } catch {
     /* first run, or corrupted prefs - defaults are fine */
   }
@@ -102,14 +135,108 @@ function savePrefs() {
       JSON.stringify({
         roots: state.roots,
         sort: state.sort,
-        groupBy: state.groupBy,
         filters: [...state.filters],
         techFilter: state.techFilter,
+        ...(state.languageChosen ? { language: state.language } : {}),
+        theme: state.theme,
+        compactTechOverview: state.compactTechOverview,
+        viewMode: state.viewMode,
+        tableSortKey: state.tableSortKey,
+        tableSortDirection: state.tableSortDirection,
+        tableColumns: state.tableColumns,
+        tableColumnWidths: state.tableColumnWidths,
       })
     );
   } catch {
     /* storage disabled - prefs simply do not persist */
   }
+}
+
+function applyLanguage() {
+  document.documentElement.lang = state.language === "system"
+    ? (navigator.language || "en")
+    : state.language;
+  window.devhqI18n?.setLanguage(state.language);
+}
+
+function applyTheme() {
+  document.documentElement.dataset.theme = state.theme;
+  const button = document.getElementById("toggle-theme");
+  if (!button) return;
+  const light = state.theme === "light";
+  button.classList.toggle("on", light);
+  button.setAttribute("aria-pressed", String(light));
+  button.title = light ? "Use dark mode" : "Use light mode";
+  button.setAttribute("aria-label", button.title);
+  window.devhqI18n?.refresh(button);
+}
+
+const FIRST_RUN_COPY = {
+  zh: "你想使用哪种语言？使用 Windows 系统语言、英语或其他语言。",
+  hi: "आप किस भाषा का उपयोग करना चाहते हैं? Windows की भाषा, अंग्रेज़ी या कोई अन्य भाषा चुनें।",
+  es: "¿Qué idioma quieres usar? Elige el idioma de Windows, inglés u otro idioma.",
+  fr: "Quelle langue souhaitez-vous utiliser ? Choisissez la langue de Windows, l’anglais ou une autre langue.",
+  ar: "ما اللغة التي تريد استخدامها؟ اختر لغة Windows أو الإنجليزية أو لغة أخرى.",
+  bn: "আপনি কোন ভাষা ব্যবহার করতে চান? Windows-এর ভাষা, ইংরেজি অথবা অন্য ভাষা বেছে নিন।",
+  pt: "Qual idioma você deseja usar? Escolha o idioma do Windows, inglês ou outro idioma.",
+  ru: "Какой язык вы хотите использовать? Выберите язык Windows, английский или другой язык.",
+  id: "Bahasa apa yang ingin Anda gunakan? Pilih bahasa Windows, bahasa Inggris, atau bahasa lain."
+};
+
+function firstRunLanguage() {
+  if (state.languageChosen) return Promise.resolve();
+  const systemCode = (navigator.language || "en").toLowerCase().split("-")[0];
+  let systemName = navigator.language || "Windows default";
+  try {
+    systemName = new Intl.DisplayNames([navigator.language], { type: "language" }).of(systemCode) || systemName;
+  } catch {}
+  const translatedQuestion = systemCode === "en" ? "" : FIRST_RUN_COPY[systemCode] || "";
+  const overlay = document.createElement("div");
+  overlay.className = "language-first-run";
+  overlay.innerHTML = `<section class="language-dialog" role="dialog" aria-modal="true" aria-labelledby="language-title">
+    <img src="devhq-icon.png" alt="" />
+    <h1 id="language-title">Choose your language</h1>
+    <p>Which language would you like to use? Choose your Windows language, English, or another language.</p>
+    ${translatedQuestion ? `<p class="translated" lang="${esc(systemCode)}" dir="auto">${esc(translatedQuestion)}</p>` : ""}
+    <div class="language-choices">
+      <button class="language-choice primary" data-language="system">${icon("desktop_windows")}
+        <span><strong>Use Windows language</strong><small>${esc(systemName)}</small></span></button>
+      <button class="language-choice" data-language="en">${icon("language")}
+        <span><strong>Use English</strong><small>English</small></span></button>
+      <button class="language-choice" data-language="other">${icon("translate")}
+        <span><strong>Other language</strong><small>Choose from the supported languages</small></span></button>
+    </div>
+    <div class="language-other" hidden>
+      <select class="sort" aria-label="Other language">
+        <option value="zh">中文（简体） — Chinese (Simplified)</option><option value="hi">हिन्दी — Hindi</option>
+        <option value="es">Español — Spanish</option><option value="fr">Français — French</option>
+        <option value="ar">العربية — Arabic</option><option value="bn">বাংলা — Bengali</option>
+        <option value="pt">Português — Portuguese</option><option value="ru">Русский — Russian</option>
+        <option value="id">Bahasa Indonesia — Indonesian</option>
+      </select>
+      <button class="btn primary" data-language="selected">Continue</button>
+    </div>
+  </section>`;
+  document.body.appendChild(overlay);
+  return new Promise((resolve) => {
+    overlay.onclick = async (e) => {
+      const button = e.target.closest("[data-language]");
+      if (!button) return;
+      let language = button.dataset.language;
+      if (language === "other") {
+        overlay.querySelector(".language-other").hidden = false;
+        overlay.querySelector("select").focus();
+        return;
+      }
+      if (language === "selected") language = overlay.querySelector("select").value;
+      state.language = language;
+      state.languageChosen = true;
+      savePrefs();
+      await window.devhqI18n?.setLanguage(language);
+      overlay.remove();
+      resolve();
+    };
+  });
 }
 
 /* ------------------------------------------------------------- formatting */
@@ -138,7 +265,13 @@ function esc(s) {
 }
 
 function icon(name) {
-  return `<span class="ms">${name}</span>`;
+  return `<span class="ms" aria-hidden="true">${name}</span>`;
+}
+
+function settingsIcon(className = "") {
+  return `<svg class="${esc(className)}" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M19.4 13a7.8 7.8 0 0 0 .05-1 7.8 7.8 0 0 0-.05-1l2.1-1.64-2-3.46-2.56 1.03a7.5 7.5 0 0 0-1.72-1L14.83 3h-4l-.4 2.93a7.5 7.5 0 0 0-1.72 1L6.16 5.9l-2 3.46L6.26 11a7.8 7.8 0 0 0-.05 1 7.8 7.8 0 0 0 .05 1l-2.1 1.64 2 3.46 2.55-1.03a7.5 7.5 0 0 0 1.72 1l.4 2.93h4l.4-2.93a7.5 7.5 0 0 0 1.72-1l2.56 1.03 2-3.46L19.4 13Zm-6.57 2.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z" />
+  </svg>`;
 }
 
 /** Shortens a git remote to `owner/repo` when it looks like one. */
@@ -544,6 +677,11 @@ function loadTodos(project) {
 /** Fills the window with one project, and starts everything the full view
  *  shows that a card does not already know. */
 function openDetail(project) {
+  if (state.settingsOpen) {
+    state.settingsOpen = false;
+    syncSettingsButton();
+    markDirty("settings");
+  }
   state.selectedPath = project.path;
   clearDetailData();
   markDirty("detail");
@@ -555,6 +693,30 @@ function closeDetail() {
   state.selectedPath = null;
   clearDetailData();
   markDirty("detail");
+}
+
+function openSettings() {
+  if (state.settingsOpen) return closeSettings();
+  if (state.selectedPath) closeDetail();
+  state.settingsOpen = true;
+  syncSettingsButton();
+  markDirty("settings");
+}
+
+function closeSettings() {
+  state.settingsOpen = false;
+  syncSettingsButton();
+  markDirty("settings");
+}
+
+function syncSettingsButton() {
+  const button = document.getElementById("open-settings");
+  if (!button) return;
+  button.classList.toggle("on", state.settingsOpen);
+  button.setAttribute("aria-pressed", String(state.settingsOpen));
+  button.title = state.settingsOpen ? "Back to overview" : "Settings";
+  button.setAttribute("aria-label", button.title);
+  window.devhqI18n?.refresh(button);
 }
 
 /** Bumping the token is what makes the reads still in flight harmless. */
@@ -607,20 +769,96 @@ function setTechFilter(name) {
   markDirty("filters", "toolbar", "grid");
 }
 
+/* ------------------------------------------------------ search commands */
+
+function availableSearchCommands() {
+  const commands = [
+    { kind: "CMD", label: "Rescan projects", detail: "F5", action: "rescan" },
+    { kind: "TERM", label: "Toggle terminal panel", detail: "Ctrl+`", action: "terminal-panel" },
+    ...Object.entries(FILTERS).map(([key, filter]) => ({
+      kind: "VIEW",
+      label: `${state.filters.has(key) ? "Remove" : "Show"} ${filter.label.toLowerCase()}`,
+      detail: "filter projects",
+      action: "filter",
+      key,
+    })),
+  ];
+
+  for (const project of state.projects.filter((p) => !p.pending)) {
+    const detail = [project.path, project.git?.branch].filter(Boolean).join(" · ");
+    commands.push({ kind: "REPO", label: project.name, detail, action: "repo", project });
+    if (project.runCmd) {
+      commands.push({ kind: "RUN", label: `Run ${project.name}`, detail: project.runCmd, action: "run", project });
+    }
+    commands.push({
+      kind: "TERM", label: `Terminal — ${project.name}`, detail: project.path,
+      action: "terminal", project,
+    });
+  }
+  return commands;
+}
+
+function renderSearchCommands() {
+  const menu = el["search-menu"];
+  const input = el["search-input"];
+  if (!menu || document.activeElement !== input) return;
+  const terms = input.value.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  searchCommands = availableSearchCommands()
+    .filter((command) => {
+      const hay = `${command.kind} ${command.label} ${command.detail}`.toLowerCase();
+      return terms.every((term) => hay.includes(term));
+    })
+    .slice(0, 60);
+  searchCommandIndex = Math.min(searchCommandIndex, Math.max(0, searchCommands.length - 1));
+  menu.innerHTML = searchCommands.length
+    ? searchCommands.map((command, index) => `<button class="search-command${
+        index === searchCommandIndex ? " on" : ""
+      }" data-command="${index}"><span class="command-kind ${command.kind.toLowerCase()}">${esc(
+        command.kind
+      )}</span><span class="command-label">${esc(command.label)}</span><span class="command-detail">${esc(
+        command.detail
+      )}</span></button>`).join("")
+    : '<div class="search-command-empty">No commands or projects found</div>';
+  menu.hidden = false;
+  menu.querySelector(".search-command.on")?.scrollIntoView({ block: "nearest" });
+}
+
+function closeSearchCommands() {
+  if (el["search-menu"]) el["search-menu"].hidden = true;
+}
+
+function runSearchCommand(index) {
+  const command = searchCommands[index];
+  if (!command) return;
+  closeSearchCommands();
+  state.search = "";
+  el["search-input"].value = "";
+  markDirty("grid", "filters");
+  if (command.action === "rescan") rescan();
+  else if (command.action === "terminal-panel") openTerminalPanel();
+  else if (command.action === "filter") toggleFilter(command.key);
+  else if (command.action === "repo") openDetail(command.project);
+  else if (command.action === "run") projectAction("run", command.project);
+  else if (command.action === "terminal") projectAction("terminal", command.project);
+}
+
 /* ----------------------------------------------------------------- views */
 
 function skeletonView(p) {
   const note = p.stopped
     ? `${icon("do_not_disturb_on")}not read - the scan was stopped`
     : `${icon("hourglass_top")}reading git status...`;
-  return `<article class="card skeleton${p.stopped ? " stopped" : ""}" data-path="${esc(p.path)}">
-    <div class="card-top"><div class="card-name">${esc(p.name)}</div></div>
-    <div class="sk sk-line" style="width:72%"></div>
-    <div class="sk-row">
+  const tech = state.compactTechOverview
+    ? `<div class="sk sk-line" style="width:62%"></div>`
+    : `<div class="sk-row">
       <span class="sk sk-pill" style="width:58px"></span>
       <span class="sk sk-pill" style="width:44px"></span>
       <span class="sk sk-pill" style="width:70px"></span>
-    </div>
+    </div>`;
+  return `<article class="card skeleton${p.stopped ? " stopped" : ""}" data-path="${esc(p.path)}">
+    <div class="card-top"><div class="card-name">${esc(p.name)}</div></div>
+    ${tech}
+    <div class="sk sk-line" style="width:72%"></div>
     <div class="sk-row">
       <span class="sk sk-pill" style="width:86px"></span>
       <span class="sk sk-pill" style="width:52px"></span>
@@ -667,11 +905,13 @@ function cardView(p) {
     .map(
       (t) =>
         `<span class="tag ${esc(t.kind)}" data-tech="${esc(t.name)}">${esc(t.name)}${
-          t.version ? `<i class="v">${esc(t.version)}</i>` : ""
+          !state.compactTechOverview && t.version ? `<i class="v">${esc(t.version)}</i>` : ""
         }</span>`
     )
     .join("");
-  const more = p.tech.length > 5 ? `<span class="tag more">+${p.tech.length - 5}</span>` : "";
+  const more = p.tech.length > 5
+    ? `<span class="tag more">+${p.tech.length - 5}</span>`
+    : "";
 
   const stats = [];
   if (g) {
@@ -732,12 +972,129 @@ function cardView(p) {
       }</div>
       ${live}
     </div>
+    ${p.tech.length ? `<div class="tags${state.compactTechOverview ? " compact" : ""}">${tags}${more}</div>` : ""}
     ${p.description ? `<div class="desc">${esc(p.description)}</div>` : ""}
-    <div class="tags">${tags}${more}</div>
     <div class="stats">${stats.join("")}</div>
     ${commit}
     ${cardActions(p)}
   </article>`;
+}
+
+const TABLE_TECH_COLUMNS = [
+  ["lang", "Language"], ["runtime", "Runtime"], ["framework", "Framework"],
+  ["ui", "UI"], ["build", "Build"], ["data", "Data"], ["test", "Testing"],
+  ["infra", "Infrastructure"], ["tool", "Tools"],
+];
+
+function tableColumnOptions() {
+  return [
+    ["version", "Project version"],
+    ...TABLE_TECH_COLUMNS,
+    ["status", "Status"],
+  ];
+}
+
+function columnPickerView() {
+  return `<div class="column-picker" id="table-column-picker">
+    <button class="column-picker-button" id="table-column-picker-button" aria-haspopup="true" aria-expanded="${state.tableColumnMenuOpen}"><span>Columns</span>${icon("keyboard_arrow_down")}</button>
+    <div class="column-picker-menu" id="table-column-picker-menu" ${state.tableColumnMenuOpen ? "" : "hidden"}><div class="column-picker-title">Visible columns</div>${tableColumnOptions()
+    .map(([key, label]) => `<label><input type="checkbox" data-table-column="${key}" ${
+      state.tableColumns.includes(key) ? "checked" : ""
+    } /><span>${label}</span></label>`).join("")}</div></div>`;
+}
+
+function tableTechCell(tech) {
+  if (!tech.length) return '<td class="table-tech-cell"><span class="table-muted">—</span></td>';
+  return `<td class="table-tech-cell"><div class="table-tech-list">${tech.map((item) =>
+    `<button class="table-tech" data-tech="${esc(item.name)}"><span>${esc(item.name)}</span>${
+      item.version ? `<code>${esc(item.version)}</code>` : ""
+    }</button>`
+  ).join("")}</div></td>`;
+}
+
+function tableRowView(p) {
+  const techColumns = TABLE_TECH_COLUMNS.filter(([kind]) => state.tableColumns.includes(kind));
+  const trailingColumns = Number(state.tableColumns.includes("status")) + 1;
+  if (p.pending) {
+    const extraColumns = Number(state.tableColumns.includes("version")) + techColumns.length + trailingColumns;
+    return `<tr class="project-row pending" data-path="${esc(p.path)}"><td><strong>${esc(
+      p.name
+    )}</strong><small>Reading project…</small></td>${extraColumns
+      ? `<td class="table-muted" colspan="${extraColumns}">Loading project…</td>`
+      : ""}</tr>`;
+  }
+  const technologyCells = techColumns.map(([kind]) =>
+    tableTechCell(p.tech.filter((tech) => tech.kind === kind))
+  ).join("");
+  const statuses = [];
+  if (p.running.length) statuses.push(`<span class="table-status running">${p.running.length} running</span>`);
+  if (changeCount(p)) statuses.push(`<span class="table-status dirty">${changeCount(p)} changed</span>`);
+  if (!statuses.length) statuses.push('<span class="table-muted">Idle</span>');
+  return `<tr class="project-row" data-path="${esc(p.path)}">
+    <td><strong>${esc(p.name)}</strong><small title="${esc(p.path)}">${esc(p.path)}</small></td>
+    ${state.tableColumns.includes("version") ? `<td class="project-version">${p.version ? esc(p.version) : "—"}</td>` : ""}
+    ${technologyCells}
+    ${state.tableColumns.includes("status") ? `<td class="table-status-cell"><div class="table-status-list">${statuses.join("")}</div></td>` : ""}
+    <td class="table-actions-cell"><div class="table-actions">
+      <button data-act="run" title="${p.runCmd ? `Run ${esc(p.runCmd)}` : "No run command detected"}" ${p.runCmd ? "" : "disabled"}>${icon("play_arrow")}</button>
+      <button data-act="vscode" title="Open in VS Code">${icon("code")}</button>
+      <button data-act="terminal" title="Open a terminal">${icon("terminal")}</button>
+    </div></td>
+  </tr>`;
+}
+
+function tableSortValue(project, key) {
+  if (key === "project") return project.name;
+  if (key === "version") return project.version || null;
+  if (key === "status") return project.running.length * 100000 + changeCount(project);
+  if (key.startsWith("tech:")) {
+    const kind = key.slice(5);
+    const tech = project.tech.filter((item) => item.kind === kind)
+      .sort((a, b) => a.name.localeCompare(b.name))[0];
+    return tech ? `${tech.name} ${tech.version || ""}` : null;
+  }
+  return project.name;
+}
+
+function sortTableProjects(projects) {
+  const direction = state.tableSortDirection;
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+  return [...projects].sort((a, b) => {
+    const av = tableSortValue(a, state.tableSortKey);
+    const bv = tableSortValue(b, state.tableSortKey);
+    if (av == null && bv == null) return a.name.localeCompare(b.name);
+    if (av == null) return -direction;
+    if (bv == null) return direction;
+    const compared = typeof av === "number" && typeof bv === "number" ? av - bv : collator.compare(av, bv);
+    return compared * direction || a.name.localeCompare(b.name);
+  });
+}
+
+function visibleTableColumnKeys() {
+  return [
+    "project",
+    ...(state.tableColumns.includes("version") ? ["version"] : []),
+    ...TABLE_TECH_COLUMNS.filter(([kind]) => state.tableColumns.includes(kind)).map(([kind]) => `tech:${kind}`),
+    ...(state.tableColumns.includes("status") ? ["status"] : []),
+    "actions",
+  ];
+}
+
+function tableColumnWidth(key) {
+  const defaults = { project: 240, version: 105, status: 130, actions: 112 };
+  return state.tableColumnWidths[key] || defaults[key] || 140;
+}
+
+function tableResizeHandle(key) {
+  return `<span class="table-resize-handle" data-resize-column="${key}" title="Drag to resize column"></span>`;
+}
+
+function tableHeader(key, label) {
+  const active = state.tableSortKey === key;
+  const direction = active ? (state.tableSortDirection === 1 ? "ascending" : "descending") : "none";
+  return `<th aria-sort="${direction}"><button class="table-sort${active ? " active" : ""}" data-table-sort="${key}">${label}<span>${
+    active ? (state.tableSortDirection === 1 ? "▲" : "▼") : ""
+  }</span></button>${tableResizeHandle(key)}</th>`;
 }
 
 /** How many patch lines are put in the DOM at once. A patch is read from the
@@ -911,7 +1268,7 @@ function todoSection() {
   return head(`<div class="todolist">${rows}</div>${tail}`, note);
 }
 
-function detailView(p) {
+function detailView(p, replayEntrance = true) {
   const g = p.git;
   const kv = [];
   if (p.description) kv.push(["Description", esc(p.description)]);
@@ -998,7 +1355,7 @@ function detailView(p) {
         "play_disabled"
       )}Nothing to run</button>`;
 
-  return `<div class="detail">
+  return `<div class="detail${replayEntrance ? "" : " steady"}">
     <div class="detail-head">
       <button class="btn back" data-act="close" title="Back to the list (Esc)">${icon(
         "arrow_back"
@@ -1033,8 +1390,10 @@ function detailView(p) {
       </div>
       ${
         g
-          ? `<div class="dcol dcol-files">${filesSection(p)}</div>
-             <div class="dcol dcol-patch">${patchSection()}</div>`
+          ? `<div class="dcol-work">
+               <div class="dcol dcol-files">${filesSection(p)}</div>
+               <div class="dcol dcol-patch">${patchSection()}</div>
+             </div>`
           : ""
       }
     </div>
@@ -1051,6 +1410,7 @@ let frame = 0;
 /** path -> the card element currently on screen for it. */
 let cardIndex = new Map();
 const el = {};
+let tableResizeClickSuppressed = false;
 
 function markDirty(...regions) {
   for (const region of regions) dirty.add(region);
@@ -1061,6 +1421,8 @@ function markDirty(...regions) {
  *  under the pointer without anything moving. */
 function touchCard(project) {
   if (dirty.has("grid")) return;
+  // Table values are sort keys, so a streamed update may move the row.
+  if (state.viewMode === "table") return markDirty("grid");
   // A project that no longer passes an active filter has to leave the list,
   // which only a rebuild can do.
   if (!matchesFilters(project)) markDirty("grid");
@@ -1097,6 +1459,7 @@ function flushRender() {
     if (!work.size) renderActivity();
   }
   if (regions.has("detail")) renderDetail();
+  if (regions.has("settings")) renderSettings();
 }
 
 /** The shell is built once. Inputs live for the lifetime of the window, so
@@ -1109,6 +1472,17 @@ function mountShell() {
           <span class="sub" id="brand-sub"></span></div>
       </div>
       <div class="win-btns">
+        <button class="win-btn" id="toggle-theme" title="Use light mode" aria-label="Use light mode" aria-pressed="false">
+          <svg class="win-icon theme-sun" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M11 1h2v3h-2V1Zm0 19h2v3h-2v-3ZM3.51 4.93l1.42-1.42 2.12 2.12-1.42 1.42-2.12-2.12Zm13.44 13.44 1.42-1.42 2.12 2.12-1.42 1.42-2.12-2.12ZM1 11h3v2H1v-2Zm19 0h3v2h-3v-2ZM3.51 19.07l2.12-2.12 1.42 1.42-2.12 2.12-1.42-1.42ZM16.95 5.63l2.12-2.12 1.42 1.42-2.12 2.12-1.42-1.42ZM12 6a6 6 0 1 1 0 12 6 6 0 0 1 0-12Zm0 2a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" />
+          </svg>
+          <svg class="win-icon theme-moon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20.2 15.35A8.4 8.4 0 0 1 8.65 3.8 9 9 0 1 0 20.2 15.35ZM12 21a7 7 0 0 1-5.18-11.7 10.4 10.4 0 0 0 7.88 7.88A7 7 0 0 1 12 21Z" />
+          </svg>
+        </button>
+        <button class="win-btn" id="open-settings" title="Settings" aria-label="Settings">
+          ${settingsIcon("win-icon")}
+        </button>
         <button class="win-btn" data-win="min">${icon("remove")}</button>
         <button class="win-btn" data-win="max">${icon("crop_square")}</button>
         <button class="win-btn close" data-win="close">${icon("close")}</button>
@@ -1130,21 +1504,23 @@ function mountShell() {
         </div>
       </div>
       <button class="btn primary" id="rescan">${icon("refresh")}<span class="label">Rescan</span></button>
-      <div class="field search">${icon("search")}
+      <div class="field search" id="search-box">${icon("search")}
         <input id="search-input" spellcheck="false"
-               placeholder="Search name, tech, branch, port..." />
+               placeholder="Search projects and commands..." />
+        <div class="search-menu" id="search-menu" hidden></div>
       </div>
       <select class="sort" id="tech-filter"><option value="">All tech</option></select>
-      <select class="sort" id="sort">
-        <option value="activity">Recent activity</option>
-        <option value="name">Name</option>
-        <option value="changes">Most changes</option>
-        <option value="running">Running first</option>
-        <option value="tech">Tech</option>
-      </select>
-      <button class="btn" id="groupby" title="Group by parent folder">${icon(
-        "view_agenda"
-      )}<span class="label">Grouped</span></button>
+      <div class="sort-buttons" id="sort-buttons" aria-label="Sort projects">
+        <button data-sort="activity" title="Sort by recent activity">Recent</button>
+        <button data-sort="name" title="Sort by project name">Name</button>
+        <button data-sort="changes" title="Sort by most changes">Changes</button>
+        <button data-sort="running" title="Show running projects first">Running</button>
+        <button data-sort="tech" title="Sort by technology">Tech</button>
+      </div>
+      <div class="sort-buttons view-buttons" id="view-buttons" aria-label="Project view">
+        <button data-view="cards">Cards</button>
+        <button data-view="table">Table</button>
+      </div>
     </div>
 
     <div class="filters" id="filters"></div>
@@ -1153,25 +1529,29 @@ function mountShell() {
     <div class="scroll" id="scroll"><div class="grid" id="grid"></div></div>
     <div class="statusbar">
       <div class="activity" id="activity"></div>
-      <button class="status-btn" id="status-term" title="Open a terminal">${icon(
+      <button class="status-btn" id="status-term" title="Open a terminal" aria-expanded="false">${icon(
         "terminal"
-      )}<span class="label">Terminal</span></button>
+      )}<span class="label">Terminal</span><span class="term-count" hidden>0</span></button>
       <div class="act-bar" id="status-progress" hidden><i></i></div>
     </div>
     <div id="detail-host"></div>
+    <div id="settings-host"></div>
   `;
 
   for (const id of [
     "brand-sub", "loadbar", "roots-btn", "roots-label", "roots-pop", "roots-list",
-    "rescan", "search-input", "tech-filter", "sort", "groupby", "activity", "filters",
-    "banner-host", "summary", "grid", "detail-host", "status-term", "status-progress",
+    "rescan", "search-input", "search-menu", "tech-filter", "sort-buttons", "view-buttons", "activity", "filters",
+    "banner-host", "summary", "grid", "detail-host", "settings-host", "open-settings", "toggle-theme",
+    "status-term", "status-progress",
   ]) {
     el[id] = document.getElementById(id);
   }
 
   el["search-input"].value = state.search;
-  el.sort.value = state.sort;
   wireShell();
+  applyTheme();
+  syncSettingsButton();
+  window.syncTerminalButton?.();
 }
 
 function renderToolbar() {
@@ -1186,8 +1566,16 @@ function renderToolbar() {
   el["roots-btn"].title = state.roots.length
     ? `Scanning ${state.roots.join(", ")} - click to change`
     : "Click to choose the folders to scan";
-  el.groupby.querySelector(".label").textContent = state.groupBy ? "Grouped" : "Flat";
-  el.groupby.querySelector(".ms").textContent = state.groupBy ? "view_agenda" : "grid_view";
+  for (const button of el["sort-buttons"].querySelectorAll("[data-sort]")) {
+    const active = button.dataset.sort === state.sort;
+    button.classList.toggle("on", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+  for (const button of el["view-buttons"].querySelectorAll("[data-view]")) {
+    const active = button.dataset.view === state.viewMode;
+    button.classList.toggle("on", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
   const pending = state.total ? state.total - state.settled : 0;
   el["brand-sub"].textContent =
     busy && pending
@@ -1220,7 +1608,7 @@ function renderActivity() {
   renderProgress();
   if (!items.length) {
     el.activity.innerHTML = `<span class="act idle"><i class="act-dot"></i><span
-      class="act-label">Idle</span><span class="act-detail">${esc(idleDetail())}</span></span>`;
+      class="act-label">Idle</span></span>`;
     return;
   }
   el.activity.innerHTML = items
@@ -1314,7 +1702,8 @@ function renderSummary() {
 }
 
 function renderGrid() {
-  const list = visibleProjects();
+  const visible = visibleProjects();
+  const list = state.viewMode === "table" ? sortTableProjects(visible) : visible;
   let body;
 
   if (!list.length) {
@@ -1327,29 +1716,24 @@ function renderGrid() {
             ? "No projects match the current filters."
             : "No projects found in this folder."
         }</div></div>`;
-  } else if (state.groupBy && list.some((p) => p.group)) {
-    const groups = new Map();
-    for (const p of list) {
-      const key = p.group || "";
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(p);
-    }
-    body = [...groups.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(
-        ([name, items]) =>
-          `${name ? `<div class="group-head">${esc(name)}</div>` : ""}${items
-            .map(cardView)
-            .join("")}`
-      )
-      .join("");
   } else {
-    body = list.map(cardView).join("");
+    body = state.viewMode === "table"
+      ? `<div class="project-table-wrap"><table class="project-table" style="width:${visibleTableColumnKeys()
+          .reduce((sum, key) => sum + tableColumnWidth(key), 0)}px"><colgroup>${visibleTableColumnKeys()
+          .map((key) => `<col data-table-col="${key}" style="width:${tableColumnWidth(key)}px" />`).join("")}</colgroup><thead><tr>
+          ${tableHeader("project", "Project")}${state.tableColumns.includes("version") ? tableHeader("version", "Version") : ""}${TABLE_TECH_COLUMNS
+            .filter(([kind]) => state.tableColumns.includes(kind))
+            .map(([kind, label]) => tableHeader(`tech:${kind}`, label)).join("")}${
+              state.tableColumns.includes("status") ? tableHeader("status", "Status") : ""
+            }<th class="table-actions-head">${columnPickerView()}${tableResizeHandle("actions")}</th>
+        </tr></thead><tbody>${list.map(tableRowView).join("")}</tbody></table></div>`
+      : list.map(cardView).join("");
   }
 
+  el.grid.classList.toggle("table-view", state.viewMode === "table");
   el.grid.innerHTML = body;
   cardIndex = new Map();
-  for (const card of el.grid.querySelectorAll(".card")) cardIndex.set(card.dataset.path, card);
+  for (const card of el.grid.querySelectorAll(".card,.project-row")) cardIndex.set(card.dataset.path, card);
 }
 
 function patchCard(path) {
@@ -1357,15 +1741,98 @@ function patchCard(path) {
   const project = state.byPath.get(path);
   if (!current || !project) return;
   const holder = document.createElement("div");
-  holder.innerHTML = cardView(project);
-  const next = holder.firstElementChild;
+  if (state.viewMode === "table") {
+    const table = document.createElement("table");
+    table.innerHTML = `<tbody>${tableRowView(project)}</tbody>`;
+    holder.appendChild(table);
+  } else {
+    holder.innerHTML = cardView(project);
+  }
+  const next = state.viewMode === "table" ? holder.querySelector("tr") : holder.firstElementChild;
   current.replaceWith(next);
   cardIndex.set(path, next);
 }
 
 function renderDetail() {
   const p = selectedProject();
-  el["detail-host"].innerHTML = p ? detailView(p) : "";
+  const host = el["detail-host"];
+  if (!p) {
+    host.innerHTML = "";
+    delete host.dataset.path;
+    return;
+  }
+
+  // Detail data arrives in pieces. Rebuilding is cheap, but replaying the
+  // entrance animation for each piece makes the Overview column flash. Only
+  // animate when entering a project, not while refreshing the open one.
+  const entering = host.dataset.path !== p.path;
+  host.innerHTML = detailView(p, entering);
+  host.dataset.path = p.path;
+}
+
+function renderSettings() {
+  const host = el["settings-host"];
+  if (!state.settingsOpen) {
+    host.innerHTML = "";
+    return;
+  }
+  host.innerHTML = `<main class="settings-page">
+    <header class="detail-head settings-head">
+      <button class="btn back" data-settings="close">${icon("arrow_back")}Back</button>
+      <div class="detail-id"><h2>${settingsIcon("settings-heading-icon")}Settings</h2></div>
+    </header>
+    <div class="settings-body">
+      <section class="settings-group">
+        <h3>General</h3>
+        <label class="settings-row" for="setting-language">
+          <span><strong>Language</strong><small>Choose the language DevHQ uses.</small></span>
+          <select class="sort setting-control" id="setting-language">
+            <option value="system">Windows default</option>
+            <option value="en">English</option>
+            <option value="zh">中文（简体） — Chinese (Simplified)</option>
+            <option value="hi">हिन्दी — Hindi</option>
+            <option value="es">Español — Spanish</option>
+            <option value="fr">Français — French</option>
+            <option value="ar">العربية — Arabic</option>
+            <option value="bn">বাংলা — Bengali</option>
+            <option value="pt">Português — Portuguese</option>
+            <option value="ru">Русский — Russian</option>
+            <option value="id">Bahasa Indonesia — Indonesian</option>
+          </select>
+        </label>
+        <label class="settings-row" for="setting-compact-tech">
+          <span><strong>Compact tech in overview</strong><small>Show technologies in a single neutral line instead of colored tags.</small></span>
+          <input class="setting-check" id="setting-compact-tech" type="checkbox" />
+        </label>
+      </section>
+      <section class="settings-group">
+        <h3>Terminal</h3>
+        <label class="settings-row" for="setting-terminal-shell">
+          <span><strong>Default shell</strong><small>Used for new terminals. Override it from the terminal toolbar.</small></span>
+          <select class="sort setting-control" id="setting-terminal-shell"></select>
+        </label>
+      </section>
+    </div>
+  </main>`;
+  host.querySelector("#setting-language").value = state.language;
+  host.querySelector("#setting-compact-tech").checked = state.compactTechOverview;
+  const shellSetting = window.devhqTerminalSettings;
+  const shellSelect = host.querySelector("#setting-terminal-shell");
+  shellSelect.innerHTML = shellSetting.profiles
+    .map((profile) => `<option value="${profile.value}">${profile.label}</option>`)
+    .join("");
+  shellSelect.value = shellSetting.getDefault();
+}
+
+/** Changes only the two DOM fragments affected by picking a diff file. The
+ *  Overview/TODO columns stay mounted, so a file click cannot flash or reset
+ *  the rest of the detail view. */
+function renderDiffSelection() {
+  for (const row of el["detail-host"].querySelectorAll(".filerow[data-file]")) {
+    row.classList.toggle("on", row.dataset.file === state.diffFile);
+  }
+  const patch = el["detail-host"].querySelector(".dcol-patch");
+  if (patch) patch.innerHTML = patchSection();
 }
 
 /* ------------------------------------------------------------------ wiring */
@@ -1373,6 +1840,13 @@ function renderDetail() {
 /** All handlers are bound once, on elements that live forever, or delegated
  *  from a container - so a redraw never has to rewire anything. */
 function wireShell() {
+  el["open-settings"].onclick = openSettings;
+  el["toggle-theme"].onclick = () => {
+    state.theme = state.theme === "light" ? "dark" : "light";
+    applyTheme();
+    savePrefs();
+  };
+
   el.rescan.onclick = () => {
     if (state.scanning) stopScan();
     else rescan();
@@ -1380,16 +1854,68 @@ function wireShell() {
 
   el["status-term"].onclick = () => window.openTerminalPanel?.();
 
-  el.groupby.onclick = () => {
-    state.groupBy = !state.groupBy;
+  el["sort-buttons"].onclick = (e) => {
+    const button = e.target.closest("[data-sort]");
+    if (!button || button.dataset.sort === state.sort) return;
+    state.sort = button.dataset.sort;
     savePrefs();
     markDirty("toolbar", "grid");
   };
-
-  el.sort.onchange = (e) => {
-    state.sort = e.target.value;
+  el["view-buttons"].onclick = (e) => {
+    const button = e.target.closest("[data-view]");
+    if (!button || button.dataset.view === state.viewMode) return;
+    state.viewMode = button.dataset.view;
+    savePrefs();
+    markDirty("toolbar", "grid");
+  };
+  el.grid.onchange = (e) => {
+    const input = e.target.closest("[data-table-column]");
+    if (!input) return;
+    state.tableColumns = input.checked
+      ? [...state.tableColumns, input.dataset.tableColumn]
+      : state.tableColumns.filter((column) => column !== input.dataset.tableColumn);
+    const sortedColumn = state.tableSortKey.startsWith("tech:") ? state.tableSortKey.slice(5) : state.tableSortKey;
+    if (!state.tableColumns.includes(sortedColumn) && state.tableSortKey !== "project") {
+      state.tableSortKey = "project";
+      state.tableSortDirection = 1;
+    }
     savePrefs();
     markDirty("grid");
+  };
+  el.grid.onpointerdown = (down) => {
+    const handle = down.target.closest("[data-resize-column]");
+    if (!handle || down.button !== 0) return;
+    down.preventDefault();
+    down.stopPropagation();
+    const key = handle.dataset.resizeColumn;
+    const table = handle.closest("table");
+    const col = [...table.querySelectorAll("col[data-table-col]")].find((item) => item.dataset.tableCol === key);
+    if (!col) return;
+    const startX = down.clientX;
+    const startWidth = col.getBoundingClientRect().width;
+    const startTableWidth = table.getBoundingClientRect().width;
+    let width = startWidth;
+    let moved = false;
+    handle.setPointerCapture(down.pointerId);
+    const move = (e) => {
+      moved ||= Math.abs(e.clientX - startX) > 2;
+      width = Math.max(key === "actions" ? 90 : 76, Math.min(800, startWidth + e.clientX - startX));
+      col.style.width = `${width}px`;
+      table.style.width = `${startTableWidth + width - startWidth}px`;
+    };
+    const up = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+      if (!moved) return;
+      state.tableColumnWidths[key] = Math.round(width);
+      savePrefs();
+      tableResizeClickSuppressed = true;
+      setTimeout(() => { tableResizeClickSuppressed = false; }, 0);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
   };
 
   el["tech-filter"].onchange = (e) => {
@@ -1436,6 +1962,14 @@ function wireShell() {
   // Clicking away leaves the folders as they were - only Scan commits them.
   document.addEventListener("pointerdown", (e) => {
     if (rootEditorOpen() && !e.target.closest("#roots")) closeRootEditor();
+    if (!e.target.closest("#search-box")) closeSearchCommands();
+    if (!e.target.closest("#table-column-picker")) {
+      const menu = document.getElementById("table-column-picker-menu");
+      const button = document.getElementById("table-column-picker-button");
+      state.tableColumnMenuOpen = false;
+      if (menu) menu.hidden = true;
+      button?.setAttribute("aria-expanded", "false");
+    }
   });
 
   // The input element itself is never replaced, so there is no caret to
@@ -1443,6 +1977,30 @@ function wireShell() {
   el["search-input"].oninput = (e) => {
     state.search = e.target.value;
     markDirty("grid", "filters");
+    searchCommandIndex = 0;
+    renderSearchCommands();
+  };
+  el["search-input"].onfocus = () => renderSearchCommands();
+  el["search-input"].onkeydown = (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!searchCommands.length) return renderSearchCommands();
+      const direction = e.key === "ArrowDown" ? 1 : -1;
+      searchCommandIndex = (searchCommandIndex + direction + searchCommands.length) % searchCommands.length;
+      renderSearchCommands();
+    } else if (e.key === "Enter" && !el["search-menu"].hidden && searchCommands.length) {
+      e.preventDefault();
+      runSearchCommand(searchCommandIndex);
+    } else if (e.key === "Escape") {
+      e.stopPropagation();
+      closeSearchCommands();
+      e.target.blur();
+    }
+  };
+  el["search-menu"].onpointerdown = (e) => e.preventDefault();
+  el["search-menu"].onclick = (e) => {
+    const command = e.target.closest("[data-command]");
+    if (command) runSearchCommand(Number(command.dataset.command));
   };
 
   el.filters.onclick = (e) => {
@@ -1468,7 +2026,27 @@ function wireShell() {
   };
 
   el.grid.onclick = (e) => {
-    const card = e.target.closest(".card");
+    if (tableResizeClickSuppressed || e.target.closest("[data-resize-column]")) return;
+    const columnPicker = e.target.closest("#table-column-picker-button");
+    if (columnPicker) {
+      const menu = document.getElementById("table-column-picker-menu");
+      state.tableColumnMenuOpen = !state.tableColumnMenuOpen;
+      menu.hidden = !state.tableColumnMenuOpen;
+      columnPicker.setAttribute("aria-expanded", String(!menu.hidden));
+      return;
+    }
+    const tableSort = e.target.closest("[data-table-sort]");
+    if (tableSort) {
+      const key = tableSort.dataset.tableSort;
+      if (state.tableSortKey === key) state.tableSortDirection *= -1;
+      else {
+        state.tableSortKey = key;
+        state.tableSortDirection = 1;
+      }
+      savePrefs();
+      return markDirty("grid");
+    }
+    const card = e.target.closest(".card,.project-row");
     if (!card) return;
     const project = state.byPath.get(card.dataset.path);
     if (!project) return;
@@ -1491,8 +2069,9 @@ function wireShell() {
     }
     const file = e.target.closest("[data-file]");
     if (file) {
+      if (state.diffFile === file.dataset.file) return;
       state.diffFile = file.dataset.file;
-      return markDirty("detail");
+      return renderDiffSelection();
     }
     const action = e.target.closest("[data-act]");
     if (!action) return;
@@ -1500,6 +2079,23 @@ function wireShell() {
     if (!p) return;
     if (action.dataset.act === "close") return closeDetail();
     projectAction(action.dataset.act, p);
+  };
+
+  el["settings-host"].onclick = (e) => {
+    if (e.target.closest('[data-settings="close"]')) closeSettings();
+  };
+  el["settings-host"].onchange = (e) => {
+    if (e.target.id === "setting-language") {
+      state.language = e.target.value;
+      applyLanguage();
+      savePrefs();
+    } else if (e.target.id === "setting-compact-tech") {
+      state.compactTechOverview = e.target.checked;
+      savePrefs();
+      markDirty("grid");
+    } else if (e.target.id === "setting-terminal-shell") {
+      window.devhqTerminalSettings.setDefault(e.target.value);
+    }
   };
 }
 
@@ -1510,32 +2106,44 @@ for (const type of ["mousedown", "mouseup", "auxclick"]) {
   document.addEventListener(type, (e) => {
     if (e.button !== 3 && e.button !== 4) return;
     e.preventDefault();
-    if (type === "mouseup" && e.button === 3 && state.selectedPath) closeDetail();
+    if (type === "mouseup" && e.button === 3) {
+      if (state.settingsOpen) closeSettings();
+      else if (state.selectedPath) closeDetail();
+    }
   });
 }
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && state.selectedPath) {
-    closeDetail();
+  if (e.key === "Escape" && (state.settingsOpen || state.selectedPath)) {
+    if (state.settingsOpen) closeSettings();
+    else closeDetail();
   } else if (e.key === "F5" || (e.ctrlKey && e.key.toLowerCase() === "r")) {
     e.preventDefault();
     rescan();
   } else if (e.ctrlKey && e.key === "`") {
     e.preventDefault();
     setDockOpen(!window.termsState.open);
-  } else if (e.ctrlKey && e.key.toLowerCase() === "f") {
+  } else if (e.ctrlKey && ["f", "k"].includes(e.key.toLowerCase())) {
     e.preventDefault();
     el["search-input"]?.focus();
+    el["search-input"]?.select();
+    searchCommandIndex = 0;
+    renderSearchCommands();
   }
 });
 
 /* ------------------------------------------------------------------ start */
 
-(function start() {
+(async function start() {
   loadPrefs();
   // The window is drawn and interactive before anything is asked of the disk.
   mountShell();
+  window.devhqI18n?.init(state.language);
   markDirty("toolbar", "filters", "summary", "grid");
+
+  // On the first run, scanning waits behind the language dialog. The shell is
+  // already painted, but no disk work or stream can distract from the choice.
+  await firstRunLanguage();
 
   listenScan().then(() => {
     if (state.roots.length) return rescan();
@@ -1556,3 +2164,20 @@ document.addEventListener("keydown", (e) => {
 window.devhqWork = { beginWork, updateWork, endWork };
 /** The folder a terminal opened from nowhere in particular should start in. */
 window.devhqPrimaryRoot = () => state.roots[0] || "";
+
+let mainWindowClosing = false;
+appWindow.onCloseRequested(async (event) => {
+  if (mainWindowClosing) return;
+  if (!window.terminalStateDirty?.()) return;
+  event.preventDefault();
+  mainWindowClosing = true;
+  beginWork("shutdown:terminals", "Saving terminal history");
+  try {
+    await Promise.race([
+      window.persistTerminalState?.(),
+      new Promise((resolve) => setTimeout(resolve, 200)),
+    ]);
+  } finally {
+    await appWindow.destroy();
+  }
+});

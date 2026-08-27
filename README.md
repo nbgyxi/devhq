@@ -3,8 +3,7 @@
 A native Windows desktop app that gives a developer-oriented overview of every
 project in a folder: what's dirty, what's running, what it's built with.
 
-Same stack as `aivideo-player` — **Tauri 2 + Rust backend + vanilla JS/CSS front
-end**, no bundler and no framework.
+**Tauri 2 + Rust backend + vanilla JS/CSS frontend**, no bundler and no framework.
 
 ## Running it
 
@@ -34,14 +33,14 @@ infra tags with the version declared in the manifest, read from `package.json`,
 manager (from the lockfile), dependency counts, npm scripts, and the project
 version.
 
-**Housekeeping** — missing README, uninstalled `node_modules`, a `.env` in the
-tree, presence of a `CLAUDE.md`.
-
 ## Terminals
 
 Every project can open a shell in its own folder, in a dock at the bottom of the
-window. The terminal button on a card or in the detail drawer opens one,
-``Ctrl+` `` toggles the panel, and the tab strip shows one tab per session
+window. The Terminal button on a card, in the detail view or in the status bar
+opens one, and *Run* starts the project in one — `npm run dev`, `cargo run`,
+`npx expo start`, whatever the folder itself says. ``Ctrl+` `` toggles the
+panel, each tab has a close cross with a `+` after the last, and the strip shows
+one tab per session
 labelled with the project it belongs to. *External shell* still opens a separate
 console window instead, as before.
 
@@ -81,12 +80,12 @@ is also why attaching a second view is a single snapshot rather than a replay.
 Chips filter by uncommitted / running / unpushed / behind / no remote / not a
 repo / stashed / stale (90d+), with live counts. The search box matches name,
 group, description, path, branch, remote, tech and port — space-separated terms
-are ANDed. The dropdowns filter by a single technology and change the sort
-(recent activity, name, most changes, running first, tech). Clicking any tech
-tag filters by it.
+are ANDed — and also offers commands to open, run or start a terminal for a
+project. The technology dropdown and direct sort buttons further organize the
+list. Clicking any tech tag filters by it.
 
-Selections persist in `localStorage`. `Ctrl+F` focuses search, `F5` rescans,
-`Esc` closes the detail drawer.
+Selections persist in `localStorage`. `Ctrl+K` (or `Ctrl+F`) focuses search, `F5` rescans,
+`Esc` (or the mouse back button) closes the detail view.
 
 ## How "running" is decided
 
@@ -108,7 +107,7 @@ Listening ports come from `netstat -ano` matched by PID.
 
 Direct children of the scan root are projects if they contain a `.git` or any
 build manifest. A folder that is only a container is descended into one extra
-level, and its children are shown grouped under its name. `node_modules`,
+level so its child projects can also be discovered. `node_modules`,
 `target`, `dist` and similar are never entered.
 
 Projects are inspected across a 12-thread pool; the work is dominated by waiting
@@ -124,7 +123,10 @@ on `git`, so a few hundred folders scan in a few seconds.
 | `src-tauri/src/tech.rs` | Manifest parsing and tech/version detection. |
 | `src-tauri/src/procs.rs` | Process/port snapshot and project attribution. |
 | `src-tauri/src/cwd.rs` | Reading another process's working directory. |
+| `src-tauri/src/todo.rs` | The TODO / FIXME sweep behind the detail view. |
 | `src-tauri/examples/scan_cli.rs` | Headless scan, prints JSON. |
+| `src-tauri/examples/todo_cli.rs` | Headless TODO sweep. |
+| `packaging/msix/`, `scripts/package-msix.ps1` | MSIX packaging for the Store. |
 | `scripts/make-icon.js` | Regenerates the source app icon. |
 
 ## Headless scan
@@ -134,7 +136,63 @@ Useful for checking the scanner without opening the window:
 ```bash
 cd src-tauri
 cargo run --example scan_cli -- "C:\code"
+cargo run --example todo_cli -- "C:\code\devhq"
 ```
+
+## Build MSIX for Microsoft Store
+
+Install the Windows 10/11 SDK first; the MSIX script needs `makeappx.exe`, and
+local sideload signing also needs `signtool.exe`.
+
+DevHQ's reserved Partner Center identity is already the default in the script,
+so a Store build is just:
+
+```powershell
+npm run msix -- -BumpVersion
+```
+
+Submit the unsigned `.msix` this creates. The identity it stamps in is:
+
+| Field | Value | Scope |
+| --- | --- | --- |
+| Package/Identity/Name | `53653Gyxi.DevHQ` | **Per app** — reserved separately for each app |
+| Package/Identity/Publisher | `CN=E33FD025-8793-475B-BE54-EF895462FBA0` | Per account — same for every app |
+| PublisherDisplayName | `Gyxi` | Per account |
+
+Both come from **Product management > Product identity**. Only the *Name* differs
+between apps under the same publisher — reusing another app's (e.g. 4i Player's
+`53653Gyxi.4i`) is rejected at upload with *"Invalid package identity name"*.
+Pass `-IdentityName` / `-Publisher` / `-PublisherDisplayName` to override.
+
+`-BumpVersion` increments the patch version in `src-tauri/tauri.conf.json`
+(e.g. `0.1.0` -> `0.1.1`) before packaging. Partner Center requires every
+submitted package to have a unique, increasing version — re-uploading the same
+full name (`...0.1.0.0_X64`) with different contents is rejected. Pass it on
+each Store build, then commit the bumped `tauri.conf.json`. Omit it to repackage
+the current version unchanged.
+
+The output is written to `target/msix/DevHQ_<version>.msix`. Partner Center
+re-signs this package with the Microsoft Store certificate, so do not self-sign
+the Store submission package.
+
+`-SkipBuild` reuses the release exe already in `src-tauri/target/release/` and
+only repacks, which is what you want while iterating on the manifest itself.
+
+For local sideload testing, generate a self-signed package instead:
+
+```powershell
+npm run msix:local
+```
+
+Then trust the generated certificate as prompted by the script and install with:
+
+```powershell
+Add-AppxPackage .\target\msix\DevHQ_0.1.0.0.msix
+```
+
+DevHQ is packaged as a full-trust desktop app (`runFullTrust`): it reads the
+folders you point it at, shells out to `git`, walks the process table and starts
+real pseudoconsoles, none of which a sandboxed package can do.
 
 ## Regenerating the icon
 

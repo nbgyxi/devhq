@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::conpty::{self, ConPty};
 use crate::off_thread;
@@ -25,6 +25,37 @@ const ATTACH_HISTORY: usize = 1000;
 /// Shells tried in order. The first that starts wins, so a machine with
 /// PowerShell 7 gets it and everything else falls back to what ships with Windows.
 const SHELLS: &[&str] = &["pwsh.exe -NoLogo", "powershell.exe -NoLogo"];
+
+fn shell_command(profile: &str) -> Result<String, String> {
+    match profile {
+        "pwsh" => Ok("pwsh.exe -NoLogo".into()),
+        "powershell" => Ok("powershell.exe -NoLogo".into()),
+        "cmd" => Ok("cmd.exe".into()),
+        "wsl" => Ok("wsl.exe --exec bash --login".into()),
+        "git-bash" => {
+            let mut candidates = Vec::new();
+            for variable in ["ProgramFiles", "ProgramFiles(x86)"] {
+                if let Some(root) = std::env::var_os(variable) {
+                    candidates.push(PathBuf::from(root).join("Git").join("bin").join("bash.exe"));
+                }
+            }
+            if let Some(root) = std::env::var_os("LOCALAPPDATA") {
+                candidates.push(
+                    PathBuf::from(root)
+                        .join("Programs")
+                        .join("Git")
+                        .join("bin")
+                        .join("bash.exe"),
+                );
+            }
+            let Some(bash) = candidates.into_iter().find(|path| path.is_file()) else {
+                return Err("Git Bash was not found. Install Git for Windows or choose another shell.".into());
+            };
+            Ok(format!(r#""{}" --login -i"#, bash.display()))
+        }
+        _ => Err("Unknown terminal shell.".into()),
+    }
+}
 
 struct Session {
     id: String,
@@ -121,6 +152,7 @@ pub struct OpenArgs {
     /// A specific command to run instead of an interactive shell — an npm
     /// script, say. The session is otherwise identical.
     pub command: Option<String>,
+    pub shell: Option<String>,
     pub cols: Option<usize>,
     pub rows: Option<usize>,
 }
@@ -188,7 +220,13 @@ fn term_open_sync(app: AppHandle, args: OpenArgs) -> Result<TermInfo, String> {
 
     let (pty, command) = match &args.command {
         Some(cmd) => (ConPty::spawn(cmd, &dir, cols as u16, rows as u16)?, cmd.clone()),
-        None => spawn_shell(&dir, cols as u16, rows as u16)?,
+        None => match args.shell.as_deref().unwrap_or("auto") {
+            "auto" => spawn_shell(&dir, cols as u16, rows as u16)?,
+            profile => {
+                let shell = shell_command(profile)?;
+                (ConPty::spawn(&shell, &dir, cols as u16, rows as u16)?, shell)
+            }
+        },
     };
 
     let id = next_id();
@@ -338,7 +376,12 @@ pub fn term_list(project_path: Option<String>) -> Vec<TermInfo> {
 /// webview never loads, leaving a black frame — and the front end never gets
 /// its reply either. Hence `async` plus [`off_thread`].
 #[tauri::command]
-pub async fn term_popout(app: AppHandle, id: String) -> Result<(), String> {
+pub async fn term_popout(
+    app: AppHandle,
+    id: String,
+    x: Option<f64>,
+    y: Option<f64>,
+) -> Result<(), String> {
     let session = lookup(&id)?;
     let label = format!("term-{id}");
     if let Some(existing) = app.get_webview_window(&label) {
@@ -347,7 +390,7 @@ pub async fn term_popout(app: AppHandle, id: String) -> Result<(), String> {
     }
     let title = format!("{} — {}", session.project_name, session.command);
     off_thread(move || {
-        WebviewWindowBuilder::new(
+        let mut builder = WebviewWindowBuilder::new(
             &app,
             &label,
             WebviewUrl::App(format!("terminal.html?id={id}").into()),
@@ -356,13 +399,61 @@ pub async fn term_popout(app: AppHandle, id: String) -> Result<(), String> {
         .inner_size(900.0, 600.0)
         .min_inner_size(400.0, 200.0)
         .decorations(false)
-        .background_color(tauri::webview::Color(12, 13, 17, 255))
-        .build()
-        .map(|_| ())
+        .background_color(tauri::webview::Color(12, 13, 17, 255));
+        if let (Some(x), Some(y)) = (x, y) {
+            builder = builder.position(x, y);
+        }
+        builder.build()
+        .and_then(|window| {
+            window.set_focus()?;
+            Ok(())
+        })
         .map_err(|e| format!("Could not open the window: {e}"))
     })
     .await
     .unwrap_or_else(|| Err("Could not open the window.".to_string()))
+}
+
+/// A small native drag image used once a dock tab leaves the main webview.
+/// Unlike an HTML element it can remain visible over the Windows desktop.
+#[tauri::command]
+pub async fn term_drag_preview(
+    app: AppHandle,
+    action: String,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    off_thread(move || {
+        const LABEL: &str = "term-drag-preview";
+        if action == "close" {
+            if let Some(window) = app.get_webview_window(LABEL) {
+                let _ = window.destroy();
+            }
+            return Ok(());
+        }
+        if let Some(window) = app.get_webview_window(LABEL) {
+            return window
+                .set_position(LogicalPosition::new(x, y))
+                .map_err(|e| e.to_string());
+        }
+        if action == "move" {
+            return Ok(());
+        }
+        WebviewWindowBuilder::new(&app, LABEL, WebviewUrl::App("terminal-drag.html".into()))
+            .inner_size(245.0, 38.0)
+            .position(x, y)
+            .decorations(false)
+            .resizable(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .focused(false)
+            .shadow(true)
+            .build()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap_or_else(|| Err("Could not show the terminal drag preview.".to_string()))
 }
 
 /// Closes the popped-out window for a session, used when it docks back in.

@@ -229,6 +229,13 @@ pub fn inspect(path: &Path) -> TechReport {
     if path.join("terraform").exists() || first_match(path, &["tf"]).is_some() {
         push(&mut r, "Terraform", "", "infra");
     }
+    let (uses_aws, uses_azure) = cloud_endpoint_hints(path);
+    if uses_aws {
+        push(&mut r, "AWS", "", "infra");
+    }
+    if uses_azure {
+        push(&mut r, "Azure", "", "infra");
+    }
     if let Some(app) = read_json(&path.join("app.json")) {
         if app.get("expo").is_some() {
             push(&mut r, "Expo", "", "framework");
@@ -347,4 +354,107 @@ fn first_match(path: &Path, exts: &[&str]) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+/// Looks for provider-owned endpoint hostnames in a small, bounded set of
+/// configuration and source files. Endpoint signatures are stronger evidence
+/// than words such as "aws" in a README, while the limits keep project scans
+/// predictable even for large repositories.
+fn cloud_endpoint_hints(root: &Path) -> (bool, bool) {
+    const MAX_FILES: usize = 80;
+    const MAX_BYTES: u64 = 512 * 1024;
+    let mut found = (false, false);
+    let mut read = 0;
+    let mut dirs = vec![(root.to_path_buf(), 0usize)];
+
+    while let Some((dir, depth)) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() {
+                if depth < 3 && !cloud_scan_ignored_dir(&name) {
+                    dirs.push((path, depth + 1));
+                }
+                continue;
+            }
+            if read >= MAX_FILES || !cloud_scan_file(&path, &name) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.len() > MAX_BYTES {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(path) else { continue };
+            read += 1;
+            let hints = clouds_in_text(&text);
+            found.0 |= hints.0;
+            found.1 |= hints.1;
+            if found.0 && found.1 {
+                return found;
+            }
+        }
+    }
+    found
+}
+
+fn cloud_scan_ignored_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | "node_modules" | "target" | "dist" | "build" | "out" | "vendor"
+            | "coverage" | ".next" | ".nuxt" | ".cache" | "bin" | "obj"
+    )
+}
+
+fn cloud_scan_file(path: &Path, name: &str) -> bool {
+    if name.contains("lock") || name.starts_with("readme") || name.starts_with("changelog") {
+        return false;
+    }
+    if name == ".env" || name.starts_with(".env.") || name.starts_with("appsettings") {
+        return true;
+    }
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase()).as_deref(),
+        Some("json" | "yaml" | "yml" | "toml" | "config" | "xml" | "properties" | "js" | "jsx"
+            | "ts" | "tsx" | "py" | "go" | "rs" | "cs" | "java" | "kt")
+    )
+}
+
+fn clouds_in_text(text: &str) -> (bool, bool) {
+    let text = text.to_ascii_lowercase();
+    let aws = [
+        ".amazonaws.com", ".amazonaws.com.cn", ".cloudfront.net", ".awsapprunner.com",
+    ]
+    .iter()
+    .any(|pattern| text.contains(pattern));
+    let azure = [
+        ".azurewebsites.net", ".blob.core.windows.net", ".dfs.core.windows.net",
+        ".database.windows.net", ".documents.azure.com", ".vault.azure.net",
+        ".servicebus.windows.net", ".azureedge.net", ".azurecontainerapps.io",
+        ".cognitiveservices.azure.com", ".openai.azure.com",
+    ]
+    .iter()
+    .any(|pattern| text.contains(pattern));
+    (aws, azure)
+}
+
+#[cfg(test)]
+mod cloud_tests {
+    use super::clouds_in_text;
+
+    #[test]
+    fn recognizes_cloud_endpoint_hosts() {
+        assert_eq!(clouds_in_text("https://bucket.s3.eu-west-1.amazonaws.com/key"), (true, false));
+        assert_eq!(clouds_in_text("Server=tcp:demo.database.windows.net"), (false, true));
+        assert_eq!(
+            clouds_in_text("https://x.execute-api.us-east-1.amazonaws.com https://demo.vault.azure.net"),
+            (true, true)
+        );
+    }
+
+    #[test]
+    fn ignores_provider_names_without_endpoints() {
+        assert_eq!(clouds_in_text("Deploy this example to AWS or Azure."), (false, false));
+    }
 }

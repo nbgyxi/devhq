@@ -64,6 +64,24 @@
     win.destroy();
   };
 
+  // Native window dragging keeps movement smooth. Once Windows releases the
+  // drag, report the pointer's physical screen position; DevHQ accepts it only
+  // when it lands on the terminal dock.
+  document.querySelector(".titlebar .drag").addEventListener("pointerdown", async (e) => {
+    if (e.button !== 0) return;
+    const grabX = e.clientX;
+    const grabY = e.clientY;
+    await win.startDragging();
+    if (handedOver) return;
+    const pos = await win.outerPosition();
+    const scale = window.devicePixelRatio || 1;
+    await emit("term:drop", {
+      id,
+      x: pos.x + grabX * scale,
+      y: pos.y + grabY * scale,
+    });
+  });
+
   let pending;
   new ResizeObserver(() => {
     clearTimeout(pending);

@@ -5,14 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Terminal</title>
 <link rel="icon" type="image/png" href="devhq-icon.png" />
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,400..700,0..1,0&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="styles.css" />
 </head>
 <body class="popout">
 <div class="titlebar">
-  <div class="drag">
+  <div class="drag" title="Drag onto DevHQ's terminal area to dock">
     <div class="brand"><img src="devhq-icon.png" alt="" />
       <span id="pop-project">Terminal</span>
       <span class="sub" id="pop-title"></span>
@@ -26,6 +23,8 @@
   </div>
 </div>
 <div id="pop-term" class="term-host"></div>
+<script src="i18n.js"></script>
+<script>window.devhqI18n.init(window.devhqI18n.storedLanguage());</script>
 <script src="terminal.js"></script>
 <script src="popout.js"></script>
 </body>
