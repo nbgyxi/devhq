@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Terminal</title>
+<link rel="icon" type="image/png" href="devhq-icon.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,400..700,0..1,0&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body class="popout">
+<div class="titlebar">
+  <div class="drag">
+    <div class="brand"><img src="devhq-icon.png" alt="" />
+      <span id="pop-project">Terminal</span>
+      <span class="sub" id="pop-title"></span>
+    </div>
+  </div>
+  <div class="win-btns">
+    <button class="win-btn" id="pop-dock" title="Dock back into DevHQ"><span class="ms">dock_to_bottom</span></button>
+    <button class="win-btn" data-win="min"><span class="ms">remove</span></button>
+    <button class="win-btn" data-win="max"><span class="ms">crop_square</span></button>
+    <button class="win-btn close" data-win="close"><span class="ms">close</span></button>
+  </div>
+</div>
+<div id="pop-term" class="term-host"></div>
+<script src="terminal.js"></script>
+<script src="popout.js"></script>
+</body>
+</html>

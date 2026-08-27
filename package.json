@@ -1,0 +1,15 @@
+{
+  "name": "devhq",
+  "version": "0.1.0",
+  "description": "DevHQ - developer overview of every project in a folder (Tauri + Rust)",
+  "private": true,
+  "scripts": {
+    "icons": "node scripts/tauri-with-cargo-path.js icon src/devhq-icon.png",
+    "dev": "node scripts/tauri-with-cargo-path.js dev",
+    "build": "node scripts/tauri-with-cargo-path.js build",
+    "tauri": "node scripts/tauri-with-cargo-path.js"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
