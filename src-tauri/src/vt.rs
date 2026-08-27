@@ -32,6 +32,78 @@ pub struct Cell {
     pub attr: u8,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::Grid;
+
+    #[test]
+    fn alternate_screen_cursor_is_not_overwritten_by_tui_cursor_saves() {
+        let mut grid = Grid::new(40, 12);
+        grid.feed(b"prompt\x1b[4;8H");
+        assert_eq!((grid.cx, grid.cy), (7, 3));
+
+        grid.feed(b"\x1b[?1049h\x1b[9;20H\x1b7\x1b[2;2H\x1b8\x1b[?1049l");
+
+        assert_eq!((grid.cx, grid.cy), (7, 3));
+        assert!(!grid.alt);
+    }
+
+    // Filling the last column parks the cursor there instead of wrapping; the
+    // wrap only happens if another character actually arrives. Anything that
+    // moves the cursor in between must cancel that parked wrap, or the next
+    // character opens a line the program never asked for — which is how an
+    // inline TUI's redraw ends up one line off from the shell that hosts it.
+    #[test]
+    fn cursor_up_cancels_a_pending_wrap() {
+        let mut grid = Grid::new(8, 6);
+        grid.feed(b"\x1b[3;1Habcdefgh");
+        assert_eq!((grid.cx, grid.cy), (7, 2));
+
+        grid.feed(b"\x1b[Ax");
+        assert_eq!(grid.row(1)[7].ch, 'x');
+        assert_eq!(grid.cy, 1);
+    }
+
+    #[test]
+    fn vertical_position_cancels_a_pending_wrap() {
+        let mut grid = Grid::new(8, 6);
+        grid.feed(b"abcdefgh\x1b[4dx");
+        assert_eq!(grid.row(3)[7].ch, 'x');
+        assert_eq!(grid.cy, 3);
+    }
+
+    #[test]
+    fn restored_cursor_cancels_a_pending_wrap() {
+        let mut grid = Grid::new(8, 6);
+        grid.feed(b"\x1b[5;3H\x1b7\x1b[1;1Habcdefgh\x1b8x");
+        assert_eq!(grid.row(4)[2].ch, 'x');
+        assert_eq!(grid.cy, 4);
+    }
+
+    #[test]
+    fn kitty_keyboard_flag_stack_is_not_a_cursor_restore() {
+        // `CSI > 1 u` / `CSI < u` push and pop keyboard flags. Only the
+        // unprefixed `CSI u` restores the cursor.
+        let mut grid = Grid::new(40, 12);
+        grid.feed(b"\x1b[1;1H\x1b[s\x1b[8;3Hdrawing");
+        assert_eq!(grid.cy, 7);
+
+        grid.feed(b"\x1b[>1u\x1b[<u\x1b[<u");
+        assert_eq!(grid.cy, 7, "flag push/pop moved the cursor");
+
+        grid.feed(b"\x1b[u");
+        assert_eq!((grid.cx, grid.cy), (0, 0), "a bare CSI u still restores");
+    }
+
+    #[test]
+    fn erasing_the_line_cancels_a_pending_wrap() {
+        let mut grid = Grid::new(8, 6);
+        grid.feed(b"abcdefgh\x1b[K\x1b[1;1Hz");
+        assert_eq!(grid.row(0)[0].ch, 'z');
+        assert_eq!(grid.cy, 0);
+    }
+}
+
 impl Cell {
     fn blank(pen: &Cell) -> Cell {
         // Erasing paints with the current background, which is why a program
@@ -64,9 +136,14 @@ pub struct Grid {
     cells: Vec<Cell>,
     /// The primary screen, parked here while the alternate screen is active.
     saved_primary: Option<Vec<Cell>>,
+    /// Cursor belonging to `saved_primary`. This must not share storage with
+    /// DECSC/SCOSC: full-screen apps use those while the alt screen is active.
+    saved_primary_cursor: (usize, usize),
     pub cx: usize,
     pub cy: usize,
     pub cursor_visible: bool,
+    /// DECSCUSR shape: 0-2 block, 3-4 underline, 5-6 bar.
+    pub cursor_style: u8,
     pub alt: bool,
     pub title: String,
     pub bracketed_paste: bool,
@@ -103,9 +180,11 @@ impl Grid {
             rows,
             cells: vec![Cell::default(); cols * rows],
             saved_primary: None,
+            saved_primary_cursor: (0, 0),
             cx: 0,
             cy: 0,
             cursor_visible: true,
+            cursor_style: 1,
             alt: false,
             title: String::new(),
             bracketed_paste: false,
@@ -256,6 +335,7 @@ impl Grid {
                 let (x, y) = self.saved_cursor;
                 self.cx = x.min(self.cols - 1);
                 self.cy = y.min(self.rows - 1);
+                self.wrap_pending = false;
                 self.state = State::Ground;
             }
             b'M' => {
@@ -265,15 +345,18 @@ impl Grid {
                 } else {
                     self.cy = self.cy.saturating_sub(1);
                 }
+                self.wrap_pending = false;
                 self.state = State::Ground;
             }
             b'D' => {
                 self.linefeed();
+                self.wrap_pending = false;
                 self.state = State::Ground;
             }
             b'E' => {
                 self.cx = 0;
                 self.linefeed();
+                self.wrap_pending = false;
                 self.state = State::Ground;
             }
             b'c' => {
@@ -345,17 +428,22 @@ impl Grid {
 
     fn dispatch(&mut self, final_byte: u8) {
         let p0 = self.param(0, 1) as usize;
+        // Every sequence below either moves the cursor or rewrites the cells
+        // around it, and each one cancels a wrap that is merely parked. Missing
+        // one leaves the flag set, and the next printable character opens a
+        // line the program never asked for — which is how an inline TUI's
+        // redraw drifts a line away from the shell hosting it.
+        if matches!(
+            final_byte,
+            b'A'..=b'H' | b'J' | b'K' | b'L' | b'M' | b'P' | b'S' | b'T' | b'X' | b'@' | b'`' | b'd' | b'f' | b'r'
+        ) {
+            self.wrap_pending = false;
+        }
         match final_byte {
             b'A' => self.cy = self.cy.saturating_sub(p0),
             b'B' => self.cy = (self.cy + p0).min(self.rows - 1),
-            b'C' => {
-                self.cx = (self.cx + p0).min(self.cols - 1);
-                self.wrap_pending = false;
-            }
-            b'D' => {
-                self.cx = self.cx.saturating_sub(p0);
-                self.wrap_pending = false;
-            }
+            b'C' => self.cx = (self.cx + p0).min(self.cols - 1),
+            b'D' => self.cx = self.cx.saturating_sub(p0),
             b'E' => {
                 self.cy = (self.cy + p0).min(self.rows - 1);
                 self.cx = 0;
@@ -364,17 +452,13 @@ impl Grid {
                 self.cy = self.cy.saturating_sub(p0);
                 self.cx = 0;
             }
-            b'G' | b'`' => {
-                self.cx = (p0 - 1).min(self.cols - 1);
-                self.wrap_pending = false;
-            }
+            b'G' | b'`' => self.cx = (p0 - 1).min(self.cols - 1),
             b'd' => self.cy = (p0 - 1).min(self.rows - 1),
             b'H' | b'f' => {
                 let row = self.param(0, 1) as usize;
                 let col = self.param(1, 1) as usize;
                 self.cy = (row - 1).min(self.rows - 1);
                 self.cx = (col - 1).min(self.cols - 1);
-                self.wrap_pending = false;
             }
             b'J' => self.erase_display(self.param(0, 0)),
             b'K' => self.erase_line(self.param(0, 0)),
@@ -386,6 +470,7 @@ impl Grid {
             b'S' => self.scroll_up(p0),
             b'T' => self.scroll_down(p0),
             b'm' => self.sgr(),
+            b'q' => self.cursor_style = self.param(0, 1).min(6) as u8,
             b'r' => {
                 let top = self.param(0, 1) as usize - 1;
                 let bot = self.params.get(1).copied().filter(|&v| v > 0).unwrap_or(self.rows as u32)
@@ -400,11 +485,18 @@ impl Grid {
             }
             b'h' => self.set_mode(true),
             b'l' => self.set_mode(false),
-            b's' => self.saved_cursor = (self.cx, self.cy),
-            b'u' => {
+            // Save/restore cursor only with no private marker. `CSI > 1 u` and
+            // `CSI < u` push and pop keyboard flags in the kitty protocol, and
+            // reading those as a restore throws the cursor back to wherever it
+            // was last saved — which is how a program that pops its flags on
+            // the way out of Ctrl+C leaves the shell drawing its next prompt
+            // above everything still on screen.
+            b's' if self.private == 0 => self.saved_cursor = (self.cx, self.cy),
+            b'u' if self.private == 0 => {
                 let (x, y) = self.saved_cursor;
                 self.cx = x.min(self.cols - 1);
                 self.cy = y.min(self.rows - 1);
+                self.wrap_pending = false;
             }
             _ => {}
         }
@@ -432,7 +524,7 @@ impl Grid {
         }
         if on {
             self.saved_primary = Some(self.cells.clone());
-            self.saved_cursor = (self.cx, self.cy);
+            self.saved_primary_cursor = (self.cx, self.cy);
             self.cells = vec![Cell::default(); self.cols * self.rows];
             self.cx = 0;
             self.cy = 0;
@@ -444,11 +536,12 @@ impl Grid {
             } else {
                 self.cells = vec![Cell::default(); self.cols * self.rows];
             }
-            let (x, y) = self.saved_cursor;
+            let (x, y) = self.saved_primary_cursor;
             self.cx = x.min(self.cols - 1);
             self.cy = y.min(self.rows - 1);
         }
         self.alt = on;
+        self.wrap_pending = false;
         self.mark_all_dirty();
     }
 
@@ -680,6 +773,8 @@ impl Grid {
         self.scroll_top = 0;
         self.scroll_bot = self.rows - 1;
         self.cursor_visible = true;
+        self.cursor_style = 1;
+        self.wrap_pending = false;
         self.mark_all_dirty();
     }
 
@@ -700,6 +795,7 @@ impl Grid {
         }
         self.cells = next;
         self.saved_primary = None;
+        self.saved_primary_cursor = (0, 0);
         self.cols = cols;
         self.rows = rows;
         self.dirty = vec![true; rows];

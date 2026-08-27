@@ -212,6 +212,14 @@ impl ConPty {
             let _ = CloseHandle(self.thread);
         }
     }
+
+    /// Stops the attached shell without closing the pseudoconsole. Used during
+    /// app teardown so the potentially blocking console cleanup can run later.
+    pub fn terminate_child(&self) {
+        unsafe {
+            let _ = TerminateProcess(self.process, 0);
+        }
+    }
 }
 
 impl Drop for ConPty {

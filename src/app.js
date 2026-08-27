@@ -1556,6 +1556,7 @@ function mountShell() {
 
 function renderToolbar() {
   const busy = state.scanning;
+  el["sort-buttons"].hidden = state.viewMode === "table";
   el.loadbar.hidden = !busy && !work.size;
   el.rescan.classList.toggle("spinning", busy);
   el.rescan.querySelector(".label").textContent = busy ? "Stop" : "Rescan";
@@ -2022,7 +2023,7 @@ function wireShell() {
     if (!btn) return;
     if (btn.dataset.win === "min") appWindow.minimize();
     else if (btn.dataset.win === "max") appWindow.toggleMaximize();
-    else appWindow.close();
+    else appWindow.destroy();
   };
 
   el.grid.onclick = (e) => {
@@ -2165,19 +2166,7 @@ window.devhqWork = { beginWork, updateWork, endWork };
 /** The folder a terminal opened from nowhere in particular should start in. */
 window.devhqPrimaryRoot = () => state.roots[0] || "";
 
-let mainWindowClosing = false;
-appWindow.onCloseRequested(async (event) => {
-  if (mainWindowClosing) return;
-  if (!window.terminalStateDirty?.()) return;
-  event.preventDefault();
-  mainWindowClosing = true;
-  beginWork("shutdown:terminals", "Saving terminal history");
-  try {
-    await Promise.race([
-      window.persistTerminalState?.(),
-      new Promise((resolve) => setTimeout(resolve, 200)),
-    ]);
-  } finally {
-    await appWindow.destroy();
-  }
+window.addEventListener("beforeunload", () => {
+  // This is DOM/localStorage-only and never delays native window destruction.
+  window.persistDockedTerminalState?.();
 });

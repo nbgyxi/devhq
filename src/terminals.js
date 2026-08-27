@@ -40,12 +40,13 @@ const terms = {
   /** id -> generation. Output increments it; a successful snapshot only
    *  clears the generation it actually captured. */
   dirtyHistory: new Map(),
+  interacted: new Set(),
   persistenceRunning: null,
   el: null,
 };
 
 function markTerminalHistoryDirty(id) {
-  if (!terms.known.has(id)) return;
+  if (!terms.known.has(id) || !terms.interacted.has(id)) return;
   terms.dirtyHistory.set(id, (terms.dirtyHistory.get(id) || 0) + 1);
 }
 
@@ -250,7 +251,7 @@ function dockEl() {
     down.preventDefault();
     grip.setPointerCapture(down.pointerId);
     const move = (e) => {
-      terms.height = Math.min(Math.max(window.innerHeight - e.clientY, 140), window.innerHeight - 220);
+      terms.height = clampDockHeight(window.innerHeight - e.clientY);
       applyDockHeight();
     };
     const up = () => {
@@ -263,7 +264,14 @@ function dockEl() {
     grip.addEventListener("pointerup", up);
   });
 
-  window.addEventListener("resize", () => fitActive());
+  window.addEventListener("resize", () => {
+    // A window that just got shorter must give the shell its room back before
+    // the terminal is refitted to whatever is left.
+    const before = terms.height;
+    applyDockHeight();
+    fitActive();
+    if (terms.height !== before) termsSavePrefs();
+  });
   return el;
 }
 
@@ -292,7 +300,18 @@ function syncTerminalButton() {
       : "Open a terminal";
 }
 
+/** The dock can never be taller than the window it sits in. `#root` is laid out
+ *  above it, so a height carried over from a maximized window — or restored on a
+ *  smaller screen — leaves the app as nothing but a full-height terminal with
+ *  the project shell squeezed to zero. Clamping here rather than only at the
+ *  drag means a saved height and a window resize are both covered. */
+function clampDockHeight(height) {
+  const room = Math.max(120, window.innerHeight - 220);
+  return Math.min(Math.max(height, 140), room);
+}
+
 function applyDockHeight() {
+  terms.height = clampDockHeight(terms.height);
   document.documentElement.style.setProperty("--dock-h", terms.open ? `${terms.height}px` : "0px");
 }
 
@@ -483,7 +502,6 @@ async function mountSession(id, restoredHistory = "") {
     history: restoredHistory,
     shell: shellProfileFromCommand(info.command),
   });
-  markTerminalHistoryDirty(id);
 
   view.onTitle = (title) => {
     session.info.title = title;
@@ -520,6 +538,7 @@ function closeTerminal(id) {
   terms.sessions.delete(id);
   terms.known.delete(id);
   terms.dirtyHistory.delete(id);
+  terms.interacted.delete(id);
   term_dock_invoke("term_close", { id }).catch(() => {});
   focusNext();
   termsSavePrefs();
@@ -652,6 +671,20 @@ async function persistTerminalState() {
   return terms.persistenceRunning;
 }
 
+/** Last-chance persistence that never crosses the native bridge. Docked views
+ *  already hold their complete rendered history, so copying it to localStorage
+ *  is synchronous and cannot delay or deadlock window shutdown. */
+function persistDockedTerminalState() {
+  for (const [id, session] of terms.sessions) {
+    if (!terms.dirtyHistory.has(id)) continue;
+    const remembered = terms.known.get(id);
+    if (!remembered) continue;
+    remembered.history = session.view.exportHistory();
+    terms.dirtyHistory.delete(id);
+  }
+  termsSavePrefs();
+}
+
 // A pop-out reports where its title-bar drag ended. Only accept the handoff
 // when that point is over the visible terminal area in this window.
 term_dock_listen("term:drop", async (event) => {
@@ -670,12 +703,17 @@ term_dock_listen("term:drop", async (event) => {
   } catch {}
 });
 
+term_dock_listen("term:input", (event) => {
+  terms.interacted.add(event.payload);
+});
+
 window.openTerminal = openTerminal;
 window.openTerminalPanel = openTerminalPanel;
 window.setDockOpen = setDockOpen;
 window.syncTerminalButton = syncTerminalButton;
 window.termsState = terms;
 window.persistTerminalState = persistTerminalState;
+window.persistDockedTerminalState = persistDockedTerminalState;
 window.terminalStateDirty = () => terms.dirtyHistory.size > 0;
 window.devhqTerminalChanged = markTerminalHistoryDirty;
 
@@ -705,4 +743,4 @@ restoreTerminals();
 
 // Keep shutdown cheap: in normal use it only has to flush output from the last
 // few seconds, and often has nothing left to do at all.
-setInterval(() => persistTerminalState().catch(() => {}), 20_000);
+setInterval(() => persistTerminalState().catch(() => {}), 5_000);

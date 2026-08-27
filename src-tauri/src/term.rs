@@ -66,6 +66,10 @@ struct Session {
     alive: AtomicBool,
     pid: u32,
     command: String,
+    /// Bytes written to the raw capture so far, which is what lets a resize be
+    /// recorded at the point in the stream where it happened. Always counted;
+    /// it means nothing when no capture is running.
+    captured: AtomicU64,
 }
 
 fn registry() -> &'static Mutex<HashMap<String, Arc<Session>>> {
@@ -128,6 +132,8 @@ pub struct Snapshot {
     cx: usize,
     cy: usize,
     cursor_visible: bool,
+    cursor_style: u8,
+    cursor_char: char,
     alt: bool,
 }
 
@@ -140,6 +146,8 @@ struct Update {
     cx: usize,
     cy: usize,
     cursor_visible: bool,
+    cursor_style: u8,
+    cursor_char: char,
     alt: bool,
     title: String,
 }
@@ -241,6 +249,7 @@ fn term_open_sync(app: AppHandle, args: OpenArgs) -> Result<TermInfo, String> {
         grid: Mutex::new(Grid::new(cols, rows)),
         alive: AtomicBool::new(true),
         command,
+        captured: AtomicU64::new(0),
     });
     registry().lock().unwrap().insert(id.clone(), session.clone());
 
@@ -260,15 +269,75 @@ fn spawn_shell(dir: &Path, cols: u16, rows: u16) -> Result<(ConPty, String), Str
     Err(last)
 }
 
+/// Opt-in raw capture of everything the pseudoconsole says, so a rendering bug
+/// can be reproduced away from the window. Set `DEVHQ_TERM_LOG` to a directory;
+/// each session then writes `<run>-<id>.bin` (the exact bytes) beside
+/// `<run>-<id>.meta` (the size it started at, then one line per resize), which
+/// `cargo run --example term_replay` replays. Unset — the normal case — this
+/// costs one env lookup per session.
+fn capture_dir() -> Option<PathBuf> {
+    let dir = PathBuf::from(std::env::var_os("DEVHQ_TERM_LOG")?);
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Session ids restart at `t1` every time the app starts, so a capture named
+/// after the id alone is silently overwritten by the next run — and half-stale
+/// pairs read as a bug that isn't there. Stamping the run keeps them apart.
+fn capture_run() -> &'static str {
+    static RUN: OnceLock<String> = OnceLock::new();
+    RUN.get_or_init(|| {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        format!("run{secs}")
+    })
+}
+
+fn open_capture(session: &Session) -> Option<std::fs::File> {
+    let dir = capture_dir()?;
+    let (cols, rows) = {
+        let grid = session.grid.lock().unwrap();
+        (grid.cols, grid.rows)
+    };
+    let stem = format!("{}-{}", capture_run(), session.id);
+    let _ = std::fs::write(dir.join(format!("{stem}.meta")), format!("{cols} {rows}\n"));
+    std::fs::File::create(dir.join(format!("{stem}.bin"))).ok()
+}
+
+/// Notes a resize in the sidecar, stamped with how far into the byte stream it
+/// landed. Resizes never appear in the bytes themselves, so without this a
+/// replay silently runs the whole session at the size it opened at.
+fn note_capture_resize(session: &Session, cols: usize, rows: usize) {
+    let Some(dir) = capture_dir() else { return };
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join(format!("{}-{}.meta", capture_run(), session.id)))
+    else {
+        return;
+    };
+    use std::io::Write;
+    let at = session.captured.load(Ordering::Relaxed);
+    let _ = writeln!(file, "resize {at} {cols} {rows}");
+}
+
 /// The reader thread: block on the pseudoconsole, feed the screen, ship the
 /// rows that changed. Blocking on `ReadFile` is itself the coalescing — ConPTY
 /// hands us one batched repaint per flush rather than a byte at a time.
 fn spawn_reader(app: AppHandle, session: Arc<Session>) {
     let handle = session.pty.lock().unwrap().output();
+    let mut capture = open_capture(&session);
     std::thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
         loop {
             let Some(n) = conpty::read_chunk(handle, &mut buf) else { break };
+            if let Some(file) = capture.as_mut() {
+                use std::io::Write;
+                let _ = file.write_all(&buf[..n]);
+                let _ = file.flush();
+                session.captured.fetch_add(n as u64, Ordering::Relaxed);
+            }
             let update = {
                 let mut grid = session.grid.lock().unwrap();
                 grid.feed(&buf[..n]);
@@ -285,6 +354,8 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
                     cx: grid.cx,
                     cy: grid.cy,
                     cursor_visible: grid.cursor_visible,
+                    cursor_style: grid.cursor_style,
+                    cursor_char: grid.row(grid.cy)[grid.cx].ch,
                     alt: grid.alt,
                     title: grid.title.clone(),
                 }
@@ -298,7 +369,13 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
 
 /// Everything a fresh view needs to draw the session as it stands.
 #[tauri::command]
-pub fn term_attach(id: String) -> Result<Snapshot, String> {
+pub async fn term_attach(id: String) -> Result<Snapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || term_attach_sync(id))
+        .await
+        .unwrap_or_else(|_| Err("The terminal snapshot could not be read.".into()))
+}
+
+fn term_attach_sync(id: String) -> Result<Snapshot, String> {
     let session = lookup(&id)?;
     // Taken before the grid is locked: `info` reads the title out of the grid
     // itself, and a std mutex is not reentrant.
@@ -320,16 +397,19 @@ pub fn term_attach(id: String) -> Result<Snapshot, String> {
         cx: grid.cx,
         cy: grid.cy,
         cursor_visible: grid.cursor_visible,
+        cursor_style: grid.cursor_style,
+        cursor_char: grid.row(grid.cy)[grid.cx].ch,
         alt: grid.alt,
     })
 }
 
 #[tauri::command]
-pub fn term_write(id: String, data: String) -> Result<(), String> {
+pub fn term_write(app: AppHandle, id: String, data: String) -> Result<(), String> {
     let session = lookup(&id)?;
     if !session.alive.load(Ordering::Relaxed) {
         return Ok(());
     }
+    let _ = app.emit("term:input", id.clone());
     let result = session.pty.lock().unwrap().write(data.as_bytes());
     result
 }
@@ -339,6 +419,7 @@ pub fn term_resize(id: String, cols: usize, rows: usize) -> Result<(), String> {
     let session = lookup(&id)?;
     let cols = cols.clamp(20, 500);
     let rows = rows.clamp(5, 200);
+    note_capture_resize(&session, cols, rows);
     session.grid.lock().unwrap().resize(cols, rows);
     let result = session.pty.lock().unwrap().resize(cols as u16, rows as u16);
     result
@@ -475,8 +556,14 @@ pub async fn term_dock(app: AppHandle, id: String) -> Result<(), String> {
 /// Kills every session. Called as the app exits so no orphaned shell outlives
 /// the window that owned it.
 pub fn shutdown() {
-    for (_, session) in registry().lock().unwrap().drain() {
+    let sessions: Vec<_> = registry().lock().unwrap().drain().map(|(_, session)| session).collect();
+    for session in &sessions {
         session.alive.store(false, Ordering::Relaxed);
-        session.pty.lock().unwrap().close();
+        session.pty.lock().unwrap().terminate_child();
     }
+    std::thread::spawn(move || {
+        for session in sessions {
+            session.pty.lock().unwrap().close();
+        }
+    });
 }

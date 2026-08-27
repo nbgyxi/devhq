@@ -46,11 +46,14 @@ function rowHtml(runs) {
   for (const run of runs) {
     let fg = cssColor(run.f);
     let bg = cssColor(run.b);
-    // Reverse video swaps the pair, and has to fall back to the theme's own
-    // colours when either side is the default.
+    // Reverse video swaps the pair. Each side has to be resolved to a real
+    // colour *before* the swap — and to its own default, foreground for the
+    // foreground. Resolving to the opposite one leaves a cell that already had
+    // a dark background painting dark text onto the dark default, which is how
+    // a program's reversed cursor block turns invisible.
     if (run.a & ATTR.REVERSE) {
-      const f = fg === null ? "var(--term-bg)" : fg;
-      const b = bg === null ? "var(--term-fg)" : bg;
+      const f = fg ?? "var(--term-fg)";
+      const b = bg ?? "var(--term-bg)";
       fg = b;
       bg = f;
     }
@@ -149,6 +152,8 @@ class TermView {
     this.cx = 0;
     this.cy = 0;
     this.cursorVisible = true;
+    this.cursorStyle = 1;
+    this.cursorChar = " ";
 
     host.classList.add("term");
     host.innerHTML =
@@ -205,10 +210,38 @@ class TermView {
       if (e.ctrlKey && e.shiftKey && (e.key === "C" || e.key === "V")) return;
       // Ctrl+` belongs to DevHQ, for toggling the panel from inside a terminal.
       if (e.ctrlKey && e.key === "`") return;
+      // Selecting with the keyboard, the way any text editor does it: Shift
+      // with a movement key extends the selection instead of reaching the
+      // shell, Ctrl widens the step to a word or the whole scrollback.
+      if (this.selectionKey(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      // Ctrl+Break is the console's own "break regardless" key, so it never
+      // looks at the selection. Keyboards without a Break key are covered by
+      // Ctrl+C twice, since copying drops the selection.
+      if (e.ctrlKey && (e.key === "Pause" || e.key === "Cancel")) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.send("\x03");
+        return;
+      }
+      // The Windows convention, as in Windows Terminal and VS Code: Ctrl+C
+      // copies while something is selected and interrupts the moment nothing
+      // is. Ctrl+Shift+C above is the unconditional copy.
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === "c" || e.key === "C")) {
+        if (this.copySelection()) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+      }
       const seq = keySequence(e);
       if (seq === null) return;
       e.preventDefault();
       e.stopPropagation();
+      this.clearSelection();
       this.send(seq);
     });
     this.host.addEventListener("paste", (e) => {
@@ -221,6 +254,121 @@ class TermView {
       const slack = this.scroll.scrollHeight - this.scroll.clientHeight - this.scroll.scrollTop;
       this.stickToBottom = slack < 4;
     });
+  }
+
+  /** Handles the editor-style selection chords, reporting whether the key was
+   *  one of them. Everything is done with the real document selection, so what
+   *  is highlighted is exactly what Ctrl+C and the mouse already copy. */
+  selectionKey(e) {
+    if (!e.shiftKey || e.altKey) return false;
+    const sel = window.getSelection();
+    if (!sel || typeof sel.modify !== "function") return false;
+
+    // Ctrl+Shift+A takes the whole scrollback, as in Windows Terminal.
+    if (e.ctrlKey && (e.key === "a" || e.key === "A")) {
+      const range = document.createRange();
+      range.setStartBefore(this.history);
+      range.setEndAfter(this.screen);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      return true;
+    }
+
+    const step = this.selectionStep(e);
+    if (!step) return false;
+    this.anchorSelection(sel);
+    sel.modify("extend", step[0], step[1]);
+    this.scrollSelectionIntoView(sel);
+    return true;
+  }
+
+  /** The direction and granularity one movement key asks for, or null if it
+   *  is not a movement key. */
+  selectionStep(e) {
+    const ctrl = e.ctrlKey;
+    switch (e.key) {
+      case "ArrowLeft": return ["left", ctrl ? "word" : "character"];
+      case "ArrowRight": return ["right", ctrl ? "word" : "character"];
+      case "ArrowUp": return ["backward", ctrl ? "paragraph" : "line"];
+      case "ArrowDown": return ["forward", ctrl ? "paragraph" : "line"];
+      case "Home": return ["backward", ctrl ? "documentboundary" : "lineboundary"];
+      case "End": return ["forward", ctrl ? "documentboundary" : "lineboundary"];
+      default: return null;
+    }
+  }
+
+  /** A selection has to start somewhere. If this terminal does not already own
+   *  one, the caret is dropped at the cursor - the place the user is looking. */
+  anchorSelection(sel) {
+    if (sel.rangeCount && this.host.contains(sel.anchorNode) && this.host.contains(sel.focusNode)) return;
+    const row = this.rowEls[this.cy];
+    if (!row) return;
+    const [node, offset] = this.caretAt(row, this.cx);
+    sel.removeAllRanges();
+    const range = document.createRange();
+    range.setStart(node, offset);
+    range.collapse(true);
+    sel.addRange(range);
+  }
+
+  /** The DOM position of column `col` on `row`. Rows are packed without their
+   *  trailing blanks, so a cursor sitting past the text lands at the end of the
+   *  row - the nearest position that exists. */
+  caretAt(row, col) {
+    const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+    let seen = 0;
+    let last = null;
+    let node;
+    while ((node = walker.nextNode())) {
+      if (seen + node.data.length >= col) return [node, col - seen];
+      seen += node.data.length;
+      last = node;
+    }
+    if (last) return [last, last.data.length];
+    return [row, 0];
+  }
+
+  /** Keeps the moving end of the selection on screen. */
+  scrollSelectionIntoView(sel) {
+    if (!sel.rangeCount || !sel.focusNode) return;
+    const range = document.createRange();
+    range.setStart(sel.focusNode, sel.focusOffset);
+    range.collapse(true);
+    let box = range.getBoundingClientRect();
+    if (!box.height) box = sel.getRangeAt(0).getBoundingClientRect();
+    if (!box.height) return;
+    const view = this.scroll.getBoundingClientRect();
+    if (box.top < view.top) this.scroll.scrollTop -= view.top - box.top + 4;
+    else if (box.bottom > view.bottom) this.scroll.scrollTop += box.bottom - view.bottom + 4;
+  }
+
+  /** Drops this terminal's selection, the way typing does in an editor. */
+  clearSelection() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    if (!this.host.contains(sel.anchorNode) || !this.host.contains(sel.focusNode)) return;
+    sel.removeAllRanges();
+  }
+
+  /** Copies this terminal's selection, reporting whether there was one to copy.
+   *
+   *  A selection somewhere else on the page is not this terminal's business —
+   *  Ctrl+C has to reach the shell in that case. The selection is dropped after
+   *  copying, which is both the visible confirmation that something was copied
+   *  and what makes an immediately repeated Ctrl+C an interrupt. */
+  copySelection() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+    if (!this.host.contains(sel.anchorNode) || !this.host.contains(sel.focusNode)) return false;
+    const text = sel.toString();
+    if (!text) return false;
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).catch(() => {});
+    } else {
+      document.execCommand("copy");
+    }
+    sel.removeAllRanges();
+    return true;
   }
 
   send(text) {
@@ -239,7 +387,7 @@ class TermView {
     this.history.innerHTML = snap.history.map((runs) => `<div>${rowHtml(runs)}</div>`).join("");
     this.buildScreen();
     for (const row of snap.screen) this.paintRow(row.y, row.runs);
-    this.moveCursor(snap.cx, snap.cy, snap.cursorVisible);
+    this.moveCursor(snap.cx, snap.cy, snap.cursorVisible, snap.cursorStyle, snap.cursorChar);
     this.toBottom();
     return snap.info;
   }
@@ -289,7 +437,7 @@ class TermView {
       for (let i = 0; i < excess; i++) this.history.firstElementChild.remove();
     }
     for (const row of payload.rows) this.paintRow(row.y, row.runs);
-    this.moveCursor(payload.cx, payload.cy, payload.cursorVisible);
+    this.moveCursor(payload.cx, payload.cy, payload.cursorVisible, payload.cursorStyle, payload.cursorChar);
     if (this.onFirstOutput) {
       const fire = this.onFirstOutput;
       this.onFirstOutput = null;
@@ -308,17 +456,28 @@ class TermView {
    *  the left, and a cursor placed by multiplication sits a whole character out
    *  by the end of a prompt. Asking the row itself where its characters are is
    *  the only measurement that cannot drift. */
-  moveCursor(cx, cy, visible) {
+  moveCursor(cx, cy, visible, style = this.cursorStyle, cursorChar = this.cursorChar) {
     this.cx = cx;
     this.cy = cy;
     this.cursorVisible = visible;
+    this.cursorStyle = style ?? 1;
+    this.cursorChar = cursorChar || " ";
     this.cursorEl.style.display = visible && !this.exited ? "block" : "none";
     const row = this.rowEls[cy];
-    this.cursorEl.style.width = `${this.cellW}px`;
-    this.cursorEl.style.height = `${row?.offsetHeight || this.cellH}px`;
+    // The cursor is a separate overlay, so it mirrors the backend's exact
+    // cell. DOM string offsets cannot be used here: wide terminal glyphs make
+    // browser character offsets diverge from terminal columns.
+    const bar = this.cursorStyle === 5 || this.cursorStyle === 6;
+    const underline = this.cursorStyle === 3 || this.cursorStyle === 4;
+    this.cursorEl.classList.toggle("bar", bar);
+    this.cursorEl.classList.toggle("underline", underline);
+    this.cursorEl.textContent = bar || underline ? "" : this.cursorChar;
+    this.cursorEl.style.width = `${bar ? 2 : this.cellW}px`;
+    const rowHeight = row?.offsetHeight || this.cellH;
+    this.cursorEl.style.height = `${underline ? 2 : rowHeight}px`;
     const x = this.columnX(cx, row);
     const y = row ? row.offsetTop : this.screen.offsetTop + cy * this.cellH;
-    this.cursorEl.style.transform = `translate(${x}px, ${y}px)`;
+    this.cursorEl.style.transform = `translate(${x}px, ${y + (underline ? rowHeight - 2 : 0)}px)`;
   }
 
   /** The left edge of column `cx` on `row`, in the coordinates the cursor is
@@ -378,7 +537,7 @@ class TermView {
     try {
       const snap = await term_invoke("term_attach", { id: this.id });
       for (const row of snap.screen) this.paintRow(row.y, row.runs);
-      this.moveCursor(snap.cx, snap.cy, snap.cursorVisible);
+      this.moveCursor(snap.cx, snap.cy, snap.cursorVisible, snap.cursorStyle, snap.cursorChar);
       if (this.stickToBottom) this.toBottom();
     } catch {}
   }
