@@ -6,12 +6,230 @@
 const term_invoke = window.__TAURI__.core.invoke;
 const term_listen = window.__TAURI__.event.listen;
 
-// The usual 16, tuned to sit on DevHQ's near-black background rather than a
-// pure-black one.
-const BASE16 = [
-  "#1c1f26", "#e05561", "#8cc265", "#d5a458", "#4d9df5", "#c162de", "#42b3c2", "#c8ccd4",
-  "#5c6370", "#ff6b78", "#a5e075", "#e6c07b", "#61afef", "#d55fde", "#56b6c2", "#ffffff",
+// ---------------------------------------------------------------- palette
+//
+// A terminal's colours live as CSS variables on the document rather than being
+// baked into the cells, so changing a scheme recolours every line already on
+// screen without repainting a single row. Both windows that host a terminal -
+// the DevHQ panel and a popped-out one - load this file, and a change in one
+// is broadcast to the other.
+
+const TERM_THEME_KEY = "devhq.termtheme.v1";
+
+const TERM_PRESETS = [
+  {
+    id: "devhq-dark", label: "DevHQ Dark", bg: "#0a0b0f", fg: "#d7dbe6",
+    ansi: ["#1c1f26", "#e05561", "#8cc265", "#d5a458", "#4d9df5", "#c162de", "#42b3c2", "#c8ccd4",
+           "#5c6370", "#ff6b78", "#a5e075", "#e6c07b", "#61afef", "#d55fde", "#56b6c2", "#ffffff"],
+  },
+  {
+    id: "devhq-light", label: "DevHQ Light", bg: "#fbfbfd", fg: "#1c1f26",
+    ansi: ["#383a42", "#e45649", "#50a14f", "#c18401", "#0184bc", "#a626a4", "#0997b3", "#a0a1a7",
+           "#4f525e", "#d13c33", "#3f8a3e", "#a06d00", "#0165a0", "#8b1f8b", "#077f97", "#0a0b0f"],
+  },
+  {
+    id: "campbell", label: "Campbell (Windows)", bg: "#0c0c0c", fg: "#cccccc",
+    ansi: ["#0c0c0c", "#c50f1f", "#13a10e", "#c19c00", "#0037da", "#881798", "#3a96dd", "#cccccc",
+           "#767676", "#e74856", "#16c60c", "#f9f1a5", "#3b78ff", "#b4009e", "#61d6d6", "#f2f2f2"],
+  },
+  {
+    id: "one-dark", label: "One Dark", bg: "#282c34", fg: "#abb2bf",
+    ansi: ["#282c34", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#abb2bf",
+           "#5c6370", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#ffffff"],
+  },
+  {
+    id: "dracula", label: "Dracula", bg: "#282a36", fg: "#f8f8f2",
+    ansi: ["#21222c", "#ff5555", "#50fa7b", "#f1fa8c", "#bd93f9", "#ff79c6", "#8be9fd", "#f8f8f2",
+           "#6272a4", "#ff6e6e", "#69ff94", "#ffffa5", "#d6acff", "#ff92df", "#a4ffff", "#ffffff"],
+  },
+  {
+    id: "nord", label: "Nord", bg: "#2e3440", fg: "#d8dee9",
+    ansi: ["#3b4252", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0",
+           "#4c566a", "#d08770", "#a3be8c", "#ebcb8b", "#81a1c1", "#b48ead", "#8fbcbb", "#eceff4"],
+  },
+  {
+    id: "gruvbox-dark", label: "Gruvbox Dark", bg: "#282828", fg: "#ebdbb2",
+    ansi: ["#282828", "#cc241d", "#98971a", "#d79921", "#458588", "#b16286", "#689d6a", "#a89984",
+           "#928374", "#fb4934", "#b8bb26", "#fabd2f", "#83a598", "#d3869b", "#8ec07c", "#ebdbb2"],
+  },
+  {
+    id: "tokyo-night", label: "Tokyo Night", bg: "#1a1b26", fg: "#c0caf5",
+    ansi: ["#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#a9b1d6",
+           "#414868", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5"],
+  },
+  {
+    id: "solarized-dark", label: "Solarized Dark", bg: "#002b36", fg: "#93a1a1",
+    ansi: ["#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5",
+           "#586e75", "#cb4b16", "#93a1a1", "#657b83", "#839496", "#6c71c4", "#93a1a1", "#fdf6e3"],
+  },
+  {
+    id: "solarized-light", label: "Solarized Light", bg: "#fdf6e3", fg: "#586e75",
+    ansi: ["#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5",
+           "#586e75", "#cb4b16", "#93a1a1", "#657b83", "#839496", "#6c71c4", "#93a1a1", "#fdf6e3"],
+  },
+  {
+    id: "github-light", label: "GitHub Light", bg: "#ffffff", fg: "#24292f",
+    ansi: ["#24292f", "#cf222e", "#116329", "#4d2d00", "#0969da", "#8250df", "#1b7c83", "#6e7781",
+           "#57606a", "#a40e26", "#1a7f37", "#633c01", "#218bff", "#a475f9", "#3192aa", "#8c959f"],
+  },
 ];
+
+/** Swatch labels, in ANSI order. */
+const TERM_COLOR_NAMES = [
+  "Black", "Red", "Green", "Yellow", "Blue", "Magenta", "Cyan", "White",
+  "Bright black", "Bright red", "Bright green", "Bright yellow",
+  "Bright blue", "Bright magenta", "Bright cyan", "Bright white",
+];
+
+const termTheme = { preset: TERM_PRESETS[0].id, custom: null };
+
+function termPreset(id) {
+  return TERM_PRESETS.find((p) => p.id === id) || TERM_PRESETS[0];
+}
+
+/** The palette actually in force: the edited one, or the chosen preset. */
+function termPalette() {
+  return termTheme.custom || termPreset(termTheme.preset);
+}
+
+function isHex(value) {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
+}
+
+function validPalette(p) {
+  return !!p && isHex(p.bg) && isHex(p.fg)
+    && Array.isArray(p.ansi) && p.ansi.length === 16 && p.ansi.every(isHex);
+}
+
+function clonePalette(p) {
+  return { bg: p.bg, fg: p.fg, ansi: [...p.ansi] };
+}
+
+function rgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/** `amount` of `b` blended into `a`, as a hex string. */
+function mix(a, b, amount) {
+  const [ar, ag, ab] = rgb(a);
+  const [br, bg, bb] = rgb(b);
+  const part = (x, y) => Math.round(x + (y - x) * amount).toString(16).padStart(2, "0");
+  return `#${part(ar, br)}${part(ag, bg)}${part(ab, bb)}`;
+}
+
+function applyTermTheme() {
+  const palette = termPalette();
+  const root = document.documentElement.style;
+  root.setProperty("--term-bg", palette.bg);
+  root.setProperty("--term-fg", palette.fg);
+  palette.ansi.forEach((hex, i) => root.setProperty(`--term-c${i}`, hex));
+  // The dock's own chrome - tab bar, tab labels, menus - is mixed out of the
+  // scheme rather than fixed in the stylesheet. A light scheme would otherwise
+  // keep the dark palette the dock was written for and paint pale text onto a
+  // pale tab bar.
+  root.setProperty("--term-bar", mix(palette.bg, palette.fg, 0.07));
+  root.setProperty("--term-bar2", mix(palette.bg, palette.fg, 0.13));
+  root.setProperty("--term-hover", mix(palette.bg, palette.fg, 0.11));
+  root.setProperty("--term-line", mix(palette.bg, palette.fg, 0.22));
+  root.setProperty("--term-dim", mix(palette.fg, palette.bg, 0.34));
+  root.setProperty("--term-dim2", mix(palette.fg, palette.bg, 0.55));
+}
+
+function saveTermTheme() {
+  try {
+    localStorage.setItem(TERM_THEME_KEY, JSON.stringify({
+      preset: termTheme.preset,
+      custom: termTheme.custom,
+    }));
+  } catch {
+    /* storage disabled - the scheme simply does not persist */
+  }
+}
+
+function loadTermTheme() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(TERM_THEME_KEY) || "{}");
+    if (TERM_PRESETS.some((p) => p.id === saved.preset)) termTheme.preset = saved.preset;
+    if (validPalette(saved.custom)) termTheme.custom = clonePalette(saved.custom);
+  } catch {
+    /* first run, or corrupted - the default preset is fine */
+  }
+  applyTermTheme();
+}
+
+function broadcastTermTheme() {
+  window.__TAURI__.event
+    .emit("term:theme", { preset: termTheme.preset, custom: termTheme.custom })
+    .catch(() => {});
+}
+
+// Dragging a colour picker reports a new colour on every mouse move. The
+// screen follows each one, but writing to storage and waking the other window
+// waits until the hand stops, so a drag stays a repaint and nothing more.
+let termThemeCommit = null;
+function commitTermTheme(defer) {
+  clearTimeout(termThemeCommit);
+  if (!defer) {
+    saveTermTheme();
+    broadcastTermTheme();
+    return;
+  }
+  termThemeCommit = setTimeout(() => {
+    saveTermTheme();
+    broadcastTermTheme();
+  }, 150);
+}
+
+/** Takes a scheme decided elsewhere: the settings page, or the other window. */
+function adoptTermTheme(next, { broadcast = false, defer = false } = {}) {
+  termTheme.preset = TERM_PRESETS.some((p) => p.id === next.preset) ? next.preset : TERM_PRESETS[0].id;
+  termTheme.custom = validPalette(next.custom) ? clonePalette(next.custom) : null;
+  applyTermTheme();
+  if (broadcast) commitTermTheme(defer);
+  else {
+    clearTimeout(termThemeCommit);
+    saveTermTheme();
+  }
+}
+
+window.devhqTermTheme = {
+  presets: TERM_PRESETS.map(({ id, label }) => ({ id, label })),
+  colorNames: TERM_COLOR_NAMES,
+  /** The preset in use, or "custom" once any colour has been changed. */
+  selection: () => (termTheme.custom ? "custom" : termTheme.preset),
+  presetLabel: () => termPreset(termTheme.preset).label,
+  palette: () => clonePalette(termPalette()),
+  usePreset(id) {
+    if (!TERM_PRESETS.some((p) => p.id === id)) return;
+    adoptTermTheme({ preset: id, custom: null }, { broadcast: true });
+  },
+  /** `key` is "bg", "fg" or an ANSI index. An edit seeds a custom palette from
+   *  whatever is on screen, so changing one colour never loses the others. */
+  setColor(key, value) {
+    if (!isHex(value)) return;
+    const custom = clonePalette(termPalette());
+    if (key === "bg" || key === "fg") custom[key] = value;
+    else if (Number.isInteger(key) && key >= 0 && key < 16) custom.ansi[key] = value;
+    else return;
+    adoptTermTheme({ preset: termTheme.preset, custom }, { broadcast: true, defer: true });
+  },
+  /** Drops the edits and goes back to the preset they were built on. */
+  resetToPreset() {
+    adoptTermTheme({ preset: termTheme.preset, custom: null }, { broadcast: true });
+  },
+};
+
+loadTermTheme();
+
+term_listen("term:theme", (event) => {
+  const next = event.payload || {};
+  if (next.preset === termTheme.preset
+    && JSON.stringify(next.custom ?? null) === JSON.stringify(termTheme.custom)) return;
+  adoptTermTheme(next);
+  window.devhqOnTermThemeChanged?.();
+});
+
 const DEFAULT_COLOR = 4294967295;
 const RGB_FLAG = 0x01000000;
 
@@ -21,7 +239,7 @@ const ATTR = { BOLD: 1, DIM: 2, ITALIC: 4, UNDERLINE: 8, REVERSE: 16, STRIKE: 32
 function cssColor(v) {
   if (v === DEFAULT_COLOR) return null;
   if (v & RGB_FLAG) return "#" + (v & 0xffffff).toString(16).padStart(6, "0");
-  if (v < 16) return BASE16[v];
+  if (v < 16) return `var(--term-c${v})`;
   if (v < 232) {
     // The 6x6x6 colour cube.
     const n = v - 16;
@@ -84,7 +302,9 @@ function keySequence(e) {
     if (k === " ") return "\x00";
   }
   switch (k) {
-    case "Enter": return "\r";
+    // Shift+Enter continues the line instead of running it. A bare LF is the
+    // byte a line editor reads as "another line", where CR is "go".
+    case "Enter": return e.shiftKey ? "\n" : "\r";
     case "Backspace": return ctrl ? "\x17" : "\x7f";
     case "Tab": return e.shiftKey ? "\x1b[Z" : "\t";
     case "Escape": return "\x1b";
@@ -152,7 +372,8 @@ class TermView {
     this.cx = 0;
     this.cy = 0;
     this.cursorVisible = true;
-    this.cursorStyle = 1;
+    // 0 is "nothing asked for", which is drawn as a thin bar.
+    this.cursorStyle = 0;
     this.cursorChar = " ";
 
     host.classList.add("term");
@@ -206,8 +427,21 @@ class TermView {
     this.host.tabIndex = 0;
     this.host.addEventListener("keydown", (e) => {
       if (this.exited) return;
-      // Leave copy/paste to the browser, and let the app keep its own chords.
-      if (e.ctrlKey && e.shiftKey && (e.key === "C" || e.key === "V")) return;
+      // Pasting is left to the browser: returning here lets the keystroke
+      // through to the native paste event, which is far more dependable than
+      // reading the clipboard ourselves. Ctrl+V, Ctrl+Shift+V and the old
+      // Shift+Insert all land there.
+      if (e.ctrlKey && !e.altKey && (e.key === "v" || e.key === "V")) return;
+      if (e.shiftKey && !e.ctrlKey && e.key === "Insert") return;
+      // Ctrl+Shift+C is the copy that never means interrupt; Ctrl+Insert is
+      // the same thing in Notepad's older spelling.
+      if (e.ctrlKey && e.shiftKey && e.key === "C") return;
+      if (e.ctrlKey && !e.shiftKey && e.key === "Insert") {
+        this.copySelection();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       // Ctrl+` belongs to DevHQ, for toggling the panel from inside a terminal.
       if (e.ctrlKey && e.key === "`") return;
       // Selecting with the keyboard, the way any text editor does it: Shift
@@ -241,8 +475,19 @@ class TermView {
       if (seq === null) return;
       e.preventDefault();
       e.stopPropagation();
+      // Notepad's rule: what is selected is what gets replaced. Backspace and
+      // Delete just remove it; a typed character removes it and takes its
+      // place. Both go in one write, so the shell never sees a half-done edit.
+      const replaces =
+        e.key === "Backspace" || e.key === "Delete" ||
+        (!e.ctrlKey && !e.altKey && e.key.length === 1);
+      const erase = replaces ? this.eraseSelectionSeq() : "";
+      if (erase && (e.key === "Backspace" || e.key === "Delete")) {
+        this.send(erase);
+        return;
+      }
       this.clearSelection();
-      this.send(seq);
+      this.send(erase + seq);
     });
     this.host.addEventListener("paste", (e) => {
       e.preventDefault();
@@ -260,17 +505,43 @@ class TermView {
    *  one of them. Everything is done with the real document selection, so what
    *  is highlighted is exactly what Ctrl+C and the mouse already copy. */
   selectionKey(e) {
-    if (!e.shiftKey || e.altKey) return false;
+    if (e.altKey) return false;
     const sel = window.getSelection();
     if (!sel || typeof sel.modify !== "function") return false;
 
-    // Ctrl+Shift+A takes the whole scrollback, as in Windows Terminal.
+    // Ctrl+A takes the whole scrollback, with or without Shift. That is the
+    // one chord where the editor meaning wins over the shell's: readline reads
+    // Ctrl+A as "start of line", which Home does here anyway.
     if (e.ctrlKey && (e.key === "a" || e.key === "A")) {
       const range = document.createRange();
       range.setStartBefore(this.history);
       range.setEndAfter(this.screen);
       sel.removeAllRanges();
       sel.addRange(range);
+      return true;
+    }
+
+    // Ctrl+Home and Ctrl+End with no Shift are Notepad's jump to the top and
+    // bottom of the document. There is no caret of ours to move, so they move
+    // the view - the visible half of what Notepad does.
+    if (e.ctrlKey && !e.shiftKey && (e.key === "Home" || e.key === "End")) {
+      this.clearSelection();
+      this.stickToBottom = e.key === "End";
+      this.scroll.scrollTop = e.key === "Home" ? 0 : this.scroll.scrollHeight;
+      return true;
+    }
+
+    if (!e.shiftKey) return false;
+
+    // A page is however many lines are on screen, less one for continuity -
+    // the same overlap Notepad leaves. There is no page granularity to ask
+    // for, so it is that many line steps.
+    if (e.key === "PageUp" || e.key === "PageDown") {
+      const dir = e.key === "PageUp" ? "backward" : "forward";
+      const lines = Math.max(1, Math.floor(this.scroll.clientHeight / this.cellH) - 1);
+      this.anchorSelection(sel);
+      for (let i = 0; i < lines; i++) sel.modify("extend", dir, "line");
+      this.scrollSelectionIntoView(sel);
       return true;
     }
 
@@ -350,6 +621,41 @@ class TermView {
     sel.removeAllRanges();
   }
 
+  /** The keystrokes that rub out the selection, or "" if it is not something
+   *  this terminal can delete.
+   *
+   *  Only the shell owns the text on screen, so deleting means asking it to:
+   *  walk its cursor to the end of the selection and backspace over it. That
+   *  is only honest for a selection sitting on the line being edited - the
+   *  scrollback above it is output that has already happened, and a full-screen
+   *  program owns its own keyboard - so everything else is left alone. */
+  eraseSelectionSeq() {
+    if (this.host.classList.contains("alt")) return "";
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return "";
+    const row = this.rowEls[this.cy];
+    if (!row) return "";
+    const range = sel.getRangeAt(0);
+    if (!row.contains(range.startContainer) || !row.contains(range.endContainer)) return "";
+    const start = this.colInRow(row, range.startContainer, range.startOffset);
+    const end = this.colInRow(row, range.endContainer, range.endOffset);
+    if (end <= start) return "";
+    sel.removeAllRanges();
+    const dx = end - this.cx;
+    const walk = dx > 0 ? "\x1b[C".repeat(dx) : "\x1b[D".repeat(-dx);
+    return walk + "\x7f".repeat(end - start);
+  }
+
+  /** The column a DOM position sits at within `row`, counted as the text in
+   *  front of it. Rows hold nothing but spans of text, so the range's own
+   *  string is the count. */
+  colInRow(row, node, offset) {
+    const range = document.createRange();
+    range.setStart(row, 0);
+    range.setEnd(node, offset);
+    return range.toString().length;
+  }
+
   /** Copies this terminal's selection, reporting whether there was one to copy.
    *
    *  A selection somewhere else on the page is not this terminal's business —
@@ -388,7 +694,7 @@ class TermView {
     this.buildScreen();
     for (const row of snap.screen) this.paintRow(row.y, row.runs);
     this.moveCursor(snap.cx, snap.cy, snap.cursorVisible, snap.cursorStyle, snap.cursorChar);
-    this.toBottom();
+    this.settleScroll();
     return snap.info;
   }
 
@@ -399,7 +705,7 @@ class TermView {
     if (!text) return;
     const html = text.split("\n").map((line) => `<div>${termEsc(line)}</div>`).join("");
     this.history.insertAdjacentHTML("afterbegin", html);
-    this.toBottom();
+    this.settleScroll();
   }
 
   /** A bounded text snapshot for persistence between application runs. */
@@ -460,14 +766,17 @@ class TermView {
     this.cx = cx;
     this.cy = cy;
     this.cursorVisible = visible;
-    this.cursorStyle = style ?? 1;
+    this.cursorStyle = style ?? 0;
     this.cursorChar = cursorChar || " ";
     this.cursorEl.style.display = visible && !this.exited ? "block" : "none";
     const row = this.rowEls[cy];
     // The cursor is a separate overlay, so it mirrors the backend's exact
     // cell. DOM string offsets cannot be used here: wide terminal glyphs make
     // browser character offsets diverge from terminal columns.
-    const bar = this.cursorStyle === 5 || this.cursorStyle === 6;
+    // A thin bar is the resting shape: 0 is the shape nothing has asked to
+    // change. A block means overwrite - insert mode, or a full-screen program
+    // that asked for one outright.
+    const bar = this.cursorStyle === 0 || this.cursorStyle === 5 || this.cursorStyle === 6;
     const underline = this.cursorStyle === 3 || this.cursorStyle === 4;
     this.cursorEl.classList.toggle("bar", bar);
     this.cursorEl.classList.toggle("underline", underline);
@@ -514,6 +823,35 @@ class TermView {
 
   toBottom() {
     this.scroll.scrollTop = this.scroll.scrollHeight;
+  }
+
+  /** Where a terminal rests when it is first shown.
+   *
+   *  Everything written so far is what matters, and the screen grid is as tall
+   *  as the viewport whether or not anything has been printed into it - so
+   *  "does it fit" is asked of the rows actually in use, not of the scroll
+   *  height. If it fits, the top is the honest place to be: the first line of
+   *  the restored session is the one worth reading. If it does not, the live
+   *  end is. */
+  settleScroll() {
+    let last = this.cy;
+    for (let y = this.rowEls.length - 1; y > last; y--) {
+      if (this.rowEls[y].textContent.trim()) {
+        last = y;
+        break;
+      }
+    }
+    const row = this.rowEls[last];
+    const used = row ? row.offsetTop + row.offsetHeight : this.screen.offsetTop + this.screen.offsetHeight;
+    if (used <= this.scroll.clientHeight) {
+      this.scroll.scrollTop = 0;
+      // Follow the output again the moment it outgrows the window, or the
+      // moment anything is typed - `send` sticks it back to the bottom.
+      this.stickToBottom = false;
+      return;
+    }
+    this.stickToBottom = true;
+    this.toBottom();
   }
 
   /** Recomputes the grid size from the element and tells the session. */

@@ -47,6 +47,7 @@ const state = {
   tableColumnMenuOpen: false,
   tableColumnWidths: {},
   settingsOpen: false,
+  settingsSection: "general",
   selectedPath: null,
   /** What the open project's detail view is showing. Both arrive after the
    *  view does, so both start null and are drawn as skeletons until they land.
@@ -59,6 +60,14 @@ const state = {
   diffFile: null,
   todos: null,
   todosError: "",
+  /** The note whose source is open, as "file:line", and one entry per note
+   *  already read: "file:line" -> { excerpt } or { error }. Kept across
+   *  redraws so reopening a note it has already read costs nothing. */
+  todoOpen: null,
+  todoSource: new Map(),
+  /** What the backend says it was built as. Empty until it answers, which is
+   *  why the button is only drawn once it has. */
+  appVersion: "",
 };
 
 /* ------------------------------------------------------------- work log */
@@ -90,6 +99,12 @@ function trackWork(key, label, promise) {
   beginWork(key, label);
   return promise.finally(() => endWork(key));
 }
+
+// A popped-out terminal can change the scheme too; if the settings page is
+// open here, its controls have to follow.
+window.devhqOnTermThemeChanged = () => {
+  if (state.settingsOpen) syncTermThemeControls();
+};
 
 /* ------------------------------------------------------------------ prefs */
 
@@ -161,6 +176,10 @@ function applyLanguage() {
 
 function applyTheme() {
   document.documentElement.dataset.theme = state.theme;
+  // The title bar toggle and the Appearance row are two ways to the same
+  // setting, so whichever was used, the other has to show the result.
+  const themeSelect = el["settings-host"]?.querySelector("#setting-theme");
+  if (themeSelect) themeSelect.value = state.theme;
   const button = document.getElementById("toggle-theme");
   if (!button) return;
   const light = state.theme === "light";
@@ -263,6 +282,13 @@ function esc(s) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   })[c]);
 }
+
+/** The settings page's left-hand menu. One entry per group, in this order. */
+const SETTINGS_SECTIONS = [
+  { id: "general", label: "General", icon: "tune" },
+  { id: "appearance", label: "Appearance", icon: "palette" },
+  { id: "terminal", label: "Terminal", icon: "terminal" },
+];
 
 function icon(name) {
   return `<span class="ms" aria-hidden="true">${name}</span>`;
@@ -674,6 +700,45 @@ function loadTodos(project) {
   );
 }
 
+function todoKey(file, line) {
+  return `${file}:${line}`;
+}
+
+/** Reads the source around one note. The note stays open while it loads, so
+ *  the row shows what it is doing rather than nothing. */
+function loadTodoSource(project, file, line) {
+  const key = todoKey(file, line);
+  if (state.todoSource.has(key)) return;
+  const token = state.detailToken;
+  trackWork(
+    `todo-source:${key}`,
+    `Reading ${file}`,
+    invoke("todo_excerpt", { path: project.path, file, line })
+  )
+    .then((excerpt) => {
+      if (state.detailToken === token) state.todoSource.set(key, { excerpt });
+    })
+    .catch((err) => {
+      if (state.detailToken === token) state.todoSource.set(key, { error: String(err) });
+    })
+    .finally(() => {
+      if (state.detailToken === token) markDirty("detail");
+    });
+}
+
+/** Opens a note's source, or closes it if it is the one already open. */
+function toggleTodoSource(file, line) {
+  const key = todoKey(file, line);
+  if (state.todoOpen === key) {
+    state.todoOpen = null;
+  } else {
+    state.todoOpen = key;
+    const project = selectedProject();
+    if (project) loadTodoSource(project, file, line);
+  }
+  markDirty("detail");
+}
+
 /** Fills the window with one project, and starts everything the full view
  *  shows that a card does not already know. */
 function openDetail(project) {
@@ -683,30 +748,124 @@ function openDetail(project) {
     markDirty("settings");
   }
   state.selectedPath = project.path;
+  window.devhqTrackPageView?.("/project");
   clearDetailData();
   markDirty("detail");
   if (project.git) loadDiff(project);
   loadTodos(project);
 }
 
-function closeDetail() {
+function closeDetail(nextPath = "/overview") {
   state.selectedPath = null;
+  window.devhqTrackPageView?.(nextPath);
   clearDetailData();
   markDirty("detail");
 }
 
 function openSettings() {
   if (state.settingsOpen) return closeSettings();
-  if (state.selectedPath) closeDetail();
+  if (state.selectedPath) closeDetail("/settings");
   state.settingsOpen = true;
+  window.devhqTrackPageView?.("/settings");
   syncSettingsButton();
   markDirty("settings");
 }
 
 function closeSettings() {
   state.settingsOpen = false;
+  window.devhqTrackPageView?.("/overview");
   syncSettingsButton();
   markDirty("settings");
+}
+
+/* ---------- the version button and what changed in each release ---------- */
+
+/** Inline code spans, so a release note can name a file or a command without
+ *  the whole list turning into prose. Escaped first: the backticks survive it. */
+function changelogText(text) {
+  return esc(text).replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
+const CHANGE_KINDS = { new: "New", better: "Improved", fix: "Fixed" };
+
+function changelogDate(iso) {
+  const date = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleDateString(document.documentElement.lang || undefined, {
+    day: "numeric", month: "short", year: "numeric",
+  });
+}
+
+function releaseHtml(release) {
+  const changes = release.changes
+    .map(([kind, text]) => `<li class="chg ${esc(kind)}">
+        <span class="chg-kind">${esc(CHANGE_KINDS[kind] || kind)}</span>
+        <span class="chg-text">${changelogText(text)}</span>
+      </li>`)
+    .join("");
+  return `<section class="release">
+    <div class="release-head">
+      <span class="release-ver">${esc(release.version)}</span>
+      <span class="release-title">${esc(release.title)}</span>
+      <time class="release-date" datetime="${esc(release.date)}">${esc(changelogDate(release.date))}</time>
+    </div>
+    <ul class="release-changes">${changes}</ul>
+  </section>`;
+}
+
+/** The list is the same every time it opens, so it is built once and then only
+ *  shown and hidden - opening it never costs a frame. */
+function buildChangelog() {
+  const log = window.devhqChangelog;
+  const built = `${log?.current}/${state.appVersion}`;
+  if (!log || el["changelog-pop"].dataset.built === built) return;
+  el["changelog-pop"].innerHTML = `
+    <div class="changelog-head">
+      <span class="changelog-title">What's new</span>
+      <span class="changelog-now">DevHQ ${esc(state.appVersion || log.current)}</span>
+      <button class="win-btn" data-changelog-act="close" title="Close">${icon("close")}</button>
+    </div>
+    <div class="changelog-list">${log.releases.map(releaseHtml).join("")}</div>`;
+  el["changelog-pop"].dataset.built = built;
+}
+
+function renderVersionButton() {
+  const button = el["status-version"];
+  if (!button) return;
+  button.hidden = !state.appVersion;
+  if (state.appVersion) button.textContent = `v${state.appVersion}`;
+}
+
+/** Asks the backend what it was built as. Nothing else waits on it: until it
+ *  answers, the status bar simply has no version on it. */
+function loadAppVersion() {
+  invoke("app_version")
+    .then((version) => {
+      state.appVersion = String(version);
+      renderVersionButton();
+    })
+    .catch(() => {});
+}
+
+function changelogOpen() {
+  return !el["changelog-pop"].hidden;
+}
+
+function openChangelog() {
+  buildChangelog();
+  el["changelog-pop"].hidden = false;
+  el["status-version"].classList.add("on");
+  el["status-version"].setAttribute("aria-expanded", "true");
+  el["changelog-pop"].scrollTop = 0;
+  window.devhqTrackPageView?.("/changelog");
+}
+
+function closeChangelog(nextPath = "/overview") {
+  if (!changelogOpen()) return;
+  el["changelog-pop"].hidden = true;
+  el["status-version"].classList.remove("on");
+  el["status-version"].setAttribute("aria-expanded", "false");
+  window.devhqTrackPageView?.(nextPath);
 }
 
 function syncSettingsButton() {
@@ -728,6 +887,8 @@ function clearDetailData() {
   state.diffFile = null;
   state.todos = null;
   state.todosError = "";
+  state.todoOpen = null;
+  state.todoSource = new Map();
 }
 
 /** Every action a project offers, in one place, so the card and the detail
@@ -1003,13 +1164,19 @@ function columnPickerView() {
     } /><span>${label}</span></label>`).join("")}</div></div>`;
 }
 
+/** The text of a run of small spans, for a title attribute. */
+function stripTags(html) {
+  return html.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+}
+
 function tableTechCell(tech) {
   if (!tech.length) return '<td class="table-tech-cell"><span class="table-muted">—</span></td>';
-  return `<td class="table-tech-cell"><div class="table-tech-list">${tech.map((item) =>
-    `<button class="table-tech" data-tech="${esc(item.name)}"><span>${esc(item.name)}</span>${
+  return `<td class="table-tech-cell"><div class="table-tech-list">${tech.map((item) => {
+    const full = item.version ? `${item.name} ${item.version}` : item.name;
+    return `<button class="table-tech" data-tech="${esc(item.name)}" title="${esc(full)}"><span>${esc(item.name)}</span>${
       item.version ? `<code>${esc(item.version)}</code>` : ""
-    }</button>`
-  ).join("")}</div></td>`;
+    }</button>`;
+  }).join("")}</div></td>`;
 }
 
 function tableRowView(p) {
@@ -1030,11 +1197,13 @@ function tableRowView(p) {
   if (p.running.length) statuses.push(`<span class="table-status running">${p.running.length} running</span>`);
   if (changeCount(p)) statuses.push(`<span class="table-status dirty">${changeCount(p)} changed</span>`);
   if (!statuses.length) statuses.push('<span class="table-muted">Idle</span>');
+  // The cell is one line and clips, so the whole of it has to be reachable.
+  const statusTitle = statuses.length ? stripTags(statuses.join(", ")) : "";
   return `<tr class="project-row" data-path="${esc(p.path)}">
-    <td><strong>${esc(p.name)}</strong><small title="${esc(p.path)}">${esc(p.path)}</small></td>
+    <td><strong title="${esc(p.name)}">${esc(p.name)}</strong><small title="${esc(p.path)}">${esc(p.path)}</small></td>
     ${state.tableColumns.includes("version") ? `<td class="project-version">${p.version ? esc(p.version) : "—"}</td>` : ""}
     ${technologyCells}
-    ${state.tableColumns.includes("status") ? `<td class="table-status-cell"><div class="table-status-list">${statuses.join("")}</div></td>` : ""}
+    ${state.tableColumns.includes("status") ? `<td class="table-status-cell" title="${esc(statusTitle)}"><div class="table-status-list">${statuses.join("")}</div></td>` : ""}
     <td class="table-actions-cell"><div class="table-actions">
       <button data-act="run" title="${p.runCmd ? `Run ${esc(p.runCmd)}` : "No run command detected"}" ${p.runCmd ? "" : "disabled"}>${icon("play_arrow")}</button>
       <button data-act="vscode" title="Open in VS Code">${icon("code")}</button>
@@ -1236,6 +1405,28 @@ function patchSection() {
   return head(title, `<div class="diff">${body}</div>${tail}`);
 }
 
+/** The code around one note: a skeleton while it is being read, then the
+ *  lines themselves with the one the note is on picked out. */
+function todoSourceView(key) {
+  const entry = state.todoSource.get(key);
+  if (!entry) {
+    return `<div class="todosrc loading">${icon("hourglass_top")}reading the file...</div>`;
+  }
+  if (entry.error) {
+    return `<div class="todosrc error">${icon("error_outline")}${esc(entry.error)}</div>`;
+  }
+  const { start, line, lines } = entry.excerpt;
+  const body = lines
+    .map((text, index) => {
+      const number = start + index;
+      return `<div class="srcline${number === line ? " hit" : ""}">
+        <span class="srcnum">${number}</span><span class="srccode">${esc(text) || " "}</span>
+      </div>`;
+    })
+    .join("");
+  return `<div class="todosrc"><div class="srclines">${body}</div></div>`;
+}
+
 function todoSection() {
   const head = (body, note = "") =>
     `<section class="section"><h3>TODO / FIXME${note}</h3>${body}</section>`;
@@ -1252,13 +1443,21 @@ function todoSection() {
   }
 
   const rows = state.todos.items
-    .map(
-      (t) => `<div class="todorow">
-        <span class="kind ${esc(t.kind)}">${esc(t.kind)}</span>
-        <span class="note">${esc(t.text) || "<em>no note</em>"}</span>
-        <span class="where">${esc(t.file)}:${t.line}</span>
-      </div>`
-    )
+    .map((t) => {
+      const key = todoKey(t.file, t.line);
+      const open = state.todoOpen === key;
+      return `<div class="todoitem${open ? " open" : ""}">
+        <button class="todorow" type="button" aria-expanded="${open}"
+                data-todo-file="${esc(t.file)}" data-todo-line="${t.line}"
+                title="Show the code around this note">
+          <span class="kind ${esc(t.kind)}">${esc(t.kind)}</span>
+          <span class="note">${esc(t.text) || "<em>no note</em>"}</span>
+          <span class="where">${esc(t.file)}:${t.line}</span>
+          <span class="ms todo-chev" aria-hidden="true">expand_more</span>
+        </button>
+        ${open ? todoSourceView(key) : ""}
+      </div>`;
+    })
     .join("");
   const n = state.todos.items.length;
   const note = ` <span class="count">${n}${state.todos.truncated ? "+" : ""}</span>`;
@@ -1509,7 +1708,12 @@ function mountShell() {
                placeholder="Search projects and commands..." />
         <div class="search-menu" id="search-menu" hidden></div>
       </div>
-      <select class="sort" id="tech-filter"><option value="">All tech</option></select>
+      <div class="tech-picker">
+        <select class="sort" id="tech-filter"><option value="">All tech</option></select>
+        <button class="tech-clear" id="tech-clear" type="button" title="Clear the technology filter" hidden>${icon(
+          "close"
+        )}</button>
+      </div>
       <div class="sort-buttons" id="sort-buttons" aria-label="Sort projects">
         <button data-sort="activity" title="Sort by recent activity">Recent</button>
         <button data-sort="name" title="Sort by project name">Name</button>
@@ -1529,6 +1733,11 @@ function mountShell() {
     <div class="scroll" id="scroll"><div class="grid" id="grid"></div></div>
     <div class="statusbar">
       <div class="activity" id="activity"></div>
+      <div class="status-version-wrap" id="status-version-wrap">
+        <button class="status-btn status-version" id="status-version" title="What's new in DevHQ"
+                aria-haspopup="dialog" aria-expanded="false"></button>
+        <div class="changelog-pop" id="changelog-pop" role="dialog" aria-label="What's new" hidden></div>
+      </div>
       <button class="status-btn" id="status-term" title="Open a terminal" aria-expanded="false">${icon(
         "terminal"
       )}<span class="label">Terminal</span><span class="term-count" hidden>0</span></button>
@@ -1540,14 +1749,15 @@ function mountShell() {
 
   for (const id of [
     "brand-sub", "loadbar", "roots-btn", "roots-label", "roots-pop", "roots-list",
-    "rescan", "search-input", "search-menu", "tech-filter", "sort-buttons", "view-buttons", "activity", "filters",
+    "rescan", "search-input", "search-menu", "tech-filter", "tech-clear", "sort-buttons", "view-buttons", "activity", "filters",
     "banner-host", "summary", "grid", "detail-host", "settings-host", "open-settings", "toggle-theme",
-    "status-term", "status-progress",
+    "status-term", "status-progress", "status-version", "changelog-pop",
   ]) {
     el[id] = document.getElementById(id);
   }
 
   el["search-input"].value = state.search;
+  renderVersionButton();
   wireShell();
   applyTheme();
   syncSettingsButton();
@@ -1598,6 +1808,14 @@ function renderToolbar() {
         .join("");
     el["tech-filter"].value = state.techFilter;
   }
+  // A filter that is on has to look on, and be switchable off without hunting
+  // for "All tech" in a list of a hundred.
+  const filtering = Boolean(state.techFilter);
+  el["tech-filter"].classList.toggle("on", filtering);
+  el["tech-clear"].hidden = !filtering;
+  el["tech-clear"].title = filtering
+    ? `Stop filtering by ${state.techFilter}`
+    : "Clear the technology filter";
 }
 
 /** The status bar's left half: one line per thing the app is doing right now,
@@ -1767,8 +1985,16 @@ function renderDetail() {
   // entrance animation for each piece makes the Overview column flash. Only
   // animate when entering a project, not while refreshing the open one.
   const entering = host.dataset.path !== p.path;
+  // Opening a note rebuilds the column, and a list that jumps back to the top
+  // when you click a row in the middle of it is unusable. Only worth keeping
+  // while staying on the same project - entering one starts at the top.
+  const todoScroll = entering ? 0 : host.querySelector(".todolist")?.scrollTop || 0;
   host.innerHTML = detailView(p, entering);
   host.dataset.path = p.path;
+  if (todoScroll) {
+    const list = host.querySelector(".todolist");
+    if (list) list.scrollTop = todoScroll;
+  }
 }
 
 function renderSettings() {
@@ -1782,40 +2008,75 @@ function renderSettings() {
       <button class="btn back" data-settings="close">${icon("arrow_back")}Back</button>
       <div class="detail-id"><h2>${settingsIcon("settings-heading-icon")}Settings</h2></div>
     </header>
-    <div class="settings-body">
-      <section class="settings-group">
-        <h3>General</h3>
-        <label class="settings-row" for="setting-language">
-          <span><strong>Language</strong><small>Choose the language DevHQ uses.</small></span>
-          <select class="sort setting-control" id="setting-language">
-            <option value="system">Windows default</option>
-            <option value="en">English</option>
-            <option value="zh">中文（简体） — Chinese (Simplified)</option>
-            <option value="hi">हिन्दी — Hindi</option>
-            <option value="es">Español — Spanish</option>
-            <option value="fr">Français — French</option>
-            <option value="ar">العربية — Arabic</option>
-            <option value="bn">বাংলা — Bengali</option>
-            <option value="pt">Português — Portuguese</option>
-            <option value="ru">Русский — Russian</option>
-            <option value="id">Bahasa Indonesia — Indonesian</option>
-          </select>
-        </label>
-        <label class="settings-row" for="setting-compact-tech">
-          <span><strong>Compact tech in overview</strong><small>Show technologies in a single neutral line instead of colored tags.</small></span>
-          <input class="setting-check" id="setting-compact-tech" type="checkbox" />
-        </label>
-      </section>
-      <section class="settings-group">
-        <h3>Terminal</h3>
-        <label class="settings-row" for="setting-terminal-shell">
-          <span><strong>Default shell</strong><small>Used for new terminals. Override it from the terminal toolbar.</small></span>
-          <select class="sort setting-control" id="setting-terminal-shell"></select>
-        </label>
-      </section>
+    <div class="settings-layout">
+      <nav class="settings-nav" aria-label="Settings sections">
+        ${SETTINGS_SECTIONS.map((section) => `<button class="settings-nav-item" type="button"
+          data-settings-section="${section.id}">${icon(section.icon)}${section.label}</button>`).join("")}
+      </nav>
+      <div class="settings-body">
+        <section class="settings-group" data-section="general">
+          <h3>General</h3>
+          <label class="settings-row" for="setting-language">
+            <span><strong>Language</strong><small>Choose the language DevHQ uses.</small></span>
+            <select class="sort setting-control" id="setting-language">
+              <option value="system">Windows default</option>
+              <option value="en">English</option>
+              <option value="zh">中文（简体） — Chinese (Simplified)</option>
+              <option value="hi">हिन्दी — Hindi</option>
+              <option value="es">Español — Spanish</option>
+              <option value="fr">Français — French</option>
+              <option value="ar">العربية — Arabic</option>
+              <option value="bn">বাংলা — Bengali</option>
+              <option value="pt">Português — Portuguese</option>
+              <option value="ru">Русский — Russian</option>
+              <option value="id">Bahasa Indonesia — Indonesian</option>
+            </select>
+          </label>
+        </section>
+        <section class="settings-group" data-section="appearance">
+          <h3>Appearance</h3>
+          <label class="settings-row" for="setting-theme">
+            <span><strong>Theme</strong><small>The window's own light or dark colors.</small></span>
+            <select class="sort setting-control" id="setting-theme">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </label>
+          <label class="settings-row" for="setting-compact-tech">
+            <span><strong>Compact tech in overview</strong><small>Show technologies in a single neutral line instead of colored tags.</small></span>
+            <input class="setting-check" id="setting-compact-tech" type="checkbox" />
+          </label>
+        </section>
+        <section class="settings-group" data-section="terminal">
+          <h3>Terminal</h3>
+          <label class="settings-row" for="setting-terminal-shell">
+            <span><strong>Default shell</strong><small>Used for new terminals. Override it from the terminal toolbar.</small></span>
+            <select class="sort setting-control" id="setting-terminal-shell"></select>
+          </label>
+          <label class="settings-row" for="setting-term-theme">
+            <span><strong>Color scheme</strong><small>Colors for every terminal, docked or popped out.</small></span>
+            <select class="sort setting-control" id="setting-term-theme"></select>
+          </label>
+          <div class="settings-row term-theme-row">
+            <span><strong>Colors</strong><small>Change any color to build a scheme of your own.</small></span>
+            <div class="term-theme-edit">
+              <div class="term-theme-preview" aria-hidden="true">
+                <div><span style="color:var(--term-c2)">you</span><span style="color:var(--term-c8)">@</span><span style="color:var(--term-c6)">devhq</span> <span style="color:var(--term-c4)">c:\\code\\devhq</span> <span style="color:var(--term-c13)">(main)</span></div>
+                <div>&gt; npm run <span style="color:var(--term-c14)">dev</span></div>
+                <div><span style="color:var(--term-c3)">warn</span> 2 outdated packages</div>
+                <div><span style="color:var(--term-c1)">error</span> port 5173 busy</div>
+                <div><span style="color:var(--term-c10)">ready</span> in <span style="color:var(--term-c12)">412 ms</span><span class="term-theme-caret"> </span></div>
+              </div>
+              <div class="term-swatches" id="setting-term-swatches"></div>
+              <button class="btn term-theme-reset" id="setting-term-reset" type="button">Reset to preset</button>
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   </main>`;
   host.querySelector("#setting-language").value = state.language;
+  host.querySelector("#setting-theme").value = state.theme;
   host.querySelector("#setting-compact-tech").checked = state.compactTechOverview;
   const shellSetting = window.devhqTerminalSettings;
   const shellSelect = host.querySelector("#setting-terminal-shell");
@@ -1823,6 +2084,69 @@ function renderSettings() {
     .map((profile) => `<option value="${profile.value}">${profile.label}</option>`)
     .join("");
   shellSelect.value = shellSetting.getDefault();
+  buildTermThemeControls(host);
+  showSettingsSection(state.settingsSection);
+}
+
+/** Shows one section. Every group stays mounted and only its visibility
+ *  changes, so switching sections cannot reset a control - the colour swatches
+ *  in particular are built once and never rebuilt underneath the pointer. */
+function showSettingsSection(id) {
+  const host = el["settings-host"];
+  if (!SETTINGS_SECTIONS.some((section) => section.id === id)) id = SETTINGS_SECTIONS[0].id;
+  state.settingsSection = id;
+  for (const group of host.querySelectorAll(".settings-group")) {
+    group.hidden = group.dataset.section !== id;
+  }
+  for (const item of host.querySelectorAll(".settings-nav-item")) {
+    const on = item.dataset.settingsSection === id;
+    item.classList.toggle("on", on);
+    item.setAttribute("aria-current", String(on));
+  }
+  host.querySelector(".settings-body").scrollTop = 0;
+}
+
+/** Builds the colour-scheme picker and its 18 swatches once per settings
+ *  render. Later changes only write values back into these inputs - rebuilding
+ *  them would close the colour picker the user is standing in. */
+function buildTermThemeControls(host) {
+  const theme = window.devhqTermTheme;
+  const themeSelect = host.querySelector("#setting-term-theme");
+  themeSelect.innerHTML = theme.presets
+    .map((preset) => `<option value="${esc(preset.id)}">${esc(preset.label)}</option>`)
+    .join("") + `<option value="custom">Custom</option>`;
+  const swatch = (key, label, value, wide = false) => `<label class="term-swatch${wide ? " wide" : ""}" title="${esc(label)}">
+      <input type="color" data-term-color="${key}" value="${value}" aria-label="${esc(label)}" />
+      <span>${esc(label)}</span>
+    </label>`;
+  const palette = theme.palette();
+  host.querySelector("#setting-term-swatches").innerHTML = [
+    swatch("bg", "Background", palette.bg, true),
+    swatch("fg", "Foreground", palette.fg, true),
+    ...palette.ansi.map((hex, i) => swatch(String(i), theme.colorNames[i], hex)),
+  ].join("");
+  syncTermThemeControls();
+}
+
+/** Mirrors the live scheme into the settings controls without touching any
+ *  other part of the page - a colour change must not redraw the panel it was
+ *  made from, and the terminals themselves recolour through CSS variables. */
+function syncTermThemeControls() {
+  const host = el["settings-host"];
+  const themeSelect = host?.querySelector("#setting-term-theme");
+  if (!themeSelect) return;
+  const theme = window.devhqTermTheme;
+  const palette = theme.palette();
+  const custom = theme.selection() === "custom";
+  themeSelect.value = custom ? "custom" : theme.selection();
+  for (const input of host.querySelectorAll("[data-term-color]")) {
+    const key = input.dataset.termColor;
+    const value = key === "bg" || key === "fg" ? palette[key] : palette.ansi[Number(key)];
+    if (input.value !== value) input.value = value;
+  }
+  const reset = host.querySelector("#setting-term-reset");
+  reset.disabled = !custom;
+  reset.textContent = custom ? `Reset to ${theme.presetLabel()}` : "Reset to preset";
 }
 
 /** Changes only the two DOM fragments affected by picking a diff file. The
@@ -1851,6 +2175,15 @@ function wireShell() {
   el.rescan.onclick = () => {
     if (state.scanning) stopScan();
     else rescan();
+  };
+
+  el["status-version"].onclick = () => (changelogOpen() ? closeChangelog() : openChangelog());
+
+  el["changelog-pop"].onclick = (e) => {
+    if (e.target.closest("[data-changelog-act=\"close\"]")) {
+      closeChangelog();
+      el["status-version"].focus();
+    }
   };
 
   el["status-term"].onclick = () => window.openTerminalPanel?.();
@@ -1919,6 +2252,15 @@ function wireShell() {
     handle.addEventListener("pointercancel", up);
   };
 
+  el["tech-clear"].onclick = () => {
+    if (!state.techFilter) return;
+    state.techFilter = "";
+    el["tech-filter"].value = "";
+    el["tech-filter"].dataset.signature = "";
+    savePrefs();
+    markDirty("filters", "toolbar", "grid");
+  };
+
   el["tech-filter"].onchange = (e) => {
     state.techFilter = e.target.value;
     el["tech-filter"].dataset.signature = "";
@@ -1963,6 +2305,7 @@ function wireShell() {
   // Clicking away leaves the folders as they were - only Scan commits them.
   document.addEventListener("pointerdown", (e) => {
     if (rootEditorOpen() && !e.target.closest("#roots")) closeRootEditor();
+    if (changelogOpen() && !e.target.closest("#status-version-wrap")) closeChangelog();
     if (!e.target.closest("#search-box")) closeSearchCommands();
     if (!e.target.closest("#table-column-picker")) {
       const menu = document.getElementById("table-column-picker-menu");
@@ -2068,6 +2411,10 @@ function wireShell() {
       closeDetail();
       return setTechFilter(tag.dataset.tech);
     }
+    const todo = e.target.closest("[data-todo-file]");
+    if (todo) {
+      return toggleTodoSource(todo.dataset.todoFile, Number(todo.dataset.todoLine));
+    }
     const file = e.target.closest("[data-file]");
     if (file) {
       if (state.diffFile === file.dataset.file) return;
@@ -2083,12 +2430,30 @@ function wireShell() {
   };
 
   el["settings-host"].onclick = (e) => {
+    const navItem = e.target.closest("[data-settings-section]");
     if (e.target.closest('[data-settings="close"]')) closeSettings();
+    else if (navItem) showSettingsSection(navItem.dataset.settingsSection);
+    else if (e.target.closest("#setting-term-reset")) {
+      window.devhqTermTheme.resetToPreset();
+      syncTermThemeControls();
+    }
+  };
+  // Colour inputs report every drag of the picker, so the terminals follow the
+  // pointer live rather than waiting for the dialog to close.
+  el["settings-host"].oninput = (e) => {
+    if (e.target.dataset.termColor === undefined) return;
+    const key = e.target.dataset.termColor;
+    window.devhqTermTheme.setColor(key === "bg" || key === "fg" ? key : Number(key), e.target.value);
+    syncTermThemeControls();
   };
   el["settings-host"].onchange = (e) => {
     if (e.target.id === "setting-language") {
       state.language = e.target.value;
       applyLanguage();
+      savePrefs();
+    } else if (e.target.id === "setting-theme") {
+      state.theme = e.target.value === "light" ? "light" : "dark";
+      applyTheme();
       savePrefs();
     } else if (e.target.id === "setting-compact-tech") {
       state.compactTechOverview = e.target.checked;
@@ -2096,6 +2461,10 @@ function wireShell() {
       markDirty("grid");
     } else if (e.target.id === "setting-terminal-shell") {
       window.devhqTerminalSettings.setDefault(e.target.value);
+    } else if (e.target.id === "setting-term-theme") {
+      if (e.target.value === "custom") return syncTermThemeControls();
+      window.devhqTermTheme.usePreset(e.target.value);
+      syncTermThemeControls();
     }
   };
 }
@@ -2115,7 +2484,10 @@ for (const type of ["mousedown", "mouseup", "auxclick"]) {
 }
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && (state.settingsOpen || state.selectedPath)) {
+  if (e.key === "Escape" && changelogOpen()) {
+    closeChangelog();
+    el["status-version"].focus();
+  } else if (e.key === "Escape" && (state.settingsOpen || state.selectedPath)) {
     if (state.settingsOpen) closeSettings();
     else closeDetail();
   } else if (e.key === "F5" || (e.ctrlKey && e.key.toLowerCase() === "r")) {
@@ -2137,8 +2509,10 @@ document.addEventListener("keydown", (e) => {
 
 (async function start() {
   loadPrefs();
+  window.devhqTrackPageView?.("/overview");
   // The window is drawn and interactive before anything is asked of the disk.
   mountShell();
+  loadAppVersion();
   window.devhqI18n?.init(state.language);
   markDirty("toolbar", "filters", "summary", "grid");
 

@@ -142,8 +142,10 @@ pub struct Grid {
     pub cx: usize,
     pub cy: usize,
     pub cursor_visible: bool,
-    /// DECSCUSR shape: 0-2 block, 3-4 underline, 5-6 bar.
+    /// DECSCUSR shape: 0 nothing asked for, 1-2 block, 3-4 underline, 5-6 bar.
     pub cursor_style: u8,
+    /// IRM, the insert/overwrite toggle behind the Insert key.
+    pub insert_mode: bool,
     pub alt: bool,
     pub title: String,
     pub bracketed_paste: bool,
@@ -184,7 +186,8 @@ impl Grid {
             cx: 0,
             cy: 0,
             cursor_visible: true,
-            cursor_style: 1,
+            cursor_style: 0,
+            insert_mode: false,
             alt: false,
             title: String::new(),
             bracketed_paste: false,
@@ -470,7 +473,7 @@ impl Grid {
             b'S' => self.scroll_up(p0),
             b'T' => self.scroll_down(p0),
             b'm' => self.sgr(),
-            b'q' => self.cursor_style = self.param(0, 1).min(6) as u8,
+            b'q' => self.cursor_style = self.param(0, 0).min(6) as u8,
             b'r' => {
                 let top = self.param(0, 1) as usize - 1;
                 let bot = self.params.get(1).copied().filter(|&v| v > 0).unwrap_or(self.rows as u32)
@@ -503,16 +506,38 @@ impl Grid {
     }
 
     fn set_mode(&mut self, on: bool) {
-        if self.private != b'?' {
+        // The < and > prefixes address other protocols entirely; only the
+        // unprefixed ANSI modes and the ? private ones are ours.
+        if self.private != b'?' && self.private != 0 {
             return;
         }
         for i in 0..self.params.len().max(1) {
-            match self.param(i, 0) {
+            let p = self.param(i, 0);
+            if self.private == 0 {
+                // IRM. Nothing here inserts on the terminal's behalf - conpty
+                // sends the finished line - but it is what the Insert key
+                // toggles, and the cursor has to show it.
+                if p == 4 {
+                    self.insert_mode = on;
+                }
+                continue;
+            }
+            match p {
                 25 => self.cursor_visible = on,
                 2004 => self.bracketed_paste = on,
                 1049 | 47 | 1047 => self.set_alt(on),
                 _ => {}
             }
+        }
+    }
+
+    /// The shape the cursor is actually drawn with. Insert mode outranks the
+    /// resting shape: a block is how overwrite has always announced itself.
+    pub fn effective_cursor_style(&self) -> u8 {
+        if self.insert_mode {
+            2
+        } else {
+            self.cursor_style
         }
     }
 
@@ -773,7 +798,8 @@ impl Grid {
         self.scroll_top = 0;
         self.scroll_bot = self.rows - 1;
         self.cursor_visible = true;
-        self.cursor_style = 1;
+        self.cursor_style = 0;
+        self.insert_mode = false;
         self.wrap_pending = false;
         self.mark_all_dirty();
     }

@@ -587,6 +587,18 @@ applyDockHeight();
 
 // A popped-out window docking back, or simply being closed: take the session
 // into the panel rather than letting it run with nothing showing it.
+// The cross on a popped-out window: that terminal is gone, not moving. Forget
+// it rather than pulling it back into the panel or restoring it next launch.
+term_dock_listen("term:closed", (event) => {
+  const id = event.payload.id;
+  terms.known.delete(id);
+  terms.dirtyHistory.delete(id);
+  terms.interacted.delete(id);
+  term_dock_invoke("term_close", { id }).catch(() => {});
+  renderTabs();
+  termsSavePrefs();
+});
+
 term_dock_listen("term:docked", async (event) => {
   const id = event.payload.id;
   await term_dock_invoke("term_dock", { id }).catch(() => {});

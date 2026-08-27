@@ -354,7 +354,7 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
                     cx: grid.cx,
                     cy: grid.cy,
                     cursor_visible: grid.cursor_visible,
-                    cursor_style: grid.cursor_style,
+                    cursor_style: grid.effective_cursor_style(),
                     cursor_char: grid.row(grid.cy)[grid.cx].ch,
                     alt: grid.alt,
                     title: grid.title.clone(),
@@ -397,7 +397,7 @@ fn term_attach_sync(id: String) -> Result<Snapshot, String> {
         cx: grid.cx,
         cy: grid.cy,
         cursor_visible: grid.cursor_visible,
-        cursor_style: grid.cursor_style,
+        cursor_style: grid.effective_cursor_style(),
         cursor_char: grid.row(grid.cy)[grid.cx].ch,
         alt: grid.alt,
     })

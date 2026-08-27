@@ -42,7 +42,7 @@
   font-style:normal;
   font-weight:400 700;
   font-display:block;
-  src:url('fonts/material-symbols-rounded.woff2?v=3') format('woff2');
+  src:url('fonts/material-symbols-rounded.woff2?v=4') format('woff2');
 }
 
 *{box-sizing:border-box;margin:0;padding:0}
@@ -68,6 +68,8 @@ code,.mono{font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,mon
 ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:8px;border:2px solid transparent;background-clip:content-box}
 ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.26);background-clip:content-box}
 ::-webkit-scrollbar-track{background:transparent}
+:root[data-theme="light"] ::-webkit-scrollbar-thumb{background:rgba(23,25,35,.24);background-clip:content-box}
+:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:rgba(23,25,35,.4);background-clip:content-box}
 
 .ms{
   font-family:'Material Symbols Rounded';font-weight:400;font-style:normal;line-height:1;
@@ -205,6 +207,22 @@ select.sort{
   height:34px;border-radius:9px;background:var(--bg2);border:1px solid var(--line);
   padding:0 8px;font-size:13px;cursor:pointer;
 }
+/* A dropdown that is filtering the list has to say so at a glance - the same
+   lit-up treatment the sort buttons use when one of them is on. */
+select.sort.on{
+  color:var(--text);border-color:var(--accent);background:rgba(109,139,255,.18);font-weight:600;
+}
+:root[data-theme="light"] select.sort.on{
+  color:#222733;background:#dfe2e8;box-shadow:inset 0 0 0 1px #c5cad3;
+}
+.tech-picker{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto}
+.tech-clear{
+  display:grid;place-items:center;width:22px;height:22px;border-radius:6px;
+  color:var(--dim2);transition:background .12s,color .12s;
+}
+.tech-clear[hidden]{display:none}
+.tech-clear .ms{font-size:15px}
+.tech-clear:hover{background:var(--bg3);color:var(--text)}
 .sort-buttons{
   height:34px;display:inline-flex;flex:0 0 auto;overflow:hidden;
   border:1px solid var(--line);border-radius:9px;background:var(--bg2);
@@ -279,7 +297,12 @@ select.sort{
 }
 .project-table th:hover .table-resize-handle::after,
 .table-resize-handle:hover::after{background:var(--accent)}
-.project-table td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+.project-table td{
+  padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle;
+  /* Text starts at the left edge and is cut off on the right, so the start of
+     every value lines up down the column and the title carries the rest. */
+  text-align:left;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;
+}
 .project-table tbody tr:last-child td{border-bottom:0}
 .project-row{cursor:pointer;transition:background .12s}
 .project-row:hover{background:var(--bg2)}
@@ -288,19 +311,27 @@ select.sort{
 .table-tech-cell{min-width:120px}
 .table-status-cell{min-width:120px}
 .table-actions-cell{width:112px}
-.project-row strong{display:block;color:var(--text);font-size:13px}
+.project-row strong{display:block;color:var(--text);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .project-row small{display:block;max-width:280px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;color:var(--dim2);white-space:nowrap}
+.project-version{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .project-version{color:var(--dim);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-variant-numeric:tabular-nums}
-.table-tech-list{display:flex;align-items:flex-start;flex-direction:column;gap:5px}
-.table-tech{display:inline-flex;align-items:baseline;gap:5px;color:var(--text);font-size:12px}
+.table-tech-list{display:flex;align-items:stretch;flex-direction:column;gap:5px;min-width:0}
+/* One technology, one line. The name gives way first and the version stays
+   whole, because a truncated version number reads as a different version. */
+.table-tech{
+  display:flex;align-items:baseline;gap:5px;color:var(--text);font-size:12px;
+  min-width:0;max-width:100%;text-align:left;
+}
+.table-tech > span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .table-tech:hover span{text-decoration:underline}
-.table-tech code{color:var(--dim2);font-size:10.5px}
+.table-tech code{flex:0 0 auto;white-space:nowrap;color:var(--dim2);font-size:10.5px}
 .table-muted{color:var(--dim2)}
-.table-status-list{display:flex;flex-wrap:wrap;gap:5px}
-.table-status{padding:2px 6px;border-radius:5px;font-size:10.5px;font-weight:600}
+.table-status-list{display:flex;flex-wrap:nowrap;gap:5px;min-width:0;overflow:hidden}
+.table-status{flex:0 0 auto;padding:2px 6px;border-radius:5px;font-size:10.5px;font-weight:600;white-space:nowrap}
 .table-status.running{color:var(--green);background:color-mix(in srgb,var(--green) 12%,transparent)}
 .table-status.dirty{color:var(--amber);background:color-mix(in srgb,var(--amber) 12%,transparent)}
 .table-actions{display:flex;justify-content:flex-end}
+.table-actions-cell{overflow:visible}
 .table-actions button{width:30px;height:28px;display:grid;place-items:center;border-radius:6px;color:var(--dim)}
 .table-actions button:hover{color:var(--text);background:var(--bg3)}
 .table-actions button:disabled{opacity:.3;pointer-events:none}
@@ -422,11 +453,14 @@ select.sort{
   display:flex;flex-direction:column;animation:fadein .14s ease both;
 }
 .settings-body{
-  flex:1;overflow:auto;padding:28px;display:flex;flex-direction:column;align-items:center;
-  justify-content:flex-start;gap:20px;
+  flex:1;min-width:0;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:28px;
+  display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:20px;
 }
 .settings-group{
-  width:min(760px,100%);overflow:hidden;
+  /* A flex item shrinks below its content by default, and this one clips what
+     it cannot fit - which reads as a settings page that will not scroll. It
+     has to keep its full height and let the body scroll instead. */
+  width:min(760px,100%);flex:0 0 auto;overflow:hidden;
   background:var(--bg1);border:1px solid var(--line);border-radius:11px;
 }
 .settings-group h3{padding:14px 18px;border-bottom:1px solid var(--line);font-size:14px}
@@ -600,11 +634,22 @@ html[dir="rtl"] .dcol-patch{grid-column:3}
 
 /* ---------- notes left in the source ---------- */
 .todolist{max-height:44vh;overflow-y:auto}
+.todoitem{border-bottom:1px solid var(--line)}
+.todoitem:last-child{border-bottom:none}
+/* The whole row is the target - a note is opened by clicking anywhere on it,
+   not by hunting for a chevron. */
 .todorow{
-  display:grid;grid-template-columns:auto 1fr;gap:2px 8px;align-items:baseline;
-  padding:6px 0;border-bottom:1px solid var(--line);
+  display:grid;grid-template-columns:auto 1fr auto;gap:2px 8px;align-items:baseline;
+  width:100%;padding:6px 0;text-align:left;background:none;
+  border-radius:7px;transition:background .12s;
 }
-.todorow:last-child{border-bottom:none}
+.todorow:hover{background:var(--bg3)}
+.todorow:focus-visible{outline:1px solid var(--accent);outline-offset:-1px}
+.todo-chev{
+  grid-column:3;grid-row:1 / span 2;align-self:center;
+  font-size:17px;color:var(--dim2);transition:transform .14s;
+}
+.todoitem.open .todo-chev{transform:rotate(180deg)}
 .todorow .kind{
   font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-size:9.5px;font-weight:700;letter-spacing:.5px;
   padding:2px 6px;border-radius:5px;background:var(--bg3);color:var(--dim);
@@ -617,6 +662,34 @@ html[dir="rtl"] .dcol-patch{grid-column:3}
   grid-column:2;font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-size:10.5px;color:var(--dim2);
   word-break:break-all;user-select:text;
 }
+
+/* The code the note was left in. Monospace, numbered, and scrolling sideways
+   on its own rather than making the column wider. */
+.todosrc{
+  margin:0 0 8px;border:1px solid var(--line);border-radius:8px;
+  background:var(--bg1);overflow:hidden;
+}
+.todosrc.loading,.todosrc.error{
+  display:flex;align-items:center;gap:6px;padding:8px 10px;
+  color:var(--dim2);font-size:12px;
+}
+.todosrc.error{color:var(--red)}
+.todosrc.loading .ms,.todosrc.error .ms{font-size:15px}
+.srclines{overflow-x:auto;padding:6px 0}
+.srcline{
+  display:flex;align-items:flex-start;gap:10px;min-width:max-content;
+  font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,monospace;
+  font-size:11.5px;line-height:1.6;color:var(--dim);
+}
+.srcnum{
+  flex:0 0 auto;width:44px;padding-right:10px;text-align:right;
+  color:var(--dim2);font-variant-numeric:tabular-nums;user-select:none;
+}
+.srccode{flex:1;white-space:pre;padding-right:12px;user-select:text}
+/* The line the note is actually on, so the eye lands on it first. */
+.srcline.hit{background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--text)}
+.srcline.hit .srcnum{color:var(--accent)}
+html[dir="rtl"] .srclines{direction:ltr;text-align:left}
 
 .section h3{
   font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;
@@ -693,9 +766,16 @@ html[dir="rtl"] .dcol-patch{grid-column:3}
 @keyframes sweep{0%{transform:translateX(-100%)}100%{transform:translateX(360%)}}
 
 /* ---------- terminal dock ---------- */
+/* The dock takes its chrome from the terminal scheme, not from the app theme:
+   the tab bar sits against the terminal and has to stay readable whichever of
+   the two is light. */
 #term-dock{
-  --bg1:#121319;--bg2:#171922;--bg3:#1e212c;--line:#272b38;
-  --text:#e8eaf0;--dim:#9aa1b4;--dim2:#6b7285;--accent:#6d8bff;
+  --bg1:var(--term-bar);--bg2:var(--term-bar2);--bg3:var(--term-hover);
+  --line:var(--term-line);
+  --text:var(--term-fg);--dim:var(--term-dim);--dim2:var(--term-dim2);
+  /* The running dot and the close cross come from the scheme's own red and
+     green, which are picked to be readable on it. */
+  --green:var(--term-c2);--red:var(--term-c1);
   position:fixed;left:0;right:0;bottom:0;height:var(--dock-h);
   display:none;flex-direction:column;background:var(--term-bg);
   border-top:1px solid var(--line);z-index:40;
@@ -742,11 +822,11 @@ body.term-drag-preview .ms{font-size:16px;color:var(--accent)}
 }
 .tab-x .ms{font-size:14px}
 .dock-tab:hover .tab-x,.dock-tab.on .tab-x{opacity:1}
-.tab-x:hover{background:rgba(255,255,255,.1);color:var(--red)}
+.tab-x:hover{background:var(--bg3);color:var(--red)}
 .dock-empty{display:flex;align-items:center;color:var(--dim2);font-size:12.5px;padding:0 6px}
 .dock-actions{display:flex;align-items:stretch}
 .dock-actions button{width:36px;display:grid;place-items:center;color:var(--dim)}
-.dock-actions button:hover{background:rgba(255,255,255,.07);color:var(--text)}
+.dock-actions button:hover{background:var(--bg3);color:var(--text)}
 .dock-actions .ms{font-size:17px}
 .dock-actions button:disabled{opacity:.35;pointer-events:none}
 .dock-actions .dock-new-split{position:relative;display:flex;align-items:stretch;border-right:1px solid var(--line)}
@@ -783,6 +863,61 @@ body.term-drag-preview .ms{font-size:16px;color:var(--accent)}
   font-variant-numeric:tabular-nums;
 }
 .term-count[hidden]{display:none}
+/* The version button, and the release list it opens above the status bar. */
+.status-version-wrap{position:relative;display:flex;flex:0 0 auto}
+.status-version{
+  font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,monospace;
+  font-size:11.5px;font-weight:500;letter-spacing:0;color:var(--dim2);padding:0 12px;
+  font-variant-numeric:tabular-nums;
+}
+.status-version[hidden]{display:none}
+.changelog-pop{
+  position:absolute;bottom:calc(100% + 8px);right:0;z-index:60;
+  width:520px;max-width:calc(100vw - 24px);display:flex;flex-direction:column;
+  background:var(--bg2);border:1px solid var(--line);border-radius:11px;
+  box-shadow:0 18px 44px rgba(0,0,0,.5);overflow:hidden;
+}
+.changelog-pop[hidden]{display:none}
+html[dir="rtl"] .changelog-pop{right:auto;left:0;direction:rtl;text-align:right}
+.changelog-head{
+  flex:0 0 auto;display:flex;align-items:center;gap:9px;padding:10px 4px 10px 14px;
+  border-bottom:1px solid var(--line);background:var(--bg1);
+}
+.changelog-title{font-size:12.5px;font-weight:600;color:var(--text)}
+.changelog-now{
+  flex:1;min-width:0;color:var(--dim2);font-size:11px;
+  font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,monospace;
+}
+.changelog-head .win-btn{height:28px;width:34px;border-radius:7px}
+.changelog-head .win-btn:hover{background:var(--bg3);color:var(--text)}
+.changelog-list{
+  flex:1;min-height:0;max-height:min(56vh,460px);overflow-y:auto;padding:4px 14px 14px;
+}
+.release{padding:12px 0;border-bottom:1px solid var(--line)}
+.release:last-child{border-bottom:none;padding-bottom:2px}
+.release-head{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin-bottom:7px}
+.release-ver{
+  color:var(--text);font-size:12px;font-weight:600;
+  font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,monospace;
+  background:var(--bg3);border-radius:6px;padding:2px 7px;
+}
+.release-title{flex:1;min-width:0;color:var(--text);font-size:12.5px;font-weight:600}
+.release-date{color:var(--dim2);font-size:11px;white-space:nowrap}
+.release-changes{display:flex;flex-direction:column;gap:6px;list-style:none;margin:0;padding:0}
+.chg{display:flex;align-items:baseline;gap:8px;font-size:12.5px;line-height:1.5;color:var(--dim)}
+.chg-kind{
+  flex:0 0 auto;width:66px;text-align:center;padding:1px 0;border-radius:5px;
+  font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;
+}
+.chg.new .chg-kind{color:var(--green);background:color-mix(in srgb,var(--green) 16%,transparent)}
+.chg.better .chg-kind{color:var(--accent);background:color-mix(in srgb,var(--accent) 16%,transparent)}
+.chg.fix .chg-kind{color:var(--amber);background:color-mix(in srgb,var(--amber) 16%,transparent)}
+.chg-text{flex:1;min-width:0}
+.chg-text code{
+  font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,monospace;
+  font-size:11.5px;color:var(--text);background:var(--bg3);border-radius:4px;padding:1px 4px;
+}
+
 .dock-views{flex:1;position:relative;min-height:0}
 .dock-views .term-host{position:absolute;inset:0;display:none}
 .dock-views .term-host.on{display:block}
@@ -790,13 +925,24 @@ body.term-drag-preview .ms{font-size:16px;color:var(--accent)}
 /* ---------- the terminal itself ---------- */
 .term{
   background:var(--term-bg);color:var(--term-fg);outline:none;
-  font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,monospace;font-size:12.5px;line-height:1.35;
+  font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,monospace;font-size:12.5px;
+  /* A whole number of pixels per row. 1.35 of 12.5px is 16.875, and rows
+     stacked on fractional pixels leave a seam of background between every one
+     of them wherever a run is painted on top of a colour. */
+  line-height:17px;
   user-select:text;cursor:text;height:100%;
 }
 .term-scroll{position:relative;height:100%;overflow-y:auto;overflow-x:hidden;padding:6px 8px}
-.term-history div,.term-screen div{white-space:pre;min-height:1.35em}
+.term-history div,.term-screen div{white-space:pre;min-height:17px}
+/* A span's background covers the font's content box, which is shorter than the
+   line - so a coloured run has to be told to fill the row it sits in. */
+.term-history div span,.term-screen div span{display:inline-block;vertical-align:top;height:17px}
 .term.alt .term-history{display:none}
 .term-probe{position:absolute;visibility:hidden;white-space:pre}
+/* Selection has to read as a selection on top of whatever colours the
+   program painted, keyboard-driven or dragged. */
+.term ::selection{background:#2f5c8f;color:#fff}
+.term::selection{background:#2f5c8f;color:#fff}
 .term-cursor{
   position:absolute;left:0;top:0;overflow:hidden;white-space:pre;text-align:center;
   color:var(--term-bg);background:var(--term-fg);opacity:1;
@@ -883,3 +1029,48 @@ body.popout .term-host{flex:1;min-height:0;background:var(--term-bg)}
 .card.skeleton.stopped .sk{animation:none;opacity:.45}
 .card.skeleton.stopped .sk-note{color:var(--dim2)}
 .chip-hint{color:var(--dim2);font-size:11.5px;letter-spacing:.2px}
+
+/* ---------- terminal colour scheme ---------- */
+.term-theme-row{align-items:flex-start}
+.term-theme-edit{display:flex;flex-direction:column;align-items:flex-end;gap:12px;min-width:340px}
+.term-theme-preview{
+  width:100%;padding:10px 12px;border-radius:9px;border:1px solid var(--line);
+  background:var(--term-bg);color:var(--term-fg);
+  font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,monospace;
+  font-size:12px;line-height:1.55;white-space:pre;overflow:hidden;
+  direction:ltr;text-align:left;
+}
+.term-theme-caret{background:var(--term-fg);display:inline-block;width:7px}
+.term-swatches{display:grid;grid-template-columns:repeat(8,1fr);gap:6px;width:100%;direction:ltr}
+.term-swatch.wide{grid-column:span 4}
+.term-swatch{display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;min-width:0}
+.term-swatch input[type="color"]{
+  width:100%;height:24px;padding:0;border:1px solid var(--line);border-radius:5px;
+  background:none;cursor:pointer;appearance:none;-webkit-appearance:none;
+}
+.term-swatch input[type="color"]::-webkit-color-swatch-wrapper{padding:2px}
+.term-swatch input[type="color"]::-webkit-color-swatch{border:0;border-radius:3px}
+.term-swatch span{
+  font-size:9.5px;color:var(--dim2);max-width:100%;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;
+}
+.term-theme-reset{align-self:flex-end}
+.term-theme-reset:disabled{opacity:.45;cursor:default}
+
+/* ---------- settings: a menu on the left, one group at a time ---------- */
+.settings-layout{flex:1;min-height:0;display:flex;align-items:stretch}
+.settings-nav{
+  flex:0 0 196px;min-height:0;overflow-y:auto;padding:14px 10px;display:flex;flex-direction:column;
+  gap:2px;background:var(--bg1);border-right:1px solid var(--line);
+}
+.settings-nav-item{
+  display:flex;align-items:center;gap:10px;flex:0 0 auto;height:36px;padding:0 11px;border-radius:8px;
+  color:var(--dim);font-size:13px;font-weight:550;text-align:left;
+  transition:background .12s,color .12s;
+}
+.settings-nav-item .ms{font-size:18px}
+.settings-nav-item:hover{background:var(--bg2);color:var(--text)}
+.settings-nav-item.on{background:var(--bg3);color:var(--text)}
+.settings-group[hidden]{display:none}
+html[dir="rtl"] .settings-nav{border-right:0;border-left:1px solid var(--line)}
+html[dir="rtl"] .settings-nav-item{text-align:right}

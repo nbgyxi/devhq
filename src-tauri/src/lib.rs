@@ -177,6 +177,15 @@ struct ScanDone {
 /// caller's thread: the folder list arrives as `scan:start`, projects fill in
 /// through `scan:project`, running processes through `scan:procs`, and
 /// `scan:done` closes it out.
+/// The version the app was built as - `tauri.conf.json`'s, which is the one
+/// `package-msix.ps1 -BumpVersion` moves and the one the installer carries.
+/// The status bar shows this rather than a copy kept in the front end, so the
+/// number on screen cannot drift from the number that shipped.
+#[tauri::command]
+fn app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
 #[tauri::command]
 fn scan(app: AppHandle, roots: Vec<String>) -> u64 {
     let token = SCAN_TOKEN.fetch_add(1, Ordering::SeqCst) + 1;
@@ -700,6 +709,21 @@ async fn todos(path: String) -> Result<todo::TodoReport, String> {
     .unwrap_or_else(|| Err("Could not read the project.".into()))
 }
 
+/// The source around one TODO, so a note can be read in the code it was left in.
+#[tauri::command]
+async fn todo_excerpt(path: String, file: String, line: u32) -> Result<todo::Excerpt, String> {
+    off_thread(move || {
+        let dir = PathBuf::from(&path);
+        if !dir.is_dir() {
+            return Err("Folder no longer exists.".into());
+        }
+        todo::excerpt(&dir, &file, line)
+    })
+    .await
+    .unwrap_or_else(|| Err("Could not read the file.".into()))
+}
+
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
@@ -708,11 +732,13 @@ pub fn run() {
     let builder = builder
         .invoke_handler(tauri::generate_handler![
             scan,
+            app_version,
             scan_cancel,
             default_root,
             open_in,
             git_diff,
             todos,
+            todo_excerpt,
             term::term_open,
             term::term_attach,
             term::term_write,
@@ -742,11 +768,13 @@ pub fn run() {
     let builder =
         builder.invoke_handler(tauri::generate_handler![
             scan,
+            app_version,
             scan_cancel,
             default_root,
             open_in,
             git_diff,
-            todos
+            todos,
+            todo_excerpt
         ]);
 
     builder.run(tauri::generate_context!()).expect("error while running DevHQ");

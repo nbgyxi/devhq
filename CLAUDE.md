@@ -41,6 +41,27 @@ is happening and **how far along** it is:
 - Actions that leave the app (VS Code, Explorer, a new shell) show their own
   transient line until they return.
 
+## Every change ships as a version
+
+The status bar carries the app's version, and clicking it opens the list of
+what every version changed. Both have to stay true, so **every change finishes
+with two more edits**:
+
+- **Bump the version in `src-tauri/tauri.conf.json`.** That is the only place
+  the app's version is written down: it is what
+  `scripts/package-msix.ps1 -BumpVersion` moves, what the installer carries,
+  and what the `app_version` command hands the status bar. `package.json` and
+  `src-tauri/Cargo.toml` carry versions of their own that are *not* the app's —
+  leave them alone.
+- **Add the release to the top of `src/changelog.js`**, newest first, dated
+  today, with one line per thing that actually changed. Each line is `new`,
+  `better` or `fix`, and says what is different for whoever uses the app —
+  not which file moved.
+
+Patch for a fix or a small piece of work, minor for a feature worth its own
+entry. Never reuse a version already in the list, and never leave the list
+behind the version in `tauri.conf.json` — the two are read side by side.
+
 ## Do not launch the app
 
 **Never start, foreground or screenshot the DevHQ window.** No `npm run dev`,

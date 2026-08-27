@@ -3,6 +3,7 @@
 // DevHQ panel — a running build keeps running.
 
 (async () => {
+  window.devhqTrackPageView?.("/terminal");
   const invoke = window.__TAURI__.core.invoke;
   const emit = window.__TAURI__.event.emit;
   const win = window.__TAURI__.window.getCurrentWindow();
@@ -10,12 +11,44 @@
   const id = new URLSearchParams(location.search).get("id");
   const host = document.getElementById("pop-term");
 
+  // Docking is the mirror of popping out: tell DevHQ to take the session back
+  // into its panel, and this window's job is done.
+  //
+  // It must be said exactly once. DevHQ answers "docked" by closing this
+  // window, and a close handled as a close request would announce a dock of its
+  // own - two windows telling each other to dock, round and round, with this
+  // one too busy to repaint. The flag closes that loop, and `destroy` leaves
+  // without raising a close request nobody needs to hear.
+  let handedOver = false;
+  let closed = false;
+  const handOver = async () => {
+    if (handedOver || closed) return;
+    handedOver = true;
+    await emit("term:docked", { id });
+  };
+
+  // Closing is not docking. The cross ends the shell, the way the cross on a
+  // tab in the panel does; only the dock button and a drag onto the panel hand
+  // the session back. DevHQ is told so it can forget the terminal instead of
+  // reopening it on the next launch.
+  const closeSession = async () => {
+    if (handedOver || closed) return;
+    closed = true;
+    await invoke("term_close", { id }).catch(() => {});
+    await emit("term:closed", { id }).catch(() => {});
+  };
+
   document.querySelectorAll("[data-win]").forEach((btn) => {
-    btn.onclick = () => {
+    btn.onclick = async () => {
       const act = btn.dataset.win;
       if (act === "min") win.minimize();
       else if (act === "max") win.toggleMaximize();
-      else win.close();
+      else {
+        // Ending the shell first, then leaving without a close request: the
+        // request handler is for Alt+F4, and running both would race.
+        await closeSession();
+        win.destroy();
+      }
     };
   });
 
@@ -43,21 +76,6 @@
   document.title = `${info.projectName} — Terminal`;
   view.fit();
   view.focus();
-
-  // Docking is the mirror of popping out: tell DevHQ to take the session back
-  // into its panel, and this window's job is done.
-  //
-  // It must be said exactly once. DevHQ answers "docked" by closing this
-  // window, and a close handled as a close request would announce a dock of its
-  // own - two windows telling each other to dock, round and round, with this
-  // one too busy to repaint. The flag closes that loop, and `destroy` leaves
-  // without raising a close request nobody needs to hear.
-  let handedOver = false;
-  const handOver = async () => {
-    if (handedOver) return;
-    handedOver = true;
-    await emit("term:docked", { id });
-  };
 
   document.getElementById("pop-dock").onclick = async () => {
     await handOver();
@@ -88,10 +106,9 @@
     pending = setTimeout(() => view.fit(), 60);
   }).observe(host);
 
-  // A closed window would otherwise leave the session running with no view.
-  // The session belongs to the project, not the window, so it is handed back
-  // to DevHQ rather than killed.
+  // Alt+F4 and anything else Windows counts as a close request mean the same
+  // as the cross: the shell ends here.
   win.onCloseRequested(async () => {
-    await handOver();
+    await closeSession();
   });
 })();

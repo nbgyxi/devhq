@@ -177,3 +177,84 @@ fn relative(root: &Path, path: &Path) -> String {
         .to_string_lossy()
         .replace('\\', "/")
 }
+
+/// How many lines of context are read either side of a note.
+const EXCERPT_RADIUS: u32 = 8;
+/// A single line of an excerpt is clipped at this, for the same reason the
+/// notes themselves are: a minified line is not context, it is a wall.
+const MAX_EXCERPT_LINE: usize = 400;
+
+/// The lines around one note, with enough around them to read what it is about.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Excerpt {
+    /// Relative to the project, with forward slashes - as the note reports it.
+    pub file: String,
+    /// The line the note is on, 1-based.
+    pub line: u32,
+    /// The line number `lines[0]` holds, 1-based, so the front end can number
+    /// the block without knowing how the window was clipped.
+    pub start: u32,
+    pub lines: Vec<String>,
+}
+
+/// Reads the lines around `line` of `file`, which is interpreted relative to
+/// `root` and must stay inside it.
+pub fn excerpt(root: &Path, file: &str, line: u32) -> Result<Excerpt, String> {
+    let target = resolve(root, file)?;
+
+    // The same ceiling the sweep itself uses. A file too big to have been
+    // searched cannot have produced the note being asked about.
+    let size = std::fs::metadata(&target).map_err(|_| "File no longer exists.".to_string())?.len();
+    if size > MAX_FILE_BYTES {
+        return Err("File is too large to show.".into());
+    }
+    let text = std::fs::read_to_string(&target).map_err(|_| "File is not text.".to_string())?;
+
+    let all: Vec<&str> = text.lines().collect();
+    if all.is_empty() {
+        return Err("File is empty.".into());
+    }
+    let line = line.max(1);
+    // Saturating, so a note on line 1 does not wrap round to the end of the file.
+    let start = line.saturating_sub(EXCERPT_RADIUS).max(1);
+    let end = (line + EXCERPT_RADIUS).min(all.len() as u32);
+    if start > all.len() as u32 {
+        return Err("File no longer has that line.".into());
+    }
+
+    let lines = all[start as usize - 1..end as usize]
+        .iter()
+        .map(|l| clip_line(l))
+        .collect();
+    Ok(Excerpt { file: file.to_string(), line, start, lines })
+}
+
+/// Joins `file` onto `root` and refuses anything that leaves the project.
+///
+/// The path arrives from the front end, so `..` and absolute paths have to be
+/// turned away here rather than trusted because the notes list produced them.
+fn resolve(root: &Path, file: &str) -> Result<PathBuf, String> {
+    let relative = Path::new(file);
+    if relative.is_absolute() || relative.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err("That file is outside the project.".into());
+    }
+    let joined = root.join(relative);
+    let (Ok(base), Ok(target)) = (root.canonicalize(), joined.canonicalize()) else {
+        return Err("File no longer exists.".into());
+    };
+    if !target.starts_with(&base) {
+        return Err("That file is outside the project.".into());
+    }
+    Ok(target)
+}
+
+/// Tabs become spaces so the block lines up under a proportional-free font
+/// without the front end having to guess a tab width.
+fn clip_line(line: &str) -> String {
+    let expanded = line.replace('\t', "    ");
+    if expanded.chars().count() <= MAX_EXCERPT_LINE {
+        return expanded;
+    }
+    expanded.chars().take(MAX_EXCERPT_LINE).collect()
+}
