@@ -188,5 +188,15 @@
   "Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.": "ফোল্ডার, ভাষা, চেহারা ও টার্মিনাল ভুলে গিয়ে এমনভাবে শুরু করুন যেন অ্যাপটি সবে ইনস্টল হয়েছে।",
   "Reset": "রিসেট",
   "Click again to reset": "রিসেট করতে আবার ক্লিক করুন",
-  "Resetting DevHQ": "DevHQ রিসেট করা হচ্ছে"
+  "Resetting DevHQ": "DevHQ রিসেট করা হচ্ছে",
+  "Send anonymous usage counts": "বেনামী ব্যবহারের গণনা পাঠান",
+  "No thanks": "না, ধন্যবাদ",
+  "Send nothing at all": "কিছুই পাঠাবেন না",
+  "Send anonymous usage data": "বেনামী ব্যবহারের ডেটা পাঠান",
+  "We would love to know someone new is using DevHQ": "আমরা জানতে ভালোবাসি যে নতুন কেউ DevHQ ব্যবহার করছেন",
+  "May we send that to PageRain Analytics? It is completely anonymous - a random number and the name of the screen you opened, nothing else. Never a project, never a folder, never your code. The few lines that do it are open source, so you can read exactly what leaves your machine.": "আমরা কি সেটি PageRain Analytics-এ পাঠাতে পারি? এটি সম্পূর্ণ বেনামী — একটি এলোমেলো সংখ্যা এবং আপনি যে স্ক্রিন খুলেছেন তার নাম, এর বেশি কিছু নয়। কোনো প্রকল্প নয়, কোনো ফোল্ডার নয়, আপনার কোড কখনোই নয়। যে কয়েকটি লাইন এটি করে সেগুলি ওপেন সোর্স, তাই আপনার মেশিন থেকে ঠিক কী যাচ্ছে তা আপনি নিজেই পড়তে পারেন।",
+  "Read the code that sends it": "যে কোড এটি পাঠায় তা পড়ুন",
+  "Yes, say hello": "হ্যাঁ, হ্যালো বলুন",
+  "Lets PageRain Analytics know someone is using DevHQ - a random number and the screen you opened, never your projects.": "PageRain Analytics-কে জানায় যে কেউ DevHQ ব্যবহার করছেন — একটি এলোমেলো সংখ্যা এবং আপনি যে স্ক্রিন খুলেছেন, আপনার প্রকল্প কখনোই নয়।",
+  "Opening your browser": "আপনার ব্রাউজার খোলা হচ্ছে"
 }

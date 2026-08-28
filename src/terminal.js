@@ -338,6 +338,20 @@ function keySequence(e) {
 }
 
 /** One shared listener pair, fanned out to whichever views are mounted. */
+// ---------------------------------------------------------------- busy state
+//
+// A stream of output is what makes the cursor look like it is blinking wildly:
+// every frame lands it somewhere else on the line. So while output is flowing
+// the cursor is parked and a spinner takes its place, and the cursor - the
+// symbol that says the shell is waiting for you - comes back the moment the
+// output stops.
+
+/** Quiet for this long and the terminal is waiting, not working. */
+const TERM_QUIET_MS = 50;
+/** Output has to have been flowing this long before the spinner appears, so a
+ *  single keystroke's echo never flashes one. */
+const TERM_BUSY_MS = 120;
+
 const views = new Map();
 let wired = false;
 
@@ -376,6 +390,12 @@ class TermView {
     // 0 is "nothing asked for", which is drawn as a thin bar.
     this.cursorStyle = 0;
     this.cursorChar = " ";
+    /** True while output is streaming: the cursor is parked and a spinner is
+     *  drawn in its cell. */
+    this.busy = false;
+    /** When the current run of output started, or 0 if the terminal is quiet. */
+    this.outputSince = 0;
+    this.quietTimer = 0;
 
     host.classList.add("term");
     host.innerHTML =
@@ -744,6 +764,9 @@ class TermView {
       for (let i = 0; i < excess; i++) this.history.firstElementChild.remove();
     }
     for (const row of payload.rows) this.paintRow(row.y, row.runs);
+    // A full-screen program owns the viewport and redraws it constantly, so it
+    // would never look anything but busy - leave its cursor alone.
+    this.noteOutput(!payload.alt);
     this.moveCursor(payload.cx, payload.cy, payload.cursorVisible, payload.cursorStyle, payload.cursorChar);
     if (this.onFirstOutput) {
       const fire = this.onFirstOutput;
@@ -769,6 +792,50 @@ class TermView {
     this.cursorVisible = visible;
     this.cursorStyle = style ?? 0;
     this.cursorChar = cursorChar || " ";
+    this.paintCursor();
+  }
+
+  /** One frame of output arrived. `live` is false for the screens that draw
+   *  themselves - those are left as they are. */
+  noteOutput(live) {
+    clearTimeout(this.quietTimer);
+    if (!live || this.exited) {
+      this.outputSince = 0;
+      this.setBusy(false);
+      return;
+    }
+    const now = performance.now();
+    if (!this.outputSince) this.outputSince = now;
+    if (now - this.outputSince >= TERM_BUSY_MS) this.setBusy(true);
+    this.quietTimer = setTimeout(() => {
+      this.outputSince = 0;
+      this.setBusy(false);
+    }, TERM_QUIET_MS);
+  }
+
+  /** Swaps the cursor for the spinner and back.
+   *
+   *  The spinner takes over the cell the cursor was in when the output began -
+   *  the cell, not the pixel, so it holds that spot on screen while lines
+   *  scroll underneath it instead of being left behind by the growing history. */
+  setBusy(on) {
+    if (on === this.busy) return;
+    this.busy = on;
+    if (on) {
+      this.busyCx = this.cx;
+      this.busyCy = this.cy;
+    }
+    this.cursorEl.classList.toggle("busy", on);
+    this.paintCursor();
+  }
+
+  /** Draws the cursor - or the spinner standing in for it - from the state
+   *  `moveCursor` last recorded. */
+  paintCursor() {
+    const busy = this.busy;
+    const cx = busy ? this.busyCx : this.cx;
+    const cy = busy ? this.busyCy : this.cy;
+    const visible = busy || this.cursorVisible;
     this.cursorEl.style.display = visible && !this.exited ? "block" : "none";
     const row = this.rowEls[cy];
     // The cursor is a separate overlay, so it mirrors the backend's exact
@@ -777,11 +844,11 @@ class TermView {
     // A thin bar is the resting shape: 0 is the shape nothing has asked to
     // change. A block means overwrite - insert mode, or a full-screen program
     // that asked for one outright.
-    const bar = this.cursorStyle === 0 || this.cursorStyle === 5 || this.cursorStyle === 6;
-    const underline = this.cursorStyle === 3 || this.cursorStyle === 4;
+    const bar = !busy && (this.cursorStyle === 0 || this.cursorStyle === 5 || this.cursorStyle === 6);
+    const underline = !busy && (this.cursorStyle === 3 || this.cursorStyle === 4);
     this.cursorEl.classList.toggle("bar", bar);
     this.cursorEl.classList.toggle("underline", underline);
-    this.cursorEl.textContent = bar || underline ? "" : this.cursorChar;
+    this.cursorEl.textContent = busy || bar || underline ? "" : this.cursorChar;
     this.cursorEl.style.width = `${bar ? 2 : this.cellW}px`;
     const rowHeight = row?.offsetHeight || this.cellH;
     this.cursorEl.style.height = `${underline ? 2 : rowHeight}px`;
@@ -883,6 +950,8 @@ class TermView {
 
   markExited() {
     this.exited = true;
+    clearTimeout(this.quietTimer);
+    this.setBusy(false);
     this.cursorEl.style.display = "none";
     this.host.classList.add("exited");
     if (this.onExit) this.onExit();
@@ -894,6 +963,7 @@ class TermView {
 
   /** Detaches the view. The session keeps running — that is the whole point. */
   dispose() {
+    clearTimeout(this.quietTimer);
     if (views.get(this.id) === this) views.delete(this.id);
   }
 }

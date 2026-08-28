@@ -1,3 +1,4 @@
+pub mod analytics;
 #[cfg(windows)]
 pub mod conpty;
 mod cwd;
@@ -186,6 +187,32 @@ struct ScanDone {
 #[tauri::command]
 fn app_version(app: AppHandle) -> String {
     app.package_info().version.to_string()
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageView {
+    /// The anonymous id the front end keeps for this install. Never anything
+    /// that could name the machine or the person at it.
+    pub visitor_id: String,
+    /// The screen, as a route: `/overview`, `/project`, `/settings`.
+    pub path: String,
+}
+
+/// Reports one page view to PageRain. The front end owns the anonymous id and
+/// the screen name; this only carries them off the UI thread and onto the
+/// network, because the window's own `fetch` is refused by CORS.
+///
+/// Nothing waits on the answer and a failure is never surfaced: a page view
+/// that does not arrive must not cost the user anything.
+#[tauri::command]
+async fn analytics_page_view(view: PageView) {
+    off_thread(move || {
+        if let Err(why) = analytics::page_view(&view.visitor_id, &view.path) {
+            eprintln!("analytics: {why}");
+        }
+    })
+    .await;
 }
 
 #[tauri::command]
@@ -723,6 +750,86 @@ fn git_diff_sync(path: String) -> Result<Diff, String> {
     Ok(Diff { text, truncated, files })
 }
 
+/// What `git pull` did: whether it worked, the line worth showing for it, and
+/// the project re-read afterwards so the card stops claiming it is behind.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullResult {
+    pub ok: bool,
+    pub summary: String,
+    pub project: Option<Project>,
+}
+
+/// `git pull` in one project's folder.
+#[tauri::command]
+async fn git_pull(path: String, group: String) -> Result<PullResult, String> {
+    off_thread(move || git_pull_sync(path, group))
+        .await
+        .unwrap_or_else(|| Err("Could not run git pull.".into()))
+}
+
+fn git_pull_sync(path: String, group: String) -> Result<PullResult, String> {
+    let dir = PathBuf::from(&path);
+    if !dir.join(".git").exists() {
+        return Err("Not a git repository.".into());
+    }
+
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("pull").current_dir(&dir);
+    // Nothing here may sit waiting for a human: no editor for a merge message,
+    // no credential or host-key prompt. A pull that would need one fails and
+    // says so instead of hanging a window that must never block.
+    cmd.env("GIT_EDITOR", "true")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let out = cmd.output().map_err(|_| "Could not start git.".to_string())?;
+    let ok = out.status.success();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let summary = pull_summary(&stdout, &stderr, ok);
+
+    // Only a pull that worked can have changed anything worth re-reading.
+    let project = ok.then(|| inspect_project(&dir, &group));
+    Ok(PullResult { ok, summary, project })
+}
+
+/// The one line of git's output worth putting in the status bar.
+fn pull_summary(stdout: &str, stderr: &str, ok: bool) -> String {
+    if ok && stdout.contains("Already up to date") {
+        return "Already up to date".to_string();
+    }
+    let pick = |text: &str| {
+        text.lines()
+            .map(str::trim)
+            .find(|line| {
+                !line.is_empty()
+                    && !line.starts_with("From ")
+                    && !line.starts_with("remote:")
+                    && !line.starts_with("Receiving")
+                    && !line.starts_with("Resolving")
+                    && !line.starts_with("Unpacking")
+                    && !line.starts_with("Counting")
+                    && !line.starts_with("Compressing")
+                    && !line.starts_with("hint:")
+                    && !line.starts_with("warning:")
+            })
+            .map(str::to_string)
+    };
+    let line = if ok {
+        pick(stdout).or_else(|| pick(stderr))
+    } else {
+        pick(stderr).or_else(|| pick(stdout))
+    };
+    line.unwrap_or_else(|| if ok { "Pulled".into() } else { "git pull failed".into() })
+}
+
 /// Every `TODO` / `FIXME` left in a project's own source.
 #[tauri::command]
 async fn todos(path: String) -> Result<todo::TodoReport, String> {
@@ -761,13 +868,16 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan,
             app_version,
+            analytics_page_view,
             scan_cancel,
             default_root,
             pick_folder,
             open_in,
             git_diff,
+            git_pull,
             todos,
             todo_excerpt,
+            term::term_shell_availability,
             term::term_open,
             term::term_attach,
             term::term_write,
@@ -798,11 +908,13 @@ pub fn run() {
         builder.invoke_handler(tauri::generate_handler![
             scan,
             app_version,
+            analytics_page_view,
             scan_cancel,
             default_root,
             pick_folder,
             open_in,
             git_diff,
+            git_pull,
             todos,
             todo_excerpt
         ]);

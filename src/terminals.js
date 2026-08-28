@@ -7,16 +7,23 @@
 
 const term_dock_invoke = window.__TAURI__.core.invoke;
 const term_dock_listen = window.__TAURI__.event.listen;
+const term_dock_emit = window.__TAURI__.event.emit;
 
 const TERM_PREFS = "devhq.terminals.v1";
 const TERM_SHELLS = [
   { value: "auto", label: "Auto" },
   { value: "pwsh", label: "PowerShell 7" },
+  { value: "pwsh-preview", label: "PowerShell Preview" },
   { value: "powershell", label: "Windows PowerShell" },
   { value: "cmd", label: "Command Prompt" },
   { value: "git-bash", label: "Git Bash" },
   { value: "wsl", label: "WSL Bash" },
+  { value: "nu", label: "NuShell" },
 ];
+const DEFAULT_SHELL_COLORS = {
+  pwsh: "#4d9df5", "pwsh-preview": "#c162de", powershell: "#61afef",
+  cmd: "#8cc265", "git-bash": "#e05561", wsl: "#d5a458", nu: "#c162de", auto: "#42b3c2",
+};
 
 const terms = {
   open: false,
@@ -26,16 +33,21 @@ const terms = {
   /** All terminals that belong to this workspace, including ones currently
    *  popped out and therefore absent from `sessions`. */
   known: new Map(),
-  /** key -> project name, for shells that have been asked for but have not
+  /** key -> { label, pane }, for shells that have been asked for but have not
    *  started yet. They get a tab straight away so the click is never silent. */
   pending: new Map(),
   height: 320,
+  splitRatio: .5,
+  paneActive: [null, null],
   restoreSpecs: [],
   restoreOpen: false,
   restoreActive: 0,
   defaultShell: "auto",
   nextShell: "auto",
-  shellMenuOpen: false,
+  shellMenuPane: null,
+  shellAvailability: new Map(),
+  shellColors: { ...DEFAULT_SHELL_COLORS },
+  shellMarkerStyle: "code",
   restoring: false,
   /** id -> generation. Output increments it; a successful snapshot only
    *  clears the generation it actually captured. */
@@ -59,6 +71,9 @@ function termsSavePrefs() {
     active: Math.max(0, entries.findIndex(([id]) => id === terms.active)),
     sessions: entries.map(([, spec]) => spec),
     defaultShell: terms.defaultShell,
+    splitRatio: terms.splitRatio,
+    shellColors: terms.shellColors,
+    shellMarkerStyle: terms.shellMarkerStyle,
   }));
 }
 
@@ -66,6 +81,13 @@ function termsLoadPrefs() {
   try {
     const saved = JSON.parse(localStorage.getItem(TERM_PREFS) || "{}");
     if (saved.height) terms.height = saved.height;
+    if (saved.splitRatio >= .25 && saved.splitRatio <= .75) terms.splitRatio = saved.splitRatio;
+    if (saved.shellColors && typeof saved.shellColors === "object") {
+      for (const profile of Object.keys(DEFAULT_SHELL_COLORS)) {
+        if (/^#[0-9a-f]{6}$/i.test(saved.shellColors[profile])) terms.shellColors[profile] = saved.shellColors[profile];
+      }
+    }
+    if (["none", "dot", "code"].includes(saved.shellMarkerStyle)) terms.shellMarkerStyle = saved.shellMarkerStyle;
     if (TERM_SHELLS.some((profile) => profile.value === saved.defaultShell)) {
       terms.defaultShell = saved.defaultShell;
       terms.nextShell = saved.defaultShell;
@@ -78,55 +100,134 @@ function termsLoadPrefs() {
   } catch {}
 }
 
+function applyShellColors() {
+  for (const [profile, color] of Object.entries(terms.shellColors)) {
+    document.documentElement.style.setProperty(`--shell-color-${profile}`, color);
+  }
+}
+
+function applyShellMarkerStyle() {
+  const dock = terms.el;
+  if (!dock) return;
+  for (const style of ["none", "dot", "code"]) dock.classList.toggle(`shell-markers-${style}`, terms.shellMarkerStyle === style);
+}
+
+function broadcastShellMarkers() {
+  term_dock_emit("term:markers", { style: terms.shellMarkerStyle, colors: terms.shellColors }).catch(() => {});
+}
+
 function termIcon(name) {
   return `<span class="ms" aria-hidden="true">${name}</span>`;
+}
+
+function shellMarker(command) {
+  const profile = shellProfileFromCommand(command);
+  const label = TERM_SHELLS.find((item) => item.value === profile)?.label || "Terminal";
+  const short = {
+    auto: "SH", pwsh: "PW7", "pwsh-preview": "PWP", powershell: "PS",
+    cmd: "CMD", "git-bash": "GIT", wsl: "WSL", nu: "NU",
+  }[profile] || "SH";
+  return `<i class="shell-mark shell-${profile}" title="${escAttr(label)}" aria-label="${escAttr(label)}">${short}</i>`;
 }
 
 function dockEl() {
   if (terms.el) return terms.el;
   const el = document.createElement("div");
   el.id = "term-dock";
+  const paneActions = (pane) => `<div class="dock-actions dock-pane-actions" data-pane-actions="${pane}">
+    <div class="dock-new-split">
+      <button data-dock="new" title="New terminal">${termIcon("add")}</button>
+      <button class="dock-new-menu-button" data-dock="shell-menu" title="Choose terminal type" aria-haspopup="menu" aria-expanded="false">${termIcon("tune")}</button>
+      <div class="dock-shell-menu" role="menu" hidden></div>
+    </div>
+    <button data-dock="popout" title="Pop out this terminal">${termIcon("open_in_new")}</button>
+    <button data-dock="close" title="Close this terminal">${termIcon("delete")}</button>
+  </div>`;
   el.innerHTML = `
     <div class="dock-grip"></div>
     <div class="dock-bar">
-      <div class="dock-tabs"></div>
-      <div class="dock-actions">
-        <div class="dock-new-split">
-          <button data-dock="new" title="New terminal">${termIcon("add")}</button>
-          <button class="dock-new-menu-button" data-dock="shell-menu" title="Choose shell" aria-haspopup="menu" aria-expanded="false">${termIcon("keyboard_arrow_down")}</button>
-          <div class="dock-shell-menu" role="menu" hidden></div>
-        </div>
-        <button data-dock="popout" title="Pop out into its own window">${termIcon("open_in_new")}</button>
-        <button data-dock="close" title="Close this terminal">${termIcon("delete")}</button>
-        <button data-dock="hide" title="Hide the panel">${termIcon("keyboard_arrow_down")}</button>
+      <div class="dock-tab-pane" data-tab-pane="0"><div class="dock-tabs"></div>${paneActions(0)}</div>
+      <div class="dock-tab-pane" data-tab-pane="1"><div class="dock-tabs"></div>${paneActions(1)}</div>
+      <button class="dock-hide" data-dock="hide" title="Hide the panel">${termIcon("keyboard_arrow_down")}</button>
+    </div>
+    <div class="dock-views">
+      <div class="dock-pane-empty" data-empty-pane="0" hidden>Drop a terminal here</div>
+      <div class="dock-divider" role="separator" aria-label="Resize terminal panes"></div>
+      <div class="dock-pane-empty" data-empty-pane="1" hidden>Drop a terminal here</div>
+      <div class="dock-drop-zones" aria-hidden="true">
+        <div data-drop-pane="0"><span>${termIcon("dock_to_left")} Dock left</span></div>
+        <div data-drop-pane="1"><span>${termIcon("dock_to_right")} Dock right</span></div>
       </div>
     </div>
-    <div class="dock-views"></div>`;
+    <div class="dock-tab-menu" role="menu" hidden></div>
+    <div class="term-shell-error" role="alertdialog" aria-modal="true" aria-labelledby="term-shell-error-title" hidden>
+      <div class="term-shell-error-card">
+        ${termIcon("error")}
+        <div><strong id="term-shell-error-title"></strong><p></p></div>
+        <button data-shell-error-close>OK</button>
+      </div>
+    </div>`;
   document.body.appendChild(el);
   terms.el = el;
 
   // Delegated, because the strip is rebuilt every time a shell starts, stops
   // or is switched to - per-tab handlers would be rewired on every one of them.
   let suppressTabClick = false;
-  el.querySelector(".dock-tabs").onclick = (e) => {
+  el.querySelector(".dock-bar").onclick = (e) => {
     if (suppressTabClick) return;
     const close = e.target.closest("[data-close]");
     if (close) return closeTerminal(close.dataset.close);
     if (e.target.closest("[data-new]")) return openNewTerminal();
     const tab = e.target.closest("[data-tab]");
-    if (tab) setActive(tab.dataset.tab);
+    if (tab) return setActive(tab.dataset.tab);
+    const action = e.target.closest("[data-dock]");
+    if (!action) return;
+    if (action.dataset.dock === "hide") return setDockOpen(false);
+    const pane = Number(action.closest("[data-tab-pane]")?.dataset.tabPane || 0);
+    const active = terms.paneActive[pane];
+    if (action.dataset.dock === "new") return openNewTerminal(terms.defaultShell, pane);
+    if (action.dataset.dock === "shell-menu") {
+      e.stopPropagation();
+      return setShellMenuOpen(terms.shellMenuPane === pane ? null : pane);
+    }
+    if (action.dataset.dock === "popout") return popOutTerminal(active);
+    if (action.dataset.dock === "close") return closeTerminal(active);
+  };
+
+  const tabMenu = el.querySelector(".dock-tab-menu");
+  el.querySelector(".dock-bar").addEventListener("contextmenu", (e) => {
+    const tab = e.target.closest("[data-tab]");
+    if (!tab) return;
+    e.preventDefault();
+    setActive(tab.dataset.tab);
+    openTerminalTabMenu(tab.dataset.tab, e.clientX, e.clientY);
+  });
+  tabMenu.onclick = (e) => {
+    const choice = e.target.closest("[data-switch-shell]");
+    if (!choice) return;
+    const id = tabMenu.dataset.tab;
+    closeTerminalTabMenu();
+    switchTerminalShell(id, choice.dataset.switchShell);
   };
 
   // Keep this gesture inside the webview rather than using HTML drag/drop.
   // Native browser dragging can activate whatever is behind the app when the
   // pointer leaves the window. Pointer capture keeps DevHQ in charge and also
   // lets us draw a clear preview of what is moving.
-  const tabs = el.querySelector(".dock-tabs");
-  const clearDropMarks = () => tabs.querySelectorAll(".drop-before,.drop-after").forEach((tab) =>
+  const tabBar = el.querySelector(".dock-bar");
+  const views = el.querySelector(".dock-views");
+  const clearDropMarks = () => tabBar.querySelectorAll(".drop-before,.drop-after").forEach((tab) =>
     tab.classList.remove("drop-before", "drop-after")
   );
-  const reorderTab = (id, target, after) => {
+  const reorderTab = (id, target, after, pane) => {
     if (target?.dataset.tab === id) return;
+    const remembered = terms.known.get(id);
+    const oldPane = sessionPane(id);
+    if (remembered) remembered.pane = pane;
+    terms.paneActive[pane] = id;
+    if (oldPane !== pane && terms.paneActive[oldPane] === id) {
+      terms.paneActive[oldPane] = [...terms.sessions.keys()].find((sid) => sid !== id && sessionPane(sid) === oldPane) || null;
+    }
     const ordered = [...terms.sessions.keys()].filter((sid) => sid !== id);
     if (target) {
       let at = ordered.indexOf(target.dataset.tab);
@@ -141,10 +242,13 @@ function dockEl() {
       ...ordered.map((sid) => [sid, terms.known.get(sid)]),
       ...remaining,
     ]);
+    terms.active = id;
+    syncPaneLayout();
     renderTabs();
+    fitVisible();
     termsSavePrefs();
   };
-  tabs.addEventListener("pointerdown", (down) => {
+  tabBar.addEventListener("pointerdown", (down) => {
     const tab = down.target.closest("[data-tab]");
     if (!tab || down.target.closest("[data-close]") || down.button !== 0) return;
     const id = tab.dataset.tab;
@@ -167,6 +271,7 @@ function dockEl() {
         ghost.className = "dock-tab-ghost";
         ghost.innerHTML = tab.innerHTML;
         document.body.appendChild(ghost);
+        views.classList.add("choosing-pane");
       }
       const outsideWindow = e.clientX < 0 || e.clientX > window.innerWidth ||
         e.clientY < 0 || e.clientY > window.innerHeight;
@@ -185,8 +290,11 @@ function dockEl() {
         term_dock_invoke("term_drag_preview", { action: "close", x: 0, y: 0 }).catch(() => {});
       }
       clearDropMarks();
-      const strip = tabs.getBoundingClientRect();
-      const inStrip = e.clientX >= strip.left && e.clientX <= strip.right &&
+      views.querySelectorAll("[data-drop-pane]").forEach((zone) => zone.classList.remove("hover"));
+      const dropZone = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-drop-pane]");
+      dropZone?.classList.add("hover");
+      const strip = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-tab-pane]")?.getBoundingClientRect();
+      const inStrip = strip && e.clientX >= strip.left && e.clientX <= strip.right &&
         e.clientY >= strip.top && e.clientY <= strip.bottom;
       target = inStrip ? document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-tab]") : null;
       if (target && target !== tab) {
@@ -196,12 +304,15 @@ function dockEl() {
       }
     };
     const finish = (e, cancelled = false) => {
+      const destination = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-drop-pane]");
       tab.removeEventListener("pointermove", move);
       tab.removeEventListener("pointerup", up);
       tab.removeEventListener("pointercancel", cancel);
       tab.classList.remove("dragging");
       clearDropMarks();
       ghost?.remove();
+      views.classList.remove("choosing-pane");
+      views.querySelectorAll("[data-drop-pane]").forEach((zone) => zone.classList.remove("hover"));
       if (nativePreview) {
         term_dock_invoke("term_drag_preview", { action: "close", x: 0, y: 0 }).catch(() => {});
       }
@@ -210,13 +321,15 @@ function dockEl() {
         suppressTabClick = false;
         return;
       }
-      const strip = tabs.getBoundingClientRect();
+      const tabPane = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-tab-pane]");
+      const strip = tabPane?.getBoundingClientRect();
       const dock = el.getBoundingClientRect();
-      const inStrip = e.clientX >= strip.left && e.clientX <= strip.right &&
+      const inStrip = strip && e.clientX >= strip.left && e.clientX <= strip.right &&
         e.clientY >= strip.top && e.clientY <= strip.bottom;
       const inDock = e.clientX >= dock.left && e.clientX <= dock.right &&
         e.clientY >= dock.top && e.clientY <= dock.bottom;
-      if (inStrip) reorderTab(id, target, after);
+      if (destination) moveToPane(id, Number(destination.dataset.dropPane));
+      else if (inStrip) reorderTab(id, target, after, Number(tabPane.dataset.tabPane));
       else if (!inDock && (e.screenX || e.screenY)) popOutTerminal(id, e.screenX, e.screenY);
       setTimeout(() => { suppressTabClick = false; }, 0);
     };
@@ -227,23 +340,25 @@ function dockEl() {
     tab.addEventListener("pointercancel", cancel);
   });
 
-  el.querySelector('[data-dock="hide"]').onclick = () => setDockOpen(false);
-  el.querySelector('[data-dock="close"]').onclick = () => closeTerminal(terms.active);
-  el.querySelector('[data-dock="popout"]').onclick = () => popOutTerminal(terms.active);
-  el.querySelector('[data-dock="new"]').onclick = () => openNewTerminal(terms.defaultShell);
-  el.querySelector('[data-dock="shell-menu"]').onclick = (e) => {
-    e.stopPropagation();
-    setShellMenuOpen(!terms.shellMenuOpen);
-  };
-  el.querySelector(".dock-shell-menu").onclick = (e) => {
+  el.querySelector(".dock-bar").addEventListener("click", (e) => {
     const choice = e.target.closest("[data-new-shell]");
     if (!choice) return;
-    setShellMenuOpen(false);
-    openNewTerminal(choice.dataset.newShell);
-  };
-  document.addEventListener("pointerdown", (e) => {
-    if (terms.shellMenuOpen && !e.target.closest(".dock-new-split")) setShellMenuOpen(false);
+    const pane = Number(choice.closest("[data-tab-pane]").dataset.tabPane);
+    setShellMenuOpen(null);
+    openNewTerminal(choice.dataset.newShell, pane);
   });
+  document.addEventListener("pointerdown", (e) => {
+    if (terms.shellMenuPane !== null && !e.target.closest(".dock-new-split")) setShellMenuOpen(null);
+    if (!e.target.closest(".dock-tab-menu")) closeTerminalTabMenu();
+  });
+  window.addEventListener("blur", closeTerminalTabMenu);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeTerminalTabMenu();
+  });
+  el.querySelector("[data-shell-error-close]").onclick = closeShellError;
+  el.querySelector(".term-shell-error").onclick = (e) => {
+    if (e.target.classList.contains("term-shell-error")) closeShellError();
+  };
 
   // Drag the top edge to resize.
   const grip = el.querySelector(".dock-grip");
@@ -258,10 +373,29 @@ function dockEl() {
       grip.removeEventListener("pointermove", move);
       grip.removeEventListener("pointerup", up);
       termsSavePrefs();
-      fitActive();
+      fitVisible();
     };
     grip.addEventListener("pointermove", move);
     grip.addEventListener("pointerup", up);
+  });
+
+  const divider = el.querySelector(".dock-divider");
+  divider.addEventListener("pointerdown", (down) => {
+    down.preventDefault();
+    divider.setPointerCapture(down.pointerId);
+    const move = (e) => {
+      const rect = views.getBoundingClientRect();
+      terms.splitRatio = Math.min(.75, Math.max(.25, (e.clientX - rect.left) / rect.width));
+      syncPaneLayout();
+    };
+    const up = () => {
+      divider.removeEventListener("pointermove", move);
+      divider.removeEventListener("pointerup", up);
+      termsSavePrefs();
+      fitVisible();
+    };
+    divider.addEventListener("pointermove", move);
+    divider.addEventListener("pointerup", up);
   });
 
   window.addEventListener("resize", () => {
@@ -269,7 +403,7 @@ function dockEl() {
     // the terminal is refitted to whatever is left.
     const before = terms.height;
     applyDockHeight();
-    fitActive();
+    fitVisible();
     if (terms.height !== before) termsSavePrefs();
   });
   return el;
@@ -321,15 +455,56 @@ function setDockOpen(open) {
   applyDockHeight();
   syncTerminalButton();
   if (open) {
-    fitActive();
+    fitVisible();
     terms.sessions.get(terms.active)?.view.focus();
   }
   termsSavePrefs();
 }
 
-function fitActive() {
-  const session = terms.sessions.get(terms.active);
-  if (session && terms.open) session.view.fit();
+function fitVisible() {
+  if (!terms.open) return;
+  for (const id of terms.paneActive) terms.sessions.get(id)?.view.fit();
+}
+
+function sessionPane(id) {
+  return terms.known.get(id)?.pane === 1 ? 1 : 0;
+}
+
+function syncPaneLayout() {
+  const views = dockEl().querySelector(".dock-views");
+  const bar = dockEl().querySelector(".dock-bar");
+  const split = [...terms.sessions.keys()].some((id) => sessionPane(id) === 1);
+  views.classList.toggle("split", split);
+  bar.classList.toggle("split", split);
+  views.style.setProperty("--term-split", `${terms.splitRatio * 100}%`);
+  bar.style.setProperty("--term-split", `${terms.splitRatio * 100}%`);
+  for (const [id, session] of terms.sessions) {
+    const pane = sessionPane(id);
+    session.host.dataset.pane = pane;
+    session.host.classList.toggle("on", terms.paneActive[pane] === id);
+  }
+  for (const empty of views.querySelectorAll("[data-empty-pane]")) {
+    const pane = Number(empty.dataset.emptyPane);
+    empty.hidden = !split || terms.paneActive[pane] !== null;
+  }
+}
+
+function moveToPane(id, pane) {
+  const session = terms.sessions.get(id);
+  const remembered = terms.known.get(id);
+  if (!session || !remembered) return;
+  const oldPane = sessionPane(id);
+  remembered.pane = pane;
+  terms.paneActive[pane] = id;
+  if (terms.paneActive[oldPane] === id) {
+    terms.paneActive[oldPane] = [...terms.sessions.keys()].find((sid) => sid !== id && sessionPane(sid) === oldPane) || null;
+  }
+  terms.active = id;
+  syncPaneLayout();
+  renderTabs();
+  fitVisible();
+  session.view.focus();
+  termsSavePrefs();
 }
 
 /** A short-lived line in the main window's activity strip. */
@@ -339,73 +514,193 @@ function termNote(key, label, ms = 2600) {
 }
 
 function renderTabs() {
-  const bar = dockEl().querySelector(".dock-tabs");
-  const starting = [...terms.pending.values()]
-    .map(
-      (name) =>
-        `<span class="dock-tab pending"><i class="dot"></i>${escAttr(name)}<em>starting...</em></span>`
-    )
-    .join("");
-  const tabs = [...terms.sessions.values()]
+  const bars = [...dockEl().querySelectorAll(".dock-tabs")];
+  for (let pane = 0; pane < 2; pane++) {
+    const starting = [...terms.pending.values()]
+      .filter((pending) => pending.pane === pane)
+      .map((pending) =>
+        `<span class="dock-tab pending"><i class="dot"></i>${escAttr(pending.label)}<em>starting...</em></span>`
+      )
+      .join("");
+    const tabs = [...terms.sessions.values()]
+    .filter((s) => sessionPane(s.info.id) === pane)
     .map((s) => {
       const label = s.info.projectName || "shell";
       const cls = ["dock-tab"];
       if (s.info.id === terms.active) cls.push("on");
+      if (terms.paneActive[sessionPane(s.info.id)] === s.info.id) cls.push("visible");
       if (s.view.exited) cls.push("dead");
-      return `<div class="${cls.join(" ")}" data-tab="${s.info.id}" title="Drag out to open in a window · ${escAttr(
+      return `<div class="${cls.join(" ")}" data-tab="${s.info.id}" title="Right-click to change shell · drag to dock or reorder · ${escAttr(
         s.info.projectPath
-      )}"><i class="dot"></i><span class="nm">${escAttr(label)}</span>
+      )}">${shellMarker(s.info.command)}<span class="nm">${escAttr(label)}</span>
         <span class="tab-x" data-close="${s.info.id}" title="Close this terminal">${termIcon(
           "close"
         )}</span></div>`;
     })
     .join("");
-  const open = tabs + starting;
-  bar.innerHTML =
-    (open || '<span class="dock-empty">No terminals open</span>');
-  const actions = dockEl().querySelector(".dock-actions");
-  for (const button of actions.querySelectorAll('[data-dock="popout"],[data-dock="close"]')) {
-    button.disabled = !terms.active;
+    const open = tabs + starting;
+    bars[pane].innerHTML = open || '<span class="dock-empty">No terminals</span>';
   }
-  for (const button of actions.querySelectorAll('[data-dock="new"],[data-dock="shell-menu"]')) {
-    button.disabled = !newTerminalTarget().path;
+  for (const actions of dockEl().querySelectorAll("[data-pane-actions]")) {
+    const pane = Number(actions.dataset.paneActions);
+    for (const button of actions.querySelectorAll('[data-dock="popout"],[data-dock="close"]')) {
+      button.disabled = !terms.paneActive[pane];
+    }
+    for (const button of actions.querySelectorAll('[data-dock="new"],[data-dock="shell-menu"]')) {
+      button.disabled = !newTerminalTarget(pane).path;
+    }
   }
   renderShellMenu();
   syncTerminalButton();
 }
 
 function renderShellMenu() {
-  const menu = dockEl().querySelector(".dock-shell-menu");
-  menu.innerHTML = `<div class="dock-menu-label">New terminal with</div>${TERM_SHELLS.map((profile) =>
-    `<button role="menuitem" data-new-shell="${profile.value}">${profile.label}${
-      profile.value === terms.defaultShell ? "<span>Default</span>" : ""
-    }</button>`
-  ).join("")}`;
-  menu.hidden = !terms.shellMenuOpen;
-  dockEl().querySelector('[data-dock="shell-menu"]').setAttribute("aria-expanded", String(terms.shellMenuOpen));
+  for (const paneEl of dockEl().querySelectorAll("[data-tab-pane]")) {
+    const pane = Number(paneEl.dataset.tabPane);
+    const menu = paneEl.querySelector(".dock-shell-menu");
+    menu.innerHTML = `<div class="dock-menu-label">New terminal with</div>${TERM_SHELLS.map((profile) => {
+      const status = terms.shellAvailability.get(profile.value);
+      return `<button role="menuitem" data-new-shell="${profile.value}"${status?.available === false ? " disabled" : ""}${status?.reason ? ` title="${escAttr(status.reason)}"` : ""}>${profile.label}${
+        status?.available === false ? "<span>Unavailable</span>" : profile.value === terms.defaultShell ? "<span>Default</span>" : ""
+      }</button>`;
+    }).join("")}`;
+    menu.hidden = terms.shellMenuPane !== pane;
+    paneEl.querySelector('[data-dock="shell-menu"]').setAttribute("aria-expanded", String(terms.shellMenuPane === pane));
+  }
 }
 
-function setShellMenuOpen(open) {
-  terms.shellMenuOpen = open;
+function setShellMenuOpen(pane) {
+  terms.shellMenuPane = pane;
   renderShellMenu();
+}
+
+async function loadShellAvailability() {
+  try {
+    const profiles = await term_dock_invoke("term_shell_availability");
+    terms.shellAvailability = new Map(profiles.map((profile) => [profile.profile, profile]));
+    for (const profile of TERM_SHELLS) Object.assign(profile, terms.shellAvailability.get(profile.value));
+    renderTabs();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function closeShellError() {
+  const dialog = terms.el?.querySelector(".term-shell-error");
+  if (dialog) dialog.hidden = true;
+}
+
+function showShellError(shell, detail = "") {
+  const profile = TERM_SHELLS.find((item) => item.value === shell);
+  const status = terms.shellAvailability.get(shell);
+  const label = profile?.label || "That shell";
+  const dialog = dockEl().querySelector(".term-shell-error");
+  dialog.querySelector("strong").textContent = `${label} couldn't start`;
+  dialog.querySelector("p").textContent = status?.reason || detail || `${label} is not available on this computer.`;
+  dialog.hidden = false;
+  dialog.querySelector("button").focus();
+}
+
+function closeTerminalTabMenu() {
+  const menu = terms.el?.querySelector(".dock-tab-menu");
+  if (menu) menu.hidden = true;
+}
+
+function openTerminalTabMenu(id, x, y) {
+  const session = terms.sessions.get(id);
+  if (!session) return;
+  const current = shellProfileFromCommand(session.info.command);
+  const menu = dockEl().querySelector(".dock-tab-menu");
+  menu.dataset.tab = id;
+  menu.innerHTML = `<div class="dock-menu-label">Restart terminal with</div>${TERM_SHELLS.map((profile) => {
+    const status = terms.shellAvailability.get(profile.value);
+    const disabled = profile.value === current || status?.available === false;
+    const stateClass = profile.value === current ? "current" : status?.available === false ? "unavailable" : "";
+    return `<button class="${stateClass}" role="menuitem" data-switch-shell="${profile.value}"${disabled ? " disabled" : ""}${status?.reason ? ` title="${escAttr(status.reason)}"` : ""}>
+      <span>${profile.label}</span>${profile.value === current ? `<span class="dock-menu-current">Current</span>` : status?.available === false ? `<span class="dock-menu-current">Unavailable</span>` : ""}
+    </button>`
+  }).join("")}`;
+  menu.hidden = false;
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(6, Math.min(x, window.innerWidth - rect.width - 6))}px`;
+  menu.style.top = `${Math.max(6, Math.min(y, window.innerHeight - rect.height - 6))}px`;
+}
+
+async function switchTerminalShell(id, shell) {
+  const old = terms.sessions.get(id);
+  const remembered = terms.known.get(id);
+  if (!old || !remembered || shellProfileFromCommand(old.info.command) === shell) return;
+  if (terms.shellAvailability.get(shell)?.available === false) {
+    showShellError(shell);
+    return;
+  }
+  const ordered = [...terms.sessions.keys()];
+  const index = ordered.indexOf(id);
+  const pane = sessionPane(id);
+  const label = old.info.projectName || "shell";
+  const key = `term:switch:${id}`;
+  window.devhqWork?.beginWork(key, `Restarting ${label} with ${TERM_SHELLS.find((profile) => profile.value === shell)?.label || shell}`);
+  let replacement = null;
+  try {
+    replacement = await term_dock_invoke("term_open", {
+      args: { projectPath: old.info.projectPath, projectName: label, shell },
+    });
+    await mountSession(replacement.id, "", pane);
+
+    old.view.dispose();
+    old.host.remove();
+    terms.sessions.delete(id);
+    terms.known.delete(id);
+    terms.dirtyHistory.delete(id);
+    terms.interacted.delete(id);
+    await term_dock_invoke("term_close", { id }).catch(() => {});
+
+    const replacementSession = terms.sessions.get(replacement.id);
+    const sessionEntries = [...terms.sessions.entries()].filter(([sid]) => sid !== replacement.id);
+    sessionEntries.splice(Math.min(index, sessionEntries.length), 0, [replacement.id, replacementSession]);
+    terms.sessions = new Map(sessionEntries);
+    const knownReplacement = terms.known.get(replacement.id);
+    const knownEntries = [...terms.known.entries()].filter(([sid]) => sid !== replacement.id);
+    knownEntries.splice(Math.min(index, knownEntries.length), 0, [replacement.id, knownReplacement]);
+    terms.known = new Map(knownEntries);
+    terms.paneActive[pane] = replacement.id;
+    terms.active = replacement.id;
+    syncPaneLayout();
+    renderTabs();
+    replacementSession.view.fit();
+    replacementSession.view.focus();
+    termsSavePrefs();
+  } catch (e) {
+    if (replacement?.id && !terms.sessions.has(replacement.id)) {
+      term_dock_invoke("term_close", { id: replacement.id }).catch(() => {});
+    }
+    showShellError(shell, String(e));
+  } finally {
+    window.devhqWork?.endWork(key);
+  }
 }
 
 /** Where a shell opened from + or the corner button lands: alongside whatever
  *  is on screen, or in the folder being scanned when nothing is. */
-function newTerminalTarget() {
-  const active = terms.sessions.get(terms.active)?.info;
+function newTerminalTarget(pane = terms.active ? sessionPane(terms.active) : 0) {
+  const active = terms.sessions.get(terms.paneActive[pane])?.info;
   if (active) return { path: active.projectPath, name: active.projectName || "this project" };
   const root = window.devhqPrimaryRoot?.() || "";
   return { path: root, name: root.split(/[\/]/).filter(Boolean).pop() || root || "no folder" };
 }
 
-function openNewTerminal(shell = terms.defaultShell) {
-  const target = newTerminalTarget();
+function openNewTerminal(shell = terms.defaultShell, pane = terms.active ? sessionPane(terms.active) : 0) {
+  const target = newTerminalTarget(pane);
   if (!target.path) {
     termNote("term:noroot", "Nowhere to open a shell - add a folder to scan first.", 4000);
     return;
   }
-  openTerminal(target, { shell });
+  if (terms.shellAvailability.get(shell)?.available === false) {
+    showShellError(shell);
+    return;
+  }
+  openTerminal(target, { shell, pane });
 }
 
 function escAttr(s) {
@@ -414,7 +709,8 @@ function escAttr(s) {
 
 function setActive(id) {
   terms.active = id;
-  for (const [sid, s] of terms.sessions) s.host.classList.toggle("on", sid === id);
+  terms.paneActive[sessionPane(id)] = id;
+  syncPaneLayout();
   renderTabs();
   if (terms.open) {
     const session = terms.sessions.get(id);
@@ -437,7 +733,8 @@ function setActive(id) {
 async function openTerminal(project, opts = {}) {
   const key = `term:${project.path}:${Date.now()}`;
   const label = opts.run ? `${project.name} · ${shortRun(opts.run)}` : project.name;
-  terms.pending.set(key, label);
+  const pane = opts.pane === 1 ? 1 : opts.pane === 0 ? 0 : terms.active ? sessionPane(terms.active) : 0;
+  terms.pending.set(key, { label, pane });
   renderTabs();
   setDockOpen(true);
   window.devhqWork?.beginWork(
@@ -449,12 +746,14 @@ async function openTerminal(project, opts = {}) {
       args: { projectPath: project.path, projectName: label, shell: opts.shell || terms.defaultShell },
     });
     terms.pending.delete(key);
-    await mountSession(info.id);
+    await mountSession(info.id, "", pane);
     if (opts.run) sendWhenReady(info.id, opts.run);
   } catch (e) {
     terms.pending.delete(key);
     renderTabs();
-    termNote(`${key}:err`, `Could not open a shell in ${project.name}: ${e}`, 5000);
+    const shell = opts.shell || terms.defaultShell;
+    if (shell !== "auto") showShellError(shell, String(e));
+    else termNote(`${key}:err`, `Could not open a shell in ${project.name}: ${e}`, 5000);
   } finally {
     terms.pending.delete(key);
     window.devhqWork?.endWork(key);
@@ -481,7 +780,7 @@ function sendWhenReady(id, command) {
 
 /** Attaches a view to a session that already exists — a new one, or one coming
  *  back from a popped-out window. */
-async function mountSession(id, restoredHistory = "") {
+async function mountSession(id, restoredHistory = "", restoredPane = 0) {
   if (terms.sessions.has(id)) {
     setActive(id);
     return;
@@ -495,12 +794,14 @@ async function mountSession(id, restoredHistory = "") {
   view.prependRestoredHistory(restoredHistory);
   const session = { info, view, host };
   terms.sessions.set(id, session);
+  const remembered = terms.known.get(id);
   terms.known.set(id, {
     projectPath: info.projectPath,
     projectName: info.projectName || "shell",
     popped: false,
     history: restoredHistory,
     shell: shellProfileFromCommand(info.command),
+    pane: remembered?.pane === 1 || restoredPane === 1 ? 1 : 0,
   });
 
   view.onTitle = (title) => {
@@ -520,13 +821,19 @@ async function mountSession(id, restoredHistory = "") {
  *  still starting counts as something to show, so the panel does not blink
  *  shut and straight back open underneath it. */
 function focusNext() {
-  const next = terms.sessions.keys().next();
-  terms.active = next.done ? null : next.value;
+  for (let pane = 0; pane < 2; pane++) {
+    if (!terms.sessions.has(terms.paneActive[pane])) {
+      terms.paneActive[pane] = [...terms.sessions.keys()].find((id) => sessionPane(id) === pane) || null;
+    }
+  }
+  const next = terms.paneActive.find((id) => terms.sessions.has(id));
+  terms.active = next || null;
   if (terms.active) {
     setActive(terms.active);
     return;
   }
   renderTabs();
+  syncPaneLayout();
   if (!terms.pending.size) setDockOpen(false);
 }
 
@@ -581,7 +888,9 @@ async function popOutTerminal(id, screenX, screenY) {
 }
 
 termsLoadPrefs();
+applyShellColors();
 dockEl();
+applyShellMarkerStyle();
 renderTabs();
 applyDockHeight();
 
@@ -621,7 +930,7 @@ async function restoreTerminals() {
   for (let i = 0; i < specs.length; i++) {
     const spec = specs[i];
     const key = `term:restore:${i}`;
-    terms.pending.set(key, spec.projectName || "shell");
+    terms.pending.set(key, { label: spec.projectName || "shell", pane: spec.pane === 1 ? 1 : 0 });
     renderTabs();
     window.devhqWork?.beginWork(key, `Restoring terminal in ${spec.projectName || spec.projectPath}`);
     try {
@@ -633,7 +942,7 @@ async function restoreTerminals() {
         },
       });
       terms.pending.delete(key);
-      await mountSession(info.id, spec.history || "");
+      await mountSession(info.id, spec.history || "", spec.pane);
       restored.push(info.id);
       if (spec.popped) await popOutTerminal(info.id);
     } catch {
@@ -732,18 +1041,47 @@ window.devhqTerminalChanged = markTerminalHistoryDirty;
 function shellProfileFromCommand(command) {
   const value = String(command || "").toLowerCase();
   if (value.includes("git\\bin\\bash.exe")) return "git-bash";
-  if (value.startsWith("wsl")) return "wsl";
-  if (value.startsWith("pwsh")) return "pwsh";
-  if (value.startsWith("powershell")) return "powershell";
-  if (value.startsWith("cmd")) return "cmd";
+  if (value.includes("7-preview\\pwsh.exe")) return "pwsh-preview";
+  if (value.includes("pwsh.exe")) return "pwsh";
+  if (value.includes("wsl.exe") || value.startsWith("wsl")) return "wsl";
+  if (value.includes("powershell.exe") || value.startsWith("powershell")) return "powershell";
+  if (value.includes("cmd.exe") || value.startsWith("cmd")) return "cmd";
+  if (value.includes("nu.exe") || value.startsWith("nu")) return "nu";
   return "auto";
 }
 
 window.devhqTerminalSettings = {
   profiles: TERM_SHELLS,
   getDefault: () => terms.defaultShell,
+  scan: loadShellAvailability,
+  shellColors: () => ({ ...terms.shellColors }),
+  getShellMarkerStyle: () => terms.shellMarkerStyle,
+  setShellMarkerStyle: (style) => {
+    if (!["none", "dot", "code"].includes(style)) return;
+    terms.shellMarkerStyle = style;
+    applyShellMarkerStyle();
+    termsSavePrefs();
+    broadcastShellMarkers();
+  },
+  setShellColor: (shell, color) => {
+    if (!(shell in DEFAULT_SHELL_COLORS) || !/^#[0-9a-f]{6}$/i.test(color)) return;
+    terms.shellColors[shell] = color;
+    applyShellColors();
+    termsSavePrefs();
+    broadcastShellMarkers();
+  },
+  resetShellColors: () => {
+    terms.shellColors = { ...DEFAULT_SHELL_COLORS };
+    applyShellColors();
+    termsSavePrefs();
+    broadcastShellMarkers();
+  },
   setDefault: (shell) => {
     if (!TERM_SHELLS.some((profile) => profile.value === shell)) return;
+    if (terms.shellAvailability.get(shell)?.available === false) {
+      showShellError(shell);
+      return;
+    }
     terms.defaultShell = shell;
     terms.nextShell = shell;
     termsSavePrefs();
@@ -752,6 +1090,7 @@ window.devhqTerminalSettings = {
 };
 
 restoreTerminals();
+loadShellAvailability();
 
 // Keep shutdown cheap: in normal use it only has to flush output from the last
 // few seconds, and often has nothing left to do at all.

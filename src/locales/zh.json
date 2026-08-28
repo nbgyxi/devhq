@@ -188,5 +188,15 @@
   "Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.": "忘记文件夹、语言、外观和终端设置，如同刚安装应用一样重新开始。",
   "Reset": "重置",
   "Click again to reset": "再次点击以重置",
-  "Resetting DevHQ": "正在重置 DevHQ"
+  "Resetting DevHQ": "正在重置 DevHQ",
+  "Send anonymous usage counts": "发送匿名使用统计",
+  "No thanks": "不用了",
+  "Send nothing at all": "什么都不发送",
+  "Send anonymous usage data": "发送匿名使用数据",
+  "We would love to know someone new is using DevHQ": "我们很想知道又有新的人在使用 DevHQ",
+  "May we send that to PageRain Analytics? It is completely anonymous - a random number and the name of the screen you opened, nothing else. Never a project, never a folder, never your code. The few lines that do it are open source, so you can read exactly what leaves your machine.": "可以把这件事发送给 PageRain Analytics 吗？它完全匿名——只有一个随机数字和你打开的界面名称，除此之外什么都没有。绝不包含项目、文件夹或你的代码。负责发送的那几行代码是开源的，你可以亲自看看究竟有什么离开了你的电脑。",
+  "Read the code that sends it": "查看发送它的代码",
+  "Yes, say hello": "可以，打个招呼",
+  "Lets PageRain Analytics know someone is using DevHQ - a random number and the screen you opened, never your projects.": "让 PageRain Analytics 知道有人在使用 DevHQ——只有一个随机数字和你打开的界面，绝不包含你的项目。",
+  "Opening your browser": "正在打开你的浏览器"
 }

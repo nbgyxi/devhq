@@ -28,33 +28,51 @@ const SHELLS: &[&str] = &["pwsh.exe -NoLogo", "powershell.exe -NoLogo"];
 
 fn shell_command(profile: &str) -> Result<String, String> {
     match profile {
-        "pwsh" => Ok("pwsh.exe -NoLogo".into()),
+        "pwsh" => pwsh_path(false).map(|path| format!(r#""{}" -NoLogo"#, path.display())).ok_or_else(|| "PowerShell 7 was not found.".into()),
+        "pwsh-preview" => pwsh_path(true).map(|path| format!(r#""{}" -NoLogo"#, path.display())).ok_or_else(|| "PowerShell Preview was not found.".into()),
         "powershell" => Ok("powershell.exe -NoLogo".into()),
         "cmd" => Ok("cmd.exe".into()),
+        "nu" => Ok("nu.exe".into()),
         "wsl" => Ok("wsl.exe --exec bash --login".into()),
         "git-bash" => {
-            let mut candidates = Vec::new();
-            for variable in ["ProgramFiles", "ProgramFiles(x86)"] {
-                if let Some(root) = std::env::var_os(variable) {
-                    candidates.push(PathBuf::from(root).join("Git").join("bin").join("bash.exe"));
-                }
-            }
-            if let Some(root) = std::env::var_os("LOCALAPPDATA") {
-                candidates.push(
-                    PathBuf::from(root)
-                        .join("Programs")
-                        .join("Git")
-                        .join("bin")
-                        .join("bash.exe"),
-                );
-            }
-            let Some(bash) = candidates.into_iter().find(|path| path.is_file()) else {
+            let Some(bash) = git_bash_path() else {
                 return Err("Git Bash was not found. Install Git for Windows or choose another shell.".into());
             };
             Ok(format!(r#""{}" --login -i"#, bash.display()))
         }
         _ => Err("Unknown terminal shell.".into()),
     }
+}
+
+fn find_command(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")
+        .and_then(|path| std::env::split_paths(&path).map(|dir| dir.join(name)).find(|path| path.is_file()))
+}
+
+fn pwsh_path(preview: bool) -> Option<PathBuf> {
+    if !preview {
+        if let Some(path) = find_command("pwsh.exe") {
+            return Some(path);
+        }
+    }
+    let folder = if preview { "7-preview" } else { "7" };
+    std::env::var_os("ProgramFiles")
+        .map(PathBuf::from)
+        .map(|root| root.join("PowerShell").join(folder).join("pwsh.exe"))
+        .filter(|path| path.is_file())
+}
+
+fn git_bash_path() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    for variable in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(root) = std::env::var_os(variable) {
+            candidates.push(PathBuf::from(root).join("Git").join("bin").join("bash.exe"));
+        }
+    }
+    if let Some(root) = std::env::var_os("LOCALAPPDATA") {
+        candidates.push(PathBuf::from(root).join("Programs").join("Git").join("bin").join("bash.exe"));
+    }
+    candidates.into_iter().find(|path| path.is_file())
 }
 
 struct Session {
@@ -165,6 +183,14 @@ pub struct OpenArgs {
     pub rows: Option<usize>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellAvailability {
+    profile: &'static str,
+    available: bool,
+    reason: Option<&'static str>,
+}
+
 /// Packs a row into runs, dropping the trailing default-background blanks that
 /// make up most of a typical line.
 fn pack(cells: &[Cell]) -> Vec<Run> {
@@ -208,6 +234,29 @@ impl Session {
 }
 
 // ---- commands ----------------------------------------------------------
+
+#[tauri::command]
+pub async fn term_shell_availability() -> Vec<ShellAvailability> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let candidates = [
+            ("pwsh", pwsh_path(false), "PowerShell 7 is not installed or is not on PATH."),
+            ("pwsh-preview", pwsh_path(true), "PowerShell Preview is not installed."),
+            ("powershell", find_command("powershell.exe"), "Windows PowerShell is not available."),
+            ("cmd", find_command("cmd.exe"), "Command Prompt is not available."),
+            ("git-bash", git_bash_path(), "Git Bash is not installed."),
+            ("wsl", find_command("wsl.exe"), "Windows Subsystem for Linux is not installed."),
+            ("nu", find_command("nu.exe"), "NuShell is not installed or is not on PATH."),
+        ];
+        let mut found = vec![ShellAvailability { profile: "auto", available: true, reason: None }];
+        found.extend(candidates.into_iter().map(|(profile, path, reason)| {
+            let available = path.is_some();
+            ShellAvailability { profile, available, reason: if available { None } else { Some(reason) } }
+        }));
+        found
+    })
+    .await
+    .unwrap_or_default()
+}
 
 /// Starting a shell means `CreateProcess` plus a pseudoconsole handshake, which
 /// is far too slow to run on the thread that draws the window.
@@ -469,7 +518,11 @@ pub async fn term_popout(
         let _ = existing.set_focus();
         return Ok(());
     }
-    let title = format!("{} — {}", session.project_name, session.command);
+    let title = Path::new(session.project_path.trim_end_matches(['\\', '/']))
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| session.project_name.clone());
     off_thread(move || {
         let mut builder = WebviewWindowBuilder::new(
             &app,

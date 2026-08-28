@@ -188,5 +188,15 @@
   "Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.": "Lupakan folder, bahasa, tampilan, dan terminal, lalu mulai lagi seolah aplikasi baru saja dipasang.",
   "Reset": "Setel ulang",
   "Click again to reset": "Klik lagi untuk menyetel ulang",
-  "Resetting DevHQ": "Menyetel ulang DevHQ"
+  "Resetting DevHQ": "Menyetel ulang DevHQ",
+  "Send anonymous usage counts": "Kirim hitungan penggunaan anonim",
+  "No thanks": "Tidak, terima kasih",
+  "Send nothing at all": "Jangan kirim apa pun",
+  "Send anonymous usage data": "Kirim data penggunaan anonim",
+  "We would love to know someone new is using DevHQ": "Kami senang mengetahui ada orang baru yang memakai DevHQ",
+  "May we send that to PageRain Analytics? It is completely anonymous - a random number and the name of the screen you opened, nothing else. Never a project, never a folder, never your code. The few lines that do it are open source, so you can read exactly what leaves your machine.": "Boleh kami mengirimkannya ke PageRain Analytics? Sepenuhnya anonim — sebuah angka acak dan nama layar yang Anda buka, tidak lebih. Tidak pernah proyek, tidak pernah folder, tidak pernah kode Anda. Beberapa baris yang melakukannya bersifat open source, jadi Anda bisa membaca sendiri apa yang keluar dari komputer Anda.",
+  "Read the code that sends it": "Baca kode yang mengirimnya",
+  "Yes, say hello": "Ya, sapa mereka",
+  "Lets PageRain Analytics know someone is using DevHQ - a random number and the screen you opened, never your projects.": "Memberi tahu PageRain Analytics bahwa ada yang memakai DevHQ — sebuah angka acak dan layar yang Anda buka, tidak pernah proyek Anda.",
+  "Opening your browser": "Membuka peramban Anda"
 }

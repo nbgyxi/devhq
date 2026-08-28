@@ -71,6 +71,10 @@ code,.mono{font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,mon
 :root[data-theme="light"] ::-webkit-scrollbar-thumb{background:rgba(23,25,35,.24);background-clip:content-box}
 :root[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:rgba(23,25,35,.4);background-clip:content-box}
 
+/* A hand-drawn icon wears the same class as a font one, so every rule that
+   sizes .ms by font-size keeps working - the svg just reads it as its em. */
+svg.ms{width:1em;height:1em;flex:0 0 auto;vertical-align:-.14em}
+svg.ms,svg.ms rect,svg.ms path{fill:none;stroke:currentColor}
 .ms{
   font-family:'Material Symbols Rounded';font-weight:400;font-style:normal;line-height:1;
   letter-spacing:normal;text-transform:none;white-space:nowrap;direction:ltr;
@@ -126,16 +130,21 @@ code,.mono{font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,mon
   border:1px solid var(--line);border-radius:10px;box-shadow:0 18px 48px rgba(0,0,0,.55);
 }
 .search-command{
-  width:100%;height:36px;display:grid;grid-template-columns:46px minmax(130px,1fr) minmax(80px,1fr);
+  width:100%;height:36px;display:grid;grid-template-columns:24px minmax(130px,1fr) minmax(80px,1fr);
   align-items:center;gap:10px;padding:0 10px;border-radius:7px;text-align:left;color:var(--text);
 }
 .search-command:hover,.search-command.on{background:var(--bg3)}
-.command-kind{
-  color:var(--dim2);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;
-  font-size:9px;letter-spacing:.8px;
-}
+/* Every row is led by the icon for its kind, so the list can be read by shape
+   before it is read by word. The colour carries the kind, the icon the verb -
+   drawn straight on the row, with no plate behind it to fight the theme. */
+.command-kind{display:grid;place-items:center;width:24px;height:24px;background:none;
+  color:var(--dim2)}
+.command-kind .ms{font-size:18px}
 .command-kind.run{color:var(--green)}
 .command-kind.term{color:var(--accent)}
+.command-kind.repo{color:var(--purple)}
+.command-kind.view{color:var(--amber)}
+.command-kind.cmd{color:var(--teal)}
 .command-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
 .command-detail{
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;color:var(--dim2);
@@ -215,7 +224,59 @@ select.sort.on{
 :root[data-theme="light"] select.sort.on{
   color:#222733;background:#dfe2e8;box-shadow:inset 0 0 0 1px #c5cad3;
 }
-.tech-picker{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto}
+.tech-picker{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;position:relative}
+.tech-button{
+  height:34px;display:inline-flex;align-items:center;gap:6px;padding:0 8px;
+  border-radius:9px;background:var(--bg2);border:1px solid var(--line);
+  color:var(--dim);font-size:13px;max-width:200px;transition:background .12s,color .12s;
+}
+.tech-button .ms{font-size:16px;color:var(--dim2)}
+.tech-button:hover{color:var(--text);background:var(--bg3)}
+.tech-button-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tech-button.on{
+  color:var(--text);border-color:var(--accent);background:rgba(109,139,255,.18);font-weight:600;
+}
+.tech-button.on .ms{color:var(--accent)}
+:root[data-theme="light"] .tech-button.on{
+  color:#222733;background:#dfe2e8;box-shadow:inset 0 0 0 1px #c5cad3;
+}
+.tech-menu{
+  position:absolute;z-index:60;top:calc(100% + 7px);left:0;width:min(340px,calc(100vw - 32px));
+  padding:6px;background:var(--bg1);border:1px solid var(--line);border-radius:10px;
+  box-shadow:0 18px 48px rgba(0,0,0,.55);
+}
+:root[data-theme="light"] .tech-menu{box-shadow:0 18px 48px rgba(15,20,40,.18)}
+.tech-menu[hidden]{display:none}
+.tech-menu-search{
+  display:flex;align-items:center;gap:7px;height:32px;padding:0 8px;margin-bottom:5px;
+  border:1px solid var(--line);border-radius:8px;background:var(--bg2);
+}
+.tech-menu-search:focus-within{border-color:var(--accent)}
+.tech-menu-search .ms{font-size:16px;color:var(--dim2)}
+.tech-menu-search input{width:100%;background:none;color:var(--text);font-size:12.5px}
+.tech-menu-search input::placeholder{color:var(--dim2)}
+.tech-menu-list{max-height:min(420px,60vh);overflow:auto}
+.tech-option{
+  width:100%;height:34px;display:grid;grid-template-columns:74px minmax(60px,1fr) auto 18px;
+  align-items:center;gap:9px;padding:0 8px;border-radius:7px;text-align:left;color:var(--text);
+}
+.tech-option:hover,.tech-option.active{background:var(--bg3)}
+/* One fixed column for the kind badge, so a list of Language / Framework / UI
+   rows lines its names up instead of stepping in and out. */
+.tech-option-kind{
+  width:100%;justify-content:center;overflow:hidden;text-overflow:ellipsis;display:block;
+  text-align:center;line-height:17px;
+}
+.tech-option-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
+.tech-option-count{
+  color:var(--dim2);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;
+  font-size:10.5px;font-variant-numeric:tabular-nums;
+}
+.tech-option-check{display:grid;place-items:center;color:var(--accent)}
+.tech-option-check .ms{font-size:16px}
+.tech-option.on .tech-option-name{font-weight:600}
+html[dir="rtl"] .tech-option{text-align:right}
+html[dir="rtl"] .tech-menu{left:auto;right:0}
 .tech-clear{
   display:grid;place-items:center;width:22px;height:22px;border-radius:6px;
   color:var(--dim2);transition:background .12s,color .12s;
@@ -315,16 +376,24 @@ select.sort.on{
 .project-row small{display:block;max-width:280px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;color:var(--dim2);white-space:nowrap}
 .project-version{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .project-version{color:var(--dim);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-variant-numeric:tabular-nums}
-.table-tech-list{display:flex;align-items:stretch;flex-direction:column;gap:5px;min-width:0}
-/* One technology, one line. The name gives way first and the version stays
-   whole, because a truncated version number reads as a different version. */
+.table-tech-list{display:flex;align-items:stretch;flex-direction:column;gap:5px;min-width:0;width:100%;overflow:hidden}
+/* One technology, one line, read from its start. The name comes first and the
+   version after it, and the line runs out of room at the right - a version can
+   be a whole npm alias (npm:react-native-tvos@^0.76.9-0), so nothing in the
+   line is allowed to hold its width and push the name out of sight. The button
+   is only the box: a <button> centres content that does not fit, which would
+   leave the middle of the line showing, so the row inside does the laying out
+   and carries the single ellipsis. The title has the whole of it. */
 .table-tech{
-  display:flex;align-items:baseline;gap:5px;color:var(--text);font-size:12px;
-  min-width:0;max-width:100%;text-align:left;
+  display:block;width:100%;min-width:0;max-width:100%;overflow:hidden;
+  color:var(--text);font-size:12px;text-align:left;
 }
-.table-tech > span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.table-tech:hover span{text-decoration:underline}
-.table-tech code{flex:0 0 auto;white-space:nowrap;color:var(--dim2);font-size:10.5px}
+.table-tech-row{
+  display:block;width:100%;min-width:0;max-width:100%;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.table-tech:hover .table-tech-name{text-decoration:underline}
+.table-tech code{margin-inline-start:5px;white-space:nowrap;color:var(--dim2);font-size:10.5px}
 .table-muted{color:var(--dim2)}
 .table-status-list{display:flex;flex-wrap:nowrap;gap:5px;min-width:0;overflow:hidden}
 .table-status{flex:0 0 auto;padding:2px 6px;border-radius:5px;font-size:10.5px;font-weight:600;white-space:nowrap}
@@ -473,6 +542,15 @@ select.sort.on{
 .settings-row strong{font-size:13.5px;font-weight:600}
 .settings-row small{color:var(--dim);font-size:12px}
 .setting-control{min-width:180px}
+.setting-theme-buttons button{min-width:78px}
+.setting-terminal-marker button{min-width:64px}
+.setting-shell-control{display:flex;align-items:center;gap:8px}
+.setting-shell-control .btn{height:34px;padding:0 11px}
+.terminal-type-colors-row{align-items:flex-start}
+.terminal-type-colors{width:360px;display:grid;grid-template-columns:1fr 1fr;gap:6px 14px}
+.terminal-type-color{height:30px;display:flex;align-items:center;gap:8px;color:var(--dim);font-size:12px}
+.terminal-type-color input{width:26px;height:22px;padding:0;border:0;background:transparent;cursor:pointer}
+.terminal-type-colors-reset{grid-column:1/-1;justify-self:end;height:30px;margin-top:4px;font-size:11.5px}
 .setting-check{width:18px;height:18px;accent-color:var(--accent);flex:0 0 auto}
 .settings-heading-icon{width:21px;height:21px;fill:currentColor;flex:0 0 auto}
 
@@ -506,6 +584,14 @@ select.sort.on{
 .language-choice > span{display:flex;flex-direction:column;gap:3px}
 .language-choice strong{font-size:13px}
 .language-choice small{color:var(--dim);font-size:11.5px}
+/* A button that reads as a link: it leaves for the browser rather than moving
+   anything in the window, and must not look like the choices under it. */
+.linklike{
+  align-self:flex-start;color:var(--accent);font-size:12px;text-align:left;
+  text-decoration:underline;text-underline-offset:2px;
+}
+.linklike:hover{color:var(--text)}
+.usage-source{margin-top:10px}
 .language-other{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
 .language-other[hidden]{display:none}
 .language-other select{min-width:220px}
@@ -803,10 +889,16 @@ html[dir="rtl"] .srclines{direction:ltr;text-align:left}
 .dock-grip{height:5px;flex:0 0 auto;cursor:ns-resize;background:transparent}
 .dock-grip:hover{background:var(--accent)}
 .dock-bar{
-  height:34px;flex:0 0 auto;display:flex;align-items:stretch;gap:6px;
-  padding-left:8px;background:var(--bg1);border-bottom:1px solid var(--line);
+  --term-split:50%;height:34px;flex:0 0 auto;display:flex;align-items:stretch;
+  position:relative;background:var(--bg1);border-bottom:1px solid var(--line);
 }
-.dock-tabs{flex:1;display:flex;align-items:stretch;gap:4px;overflow-x:auto;overflow-y:hidden}
+.dock-tab-pane{display:none;position:relative;min-width:0;padding-left:8px}
+.dock-tab-pane[data-tab-pane="0"]{display:block;flex:1}
+.dock-bar.split .dock-tab-pane{display:block;position:absolute;top:0;bottom:0}
+.dock-bar.split .dock-tab-pane[data-tab-pane="0"]{left:0;width:var(--term-split);border-right:3px solid var(--line)}
+.dock-bar.split .dock-tab-pane[data-tab-pane="1"]{left:var(--term-split);right:0;border-left:3px solid var(--line)}
+.dock-tabs{height:100%;margin-right:134px;display:flex;align-items:stretch;gap:4px;overflow-x:auto;overflow-y:hidden}
+.dock-bar:not(.split) [data-tab-pane="0"] .dock-tabs,.dock-bar.split [data-tab-pane="1"] .dock-tabs{margin-right:170px}
 .dock-tabs::-webkit-scrollbar{height:0}
 .dock-tab{
   display:flex;align-items:center;gap:7px;padding:0 6px 0 12px;font-size:12.5px;font-weight:500;
@@ -830,9 +922,24 @@ body.term-drag-preview{
 body.term-drag-preview img{width:17px;height:17px;border-radius:4px}
 body.term-drag-preview .ms{font-size:16px;color:var(--accent)}
 .dock-tab.on{color:var(--text);border-bottom-color:var(--accent);background:var(--term-bg)}
+.dock-tab.visible:not(.on){color:var(--text);background:color-mix(in srgb,var(--term-bg) 65%,transparent)}
 .dock-tab .dot{width:6px;height:6px;border-radius:50%;background:var(--green);flex:0 0 auto}
+.shell-mark{height:16px;min-width:22px;padding:0 4px;display:grid;place-items:center;flex:0 0 auto;border:1px solid currentColor;border-radius:4px;color:var(--shell-color-auto);font-style:normal;font-size:8px;font-weight:800;line-height:1;letter-spacing:.02em}
+.shell-mark.shell-pwsh{color:var(--shell-color-pwsh)}
+.shell-mark.shell-pwsh-preview{color:var(--shell-color-pwsh-preview)}
+.shell-mark.shell-powershell{color:var(--shell-color-powershell)}
+.shell-mark.shell-cmd{color:var(--shell-color-cmd)}
+.shell-mark.shell-git-bash{color:var(--shell-color-git-bash)}
+.shell-mark.shell-wsl{color:var(--shell-color-wsl)}
+.shell-mark.shell-nu{color:var(--shell-color-nu)}
+#term-dock.shell-markers-none .shell-mark{display:none}
+#term-dock.shell-markers-dot .shell-mark{width:7px;min-width:7px;height:7px;padding:0;border:0;border-radius:50%;background:currentColor;font-size:0}
+body.popout.shell-markers-none .shell-mark{display:none}
+body.popout.shell-markers-dot .shell-mark{width:7px;min-width:7px;height:7px;padding:0;border:0;border-radius:50%;background:currentColor;font-size:0}
+body.popout .brand .shell-mark{margin-left:2px}
 .dock-tab.dead{color:var(--dim2)}
 .dock-tab.dead .dot{background:var(--dim2)}
+.dock-tab.dead .shell-mark{color:var(--dim2)}
 /* The cross holds its space at all times - a tab that changes width when the
    pointer crosses it is a tab that moves out from under the click. */
 .tab-x{
@@ -843,14 +950,18 @@ body.term-drag-preview .ms{font-size:16px;color:var(--accent)}
 .dock-tab:hover .tab-x,.dock-tab.on .tab-x{opacity:1}
 .tab-x:hover{background:var(--bg3);color:var(--red)}
 .dock-empty{display:flex;align-items:center;color:var(--dim2);font-size:12.5px;padding:0 6px}
-.dock-actions{display:flex;align-items:stretch}
+.dock-actions{position:absolute;right:0;top:0;bottom:0;z-index:3;display:flex;align-items:stretch;background:var(--bg1)}
+.dock-bar:not(.split) [data-pane-actions="0"],.dock-bar.split [data-pane-actions="1"]{right:36px}
 .dock-actions button{width:36px;display:grid;place-items:center;color:var(--dim)}
 .dock-actions button:hover{background:var(--bg3);color:var(--text)}
 .dock-actions .ms{font-size:17px}
 .dock-actions button:disabled{opacity:.35;pointer-events:none}
+.dock-hide{position:absolute;right:0;top:0;bottom:0;z-index:4;width:36px;display:grid;place-items:center;color:var(--dim);background:var(--bg1);border-left:1px solid var(--line)}
+.dock-hide:hover{background:var(--bg3);color:var(--text)}
+.dock-hide .ms{font-size:17px}
 .dock-actions .dock-new-split{position:relative;display:flex;align-items:stretch;border-right:1px solid var(--line)}
-.dock-actions .dock-new-menu-button{width:22px}
-.dock-actions .dock-new-menu-button .ms{font-size:16px}
+.dock-actions .dock-new-menu-button{width:26px}
+.dock-actions .dock-new-menu-button .ms{font-size:15px}
 .dock-shell-menu{
   position:absolute;right:0;bottom:36px;z-index:5;width:205px;padding:6px;border:1px solid var(--line);
   border-radius:8px;background:var(--bg2);box-shadow:0 10px 30px rgba(0,0,0,.45);
@@ -862,6 +973,23 @@ body.term-drag-preview .ms{font-size:16px;color:var(--accent)}
 }
 .dock-shell-menu button span{color:var(--dim2);font-size:10px}
 .dock-menu-label{padding:4px 9px 6px;color:var(--dim2);font-size:10px;text-transform:uppercase;letter-spacing:.08em}
+.dock-tab-menu{
+  position:fixed;z-index:110;width:220px;padding:6px;border:1px solid var(--line);border-radius:8px;
+  background:var(--bg2);box-shadow:0 10px 30px rgba(0,0,0,.5);
+}
+.dock-tab-menu[hidden]{display:none}
+.dock-tab-menu button{width:100%;height:31px;padding:0 9px;display:flex;align-items:center;justify-content:space-between;border-radius:5px;color:var(--text);font-size:12px;text-align:left}
+.dock-tab-menu button:hover{background:var(--bg3)}
+.dock-tab-menu button:disabled{color:var(--dim2);pointer-events:none}
+.dock-tab-menu button.current:disabled{color:var(--text);opacity:1}
+.dock-tab-menu .dock-menu-current{color:var(--dim2);font-size:10px}
+.term-shell-error{position:fixed;inset:0;z-index:130;display:grid;place-items:center;padding:20px;background:rgba(0,0,0,.58)}
+.term-shell-error[hidden]{display:none}
+.term-shell-error-card{width:min(430px,100%);display:grid;grid-template-columns:38px 1fr;gap:12px 14px;padding:20px;border:1px solid var(--line);border-radius:12px;background:var(--bg2);box-shadow:0 20px 60px rgba(0,0,0,.6)}
+.term-shell-error-card>.ms{font-size:28px;color:var(--red)}
+.term-shell-error-card strong{display:block;color:var(--text);font-size:15px;margin:2px 0 6px}
+.term-shell-error-card p{margin:0;color:var(--dim);font-size:12.5px;line-height:1.5}
+.term-shell-error-card button{grid-column:2;justify-self:end;min-width:76px;height:32px;padding:0 16px;border-radius:7px;background:var(--accent);color:#fff;font-size:12px;font-weight:600}
 
 /* The status bar: always there, always saying what the app is doing, with the
    way into a terminal on the end of it. */
@@ -937,9 +1065,26 @@ html[dir="rtl"] .changelog-pop{right:auto;left:0;direction:rtl;text-align:right}
   font-size:11.5px;color:var(--text);background:var(--bg3);border-radius:4px;padding:1px 4px;
 }
 
-.dock-views{flex:1;position:relative;min-height:0}
-.dock-views .term-host{position:absolute;inset:0;display:none}
+.dock-views{--term-split:50%;flex:1;position:relative;min-height:0}
+.dock-views .term-host{position:absolute;inset:0;display:none;min-width:0}
 .dock-views .term-host.on{display:block}
+.dock-views.split .term-host[data-pane="0"]{right:calc(100% - var(--term-split) + 3px)}
+.dock-views.split .term-host[data-pane="1"]{left:calc(var(--term-split) + 3px)}
+.dock-divider{display:none;position:absolute;z-index:4;top:0;bottom:0;left:calc(var(--term-split) - 3px);width:6px;cursor:ew-resize;background:var(--line)}
+.dock-divider:hover{background:var(--accent)}
+.dock-views.split .dock-divider{display:block}
+.dock-pane-empty{position:absolute;top:0;bottom:0;display:grid;place-items:center;color:var(--dim2);font-size:12px}
+.dock-pane-empty[data-empty-pane="0"]{left:0;right:calc(100% - var(--term-split) + 3px)}
+.dock-pane-empty[data-empty-pane="1"]{left:calc(var(--term-split) + 3px);right:0}
+.dock-pane-empty[hidden]{display:none}
+.dock-drop-zones{display:none;position:absolute;inset:0;z-index:8;pointer-events:none;background:color-mix(in srgb,var(--term-bg) 45%,transparent)}
+.dock-views.choosing-pane .dock-drop-zones{display:block}
+.dock-drop-zones>div{position:absolute;top:8px;bottom:8px;display:grid;place-items:center;border:2px dashed var(--dim2);border-radius:8px;color:var(--dim);background:color-mix(in srgb,var(--term-bg) 82%,transparent);pointer-events:auto}
+.dock-drop-zones>[data-drop-pane="0"]{left:8px;right:calc(100% - var(--term-split) + 4px)}
+.dock-drop-zones>[data-drop-pane="1"]{left:calc(var(--term-split) + 4px);right:8px}
+.dock-drop-zones>div.hover{border-color:var(--accent);color:var(--text);background:color-mix(in srgb,var(--accent) 16%,var(--term-bg))}
+.dock-drop-zones span{display:flex;align-items:center;gap:7px;padding:8px 12px;border-radius:7px;background:var(--bg2);font-size:12px;font-weight:600}
+.dock-drop-zones .ms{font-size:18px;color:var(--accent)}
 
 /* ---------- the terminal itself ---------- */
 .term{
@@ -968,6 +1113,20 @@ html[dir="rtl"] .changelog-pop{right:auto;left:0;direction:rtl;text-align:right}
   pointer-events:none;border-radius:1px;
 }
 .term:not(:focus-within) .term-cursor{opacity:.3}
+
+/* Working, rather than waiting. While output is streaming the cursor stops
+   chasing every frame across the line and spins in place instead; the ordinary
+   cursor coming back is what says the shell is waiting for you again. It stays
+   at full strength unfocused - it is the process that is busy, not the pane. */
+.term-cursor.busy{background:none;color:transparent;overflow:visible}
+.term-cursor.busy::after{
+  content:"";position:absolute;left:50%;top:50%;
+  width:11px;height:11px;margin:-6px 0 0 -6px;box-sizing:border-box;
+  border:2px solid color-mix(in srgb,var(--term-fg) 25%,transparent);
+  border-top-color:var(--term-fg);border-radius:50%;
+  animation:actspin .6s linear infinite;
+}
+.term:not(:focus-within) .term-cursor.busy{opacity:1}
 .term.exited{opacity:.72}
 
 /* ---------- popped-out terminal window ---------- */

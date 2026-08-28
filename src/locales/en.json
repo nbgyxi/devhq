@@ -29,6 +29,11 @@
   "Tech": "Tech",
   "Terminal": "Terminal",
   "All tech": "All tech",
+  "Pull": "Pull",
+  "Run git pull here": "Run git pull here",
+  "Filter technologies...": "Filter technologies...",
+  "No technology matches": "No technology matches",
+  "Choose a technology to filter by": "Choose a technology to filter by",
   "Search projects and commands...": "Search projects and commands...",
   "Open a terminal": "Open a terminal",
   "Sort projects": "Sort projects",
@@ -190,5 +195,15 @@
   "Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.": "Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.",
   "Reset": "Reset",
   "Click again to reset": "Click again to reset",
-  "Resetting DevHQ": "Resetting DevHQ"
+  "Resetting DevHQ": "Resetting DevHQ",
+  "Send anonymous usage counts": "Send anonymous usage counts",
+  "No thanks": "No thanks",
+  "Send nothing at all": "Send nothing at all",
+  "Send anonymous usage data": "Send anonymous usage data",
+  "We would love to know someone new is using DevHQ": "We would love to know someone new is using DevHQ",
+  "May we send that to PageRain Analytics? It is completely anonymous - a random number and the name of the screen you opened, nothing else. Never a project, never a folder, never your code. The few lines that do it are open source, so you can read exactly what leaves your machine.": "May we send that to PageRain Analytics? It is completely anonymous - a random number and the name of the screen you opened, nothing else. Never a project, never a folder, never your code. The few lines that do it are open source, so you can read exactly what leaves your machine.",
+  "Read the code that sends it": "Read the code that sends it",
+  "Yes, say hello": "Yes, say hello",
+  "Lets PageRain Analytics know someone is using DevHQ - a random number and the screen you opened, never your projects.": "Lets PageRain Analytics know someone is using DevHQ - a random number and the screen you opened, never your projects.",
+  "Opening your browser": "Opening your browser"
 }

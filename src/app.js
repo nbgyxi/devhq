@@ -42,6 +42,10 @@ const state = {
   techFilter: "",
   language: "system",
   languageChosen: false,
+  /** Whether anonymous usage counts may be sent, and whether the question has
+   *  been put yet. Nothing is sent until it has been answered yes. */
+  analytics: false,
+  analyticsChosen: false,
   theme: "dark",
   compactTechOverview: true,
   viewMode: "cards",
@@ -80,6 +84,8 @@ const state = {
 const work = new Map();
 let searchCommands = [];
 let searchCommandIndex = 0;
+let techMenuRows = [];
+let techMenuIndex = 0;
 
 function beginWork(key, label, detail = "") {
   work.set(key, { label, detail });
@@ -131,6 +137,11 @@ function loadPrefs() {
       // new compact presentation, so it is visible without adding card height.
       state.compactTechOverview = true;
     }
+    if (typeof p.analytics === "boolean") {
+      state.analytics = p.analytics;
+      state.analyticsChosen = true;
+    }
+    applyAnalytics();
     if (["dark", "light"].includes(p.theme)) state.theme = p.theme;
     if (["cards", "table"].includes(p.viewMode)) state.viewMode = p.viewMode;
     if (typeof p.tableSortKey === "string") state.tableSortKey = p.tableSortKey;
@@ -158,6 +169,7 @@ function savePrefs() {
         filters: [...state.filters],
         techFilter: state.techFilter,
         ...(state.languageChosen ? { language: state.language } : {}),
+        ...(state.analyticsChosen ? { analytics: state.analytics } : {}),
         theme: state.theme,
         compactTechOverview: state.compactTechOverview,
         viewMode: state.viewMode,
@@ -172,6 +184,11 @@ function savePrefs() {
   }
 }
 
+/** Hands the answer to the tracker, which sends nothing until it has one. */
+function applyAnalytics() {
+  window.devhqAnalyticsConsent?.(state.analyticsChosen && state.analytics);
+}
+
 function applyLanguage() {
   document.documentElement.lang = state.language === "system"
     ? (navigator.language || "en")
@@ -181,10 +198,13 @@ function applyLanguage() {
 
 function applyTheme() {
   document.documentElement.dataset.theme = state.theme;
-  // The title bar toggle and the Appearance row are two ways to the same
+  // The title bar toggle and the General row are two ways to the same
   // setting, so whichever was used, the other has to show the result.
-  const themeSelect = el["settings-host"]?.querySelector("#setting-theme");
-  if (themeSelect) themeSelect.value = state.theme;
+  for (const choice of el["settings-host"]?.querySelectorAll("[data-setting-theme]") || []) {
+    const active = choice.dataset.settingTheme === state.theme;
+    choice.classList.toggle("on", active);
+    choice.setAttribute("aria-pressed", String(active));
+  }
   const button = document.getElementById("toggle-theme");
   if (!button) return;
   const light = state.theme === "light";
@@ -366,6 +386,61 @@ function firstRunFolders() {
   });
 }
 
+/** The file that builds the request and puts it on the wire - the one that
+ *  answers "what leaves my machine". Offered in the question itself, because
+ *  "anonymous" is worth more when it can be read. Its own comment points at
+ *  `src/analytics.js`, which is the half that decides when to send at all. */
+const ANALYTICS_SOURCE_URL = "https://github.com/nbgyxi/devhq/blob/main/src-tauri/src/analytics.rs";
+
+/** The last thing a new install asks: whether it may say hello. Asked once, in
+ *  the same dialog shape as the questions before it, and answerable either way
+ *  without explaining yourself. The answer is remembered and can be changed in
+ *  Settings afterwards. */
+function firstRunUsageData() {
+  if (state.analyticsChosen) return Promise.resolve();
+  const overlay = document.createElement("div");
+  overlay.className = "language-first-run";
+  overlay.innerHTML = `<section class="language-dialog" role="dialog" aria-modal="true"
+      aria-labelledby="usage-title">
+    <img src="devhq-icon.png" alt="" />
+    <h1 id="usage-title">We would love to know someone new is using DevHQ</h1>
+    <p>May we send that to PageRain Analytics? It is completely anonymous - a random number and the name of the screen you opened, nothing else. Never a project, never a folder, never your code. The few lines that do it are open source, so you can read exactly what leaves your machine.</p>
+    <p class="usage-source"><button class="linklike" type="button" data-usage="source">Read the code that sends it</button></p>
+    <div class="language-choices">
+      <button class="language-choice primary" data-usage="yes">${icon("waving_hand")}
+        <span><strong>Yes, say hello</strong><small>Send anonymous usage counts</small></span></button>
+      <button class="language-choice" data-usage="no">${icon("close")}
+        <span><strong>No thanks</strong><small>Send nothing at all</small></span></button>
+    </div>
+  </section>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('[data-usage="yes"]').focus();
+  return new Promise((resolve) => {
+    overlay.onclick = (e) => {
+      const button = e.target.closest("[data-usage]");
+      if (!button) return;
+      // Reading the code is not an answer: the question stays up behind it.
+      if (button.dataset.usage === "source") return openUrl(ANALYTICS_SOURCE_URL);
+      state.analytics = button.dataset.usage === "yes";
+      state.analyticsChosen = true;
+      savePrefs();
+      applyAnalytics();
+      // Counted from here rather than at startup: the screen behind the
+      // question is the first one this install has actually shown.
+      window.devhqTrackPageView?.(currentPath());
+      overlay.remove();
+      resolve();
+    };
+  });
+}
+
+/** Opens a link in the user's browser. A plain anchor would navigate the app's
+ *  own window away from itself, so it goes out through the opener plugin. */
+function openUrl(url) {
+  trackWork("open:url", "Opening your browser", invoke("plugin:opener|open_url", { url }))
+    .catch(() => {});
+}
+
 /* ------------------------------------------------------------- formatting */
 
 function ago(seconds) {
@@ -394,12 +469,33 @@ function esc(s) {
 /** The settings page's left-hand menu. One entry per group, in this order. */
 const SETTINGS_SECTIONS = [
   { id: "general", label: "General", icon: "tune" },
-  { id: "appearance", label: "Appearance", icon: "palette" },
   { id: "terminal", label: "Terminal", icon: "terminal" },
 ];
 
+/* The icon font has no glyph for `terminal`: it comes out as the browser's
+ * missing-character box, which is invisible on the dark theme and a black
+ * square on the light one. That one icon is therefore drawn by hand, in
+ * currentColor, so it sizes and colours exactly like the font ones. */
+const INLINE_ICONS = {
+  terminal: `<svg class="ms ms-svg" viewBox="0 0 24 24" aria-hidden="true"
+    style="width:1em;height:1em;fill:none;stroke:currentColor;vertical-align:-.14em"
+    stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2.6" y="4.4" width="18.8" height="15.2" rx="2.6" style="fill:none;stroke:currentColor" />
+    <path d="m6.9 9.4 2.9 2.6-2.9 2.6" style="fill:none;stroke:currentColor" />
+    <path d="M12.9 15h4.2" style="fill:none;stroke:currentColor" />
+  </svg>`,
+  // Drawn by hand for the same reason, rather than trusting a second ligature.
+  download: `<svg class="ms ms-svg" viewBox="0 0 24 24" aria-hidden="true"
+    style="width:1em;height:1em;fill:none;stroke:currentColor;vertical-align:-.14em"
+    stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3.6v10.2" style="fill:none;stroke:currentColor" />
+    <path d="m7.6 9.6 4.4 4.4 4.4-4.4" style="fill:none;stroke:currentColor" />
+    <path d="M4.4 17.2v1.4a1.8 1.8 0 0 0 1.8 1.8h11.6a1.8 1.8 0 0 0 1.8-1.8v-1.4" style="fill:none;stroke:currentColor" />
+  </svg>`,
+};
+
 function icon(name) {
-  return `<span class="ms" aria-hidden="true">${name}</span>`;
+  return INLINE_ICONS[name] || `<span class="ms" aria-hidden="true">${name}</span>`;
 }
 
 function settingsIcon(className = "") {
@@ -426,7 +522,7 @@ function shortRemote(url) {
  * Only what is drawn changes. The real `path` is still what every action,
  * terminal and git read uses, and the folder editor still holds the real
  * roots, so the app works the same with the switch either way. */
-const DEMO_MODE = true;
+const DEMO_MODE = false;
 
 const DEMO_ROOT = "C:\\Projects";
 const DEMO_NAMES = [
@@ -825,6 +921,48 @@ function replaceProject(project, previous) {
 
 /* --------------------------------------------------------------- actions */
 
+/** `git pull` in a project's folder.
+ *
+ *  The work is named in the status bar while it runs and git's own answer is
+ *  left there when it lands, because a pull that says nothing is a pull the
+ *  user has to go and check by hand. The backend re-reads the project in the
+ *  same call, so the card stops claiming it is behind without a whole rescan. */
+function pullProject(project) {
+  const key = `pull:${project.path}`;
+  // Two pulls of one folder at once would race each other's index lock.
+  if (work.has(key)) return;
+  trackWork(key, `Pulling ${project.name}`, invoke("git_pull", { path: project.path, group: project.group }))
+    .then((result) => {
+      if (result.project) {
+        const previous = state.byPath.get(result.project.path);
+        // Running processes are the process sweep's business, not a pull's.
+        result.project.running = previous ? previous.running : [];
+        result.project.ports = previous ? previous.ports : [];
+        replaceProject(result.project, previous);
+        markDirty("summary", "filters", "grid");
+        // The patch on screen is about the tree as it was before the pull.
+        if (state.selectedPath === result.project.path) {
+          state.diff = null;
+          state.diffError = "";
+          state.diffFiles = new Map();
+          state.diffFile = null;
+          loadDiff(result.project);
+        }
+      }
+      if (!result.ok) {
+        state.error = `${project.name}: ${result.summary}`;
+        markDirty("banner");
+      }
+      // Whatever git said stays on the bar long enough to be read.
+      beginWork(`${key}:said`, `${project.name}: ${result.summary}`);
+      setTimeout(() => endWork(`${key}:said`), 3500);
+    })
+    .catch((err) => {
+      state.error = `${project.name}: ${String(err)}`;
+      markDirty("banner");
+    });
+}
+
 function openIn(path, target) {
   const labels = { explorer: "Opening Explorer", vscode: "Opening VS Code", terminal: "Opening a shell" };
   trackWork(`open:${target}`, labels[target] || "Opening", invoke("open_in", { path, target })).catch(
@@ -1055,6 +1193,16 @@ function changelogOpen() {
   return !el["changelog-pop"].hidden;
 }
 
+/** The screen the window is showing, named for analytics. Worked out from the
+ *  state rather than remembered, so closing something always reports whatever
+ *  it uncovers - the changelog over a project goes back to the project. */
+function currentPath() {
+  if (changelogOpen()) return "/changelog";
+  if (state.settingsOpen) return "/settings";
+  if (state.selectedPath) return "/project";
+  return "/overview";
+}
+
 function openChangelog() {
   buildChangelog();
   el["changelog-pop"].hidden = false;
@@ -1064,12 +1212,12 @@ function openChangelog() {
   window.devhqTrackPageView?.("/changelog");
 }
 
-function closeChangelog(nextPath = "/overview") {
+function closeChangelog() {
   if (!changelogOpen()) return;
   el["changelog-pop"].hidden = true;
   el["status-version"].classList.remove("on");
   el["status-version"].setAttribute("aria-expanded", "false");
-  window.devhqTrackPageView?.(nextPath);
+  window.devhqTrackPageView?.(currentPath());
 }
 
 function syncSettingsButton() {
@@ -1110,6 +1258,9 @@ function projectAction(action, p) {
     case "terminal":
       openTerminal(p);
       break;
+    case "pull":
+      if (p.git) pullProject(p);
+      break;
     case "external":
       openIn(p.path, "terminal");
       break;
@@ -1134,7 +1285,102 @@ function setTechFilter(name) {
   markDirty("filters", "toolbar", "grid");
 }
 
+/* ------------------------------------------------------- tech dropdown */
+
+/** What each tech kind is called in the picker. Short, because it sits in a
+ *  fixed column in front of every name. */
+const TECH_KIND_LABELS = {
+  all: "All", lang: "Lang", runtime: "Runtime", framework: "Framework", ui: "UI",
+  build: "Build", data: "Data", test: "Test", infra: "Infra", tool: "Tool",
+};
+
+/** Every technology the scan has seen, with how many projects carry it and
+ *  which kind it is, so the list is coloured the way the cards' tags are. */
+function techEntries() {
+  const seen = new Map();
+  for (const project of state.projects) {
+    for (const tech of project.tech) {
+      const entry = seen.get(tech.name) || { name: tech.name, kind: tech.kind, count: 0 };
+      entry.count += 1;
+      seen.set(tech.name, entry);
+    }
+  }
+  return [...seen.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+
+function techMenuOpen() {
+  return Boolean(el["tech-menu"]) && !el["tech-menu"].hidden;
+}
+
+function openTechMenu() {
+  el["tech-menu-input"].value = "";
+  techMenuIndex = 0;
+  el["tech-menu"].hidden = false;
+  el["tech-filter"].setAttribute("aria-expanded", "true");
+  renderTechMenu();
+  el["tech-menu-input"].focus();
+}
+
+function closeTechMenu() {
+  if (!el["tech-menu"]) return;
+  el["tech-menu"].hidden = true;
+  el["tech-filter"].setAttribute("aria-expanded", "false");
+}
+
+function chooseTech(name) {
+  closeTechMenu();
+  el["tech-filter"].focus();
+  // "All tech" clears the filter; so does picking the one already on.
+  if (!name) {
+    if (!state.techFilter) return;
+    state.techFilter = "";
+    savePrefs();
+    return markDirty("filters", "toolbar", "grid");
+  }
+  setTechFilter(name);
+}
+
+function renderTechMenu() {
+  const terms = el["tech-menu-input"].value.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  const matches = techEntries().filter((entry) => {
+    const hay = `${entry.name} ${entry.kind}`.toLowerCase();
+    return terms.every((term) => hay.includes(term));
+  });
+  // "All tech" is the way back out, so it leads the list - but only when the
+  // list is the whole list; while typing, every row should be a match.
+  techMenuRows = terms.length
+    ? matches
+    : [{ name: "", kind: "all", count: state.projects.length, label: "All tech" }, ...matches];
+  techMenuIndex = Math.min(techMenuIndex, Math.max(0, techMenuRows.length - 1));
+  el["tech-menu-list"].innerHTML = techMenuRows.length
+    ? techMenuRows.map((entry, index) => {
+        const on = entry.name ? entry.name === state.techFilter : !state.techFilter;
+        return `<button class="tech-option${index === techMenuIndex ? " active" : ""}${
+          on ? " on" : ""
+        }" role="option" aria-selected="${on}" data-tech-option="${esc(entry.name)}"><span
+          class="tech-option-kind tag ${esc(entry.kind)}">${esc(
+          TECH_KIND_LABELS[entry.kind] || entry.kind
+        )}</span><span
+          class="tech-option-name">${esc(entry.label || entry.name)}</span><span
+          class="tech-option-count">${entry.count}</span><span
+          class="tech-option-check">${on ? icon("check") : ""}</span></button>`;
+      }).join("")
+    : '<div class="search-command-empty">No technology matches</div>';
+  el["tech-menu-list"].querySelector(".tech-option.active")?.scrollIntoView({ block: "nearest" });
+}
+
 /* ------------------------------------------------------ search commands */
+
+/** The icon that stands for each kind of palette row. Every row carries one -
+ *  a row without one reads as a hole in the list. */
+const COMMAND_KIND_ICONS = {
+  CMD: "bolt",
+  TERM: "terminal",
+  VIEW: "filter_alt",
+  REPO: "folder_open",
+  RUN: "play_arrow",
+  PULL: "download",
+};
 
 function availableSearchCommands() {
   const commands = [
@@ -1159,15 +1405,37 @@ function availableSearchCommands() {
       kind: "TERM", label: `Terminal — ${project.name}`, detail: project.path,
       action: "terminal", project,
     });
+    if (project.git) {
+      commands.push({
+        kind: "PULL", label: `Pull ${project.name}`,
+        detail: project.git.upstream || project.git.branch || "git pull",
+        action: "pull", project,
+      });
+    }
   }
   return commands;
+}
+
+/** What the search box is actually searching for. A leading ">" is the
+ *  command prefix, not part of the words - it opens the palette and is
+ *  otherwise ignored, so ">term" narrows the commands without emptying the
+ *  project list behind them. */
+function searchQuery(value = el["search-input"]?.value || "") {
+  return value.replace(/^>\s*/, "");
+}
+
+function openSearchCommands() {
+  el["search-input"]?.focus();
+  el["search-input"]?.select();
+  searchCommandIndex = 0;
+  renderSearchCommands();
 }
 
 function renderSearchCommands() {
   const menu = el["search-menu"];
   const input = el["search-input"];
   if (!menu || document.activeElement !== input) return;
-  const terms = input.value.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  const terms = searchQuery(input.value).toLowerCase().trim().split(/\s+/).filter(Boolean);
   searchCommands = availableSearchCommands()
     .filter((command) => {
       const hay = `${command.kind} ${command.label} ${command.detail}`.toLowerCase();
@@ -1178,9 +1446,10 @@ function renderSearchCommands() {
   menu.innerHTML = searchCommands.length
     ? searchCommands.map((command, index) => `<button class="search-command${
         index === searchCommandIndex ? " on" : ""
-      }" data-command="${index}"><span class="command-kind ${command.kind.toLowerCase()}">${esc(
+      }" data-command="${index}"><span class="command-kind ${command.kind.toLowerCase()}" title="${esc(
         command.kind
-      )}</span><span class="command-label">${esc(command.label)}</span><span class="command-detail">${esc(
+      )}">${icon(COMMAND_KIND_ICONS[command.kind] || "chevron_right")}</span><span
+        class="command-label">${esc(command.label)}</span><span class="command-detail">${esc(
         command.detail
       )}</span></button>`).join("")
     : '<div class="search-command-empty">No commands or projects found</div>';
@@ -1205,6 +1474,7 @@ function runSearchCommand(index) {
   else if (command.action === "repo") openDetail(command.project);
   else if (command.action === "run") projectAction("run", command.project);
   else if (command.action === "terminal") projectAction("terminal", command.project);
+  else if (command.action === "pull") projectAction("pull", command.project);
 }
 
 /* ----------------------------------------------------------------- views */
@@ -1249,11 +1519,17 @@ function cardActions(p) {
     : `<button class="cact" disabled title="Nothing in this folder says how it runs">${icon(
         "play_disabled"
       )}Run</button>`;
+  // Pull is only offered where it can mean something: a folder git knows about.
+  const pull = p.git
+    ? `<button class="cact" data-act="pull" title="Run git pull here">${icon(
+        "download"
+      )}Pull</button>`
+    : "";
   return `<div class="card-actions">${run}
     <button class="cact" data-act="vscode" title="Open in VS Code">${icon("code")}Code</button>
     <button class="cact" data-act="terminal" title="Open a terminal here">${icon(
       "terminal"
-    )}Terminal</button>
+    )}Terminal</button>${pull}
   </div>`;
 }
 
@@ -1377,9 +1653,9 @@ function tableTechCell(tech) {
   if (!tech.length) return '<td class="table-tech-cell"><span class="table-muted">—</span></td>';
   return `<td class="table-tech-cell"><div class="table-tech-list">${tech.map((item) => {
     const full = item.version ? `${item.name} ${item.version}` : item.name;
-    return `<button class="table-tech" data-tech="${esc(item.name)}" title="${esc(full)}"><span>${esc(item.name)}</span>${
+    return `<button class="table-tech" data-tech="${esc(item.name)}" title="${esc(full)}"><span class="table-tech-row"><span class="table-tech-name">${esc(item.name)}</span>${
       item.version ? `<code>${esc(item.version)}</code>` : ""
-    }</button>`;
+    }</span></button>`;
   }).join("")}</div></td>`;
 }
 
@@ -1412,6 +1688,7 @@ function tableRowView(p) {
       <button data-act="run" title="${p.runCmd ? `Run ${esc(p.runCmd)}` : "No run command detected"}" ${p.runCmd ? "" : "disabled"}>${icon("play_arrow")}</button>
       <button data-act="vscode" title="Open in VS Code">${icon("code")}</button>
       <button data-act="terminal" title="Open a terminal">${icon("terminal")}</button>
+      ${p.git ? `<button data-act="pull" title="Run git pull here">${icon("download")}</button>` : ""}
     </div></td>
   </tr>`;
 }
@@ -1778,6 +2055,7 @@ function detailView(p, replayEntrance = true) {
       ${run}
       <button class="btn" data-act="vscode">${icon("code")}VS Code</button>
       <button class="btn" data-act="terminal">${icon("terminal")}Terminal</button>
+      ${g ? `<button class="btn" data-act="pull" title="Run git pull here">${icon("download")}Pull</button>` : ""}
       <button class="btn" data-act="explorer">${icon("folder_open")}Explorer</button>
       <button class="btn" data-act="external">${icon("open_in_new")}External shell</button>
       <button class="btn" data-act="copy">${icon("content_copy")}Copy path</button>
@@ -1915,11 +2193,18 @@ function mountShell() {
                placeholder="Search projects and commands..." />
         <div class="search-menu" id="search-menu" hidden></div>
       </div>
-      <div class="tech-picker">
-        <select class="sort" id="tech-filter"><option value="">All tech</option></select>
+      <div class="tech-picker" id="tech-picker">
+        <button class="tech-button" id="tech-filter" type="button" aria-haspopup="listbox"
+                title="Choose a technology to filter by" aria-expanded="false">${icon("category")}<span class="tech-button-label"
+          id="tech-filter-label">All tech</span>${icon("keyboard_arrow_down")}</button>
         <button class="tech-clear" id="tech-clear" type="button" title="Clear the technology filter" hidden>${icon(
           "close"
         )}</button>
+        <div class="tech-menu" id="tech-menu" role="listbox" hidden>
+          <div class="tech-menu-search">${icon("search")}<input id="tech-menu-input"
+            spellcheck="false" placeholder="Filter technologies..." /></div>
+          <div class="tech-menu-list" id="tech-menu-list"></div>
+        </div>
       </div>
       <div class="sort-buttons" id="sort-buttons" aria-label="Sort projects">
         <button data-sort="activity" title="Sort by recent activity">Recent</button>
@@ -1956,7 +2241,8 @@ function mountShell() {
 
   for (const id of [
     "brand-sub", "loadbar", "roots-btn", "roots-label", "roots-pop", "roots-list",
-    "rescan", "search-input", "search-menu", "tech-filter", "tech-clear", "sort-buttons", "view-buttons", "activity", "filters",
+    "rescan", "search-input", "search-menu", "tech-picker", "tech-filter", "tech-filter-label",
+    "tech-menu", "tech-menu-input", "tech-menu-list", "tech-clear", "sort-buttons", "view-buttons", "activity", "filters",
     "banner-host", "summary", "grid", "detail-host", "settings-host", "open-settings", "toggle-theme",
     "status-term", "status-progress", "status-version", "changelog-pop",
   ]) {
@@ -2000,21 +2286,10 @@ function renderToolbar() {
       ? `${state.projects.length} projects \u00b7 ${pending} loading`
       : `${state.projects.length} projects`;
 
-  // The tech list is rebuilt only when it actually changed, and never while the
-  // user has the picker open.
-  const counts = new Map();
-  for (const p of state.projects) for (const t of p.tech) counts.set(t.name, (counts.get(t.name) || 0) + 1);
-  const entries = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  const signature = entries.map(([n, c]) => `${n}:${c}`).join("|") + `#${state.techFilter}`;
-  if (signature !== el["tech-filter"].dataset.signature && document.activeElement !== el["tech-filter"]) {
-    el["tech-filter"].dataset.signature = signature;
-    el["tech-filter"].innerHTML =
-      `<option value="">All tech</option>` +
-      entries
-        .map(([name, n]) => `<option value="${esc(name)}">${esc(name)} (${n})</option>`)
-        .join("");
-    el["tech-filter"].value = state.techFilter;
-  }
+  // The button says what is being filtered by; the list behind it is only
+  // rebuilt while it is open, so a scan streaming in cannot redraw it underfoot.
+  el["tech-filter-label"].textContent = state.techFilter || "All tech";
+  if (techMenuOpen()) renderTechMenu();
   // A filter that is on has to look on, and be switchable off without hunting
   // for "All tech" in a list of a hundred.
   const filtering = Boolean(state.techFilter);
@@ -2239,31 +2514,49 @@ function renderSettings() {
               <option value="id">Bahasa Indonesia — Indonesian</option>
             </select>
           </label>
+          <div class="settings-row">
+            <span><strong>Theme</strong><small>The window's own light or dark colors.</small></span>
+            <div class="sort-buttons setting-theme-buttons" aria-label="Theme">
+              <button type="button" data-setting-theme="dark">Dark</button>
+              <button type="button" data-setting-theme="light">Light</button>
+            </div>
+          </div>
+          <label class="settings-row" for="setting-compact-tech">
+            <span><strong>Compact tech in overview</strong><small>Show technologies in a single neutral line instead of colored tags.</small></span>
+            <input class="setting-check" id="setting-compact-tech" type="checkbox" />
+          </label>
+          <label class="settings-row" for="setting-analytics">
+            <span><strong>Send anonymous usage data</strong><small>Lets PageRain Analytics know someone is using DevHQ - a random number and the screen you opened, never your projects.</small>
+              <button class="linklike" type="button" id="setting-analytics-source">Read the code that sends it</button>
+            </span>
+            <input class="setting-check" id="setting-analytics" type="checkbox" />
+          </label>
           <div class="settings-row danger-row">
             <span><strong>Reset DevHQ</strong><small>Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.</small></span>
             <button class="btn danger setting-control" id="setting-reset" type="button">Reset</button>
           </div>
         </section>
-        <section class="settings-group" data-section="appearance">
-          <h3>Appearance</h3>
-          <label class="settings-row" for="setting-theme">
-            <span><strong>Theme</strong><small>The window's own light or dark colors.</small></span>
-            <select class="sort setting-control" id="setting-theme">
-              <option value="dark">Dark</option>
-              <option value="light">Light</option>
-            </select>
-          </label>
-          <label class="settings-row" for="setting-compact-tech">
-            <span><strong>Compact tech in overview</strong><small>Show technologies in a single neutral line instead of colored tags.</small></span>
-            <input class="setting-check" id="setting-compact-tech" type="checkbox" />
-          </label>
-        </section>
         <section class="settings-group" data-section="terminal">
           <h3>Terminal</h3>
-          <label class="settings-row" for="setting-terminal-shell">
+          <div class="settings-row">
             <span><strong>Default shell</strong><small>Used for new terminals. Override it from the terminal toolbar.</small></span>
-            <select class="sort setting-control" id="setting-terminal-shell"></select>
-          </label>
+            <div class="setting-shell-control">
+              <select class="sort setting-control" id="setting-terminal-shell" aria-label="Default shell"></select>
+              <button class="btn" type="button" id="setting-shell-scan">${icon("refresh")}Scan</button>
+            </div>
+          </div>
+          <div class="settings-row terminal-type-colors-row">
+            <span><strong>Terminal type colors</strong><small>Choose the identifying tab color for each shell.</small></span>
+            <div class="terminal-type-colors" id="setting-shell-colors"></div>
+          </div>
+          <div class="settings-row">
+            <span><strong>Terminal identifiers</strong><small>Choose how terminal types appear in their tabs.</small></span>
+            <div class="sort-buttons setting-terminal-marker" aria-label="Terminal identifiers">
+              <button type="button" data-terminal-marker="none">None</button>
+              <button type="button" data-terminal-marker="dot">Dot</button>
+              <button type="button" data-terminal-marker="code">Code</button>
+            </div>
+          </div>
           <label class="settings-row" for="setting-term-theme">
             <span><strong>Color scheme</strong><small>Colors for every terminal, docked or popped out.</small></span>
             <select class="sort setting-control" id="setting-term-theme"></select>
@@ -2287,16 +2580,39 @@ function renderSettings() {
     </div>
   </main>`;
   host.querySelector("#setting-language").value = state.language;
-  host.querySelector("#setting-theme").value = state.theme;
+  for (const button of host.querySelectorAll("[data-setting-theme]")) {
+    const active = button.dataset.settingTheme === state.theme;
+    button.classList.toggle("on", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
   host.querySelector("#setting-compact-tech").checked = state.compactTechOverview;
+  host.querySelector("#setting-analytics").checked = state.analyticsChosen && state.analytics;
   const shellSetting = window.devhqTerminalSettings;
   const shellSelect = host.querySelector("#setting-terminal-shell");
   shellSelect.innerHTML = shellSetting.profiles
-    .map((profile) => `<option value="${profile.value}">${profile.label}</option>`)
+    .map((profile) => `<option value="${profile.value}"${profile.available === false ? " disabled" : ""}>${profile.label}${profile.available === false ? " · unavailable" : ""}</option>`)
     .join("");
   shellSelect.value = shellSetting.getDefault();
+  for (const button of host.querySelectorAll("[data-terminal-marker]")) {
+    const active = button.dataset.terminalMarker === shellSetting.getShellMarkerStyle();
+    button.classList.toggle("on", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+  buildShellColorControls(host);
   buildTermThemeControls(host);
   showSettingsSection(state.settingsSection);
+}
+
+function buildShellColorControls(host) {
+  const shellSetting = window.devhqTerminalSettings;
+  const colors = shellSetting.shellColors();
+  host.querySelector("#setting-shell-colors").innerHTML = shellSetting.profiles
+    .filter((profile) => profile.value !== "auto")
+    .map((profile) => `<label class="terminal-type-color">
+      <input type="color" data-shell-color="${esc(profile.value)}" value="${esc(colors[profile.value])}" aria-label="${esc(profile.label)} color" />
+      <span>${esc(profile.label)}</span>
+    </label>`)
+    .join("") + `<button class="btn terminal-type-colors-reset" id="setting-shell-colors-reset" type="button">Reset colors</button>`;
 }
 
 /** Resetting throws away everything the app remembers, and there is no undo,
@@ -2511,18 +2827,36 @@ function wireShell() {
 
   el["tech-clear"].onclick = () => {
     if (!state.techFilter) return;
-    state.techFilter = "";
-    el["tech-filter"].value = "";
-    el["tech-filter"].dataset.signature = "";
-    savePrefs();
-    markDirty("filters", "toolbar", "grid");
+    setTechFilter(state.techFilter);
   };
 
-  el["tech-filter"].onchange = (e) => {
-    state.techFilter = e.target.value;
-    el["tech-filter"].dataset.signature = "";
-    savePrefs();
-    markDirty("filters", "grid");
+  el["tech-filter"].onclick = () => (techMenuOpen() ? closeTechMenu() : openTechMenu());
+
+  el["tech-menu-input"].oninput = () => {
+    techMenuIndex = 0;
+    renderTechMenu();
+  };
+
+  el["tech-menu-input"].onkeydown = (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!techMenuRows.length) return;
+      const direction = e.key === "ArrowDown" ? 1 : -1;
+      techMenuIndex = (techMenuIndex + direction + techMenuRows.length) % techMenuRows.length;
+      renderTechMenu();
+    } else if (e.key === "Enter" && techMenuRows.length) {
+      e.preventDefault();
+      chooseTech(techMenuRows[techMenuIndex].name);
+    } else if (e.key === "Escape") {
+      e.stopPropagation();
+      closeTechMenu();
+      el["tech-filter"].focus();
+    }
+  };
+
+  el["tech-menu"].onclick = (e) => {
+    const row = e.target.closest("[data-tech-option]");
+    if (row) chooseTech(row.dataset.techOption);
   };
 
   el["roots-btn"].onclick = () => (rootEditorOpen() ? closeRootEditor() : openRootEditor());
@@ -2566,6 +2900,7 @@ function wireShell() {
     if (rootEditorOpen() && !e.target.closest("#roots")) closeRootEditor();
     if (changelogOpen() && !e.target.closest("#status-version-wrap")) closeChangelog();
     if (!e.target.closest("#search-box")) closeSearchCommands();
+    if (techMenuOpen() && !e.target.closest("#tech-picker")) closeTechMenu();
     if (!e.target.closest("#table-column-picker")) {
       const menu = document.getElementById("table-column-picker-menu");
       const button = document.getElementById("table-column-picker-button");
@@ -2578,7 +2913,7 @@ function wireShell() {
   // The input element itself is never replaced, so there is no caret to
   // restore; the list simply redraws on the next frame.
   el["search-input"].oninput = (e) => {
-    state.search = e.target.value;
+    state.search = searchQuery(e.target.value);
     markDirty("grid", "filters");
     searchCommandIndex = 0;
     renderSearchCommands();
@@ -2614,7 +2949,6 @@ function wireShell() {
       state.techFilter = "";
       state.search = "";
       el["search-input"].value = "";
-      el["tech-filter"].value = "";
       savePrefs();
       markDirty("filters", "toolbar", "grid");
     }
@@ -2688,19 +3022,62 @@ function wireShell() {
     projectAction(action.dataset.act, p);
   };
 
-  el["settings-host"].onclick = (e) => {
+  el["settings-host"].onclick = async (e) => {
     const navItem = e.target.closest("[data-settings-section]");
-    if (e.target.closest('[data-settings="close"]')) closeSettings();
+    if (e.target.closest("#setting-analytics-source")) {
+      // Inside the row's label, so the click has to be stopped from also
+      // flipping the switch it sits under.
+      e.preventDefault();
+      openUrl(ANALYTICS_SOURCE_URL);
+    } else if (e.target.closest('[data-settings="close"]')) closeSettings();
     else if (navItem) showSettingsSection(navItem.dataset.settingsSection);
     else if (e.target.closest("#setting-reset")) armReset(e.target.closest("#setting-reset"));
+    else if (e.target.closest("[data-setting-theme]")) {
+      const button = e.target.closest("[data-setting-theme]");
+      if (button.dataset.settingTheme === state.theme) return;
+      state.theme = button.dataset.settingTheme;
+      applyTheme();
+      savePrefs();
+    } else if (e.target.closest("[data-terminal-marker]")) {
+      const button = e.target.closest("[data-terminal-marker]");
+      window.devhqTerminalSettings.setShellMarkerStyle(button.dataset.terminalMarker);
+      for (const choice of el["settings-host"].querySelectorAll("[data-terminal-marker]")) {
+        const active = choice === button;
+        choice.classList.toggle("on", active);
+        choice.setAttribute("aria-pressed", String(active));
+      }
+    }
     else if (e.target.closest("#setting-term-reset")) {
       window.devhqTermTheme.resetToPreset();
       syncTermThemeControls();
+    } else if (e.target.closest("#setting-shell-colors-reset")) {
+      window.devhqTerminalSettings.resetShellColors();
+      buildShellColorControls(el["settings-host"]);
+    } else if (e.target.closest("#setting-shell-scan")) {
+      const button = e.target.closest("#setting-shell-scan");
+      button.disabled = true;
+      button.classList.add("spinning");
+      try {
+        await window.devhqTerminalSettings.scan();
+        const select = el["settings-host"].querySelector("#setting-terminal-shell");
+        const shellSetting = window.devhqTerminalSettings;
+        select.innerHTML = shellSetting.profiles
+          .map((profile) => `<option value="${profile.value}"${profile.available === false ? " disabled" : ""}>${profile.label}${profile.available === false ? " · unavailable" : ""}</option>`)
+          .join("");
+        select.value = shellSetting.getDefault();
+      } finally {
+        button.classList.remove("spinning");
+        button.disabled = false;
+      }
     }
   };
   // Colour inputs report every drag of the picker, so the terminals follow the
   // pointer live rather than waiting for the dialog to close.
   el["settings-host"].oninput = (e) => {
+    if (e.target.dataset.shellColor !== undefined) {
+      window.devhqTerminalSettings.setShellColor(e.target.dataset.shellColor, e.target.value);
+      return;
+    }
     if (e.target.dataset.termColor === undefined) return;
     const key = e.target.dataset.termColor;
     window.devhqTermTheme.setColor(key === "bg" || key === "fg" ? key : Number(key), e.target.value);
@@ -2711,14 +3088,18 @@ function wireShell() {
       state.language = e.target.value;
       applyLanguage();
       savePrefs();
-    } else if (e.target.id === "setting-theme") {
-      state.theme = e.target.value === "light" ? "light" : "dark";
-      applyTheme();
-      savePrefs();
     } else if (e.target.id === "setting-compact-tech") {
       state.compactTechOverview = e.target.checked;
       savePrefs();
       markDirty("grid");
+    } else if (e.target.id === "setting-analytics") {
+      state.analytics = e.target.checked;
+      state.analyticsChosen = true;
+      savePrefs();
+      applyAnalytics();
+      // Switching it on counts the screen it was switched on from, so the
+      // setting has an immediate, visible effect rather than a silent one.
+      window.devhqTrackPageView?.(currentPath());
     } else if (e.target.id === "setting-terminal-shell") {
       window.devhqTerminalSettings.setDefault(e.target.value);
     } else if (e.target.id === "setting-term-theme") {
@@ -2743,6 +3124,14 @@ for (const type of ["mousedown", "mouseup", "auxclick"]) {
   });
 }
 
+/** True when the key belongs to whatever has focus - a field, a terminal,
+ *  anything editable - and must not be taken as a shortcut. */
+function typingSomewhereElse(target) {
+  const node = target instanceof Element ? target : null;
+  if (!node) return false;
+  return Boolean(node.closest("input, textarea, select, [contenteditable=''], [contenteditable='true']"));
+}
+
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && changelogOpen()) {
     closeChangelog();
@@ -2758,9 +3147,15 @@ document.addEventListener("keydown", (e) => {
     setDockOpen(!window.termsState.open);
   } else if (e.ctrlKey && ["f", "k"].includes(e.key.toLowerCase())) {
     e.preventDefault();
-    el["search-input"]?.focus();
-    el["search-input"]?.select();
-    searchCommandIndex = 0;
+    openSearchCommands();
+  } else if (e.key === ">" && !e.ctrlKey && !e.altKey && !typingSomewhereElse(e.target)) {
+    // ">" is the second way in, the way it is in an editor: it lands in the
+    // box as the command prefix and the list opens under it.
+    e.preventDefault();
+    openSearchCommands();
+    el["search-input"].value = "> ";
+    state.search = "";
+    markDirty("grid", "filters");
     renderSearchCommands();
   }
 });
@@ -2783,8 +3178,17 @@ document.addEventListener("keydown", (e) => {
   listenScan().then(async () => {
     // Nothing scanned before: ask which folder to read rather than guessing
     // one, and start only once there is an answer.
-    if (!state.roots.length) await firstRunFolders();
+    const newInstall = !state.roots.length;
+    if (newInstall) {
+      await firstRunFolders();
+      // The usage question comes last, and on a new install there is nothing
+      // behind it to look at anyway, so the scan waits for the answer.
+      await firstRunUsageData();
+    }
     if (state.roots.length) rescan();
+    // An install that already has folders keeps its projects loading while it
+    // answers - the question is not worth a wait.
+    if (!newInstall) firstRunUsageData();
   });
 })();
 

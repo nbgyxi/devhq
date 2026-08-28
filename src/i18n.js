@@ -24,7 +24,10 @@ window.devhqI18n = (() => {
     const source = originalText.get(node);
     const value = source.trim();
     if (!value) return;
-    const next = translated(value);
+    const isEnglishOption = node.parentElement?.tagName === "OPTION" && node.parentElement.value === "en";
+    const next = isEnglishOption && language !== "en"
+      ? `English — ${translated("English")}`
+      : translated(value);
     node.nodeValue = source.replace(value, next);
   }
 

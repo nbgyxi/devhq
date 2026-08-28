@@ -188,5 +188,15 @@
   "Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.": "Esquecer as pastas, o idioma, a aparência e os terminais, e começar de novo como se a aplicação tivesse acabado de ser instalada.",
   "Reset": "Repor",
   "Click again to reset": "Clique novamente para repor",
-  "Resetting DevHQ": "A repor o DevHQ"
+  "Resetting DevHQ": "A repor o DevHQ",
+  "Send anonymous usage counts": "Enviar contagens de uso anônimas",
+  "No thanks": "Não, obrigado",
+  "Send nothing at all": "Não enviar nada",
+  "Send anonymous usage data": "Enviar dados de uso anônimos",
+  "We would love to know someone new is using DevHQ": "Adoraríamos saber que alguém novo está usando o DevHQ",
+  "May we send that to PageRain Analytics? It is completely anonymous - a random number and the name of the screen you opened, nothing else. Never a project, never a folder, never your code. The few lines that do it are open source, so you can read exactly what leaves your machine.": "Podemos enviar isso ao PageRain Analytics? É completamente anônimo: um número aleatório e o nome da tela que você abriu, nada mais. Nunca um projeto, nunca uma pasta, nunca o seu código. As poucas linhas que fazem isso são de código aberto, então você pode ler exatamente o que sai da sua máquina.",
+  "Read the code that sends it": "Leia o código que envia",
+  "Yes, say hello": "Sim, diga olá",
+  "Lets PageRain Analytics know someone is using DevHQ - a random number and the screen you opened, never your projects.": "Avisa o PageRain Analytics que alguém está usando o DevHQ: um número aleatório e a tela que você abriu, nunca os seus projetos.",
+  "Opening your browser": "Abrindo o seu navegador"
 }

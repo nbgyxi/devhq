@@ -6,6 +6,7 @@
   window.devhqTrackPageView?.("/terminal");
   const invoke = window.__TAURI__.core.invoke;
   const emit = window.__TAURI__.event.emit;
+  const listen = window.__TAURI__.event.listen;
   const win = window.__TAURI__.window.getCurrentWindow();
 
   const id = new URLSearchParams(location.search).get("id");
@@ -73,7 +74,45 @@
     return;
   }
   document.getElementById("pop-project").textContent = info.projectName;
-  document.title = `${info.projectName} — Terminal`;
+  const marker = document.getElementById("pop-shell");
+  const markerProfile = (() => {
+    const command = String(info.command || "").toLowerCase();
+    if (command.includes("git\\bin\\bash.exe")) return "git-bash";
+    if (command.includes("7-preview\\pwsh.exe")) return "pwsh-preview";
+    if (command.includes("pwsh.exe")) return "pwsh";
+    if (command.includes("wsl.exe") || command.startsWith("wsl")) return "wsl";
+    if (command.includes("powershell.exe") || command.startsWith("powershell")) return "powershell";
+    if (command.includes("cmd.exe") || command.startsWith("cmd")) return "cmd";
+    if (command.includes("nu.exe") || command.startsWith("nu")) return "nu";
+    return "auto";
+  })();
+  const markerCodes = { auto: "SH", pwsh: "PW7", "pwsh-preview": "PWP", powershell: "PS", cmd: "CMD", "git-bash": "GIT", wsl: "WSL", nu: "NU" };
+  const markerLabels = { auto: "Terminal", pwsh: "PowerShell 7", "pwsh-preview": "PowerShell Preview", powershell: "Windows PowerShell", cmd: "Command Prompt", "git-bash": "Git Bash", wsl: "WSL Bash", nu: "NuShell" };
+  const markerDefaults = { auto: "#42b3c2", pwsh: "#4d9df5", "pwsh-preview": "#c162de", powershell: "#61afef", cmd: "#8cc265", "git-bash": "#e05561", wsl: "#d5a458", nu: "#c162de" };
+  const applyMarkers = (next) => {
+    const style = ["none", "dot", "code"].includes(next?.style) ? next.style : "code";
+    document.body.classList.remove("shell-markers-none", "shell-markers-dot", "shell-markers-code");
+    document.body.classList.add(`shell-markers-${style}`);
+    const color = next?.colors?.[markerProfile] || markerDefaults[markerProfile];
+    if (/^#[0-9a-f]{6}$/i.test(color)) document.documentElement.style.setProperty(`--shell-color-${markerProfile}`, color);
+    marker.className = `shell-mark shell-${markerProfile}`;
+    marker.textContent = markerCodes[markerProfile];
+    marker.title = markerLabels[markerProfile];
+    marker.hidden = false;
+  };
+  try {
+    const prefs = JSON.parse(localStorage.getItem("devhq.terminals.v1") || "{}");
+    applyMarkers({ style: prefs.shellMarkerStyle, colors: prefs.shellColors });
+  } catch {
+    applyMarkers({ style: "code", colors: {} });
+  }
+  listen("term:markers", (event) => applyMarkers(event.payload));
+  const folderTitle = String(info.projectPath || "")
+    .replace(/[\\/]+$/, "")
+    .split(/[\\/]/)
+    .filter(Boolean)
+    .pop();
+  document.title = folderTitle || info.projectName || "Terminal";
   view.fit();
   view.focus();
 

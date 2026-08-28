@@ -9,6 +9,188 @@
 window.devhqChangelog = (() => {
   const releases = [
     {
+      version: "0.11.6",
+      date: "2026-08-28",
+      title: "Your call",
+      changes: [
+        ["new", "DevHQ now asks before counting anything, and links you straight to the handful of lines that do it. Say no and nothing is ever sent."],
+        ["new", "Settings has a switch for it, so you can change your mind whenever you like."],
+        ["fix", "The counts that were meant to be sent never actually left the app. They do now - just which screen you opened, nothing about your projects."],
+      ],
+    },
+    {
+      version: "0.11.5",
+      date: "2026-08-28",
+      title: "Read from the start",
+      changes: [
+        ["fix", "A technology line too long for its column in the table now starts with its name and trails off at the right. A long version - an npm alias such as npm:react-native-tvos@^0.76.9-0 - no longer pushes the name out of the row and leaves the middle of the line showing."],
+      ],
+    },
+    {
+      version: "0.11.4",
+      date: "2026-08-28",
+      title: "One line, one start",
+      changes: [
+        ["fix", "The table's technology lines lay themselves out inside the button rather than letting the button centre them."],
+      ],
+    },
+    {
+      version: "0.11.3",
+      date: "2026-08-28",
+      title: "One line, one start",
+      changes: [
+        ["fix", "The table's technology lines lay themselves out inside the button rather than letting the button centre them."],
+      ],
+    },
+    {
+      version: "0.11.2",
+      date: "2026-08-28",
+      title: "Pull without leaving",
+      changes: [
+        ["new", "Every git project has a Pull button - on the card, in the table, in the detail view and in the command palette - that runs git pull in that folder and says what git answered."],
+        ["fix", "The terminal and pull icons are drawn as shapes rather than font glyphs, so neither can come out as a black box."],
+        ["fix", "The window no longer draws itself with the previous release's stylesheet and scripts after an update."],
+      ],
+    },
+    {
+      version: "0.11.1",
+      date: "2026-08-28",
+      title: "Type > for commands",
+      changes: [
+        ["new", "Typing > anywhere in the window opens the command palette, the way Ctrl+K does, and the > stays in the box as the command prefix."],
+        ["fix", "The terminal icon is drawn again everywhere it appears - the status bar, project cards, the command palette and settings - instead of the black box the icon font was showing."],
+        ["better", "Command palette icons sit straight on the row, with no tinted plate behind them."],
+      ],
+    },
+    {
+      version: "0.11.0",
+      date: "2026-08-28",
+      title: "A picker for your stack",
+      changes: [
+        ["new", "The tech filter is now a real dropdown: search it, walk it with the arrow keys, and see each technology's kind and how many projects use it."],
+        ["better", "Ctrl+K rows lead with an icon for what they do - terminal, run, project, filter or command - instead of a four-letter code."],
+      ],
+    },
+    {
+      version: "0.10.2",
+      date: "2026-08-28",
+      title: "Terminal tab identifiers",
+      changes: [
+        ["new", "Terminal settings can show shell types as no marker, a colored dot or the current short code badge."],
+        ["better", "Popped-out terminals use the same shell marker style and color as docked tabs, including live setting changes."],
+      ],
+    },
+    {
+      version: "0.10.1",
+      date: "2026-08-28",
+      title: "One-click theme choice",
+      changes: [
+        ["better", "Light and dark mode use the same clear two-button switch as the Cards and Table view choice."],
+      ],
+    },
+    {
+      version: "0.10.0",
+      date: "2026-08-28",
+      title: "Your shell colors",
+      changes: [
+        ["new", "Terminal settings let every shell type have its own tab-badge color, applied live and remembered."],
+        ["better", "Theme and compact overview settings now live under General instead of a separate Appearance section."],
+      ],
+    },
+    {
+      version: "0.9.4",
+      date: "2026-08-28",
+      title: "Know your shell",
+      changes: [
+        ["better", "Terminal tabs identify their shell with a compact PW7, PS, CMD, GIT, WSL or NU badge; exited terminals still dim and starting terminals still spin."],
+      ],
+    },
+    {
+      version: "0.9.3",
+      date: "2026-08-28",
+      title: "Controls on both sides",
+      changes: [
+        ["new", "Each terminal pane now has its own New, shell chooser, Pop out and Close controls, acting only on that side."],
+        ["better", "The terminal-type chooser uses a tuning icon so the down arrow means only Hide panel."],
+      ],
+    },
+    {
+      version: "0.9.2",
+      date: "2026-08-28",
+      title: "Refresh installed shells",
+      changes: [
+        ["new", "Terminal settings can rescan installed shells without restarting DevHQ."],
+        ["fix", "The current shell stays normally styled in the tab menu instead of looking unavailable."],
+      ],
+    },
+    {
+      version: "0.9.1",
+      date: "2026-08-28",
+      title: "Cleaner shell menus",
+      changes: [
+        ["better", "Shell menus keep their short, readable names while still disabling options that are not installed."],
+      ],
+    },
+    {
+      version: "0.9.0",
+      date: "2026-08-28",
+      title: "Use the shells you have",
+      changes: [
+        ["new", "DevHQ now discovers installed shells at startup, including PowerShell stable and preview, Windows PowerShell, Command Prompt, Git Bash, WSL and NuShell."],
+        ["better", "Unavailable shells are disabled in terminal menus, with a clear dialog if one still fails to launch."],
+      ],
+    },
+    {
+      version: "0.8.3",
+      date: "2026-08-28",
+      title: "Short terminal titles",
+      changes: [
+        ["better", "A popped-out terminal uses only its folder name in the taskbar and window title, such as devhq instead of the full C:\\code\\devhq path."],
+      ],
+    },
+    {
+      version: "0.8.2",
+      date: "2026-08-28",
+      title: "Dock where the divider is",
+      changes: [
+        ["fix", "The left and right terminal docking previews now follow the splitter instead of always dividing the panel in half."],
+      ],
+    },
+    {
+      version: "0.8.1",
+      date: "2026-08-28",
+      title: "A different shell, right here",
+      changes: [
+        ["new", "Right-click a terminal tab to restart it with PowerShell, Command Prompt, Git Bash or WSL while keeping its folder, pane and tab position."],
+      ],
+    },
+    {
+      version: "0.8.0",
+      date: "2026-08-28",
+      title: "Terminals side by side",
+      changes: [
+        ["new", "Drag a terminal tab over the panel and drop it on the left or right docking preview to work in two terminals side by side."],
+        ["new", "Each side has its own tab strip, and tabs can be dragged directly between the two terminal groups."],
+        ["new", "Drag the divider between terminal panes to give either side more room; the split and each terminal's side are restored next time."],
+      ],
+    },
+    {
+      version: "0.7.2",
+      date: "2026-08-28",
+      title: "A redrawn face",
+      changes: [
+        ["better", "The app icon has been redrawn, and it is cropped to the artwork so it fills the tile edge to edge - on the taskbar, in the window corner, in the installer and on the browser tab."],
+      ],
+    },
+    {
+      version: "0.7.1",
+      date: "2026-08-28",
+      title: "Working, or waiting",
+      changes: [
+        ["better", "A terminal that is producing output now spins a small marker in place of the cursor instead of flinging the cursor along the line on every frame. The moment the output stops, the ordinary cursor is back - that is the terminal telling you it is waiting for you."],
+      ],
+    },
+    {
       version: "0.7.0",
       date: "2026-08-28",
       title: "Ask before you scan",
