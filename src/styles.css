@@ -476,6 +476,13 @@ select.sort.on{
 .setting-check{width:18px;height:18px;accent-color:var(--accent);flex:0 0 auto}
 .settings-heading-icon{width:21px;height:21px;fill:currentColor;flex:0 0 auto}
 
+/* The one destructive control in Settings, and it looks like it. */
+.btn.danger{
+  min-width:180px;justify-content:center;border-color:var(--red);color:var(--red);background:transparent;
+}
+.btn.danger:hover{background:var(--red);color:#fff}
+.btn.danger.armed{background:var(--red);border-color:var(--red);color:#fff;font-weight:600}
+
 /* ---------- first-run language ---------- */
 .language-first-run{
   position:fixed;inset:0;z-index:200;display:grid;place-items:center;padding:24px;
@@ -502,6 +509,18 @@ select.sort.on{
 .language-other{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
 .language-other[hidden]{display:none}
 .language-other select{min-width:220px}
+
+/* ---------- first-run folder ---------- */
+.folder-dialog .rootpop-list{margin-top:20px;max-height:34vh}
+.folder-dialog .root-row{height:38px;background:var(--bg2)}
+.folder-dialog .root-row input{font-size:13px}
+.first-run-error{margin-top:10px;color:var(--red);font-size:12.5px}
+.first-run-error[hidden]{display:none}
+.first-run-foot{display:flex;align-items:center;gap:8px;margin-top:16px}
+.first-run-foot .btn.primary{margin-left:auto}
+.root-browse{display:grid;place-items:center;width:22px;height:22px;border-radius:6px;color:var(--dim2)}
+.root-browse .ms{font-size:15px}
+.root-browse:hover{background:var(--bg3);color:var(--accent)}
 
 /* ---------- right-to-left languages ----------
    Mirror the application chrome and reading flow, but keep Windows controls,

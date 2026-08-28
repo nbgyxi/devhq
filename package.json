@@ -4,9 +4,11 @@
   "description": "DevHQ - developer overview of every project in a folder (Tauri + Rust)",
   "private": true,
   "scripts": {
-    "icons": "node scripts/tauri-with-cargo-path.js icon src/devhq-icon.png",
+    "icons": "node scripts/tauri-with-cargo-path.js icon app-icon.png",
     "dev": "node scripts/tauri-with-cargo-path.js dev",
+    "prebuild": "node scripts/check-version.js",
     "build": "node scripts/tauri-with-cargo-path.js build",
+    "version:check": "node scripts/check-version.js",
     "msix": "powershell -ExecutionPolicy Bypass -File ./scripts/package-msix.ps1",
     "msix:local": "powershell -ExecutionPolicy Bypass -File ./scripts/package-msix.ps1 -SelfSign",
     "tauri": "node scripts/tauri-with-cargo-path.js"

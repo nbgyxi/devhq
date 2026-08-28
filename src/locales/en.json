@@ -178,5 +178,17 @@
   "Fixed": "Fixed",
   "Show the code around this note": "Show the code around this note",
   "reading the file...": "reading the file...",
-  "Clear the technology filter": "Clear the technology filter"
+  "Clear the technology filter": "Clear the technology filter",
+  "Browse for a folder": "Browse for a folder",
+  "Which folder holds your projects?": "Which folder holds your projects?",
+  "DevHQ reads every project inside the folder you choose. Type the path or browse for it - you can add more folders now, or change them later.": "DevHQ reads every project inside the folder you choose. Type the path or browse for it - you can add more folders now, or change them later.",
+  "Add another folder": "Add another folder",
+  "Start scanning": "Start scanning",
+  "Waiting for a folder to scan": "Waiting for a folder to scan",
+  "Waiting for the folder picker": "Waiting for the folder picker",
+  "Reset DevHQ": "Reset DevHQ",
+  "Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.": "Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.",
+  "Reset": "Reset",
+  "Click again to reset": "Click again to reset",
+  "Resetting DevHQ": "Resetting DevHQ"
 }

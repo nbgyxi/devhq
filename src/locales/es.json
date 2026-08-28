@@ -176,5 +176,17 @@
   "Fixed": "Corregido",
   "Show the code around this note": "Mostrar el código alrededor de esta nota",
   "reading the file...": "leyendo el archivo…",
-  "Clear the technology filter": "Quitar el filtro de tecnología"
+  "Clear the technology filter": "Quitar el filtro de tecnología",
+  "Browse for a folder": "Buscar una carpeta",
+  "Which folder holds your projects?": "¿En qué carpeta están tus proyectos?",
+  "DevHQ reads every project inside the folder you choose. Type the path or browse for it - you can add more folders now, or change them later.": "DevHQ lee todos los proyectos dentro de la carpeta que elijas. Escribe la ruta o búscala: puedes añadir más carpetas ahora o cambiarlas más tarde.",
+  "Add another folder": "Añadir otra carpeta",
+  "Start scanning": "Empezar a escanear",
+  "Waiting for a folder to scan": "Esperando una carpeta que escanear",
+  "Waiting for the folder picker": "Esperando al selector de carpetas",
+  "Reset DevHQ": "Restablecer DevHQ",
+  "Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.": "Olvida las carpetas, el idioma, la apariencia y las terminales, y empieza de nuevo como si acabaras de instalar la aplicación.",
+  "Reset": "Restablecer",
+  "Click again to reset": "Haz clic otra vez para restablecer",
+  "Resetting DevHQ": "Restableciendo DevHQ"
 }

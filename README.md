@@ -164,12 +164,23 @@ between apps under the same publisher — reusing another app's (e.g. 4i Player'
 `53653Gyxi.4i`) is rejected at upload with *"Invalid package identity name"*.
 Pass `-IdentityName` / `-Publisher` / `-PublisherDisplayName` to override.
 
-`-BumpVersion` increments the patch version in `src-tauri/tauri.conf.json`
-(e.g. `0.1.0` -> `0.1.1`) before packaging. Partner Center requires every
-submitted package to have a unique, increasing version — re-uploading the same
-full name (`...0.1.0.0_X64`) with different contents is rejected. Pass it on
-each Store build, then commit the bumped `tauri.conf.json`. Omit it to repackage
-the current version unchanged.
+The version being built comes from the top of `src/changelog.js` — the same
+list the app shows when you click the version in its status bar. So a release
+starts by writing it down:
+
+1. Add the release to the top of `src/changelog.js`, dated, with a line per
+   change.
+2. `npm run msix -- -BumpVersion`, which brings `src-tauri/tauri.conf.json` up
+   to that version and packages it.
+3. Commit the bumped `tauri.conf.json` with the changelog entry.
+
+`-BumpVersion` no longer invents a number: it adopts the one the changelog
+already names, and refuses to move the version backwards. Without the flag, a
+build whose `tauri.conf.json` and changelog disagree stops rather than shipping
+under a number the app cannot explain. Partner Center requires every submitted
+package to have a unique, increasing version — re-uploading the same full name
+(`...0.1.0.0_X64`) with different contents is rejected — so a new submission
+means a new entry in the list, which is what you wanted written down anyway.
 
 The output is written to `target/msix/DevHQ_<version>.msix`. Partner Center
 re-signs this package with the Microsoft Store certificate, so do not self-sign

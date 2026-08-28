@@ -51,7 +51,7 @@ function markTerminalHistoryDirty(id) {
 }
 
 function termsSavePrefs() {
-  if (terms.restoring) return;
+  if (terms.restoring || window.devhqResetting) return;
   const entries = [...terms.known.entries()];
   localStorage.setItem(TERM_PREFS, JSON.stringify({
     height: terms.height,

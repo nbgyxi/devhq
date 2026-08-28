@@ -176,5 +176,17 @@
   "Fixed": "修复",
   "Show the code around this note": "显示这条备注周围的代码",
   "reading the file...": "正在读取文件…",
-  "Clear the technology filter": "清除技术筛选"
+  "Clear the technology filter": "清除技术筛选",
+  "Browse for a folder": "浏览文件夹",
+  "Which folder holds your projects?": "您的项目在哪个文件夹中？",
+  "DevHQ reads every project inside the folder you choose. Type the path or browse for it - you can add more folders now, or change them later.": "DevHQ 会读取您所选文件夹中的每个项目。输入路径或浏览查找 — 现在可以添加更多文件夹，也可以稍后更改。",
+  "Add another folder": "添加其他文件夹",
+  "Start scanning": "开始扫描",
+  "Waiting for a folder to scan": "正在等待要扫描的文件夹",
+  "Waiting for the folder picker": "正在等待文件夹选择器",
+  "Reset DevHQ": "重置 DevHQ",
+  "Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.": "忘记文件夹、语言、外观和终端设置，如同刚安装应用一样重新开始。",
+  "Reset": "重置",
+  "Click again to reset": "再次点击以重置",
+  "Resetting DevHQ": "正在重置 DevHQ"
 }

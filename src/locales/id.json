@@ -176,5 +176,17 @@
   "Fixed": "Diperbaiki",
   "Show the code around this note": "Tampilkan kode di sekitar catatan ini",
   "reading the file...": "membaca berkas…",
-  "Clear the technology filter": "Hapus filter teknologi"
+  "Clear the technology filter": "Hapus filter teknologi",
+  "Browse for a folder": "Telusuri folder",
+  "Which folder holds your projects?": "Di folder mana proyek Anda berada?",
+  "DevHQ reads every project inside the folder you choose. Type the path or browse for it - you can add more folders now, or change them later.": "DevHQ membaca setiap proyek di dalam folder yang Anda pilih. Ketik jalurnya atau telusuri — Anda dapat menambahkan folder lain sekarang, atau menggantinya nanti.",
+  "Add another folder": "Tambahkan folder lain",
+  "Start scanning": "Mulai memindai",
+  "Waiting for a folder to scan": "Menunggu folder untuk dipindai",
+  "Waiting for the folder picker": "Menunggu pemilih folder",
+  "Reset DevHQ": "Setel ulang DevHQ",
+  "Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.": "Lupakan folder, bahasa, tampilan, dan terminal, lalu mulai lagi seolah aplikasi baru saja dipasang.",
+  "Reset": "Setel ulang",
+  "Click again to reset": "Klik lagi untuk menyetel ulang",
+  "Resetting DevHQ": "Menyetel ulang DevHQ"
 }

@@ -60,7 +60,8 @@ with two more edits**:
 
 Patch for a fix or a small piece of work, minor for a feature worth its own
 entry. Never reuse a version already in the list, and never leave the list
-behind the version in `tauri.conf.json` — the two are read side by side.
+behind the version in `tauri.conf.json` — the two are read side by side, and
+`package-msix.ps1` refuses to build a release where they disagree.
 
 ## Do not launch the app
 

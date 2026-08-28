@@ -2,6 +2,8 @@
 pub mod conpty;
 mod cwd;
 mod git;
+#[cfg(windows)]
+mod picker;
 mod procs;
 mod tech;
 pub mod todo;
@@ -610,6 +612,32 @@ fn default_root_sync() -> String {
     std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".to_string())
 }
 
+/// The native folder picker, opened from the folder editor and from the first
+/// run. Returns the chosen folder, or `None` when the dialog was dismissed.
+/// The dialog runs off the UI thread, so the window keeps drawing while it is
+/// on screen.
+#[cfg(windows)]
+#[tauri::command]
+async fn pick_folder(app: AppHandle, start: Option<String>) -> Result<Option<String>, String> {
+    // The handle travels as an integer because `HWND` is not `Send`; the picker
+    // thread only ever uses it to own the dialog.
+    let owner = app
+        .get_webview_window("main")
+        .and_then(|w| w.hwnd().ok())
+        .map(|hwnd| hwnd.0 as isize)
+        .unwrap_or(0);
+    off_thread(move || picker::pick_folder(owner, start))
+        .await
+        .unwrap_or_else(|| Err("Could not open the folder picker.".into()))
+}
+
+/// Off Windows there is no picker to show, so the typed path is all there is.
+#[cfg(not(windows))]
+#[tauri::command]
+async fn pick_folder(_start: Option<String>) -> Result<Option<String>, String> {
+    Err("Choosing a folder is only available on Windows - type the path instead.".into())
+}
+
 /// Opens a project in Explorer, VS Code or a terminal. `target` is validated
 /// against a fixed set so the front end can never name an arbitrary program.
 #[tauri::command]
@@ -735,6 +763,7 @@ pub fn run() {
             app_version,
             scan_cancel,
             default_root,
+            pick_folder,
             open_in,
             git_diff,
             todos,
@@ -771,6 +800,7 @@ pub fn run() {
             app_version,
             scan_cancel,
             default_root,
+            pick_folder,
             open_in,
             git_diff,
             todos,

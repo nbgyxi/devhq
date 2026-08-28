@@ -9,6 +9,32 @@
 window.devhqChangelog = (() => {
   const releases = [
     {
+      version: "0.7.0",
+      date: "2026-08-28",
+      title: "Ask before you scan",
+      changes: [
+        ["new", "A fresh install now asks which folder holds your projects instead of guessing one. Name as many folders as you like before the first scan starts."],
+        ["new", "Every folder row - in that question and in the toolbar's folder editor - has a Browse button that opens the Windows folder picker, so a path can be picked as well as typed."],
+        ["new", "Settings has a Reset button. It forgets the folders, language, appearance and terminals and starts the app over as if it had just been installed; it takes two clicks, because there is no undo."],
+      ],
+    },
+    {
+      version: "0.6.3",
+      date: "2026-08-28",
+      title: "A face of its own",
+      changes: [
+        ["better", "DevHQ has a new app icon, cropped so the artwork fills the tile edge to edge - it shows up on the taskbar, in the window corner, in the installer and on the browser tab."],
+      ],
+    },
+    {
+      version: "0.6.2",
+      date: "2026-08-28",
+      title: "The number always matches the list",
+      changes: [
+        ["better", "The version this window shows is now the one the build was made with, and a release cannot be packaged unless it appears in this list - so the number on the status bar always has an entry here to explain it."],
+      ],
+    },
+    {
       version: "0.6.1",
       date: "2026-08-27",
       title: "A tidier list",

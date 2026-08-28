@@ -176,5 +176,17 @@
   "Fixed": "إصلاح",
   "Show the code around this note": "إظهار الشيفرة المحيطة بهذه الملاحظة",
   "reading the file...": "جارٍ قراءة الملف…",
-  "Clear the technology filter": "مسح مرشّح التقنيات"
+  "Clear the technology filter": "مسح مرشّح التقنيات",
+  "Browse for a folder": "استعراض مجلد",
+  "Which folder holds your projects?": "في أي مجلد توجد مشاريعك؟",
+  "DevHQ reads every project inside the folder you choose. Type the path or browse for it - you can add more folders now, or change them later.": "يقرأ DevHQ كل مشروع داخل المجلد الذي تختاره. اكتب المسار أو استعرض للوصول إليه — يمكنك إضافة مزيد من المجلدات الآن أو تغييرها لاحقًا.",
+  "Add another folder": "إضافة مجلد آخر",
+  "Start scanning": "بدء الفحص",
+  "Waiting for a folder to scan": "في انتظار مجلد لفحصه",
+  "Waiting for the folder picker": "في انتظار أداة اختيار المجلد",
+  "Reset DevHQ": "إعادة تعيين DevHQ",
+  "Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.": "نسيان المجلدات واللغة والمظهر والطرفيات، والبدء من جديد كأن التطبيق ثُبّت للتو.",
+  "Reset": "إعادة تعيين",
+  "Click again to reset": "انقر مرة أخرى لإعادة التعيين",
+  "Resetting DevHQ": "جارٍ إعادة تعيين DevHQ"
 }

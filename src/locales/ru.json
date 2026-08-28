@@ -176,5 +176,17 @@
   "Fixed": "Исправлено",
   "Show the code around this note": "Показать код вокруг этой заметки",
   "reading the file...": "чтение файла…",
-  "Clear the technology filter": "Сбросить фильтр по технологии"
+  "Clear the technology filter": "Сбросить фильтр по технологии",
+  "Browse for a folder": "Обзор папок",
+  "Which folder holds your projects?": "В какой папке находятся ваши проекты?",
+  "DevHQ reads every project inside the folder you choose. Type the path or browse for it - you can add more folders now, or change them later.": "DevHQ читает каждый проект внутри выбранной папки. Введите путь или найдите папку в обзоре — можно добавить ещё папки сейчас или изменить их позже.",
+  "Add another folder": "Добавить ещё папку",
+  "Start scanning": "Начать сканирование",
+  "Waiting for a folder to scan": "Ожидание папки для сканирования",
+  "Waiting for the folder picker": "Ожидание выбора папки",
+  "Reset DevHQ": "Сбросить DevHQ",
+  "Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.": "Забыть папки, язык, оформление и терминалы и начать заново, как будто приложение только что установлено.",
+  "Reset": "Сбросить",
+  "Click again to reset": "Нажмите ещё раз, чтобы сбросить",
+  "Resetting DevHQ": "Сброс DevHQ"
 }

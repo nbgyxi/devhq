@@ -137,6 +137,7 @@ function applyTermTheme() {
 }
 
 function saveTermTheme() {
+  if (window.devhqResetting) return;
   try {
     localStorage.setItem(TERM_THEME_KEY, JSON.stringify({
       preset: termTheme.preset,

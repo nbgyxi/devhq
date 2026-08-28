@@ -18,6 +18,10 @@ const appWindow = window.__TAURI__.window.getCurrentWindow();
 
 const PREFS_KEY = "devhq.prefs.v1";
 
+/** Set once a reset is under way, so nothing writes remembered state back
+ *  between the wipe and the reload. */
+let resetting = false;
+
 const state = {
   /** Every folder being scanned. Edited through the toolbar chip, never a
    *  field left standing open once the list has loaded. */
@@ -144,6 +148,7 @@ function loadPrefs() {
 }
 
 function savePrefs() {
+  if (resetting) return;
   try {
     localStorage.setItem(
       PREFS_KEY,
@@ -258,6 +263,109 @@ function firstRunLanguage() {
   });
 }
 
+/** The second thing a new install asks, once the language is settled: where
+ *  the projects live. It is the folder editor's own rows in a dialog, so the
+ *  path can be typed or picked, and more than one folder can be named before
+ *  the first scan ever starts. Resolves once at least one folder is chosen. */
+function firstRunFolders() {
+  if (state.roots.length) return Promise.resolve();
+  const overlay = document.createElement("div");
+  overlay.className = "language-first-run";
+  overlay.innerHTML = `<section class="language-dialog folder-dialog" role="dialog" aria-modal="true"
+      aria-labelledby="folder-title">
+    <img src="devhq-icon.png" alt="" />
+    <h1 id="folder-title">Which folder holds your projects?</h1>
+    <p>DevHQ reads every project inside the folder you choose. Type the path or browse for it - you can add more folders now, or change them later.</p>
+    <div class="rootpop-list first-run-roots"></div>
+    <p class="first-run-error" hidden></p>
+    <div class="first-run-foot">
+      <button class="btn" data-first-run="add">${icon("add")}Add another folder</button>
+      <button class="btn primary" data-first-run="start">${icon("refresh")}Start scanning</button>
+    </div>
+  </section>`;
+
+  const list = overlay.querySelector(".first-run-roots");
+  const problem = overlay.querySelector(".first-run-error");
+  const startButton = overlay.querySelector('[data-first-run="start"]');
+  const first = rootRow();
+  list.append(first);
+  document.body.appendChild(overlay);
+  first.querySelector("input").focus();
+
+  const chosen = () => [...list.querySelectorAll("input")].map((i) => i.value.trim()).filter(Boolean);
+  const sync = () => { startButton.disabled = chosen().length === 0; };
+  const fail = (message) => {
+    problem.textContent = message;
+    problem.hidden = !message;
+  };
+  sync();
+
+  // The likely answer is offered rather than assumed: it fills the empty row
+  // as a suggestion the moment the backend works it out, and never overwrites
+  // anything already typed.
+  trackWork("root", "Looking for a code folder", invoke("default_root"))
+    .then((root) => {
+      const input = first.querySelector("input");
+      if (root && !input.value) {
+        input.value = root;
+        input.select();
+        sync();
+      }
+    })
+    .catch(() => {});
+
+  beginWork("first-run", "Waiting for a folder to scan");
+  return new Promise((resolve) => {
+    const done = () => {
+      const roots = [];
+      const seen = new Set();
+      for (const value of chosen()) {
+        if (seen.has(value.toLowerCase())) continue;
+        seen.add(value.toLowerCase());
+        roots.push(value);
+      }
+      if (!roots.length) return;
+      state.roots = roots;
+      savePrefs();
+      endWork("first-run");
+      overlay.remove();
+      markDirty("toolbar");
+      resolve();
+    };
+
+    overlay.oninput = sync;
+    overlay.onclick = (e) => {
+      const browse = e.target.closest(".root-browse");
+      if (browse) {
+        fail("");
+        return browseForFolder(browse.closest(".root-row"), fail).then(sync);
+      }
+      const drop = e.target.closest(".root-drop");
+      if (drop) {
+        // The last row stays, emptied: there is always somewhere to type.
+        if (list.children.length > 1) drop.closest(".root-row").remove();
+        else drop.closest(".root-row").querySelector("input").value = "";
+        return sync();
+      }
+      const action = e.target.closest("[data-first-run]");
+      if (!action) return;
+      if (action.dataset.firstRun === "add") {
+        const row = rootRow();
+        list.append(row);
+        row.querySelector("input").focus();
+        sync();
+      } else {
+        done();
+      }
+    };
+    overlay.onkeydown = (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      done();
+    };
+  });
+}
+
 /* ------------------------------------------------------------- formatting */
 
 function ago(seconds) {
@@ -307,6 +415,65 @@ function shortRemote(url) {
   return m ? m[1] : url;
 }
 
+/* ============================== SCREENSHOT MODE ==============================
+ * One switch that makes the window safe to photograph: every project's title,
+ * group and path is replaced by a made-up but plausible one, the toolbar shows
+ * a fake scan root, and the git remote is left out of the detail pane.
+ *
+ *   DEMO_MODE = true   aliases everything below
+ *   DEMO_MODE = false  the app behaves exactly as it did before this block
+ *
+ * Only what is drawn changes. The real `path` is still what every action,
+ * terminal and git read uses, and the folder editor still holds the real
+ * roots, so the app works the same with the switch either way. */
+const DEMO_MODE = true;
+
+const DEMO_ROOT = "C:\\Projects";
+const DEMO_NAMES = [
+  "acme-storefront", "orbit-api", "northwind-dashboard", "pelican-cli",
+  "harbor-auth", "quartz-ui", "vector-ingest", "lantern-docs",
+  "redwood-billing", "sable-scheduler", "atlas-gateway", "juniper-mobile",
+  "cobalt-analytics", "meridian-crm", "fernway-blog", "solstice-player",
+  "tidepool-sync", "granite-worker", "willow-notify", "cinder-search",
+  "beacon-status", "driftwood-shop", "kestrel-router", "opaline-editor",
+  "foxglove-metrics", "basalt-queue", "marlin-uploads", "verdant-forms",
+  "halcyon-chat", "umbra-proxy", "clearwater-etl", "nimbus-deploy",
+  "thistle-invoices", "onyx-identity", "seafarer-maps", "birchwood-wiki",
+  "cascade-events", "peregrine-bot", "amberline-store", "slate-reports",
+];
+const DEMO_GROUPS = ["clients", "internal", "labs", "archive", "vendor", "sandbox"];
+
+/** Memoised so a project keeps the same alias for the whole session. */
+function demoPick(map, pool, real) {
+  if (!map.has(real)) {
+    const i = map.size;
+    const base = pool[i % pool.length];
+    map.set(real, i < pool.length ? base : `${base}-${Math.floor(i / pool.length) + 1}`);
+  }
+  return map.get(real);
+}
+const demoNames = new Map();
+const demoGroups = new Map();
+const demoName = (real) => (DEMO_MODE && real ? demoPick(demoNames, DEMO_NAMES, real) : real);
+const demoGroup = (real) => (DEMO_MODE && real ? demoPick(demoGroups, DEMO_GROUPS, real) : real);
+
+/** The whole displayed path, rebuilt from the aliases: real roots, drives and
+ *  intermediate folders never reach the screen. With the switch off this is
+ *  the project's real path, which is what every call site drew before. */
+function demoPath(p) {
+  if (!p) return "";
+  if (!DEMO_MODE) return p.path;
+  const group = p.group ? `\\${p.group}` : "";
+  return `${DEMO_ROOT}${group}\\${p.name}`;
+}
+
+/** The toolbar's folder chip: the real roots are never drawn in demo mode. */
+function demoRootsLabel(roots) {
+  if (!DEMO_MODE) return null;
+  return roots.length === 1 ? DEMO_ROOT : `${DEMO_ROOT} +${roots.length - 1}`;
+}
+/* ============================ END SCREENSHOT MODE =========================== */
+
 /* -------------------------------------------------------------- derived */
 
 /** A discovered folder before anything is known about it. Every field the rest
@@ -314,9 +481,9 @@ function shortRemote(url) {
  *  beyond the `pending` flag itself. */
 function stubProject(stub) {
   return {
-    name: stub.name,
+    name: demoName(stub.name), // aliased in screenshot mode, real otherwise
     path: stub.path,
-    group: stub.group,
+    group: demoGroup(stub.group), // aliased in screenshot mode, real otherwise
     description: "",
     version: "",
     packageManager: "",
@@ -427,6 +594,8 @@ function selectedProject() {
  *  count, so the toolbar stays a single short line. */
 function rootsLabel() {
   if (!state.roots.length) return "Add a folder";
+  const demo = demoRootsLabel(state.roots);
+  if (demo) return demo;
   if (state.roots.length === 1) return state.roots[0];
   return `${state.roots[0]} +${state.roots.length - 1}`;
 }
@@ -435,9 +604,40 @@ function rootRow(value = "") {
   const row = document.createElement("div");
   row.className = "root-row";
   row.innerHTML = `${icon("folder")}<input spellcheck="false" placeholder="C:\\code" />
+    <button class="root-browse" title="Browse for a folder">${icon("folder_open")}</button>
     <button class="root-drop" title="Remove">${icon("close")}</button>`;
   row.querySelector("input").value = value;
   return row;
+}
+
+/** Opens the native folder picker for one row. The dialog is Windows' own,
+ *  shown on a thread of its own, so this only waits for the answer - the
+ *  window carries on drawing behind it. A dismissed dialog changes nothing. */
+let browsing = false;
+async function browseForFolder(row, onError) {
+  if (browsing) return;
+  const input = row.querySelector("input");
+  browsing = true;
+  try {
+    const picked = await trackWork(
+      "pick-folder",
+      "Waiting for the folder picker",
+      invoke("pick_folder", { start: input.value.trim() || state.roots[0] || "" })
+    );
+    if (picked) {
+      input.value = picked;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  } catch (err) {
+    if (onError) onError(String(err));
+    else {
+      state.error = String(err);
+      markDirty("banner");
+    }
+  } finally {
+    browsing = false;
+    input.focus();
+  }
 }
 
 function rootEditorOpen() {
@@ -493,7 +693,8 @@ function rescan() {
   state.total = 0;
   state.settled = 0;
   state.durationMs = 0;
-  beginWork("scan", `Starting scan of ${state.roots.join(", ") || "nothing"}`);
+  const scanLabel = demoRootsLabel(state.roots) || state.roots.join(", ") || "nothing";
+  beginWork("scan", `Starting scan of ${scanLabel}`);
   markDirty("toolbar", "grid", "summary", "banner", "filters");
   savePrefs();
   invoke("scan", { roots: state.roots }).catch((err) => {
@@ -606,6 +807,9 @@ function listenScan() {
 
 /** Swaps a stub for the real thing, in the list and in the index. */
 function replaceProject(project, previous) {
+  // Aliased in screenshot mode, the real strings otherwise.
+  project.name = demoName(project.name);
+  project.group = demoGroup(project.group);
   const index = previous ? state.projects.indexOf(previous) : -1;
   if (index >= 0) state.projects[index] = project;
   else state.projects.push(project);
@@ -1200,7 +1404,7 @@ function tableRowView(p) {
   // The cell is one line and clips, so the whole of it has to be reachable.
   const statusTitle = statuses.length ? stripTags(statuses.join(", ")) : "";
   return `<tr class="project-row" data-path="${esc(p.path)}">
-    <td><strong title="${esc(p.name)}">${esc(p.name)}</strong><small title="${esc(p.path)}">${esc(p.path)}</small></td>
+    <td><strong title="${esc(p.name)}">${esc(p.name)}</strong><small title="${esc(demoPath(p))}">${esc(demoPath(p))}</small></td>
     ${state.tableColumns.includes("version") ? `<td class="project-version">${p.version ? esc(p.version) : "—"}</td>` : ""}
     ${technologyCells}
     ${state.tableColumns.includes("status") ? `<td class="table-status-cell" title="${esc(statusTitle)}"><div class="table-status-list">${statuses.join("")}</div></td>` : ""}
@@ -1471,7 +1675,7 @@ function detailView(p, replayEntrance = true) {
   const g = p.git;
   const kv = [];
   if (p.description) kv.push(["Description", esc(p.description)]);
-  kv.push(["Path", `<span class="mono">${esc(p.path)}</span>`]);
+  kv.push(["Path", `<span class="mono">${esc(demoPath(p))}</span>`]);
   if (p.runCmd) kv.push(["Runs with", `<span class="mono">${esc(p.runCmd)}</span>`]);
   if (p.group) kv.push(["Group", esc(p.group)]);
   if (p.version) kv.push(["Version", `<span class="mono">${esc(p.version)}</span>`]);
@@ -1482,7 +1686,10 @@ function detailView(p, replayEntrance = true) {
   if (g) {
     kv.push(["Branch", `<span class="mono">${esc(g.branch || "detached")}</span>`]);
     if (g.upstream) kv.push(["Upstream", `<span class="mono">${esc(g.upstream)}</span>`]);
-    kv.push(["Remote", g.remote ? `<span class="mono">${esc(g.remote)}</span>` : "none"]);
+    // The remote is the one thing an alias cannot cover, so screenshot mode
+    // leaves the row out entirely rather than showing a made-up URL.
+    if (!DEMO_MODE)
+      kv.push(["Remote", g.remote ? `<span class="mono">${esc(g.remote)}</span>` : "none"]);
     kv.push(["Ahead / behind", `${g.ahead} / ${g.behind}`]);
     kv.push(["Branches", String(g.branches.length)]);
     kv.push(["Stashes", String(g.stashes)]);
@@ -1563,7 +1770,7 @@ function detailView(p, replayEntrance = true) {
         <h2>${esc(p.name)}${
           p.version ? `<span class="card-ver">v${esc(p.version)}</span>` : ""
         }</h2>
-        <div class="path">${esc(p.path)}</div>
+        <div class="path">${esc(demoPath(p))}</div>
       </div>
       <button class="win-btn" data-act="close" title="Close">${icon("close")}</button>
     </div>
@@ -1775,7 +1982,7 @@ function renderToolbar() {
   el["roots-label"].textContent = rootsLabel();
   el["roots-btn"].classList.toggle("empty", state.roots.length === 0);
   el["roots-btn"].title = state.roots.length
-    ? `Scanning ${state.roots.join(", ")} - click to change`
+    ? `Scanning ${demoRootsLabel(state.roots) || state.roots.join(", ")} - click to change`
     : "Click to choose the folders to scan";
   for (const button of el["sort-buttons"].querySelectorAll("[data-sort]")) {
     const active = button.dataset.sort === state.sort;
@@ -1928,7 +2135,7 @@ function renderGrid() {
   if (!list.length) {
     body = state.scanning
       ? `<div class="empty">${icon("hourglass_top")}<div>Looking for projects in ${esc(
-          state.roots.join(", ")
+          demoRootsLabel(state.roots) || state.roots.join(", ")
         )}...</div></div>`
       : `<div class="empty">${icon("search_off")}<div>${
           state.projects.length
@@ -2032,6 +2239,10 @@ function renderSettings() {
               <option value="id">Bahasa Indonesia — Indonesian</option>
             </select>
           </label>
+          <div class="settings-row danger-row">
+            <span><strong>Reset DevHQ</strong><small>Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.</small></span>
+            <button class="btn danger setting-control" id="setting-reset" type="button">Reset</button>
+          </div>
         </section>
         <section class="settings-group" data-section="appearance">
           <h3>Appearance</h3>
@@ -2086,6 +2297,52 @@ function renderSettings() {
   shellSelect.value = shellSetting.getDefault();
   buildTermThemeControls(host);
   showSettingsSection(state.settingsSection);
+}
+
+/** Resetting throws away everything the app remembers, and there is no undo,
+ *  so it takes two clicks: the first arms the button, the second wipes. The
+ *  arming lapses on its own, so a stray click cannot leave it loaded. */
+let resetTimer = 0;
+let armedButton = null;
+function armReset(button) {
+  // Leaving Settings and coming back rebuilds the button, and that new button
+  // has to be armed again: only a second click on the same one resets.
+  if (resetTimer && armedButton === button) {
+    clearTimeout(resetTimer);
+    resetTimer = 0;
+    return resetApp();
+  }
+  clearTimeout(resetTimer);
+  armedButton = button;
+  button.classList.add("armed");
+  button.textContent = "Click again to reset";
+  resetTimer = setTimeout(() => {
+    resetTimer = 0;
+    armedButton = null;
+    button.classList.remove("armed");
+    button.textContent = "Reset";
+  }, 6000);
+}
+
+/** Puts the app back to a fresh install: every shell closed, everything it
+ *  remembered dropped, then a reload so the first-run questions come round
+ *  again. Only the analytics visitor id survives - it is not a preference, and
+ *  a reset install is still the same install. */
+async function resetApp() {
+  resetting = true;
+  window.devhqResetting = true;
+  beginWork("reset", "Resetting DevHQ");
+  for (const id of [...(window.termsState?.known.keys() || [])]) {
+    await invoke("term_close", { id }).catch(() => {});
+  }
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith("devhq.") && key !== "devhq.analytics.visitor.v1") localStorage.removeItem(key);
+    }
+  } catch {
+    /* storage disabled - there was nothing remembered to drop */
+  }
+  location.reload();
 }
 
 /** Shows one section. Every group stays mounted and only its visibility
@@ -2271,6 +2528,8 @@ function wireShell() {
   el["roots-btn"].onclick = () => (rootEditorOpen() ? closeRootEditor() : openRootEditor());
 
   el["roots-pop"].onclick = (e) => {
+    const browse = e.target.closest(".root-browse");
+    if (browse) return browseForFolder(browse.closest(".root-row"));
     const drop = e.target.closest(".root-drop");
     if (drop) {
       const row = drop.closest(".root-row");
@@ -2433,6 +2692,7 @@ function wireShell() {
     const navItem = e.target.closest("[data-settings-section]");
     if (e.target.closest('[data-settings="close"]')) closeSettings();
     else if (navItem) showSettingsSection(navItem.dataset.settingsSection);
+    else if (e.target.closest("#setting-reset")) armReset(e.target.closest("#setting-reset"));
     else if (e.target.closest("#setting-term-reset")) {
       window.devhqTermTheme.resetToPreset();
       syncTermThemeControls();
@@ -2520,19 +2780,11 @@ document.addEventListener("keydown", (e) => {
   // already painted, but no disk work or stream can distract from the choice.
   await firstRunLanguage();
 
-  listenScan().then(() => {
-    if (state.roots.length) return rescan();
-    trackWork("root", "Looking for a code folder", invoke("default_root"))
-      .then((root) => {
-        state.roots = [root];
-        markDirty("toolbar");
-        rescan();
-      })
-      .catch(() => {
-        state.error = "Could not work out a starting folder - pick one above.";
-        markDirty("banner");
-        openRootEditor();
-      });
+  listenScan().then(async () => {
+    // Nothing scanned before: ask which folder to read rather than guessing
+    // one, and start only once there is an answer.
+    if (!state.roots.length) await firstRunFolders();
+    if (state.roots.length) rescan();
   });
 })();
 
@@ -2542,5 +2794,5 @@ window.devhqPrimaryRoot = () => state.roots[0] || "";
 
 window.addEventListener("beforeunload", () => {
   // This is DOM/localStorage-only and never delays native window destruction.
-  window.persistDockedTerminalState?.();
+  if (!resetting) window.persistDockedTerminalState?.();
 });

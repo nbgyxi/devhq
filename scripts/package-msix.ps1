@@ -21,6 +21,8 @@
 .EXAMPLE
   # Store submission build (unsigned). The identity defaults below are already
   # DevHQ's reserved Partner Center values, so this is the whole command:
+  #   1. add the release to the top of src/changelog.js
+  #   2. then:
   ./scripts/package-msix.ps1 -BumpVersion
 
 .EXAMPLE
@@ -49,9 +51,9 @@ param(
     # Skip the tauri build step and reuse the existing release exe.
     [switch]$SkipBuild,
 
-    # Increment the patch version in tauri.conf.json before packaging so each
-    # Store submission gets a unique, increasing package version (required by
-    # Partner Center: you can't re-upload the same full name with new contents).
+    # Bring tauri.conf.json up to the version at the top of src/changelog.js
+    # before packaging. Without this, a build whose two versions disagree is
+    # refused rather than shipped under a number the app cannot explain.
     [switch]$BumpVersion,
 
     # Sign with a generated self-signed cert for LOCAL sideload testing only.
@@ -91,32 +93,56 @@ function ConvertTo-XmlText([string]$value) {
 }
 
 # --- 1. Version (4-part, last digit 0 per Store rules) --------------------
-# Resolved (and optionally bumped) BEFORE the build so the version baked into
-# the exe matches the MSIX package version.
+# The release list in the app is the source of truth. Whatever sits at the top
+# of src/changelog.js is the version being built, and tauri.conf.json has to
+# say the same thing - that is what the exe carries, what the MSIX is named
+# after, and what the status bar shows through `app_version`. A package whose
+# number is not in the list in the window is one nobody can place.
+#
+# Resolved BEFORE the build so the version baked into the exe matches the MSIX.
+$changelogPath = Join-Path $repoRoot "src/changelog.js"
+$changelogRaw  = Get-Content $changelogPath -Raw
+$topRelease = [regex]::Match(
+    $changelogRaw,
+    '(?m)^\s*version:\s*"(\d+\.\d+\.\d+)"',
+    [System.Text.RegularExpressions.RegexOptions]::None,
+    [TimeSpan]::FromSeconds(5))
+if (-not $topRelease.Success) {
+    throw "No release found in $changelogPath. The newest release goes at the top of the list."
+}
+$listVersion = $topRelease.Groups[1].Value
+
 $confPath = Join-Path $tauriRoot "tauri.conf.json"
 $confRaw  = Get-Content $confPath -Raw
 $conf     = $confRaw | ConvertFrom-Json
-$parts = @($conf.version.Split('.'))
-while ($parts.Count -lt 3) { $parts += '0' }
+$confVersion = $conf.version
 
-if ($BumpVersion) {
-    $parts[2] = [string]([int]$parts[2] + 1)
-    $newSemver = "{0}.{1}.{2}" -f $parts[0], $parts[1], $parts[2]
+if ($confVersion -ne $listVersion) {
+    if (-not $BumpVersion) {
+        throw ("Version mismatch: tauri.conf.json says $confVersion, the top of src/changelog.js says $listVersion. " +
+               "Add the release you are building to the top of src/changelog.js, then re-run with -BumpVersion.")
+    }
+    if ([version]$listVersion -lt [version]$confVersion) {
+        throw ("src/changelog.js is behind tauri.conf.json ($listVersion < $confVersion). " +
+               "Add the new release to the top of the list rather than moving the app's version backwards.")
+    }
     # Replace only the version line so the rest of the file keeps its formatting.
     $confRaw = [regex]::Replace(
         $confRaw,
         '("version"\s*:\s*")[^"]*(")',
-        ('${1}' + $newSemver + '${2}'),
+        ('${1}' + $listVersion + '${2}'),
         [System.Text.RegularExpressions.RegexOptions]::None,
         [TimeSpan]::FromSeconds(5))
     # Write UTF-8 WITHOUT a BOM; Windows PowerShell's `Set-Content -Encoding UTF8`
     # emits a BOM that the Tauri JSON config parser rejects.
     [System.IO.File]::WriteAllText($confPath, $confRaw, (New-Object System.Text.UTF8Encoding($false)))
-    Write-Host "==> Bumped version to $newSemver in tauri.conf.json" -ForegroundColor Cyan
+    Write-Host "==> tauri.conf.json moved $confVersion -> $listVersion, from the changelog" -ForegroundColor Cyan
 }
 
+$parts = @($listVersion.Split('.'))
+while ($parts.Count -lt 3) { $parts += '0' }
 $version = "{0}.{1}.{2}.0" -f $parts[0], $parts[1], $parts[2]
-Write-Host "==> Package version: $version" -ForegroundColor Cyan
+Write-Host "==> Package version: $version (release '$listVersion' in src/changelog.js)" -ForegroundColor Cyan
 
 # --- 2. Build -------------------------------------------------------------
 if (-not $SkipBuild) {

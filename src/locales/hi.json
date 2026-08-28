@@ -176,5 +176,17 @@
   "Fixed": "ठीक किया",
   "Show the code around this note": "इस नोट के आसपास का कोड दिखाएँ",
   "reading the file...": "फ़ाइल पढ़ी जा रही है…",
-  "Clear the technology filter": "तकनीक फ़िल्टर हटाएँ"
+  "Clear the technology filter": "तकनीक फ़िल्टर हटाएँ",
+  "Browse for a folder": "फ़ोल्डर ब्राउज़ करें",
+  "Which folder holds your projects?": "आपके प्रोजेक्ट किस फ़ोल्डर में हैं?",
+  "DevHQ reads every project inside the folder you choose. Type the path or browse for it - you can add more folders now, or change them later.": "DevHQ आपके चुने हुए फ़ोल्डर के अंदर मौजूद हर प्रोजेक्ट को पढ़ता है। पथ टाइप करें या ब्राउज़ करें — आप अभी और फ़ोल्डर जोड़ सकते हैं, या बाद में बदल सकते हैं।",
+  "Add another folder": "एक और फ़ोल्डर जोड़ें",
+  "Start scanning": "स्कैन शुरू करें",
+  "Waiting for a folder to scan": "स्कैन करने के लिए फ़ोल्डर की प्रतीक्षा",
+  "Waiting for the folder picker": "फ़ोल्डर चयनकर्ता की प्रतीक्षा",
+  "Reset DevHQ": "DevHQ रीसेट करें",
+  "Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.": "फ़ोल्डर, भाषा, दिखावट और टर्मिनल भूल जाएँ और ऐसे शुरू करें जैसे ऐप अभी इंस्टॉल हुआ हो।",
+  "Reset": "रीसेट",
+  "Click again to reset": "रीसेट करने के लिए फिर से क्लिक करें",
+  "Resetting DevHQ": "DevHQ रीसेट हो रहा है"
 }
