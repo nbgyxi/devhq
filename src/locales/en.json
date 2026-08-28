@@ -204,6 +204,8 @@
   "May we send that to PageRain Analytics? It is completely anonymous - a random number and the name of the screen you opened, nothing else. Never a project, never a folder, never your code. The few lines that do it are open source, so you can read exactly what leaves your machine.": "May we send that to PageRain Analytics? It is completely anonymous - a random number and the name of the screen you opened, nothing else. Never a project, never a folder, never your code. The few lines that do it are open source, so you can read exactly what leaves your machine.",
   "Read the code that sends it": "Read the code that sends it",
   "Yes, say hello": "Yes, say hello",
-  "Lets PageRain Analytics know someone is using DevHQ - a random number and the screen you opened, never your projects.": "Lets PageRain Analytics know someone is using DevHQ - a random number and the screen you opened, never your projects.",
-  "Opening your browser": "Opening your browser"
+  "Opening your browser": "Opening your browser",
+  "Let us know you're using DevHQ, via PageRain. It's a random number and the screen you opened - never your projects.": "Let us know you're using DevHQ, via PageRain. It's a random number and the screen you opened - never your projects.",
+  "Keep this window on top": "Keep this window on top",
+  "Stop keeping this window on top": "Stop keeping this window on top"
 }

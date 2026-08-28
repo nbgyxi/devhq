@@ -9,6 +9,339 @@
 window.devhqChangelog = (() => {
   const releases = [
     {
+      version: "0.19.11",
+      date: "2026-08-28",
+      title: "Shift+Home leaves the caret at the start",
+      changes: [
+        ["fix", "After selecting a command with Shift+Home, Shift+Right now unselects the first letter instead of extending the selection at the other end."],
+      ],
+    },
+    {
+      version: "0.19.10",
+      date: "2026-08-28",
+      title: "Official WinUI template",
+      changes: [
+        ["better", "The native Windows experiment now uses Microsoft's packaged .NET 10 WinUI template so dotnet run can register and launch it reliably."],
+      ],
+    },
+    {
+      version: "0.19.9",
+      date: "2026-08-28",
+      title: "Diagnosable WinUI startup",
+      changes: [
+        ["fix", "The WinUI experiment explicitly initializes the Windows App SDK bootstrapper and records otherwise silent startup failures."],
+      ],
+    },
+    {
+      version: "0.19.8",
+      date: "2026-08-28",
+      title: "Native Windows UI experiment",
+      changes: [
+        ["new", "Added an isolated WinUI 3 smoke test for evaluating native controls, themes, lists and text editing before considering a frontend rewrite."],
+      ],
+    },
+    {
+      version: "0.19.7",
+      date: "2026-08-28",
+      title: "Exact terminal command ranges",
+      changes: [
+        ["fix", "Shift+Home and Shift+End now construct exact terminal-column ranges instead of relying on Chromium's inconsistent selection extension."],
+        ["fix", "Selected-command deletion receives stable range boundaries from keyboard selections."],
+      ],
+    },
+    {
+      version: "0.19.6",
+      date: "2026-08-28",
+      title: "Selection follows the terminal cursor",
+      changes: [
+        ["fix", "Shift+Home now anchors at the real terminal cursor and selects the complete command prefix instead of extending a stale one-word browser selection."],
+        ["fix", "Deleting a terminal selection now consistently operates on the selection anchored at the current command cursor."],
+      ],
+    },
+    {
+      version: "0.19.5",
+      date: "2026-08-28",
+      title: "Delete terminal selections",
+      changes: [
+        ["fix", "Backspace and Delete now reliably remove selected text from the current terminal command by deleting from the selection's beginning."],
+      ],
+    },
+    {
+      version: "0.19.4",
+      date: "2026-08-28",
+      title: "Manage leftover terminal processes",
+      changes: [
+        ["new", "Terminal process warnings have their own status field beside the version, opening a process list with Kill and Kill all actions."],
+      ],
+    },
+    {
+      version: "0.19.3",
+      date: "2026-08-28",
+      title: "Editor-style Shift+End",
+      changes: [
+        ["better", "Shift+End in a terminal selects from the cursor to the end of the current command without including blank terminal padding."],
+      ],
+    },
+    {
+      version: "0.19.2",
+      date: "2026-08-28",
+      title: "Editor-style Shift+Home",
+      changes: [
+        ["better", "Shift+Home in a terminal selects from the cursor back to the beginning of the current command without including the shell prompt."],
+      ],
+    },
+    {
+      version: "0.19.1",
+      date: "2026-08-28",
+      title: "Reproducible orphan warning test",
+      changes: [
+        ["new", "Added a safe test fixture and cleanup script for verifying that terminal orphan-process warnings appear after closure."],
+      ],
+    },
+    {
+      version: "0.19.0",
+      date: "2026-08-28",
+      title: "Reliable terminal cleanup warnings",
+      changes: [
+        ["new", "Terminals close immediately, then DevHQ checks their former child processes two seconds later and shows a numbered warning beside Terminal when any remain."],
+        ["better", "Terminal tabs now close immediately while cleanup checks happen afterward without blocking the interface."],
+      ],
+    },
+    {
+      version: "0.18.16",
+      date: "2026-08-28",
+      title: "Clean process labels",
+      changes: [
+        ["fix", "Kill-command details now use correctly encoded separators and loading punctuation."],
+      ],
+    },
+    {
+      version: "0.18.15",
+      date: "2026-08-28",
+      title: "Kill search loads on demand",
+      changes: [
+        ["fix", "Typing kill directly into universal search now loads process results, with visible loading and error states."],
+      ],
+    },
+    {
+      version: "0.18.14",
+      date: "2026-08-28",
+      title: "Clean terminal command row",
+      changes: [
+        ["fix", "The terminal command icon no longer inherits the black terminal-pane background in the command palette."],
+      ],
+    },
+    {
+      version: "0.18.13",
+      date: "2026-08-28",
+      title: "Kill from the palette",
+      changes: [
+        ["new", "Ctrl+K can find Kill process commands by process name, PID or port, with the exact PID shown before confirmation."],
+        ["fix", "Terminal commands use a transparent theme-native icon that stays clear in light mode."],
+      ],
+    },
+    {
+      version: "0.18.12",
+      date: "2026-08-28",
+      title: "Visible copy confirmation",
+      changes: [
+        ["better", "A working folder's Copy button briefly changes to a green checkmark after copying."],
+      ],
+    },
+    {
+      version: "0.18.11",
+      date: "2026-08-28",
+      title: "Folder actions stay close",
+      changes: [
+        ["fix", "Copy and Reveal now sit immediately after the working-folder path instead of being pushed to the far edge of the column."],
+      ],
+    },
+    {
+      version: "0.18.10",
+      date: "2026-08-28",
+      title: "Universal stays universal",
+      changes: [
+        ["fix", "The top search remains the universal project and command search while Process Explorer keeps its own independent process filter."],
+        ["fix", "Project-linked and ordinary working folders now use the exact same flex box, padding and truncation geometry."],
+      ],
+    },
+    {
+      version: "0.18.9",
+      date: "2026-08-28",
+      title: "Folders line up",
+      changes: [
+        ["fix", "Linked project folders and ordinary working folders now share the same baseline, spacing and right-aligned shortcut positions."],
+      ],
+    },
+    {
+      version: "0.18.8",
+      date: "2026-08-28",
+      title: "Project folder shortcuts",
+      changes: [
+        ["fix", "Process rows linked to Overview projects now always show Copy and Reveal actions for the project root folder."],
+      ],
+    },
+    {
+      version: "0.18.7",
+      date: "2026-08-28",
+      title: "Folder shortcuts",
+      changes: [
+        ["new", "Working folders in Process Explorer have compact actions to copy their path or reveal them in Windows Explorer."],
+      ],
+    },
+    {
+      version: "0.18.6",
+      date: "2026-08-28",
+      title: "Back to the project",
+      changes: [
+        ["new", "A process working inside an Overview project links directly from its Working folder cell to that project's detail view."],
+      ],
+    },
+    {
+      version: "0.18.5",
+      date: "2026-08-28",
+      title: "See the response",
+      changes: [
+        ["new", "Browser-readable port badges and Local development labels show the HTTP response code DevHQ received, including errors such as HTTP 500."],
+      ],
+    },
+    {
+      version: "0.18.4",
+      date: "2026-08-28",
+      title: "Development, not Windows",
+      changes: [
+        ["better", "Local development accepts any valid HTTP response, including failed apps, redirects and error pages, while requiring a matching project, development runtime or known server command."],
+        ["fix", "Unrelated Windows services no longer appear in the Local development filter merely because they expose an HTTP endpoint."],
+      ],
+    },
+    {
+      version: "0.18.3",
+      date: "2026-08-28",
+      title: "One definition of local development",
+      changes: [
+        ["fix", "The Local development filter and highlighted rows now include only localhost services that answered as browser-readable HTTP endpoints."],
+      ],
+    },
+    {
+      version: "0.18.2",
+      date: "2026-08-28",
+      title: "Open what is actually web",
+      changes: [
+        ["fix", "Open and Copy URL are available only after a localhost port answers with a real HTTP response, so database and other non-web listeners are no longer sent to the browser."],
+      ],
+    },
+    {
+      version: "0.18.1",
+      date: "2026-08-28",
+      title: "Processes in order",
+      changes: [
+        ["new", "Process Explorer columns can be sorted in either direction by Ports, Process, PID or Working folder."],
+      ],
+    },
+    {
+      version: "0.18.0",
+      date: "2026-08-28",
+      title: "Local development, live",
+      changes: [
+        ["new", "Processes listening through localhost are highlighted directly in the process table and identified from their command, port and matching Overview project."],
+        ["new", "A Local development filter shows only processes with loopback or wildcard TCP listeners."],
+      ],
+    },
+    {
+      version: "0.17.0",
+      date: "2026-08-28",
+      title: "Every process, every port",
+      changes: [
+        ["new", "The Port Manager is now a combined Process and Port Explorer showing every process, including those without a listening port."],
+        ["better", "All TCP listeners and UDP bindings owned by a process are grouped into its single process row."],
+      ],
+    },
+    {
+      version: "0.16.1",
+      date: "2026-08-28",
+      title: "Ports in line",
+      changes: [
+        ["new", "Port Manager has its own filter field for ports, processes, PIDs, protocols, paths and command lines."],
+        ["fix", "The Actions column now stays aligned with every other port-table cell and row divider."],
+      ],
+    },
+    {
+      version: "0.16.0",
+      date: "2026-08-28",
+      title: "Ports under control",
+      changes: [
+        ["new", "A top-level Port Manager lists system-wide TCP listeners and UDP bindings with their process, PID and working folder."],
+        ["new", "Port actions can open localhost, copy its URL, inspect complete process details or terminate the owning process after confirmation."],
+        ["better", "Overview and Ports now have persistent navigation beside the contextual search box."],
+      ],
+    },
+    {
+      version: "0.15.4",
+      date: "2026-08-28",
+      title: "Rows in order",
+      changes: [
+        ["better", "The scan summary now comes before the Stashed and Behind filter row, with the technology filter aligned to that row's right edge."],
+      ],
+    },
+    {
+      version: "0.15.3",
+      date: "2026-08-28",
+      title: "Filters together",
+      changes: [
+        ["better", "The technology filter now sits at the right of the summary row with the other overview controls."],
+      ],
+    },
+    {
+      version: "0.15.2",
+      date: "2026-08-28",
+      title: "One control row",
+      changes: [
+        ["better", "The scanned folder and Rescan control now join sorting and view choices in the summary row."],
+      ],
+    },
+    {
+      version: "0.15.1",
+      date: "2026-08-28",
+      title: "Views in their place",
+      changes: [
+        ["better", "The Cards and Table view switch now sits in the summary row alongside project sorting."],
+      ],
+    },
+    {
+      version: "0.15.0",
+      date: "2026-08-28",
+      title: "A tidier overview",
+      changes: [
+        ["better", "Project sorting now sits with the scan summary, leaving more room in the main toolbar."],
+        ["better", "Scan status shows when the scan happened without reporting how many milliseconds it took."],
+      ],
+    },
+    {
+      version: "0.14.0",
+      date: "2026-08-28",
+      title: "Select with context",
+      changes: [
+        ["new", "Ctrl+A in an active terminal command selects that command first; press it again to select the terminal's complete history and screen."],
+      ],
+    },
+    {
+      version: "0.13.1",
+      date: "2026-08-28",
+      title: "Word by word",
+      changes: [
+        ["fix", "Ctrl+Shift+Left now consistently selects the previous word in terminals, including across differently styled text."],
+      ],
+    },
+    {
+      version: "0.12.0",
+      date: "2026-08-28",
+      title: "On top of things",
+      changes: [
+        ["new", "A popped-out terminal can be pinned above every other window with the pin in its title bar. Handy for watching a build while you work in something else."],
+        ["better", "A pinned terminal stays pinned when you dock it and pop it out again."],
+      ],
+    },
+    {
       version: "0.11.6",
       date: "2026-08-28",
       title: "Your call",

@@ -858,6 +858,32 @@ async fn todo_excerpt(path: String, file: String, line: u32) -> Result<todo::Exc
     .unwrap_or_else(|| Err("Could not read the file.".into()))
 }
 
+#[tauri::command]
+async fn port_list() -> Vec<procs::ProcessEntry> {
+    off_thread(procs::port_list).await.unwrap_or_default()
+}
+
+#[tauri::command]
+async fn port_kill(pid: u32, expected_executable: String, expected_process: String) -> Result<(), String> {
+    off_thread(move || procs::kill(pid, &expected_executable, &expected_process))
+        .await
+        .unwrap_or_else(|| Err("Could not terminate the process.".into()))
+}
+
+#[tauri::command]
+async fn term_close_snapshot(id: String) -> Result<Vec<procs::ProcessIdentity>, String> {
+    off_thread(move || {
+        let descendants = procs::descendants(term::term_pid(&id)?);
+        term::term_close(id)?;
+        Ok(descendants)
+    }).await.unwrap_or_else(|| Err("Could not close the terminal.".into()))
+}
+
+#[tauri::command]
+async fn process_survivors(expected: Vec<procs::ProcessIdentity>) -> Vec<procs::ProcessIdentity> {
+    off_thread(move || procs::survivors(expected)).await.unwrap_or_default()
+}
+
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -877,6 +903,10 @@ pub fn run() {
             git_pull,
             todos,
             todo_excerpt,
+            port_list,
+            port_kill,
+            term_close_snapshot,
+            process_survivors,
             term::term_shell_availability,
             term::term_open,
             term::term_attach,

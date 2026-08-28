@@ -56,6 +56,17 @@ const state = {
   tableColumnWidths: {},
   settingsOpen: false,
   settingsSection: "general",
+  activeView: "overview",
+  portSearch: "",
+  portLocalOnly: false,
+  processSortKey: "process",
+  processSortDirection: 1,
+  ports: [],
+  portsLoading: false,
+  portsError: "",
+  portInspect: null,
+  portConfirm: null,
+  portToken: 0,
   selectedPath: null,
   /** What the open project's detail view is showing. Both arrive after the
    *  view does, so both start null and are drawn as skeletons until they land.
@@ -1115,9 +1126,237 @@ function openSettings() {
 
 function closeSettings() {
   state.settingsOpen = false;
-  window.devhqTrackPageView?.("/overview");
+  window.devhqTrackPageView?.(state.activeView === "ports" ? "/ports" : "/overview");
   syncSettingsButton();
   markDirty("settings");
+}
+
+/* --------------------------------------------------------------- ports */
+
+function switchMainView(view) {
+  if (!['overview', 'ports'].includes(view) || state.activeView === view) return;
+  state.activeView = view;
+  state.selectedPath = null;
+  state.settingsOpen = false;
+  clearDetailData();
+  syncSettingsButton();
+  syncMainView();
+  window.devhqTrackPageView?.(`/${view}`);
+  if (view === "ports" && !state.ports.length) loadPorts();
+}
+
+function syncMainView() {
+  if (!el["top-nav"]) return;
+  const ports = state.activeView === "ports";
+  for (const button of el["top-nav"].querySelectorAll("[data-main-view]")) {
+    const active = button.dataset.mainView === state.activeView;
+    button.classList.toggle("on", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+  for (const id of ["summary", "filters", "banner-host", "scroll"]) el[id].hidden = ports;
+  el["ports-host"].hidden = !ports;
+  el["search-input"].value = state.search;
+  if (el["port-filter-input"]) el["port-filter-input"].value = state.portSearch;
+  el["search-input"].placeholder = "Search projects and commands...";
+  closeSearchCommands();
+  markDirty(ports ? "ports" : "grid", "toolbar");
+}
+
+async function loadPorts() {
+  const token = ++state.portToken;
+  state.portsLoading = true;
+  state.portsError = "";
+  markDirty("ports");
+  beginWork("ports", "Reading processes and ports");
+  try {
+    const rows = await invoke("port_list");
+    if (token === state.portToken) state.ports = Array.isArray(rows) ? rows : [];
+  } catch (error) {
+    if (token === state.portToken) state.portsError = String(error);
+  } finally {
+    if (token === state.portToken) {
+      state.portsLoading = false;
+      markDirty("ports");
+      if (document.activeElement === el["search-input"]) renderSearchCommands();
+    }
+    endWork("ports");
+  }
+}
+
+function visiblePorts() {
+  const words = state.portSearch.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  const rows = state.ports.filter((row) => {
+    if (state.portLocalOnly && !isLocalDevelopmentProcess(row)) return false;
+    if (!words.length) return true;
+    const bindings = (row.ports || []).map((binding) => `${binding.port} ${binding.protocol} ${binding.address} ${binding.browserUrl || ""}`).join(" ");
+    const haystack = `${bindings} ${row.pid} ${row.process} ${row.cwd} ${row.executablePath} ${row.commandLine}`.toLowerCase();
+    return words.every((word) => haystack.includes(word));
+  });
+  const direction = state.processSortDirection;
+  const value = (row) => {
+    if (state.processSortKey === "ports") return Math.min(...(row.ports || []).map((binding) => binding.port), 65536);
+    if (state.processSortKey === "pid") return row.pid;
+    if (state.processSortKey === "path") return row.cwd || row.executablePath || "";
+    return portProcessName(row);
+  };
+  return rows.sort((a, b) => {
+    const av = value(a);
+    const bv = value(b);
+    const compared = typeof av === "number" ? av - bv : String(av).localeCompare(String(bv));
+    return compared * direction || a.pid - b.pid;
+  });
+}
+
+function portProcessName(row) {
+  return row.process || row.executablePath?.split(/[\\/]/).pop() || "Unknown process";
+}
+
+function processPortText(row) {
+  return (row.ports || []).map((binding) => `${binding.port}/${binding.protocol}${binding.httpStatus ? ` (HTTP ${binding.httpStatus})` : ""}`).join(", ") || "None";
+}
+
+function primaryBrowserUrl(row) {
+  return (row.ports || []).find((binding) => binding.browserUrl)?.browserUrl || null;
+}
+
+function projectForProcess(row) {
+  const cwd = String(row.cwd || "").replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+  if (!cwd) return null;
+  return state.projects.find((project) => {
+    const path = String(project.path || "").replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+    return cwd === path || cwd.startsWith(`${path}\\`);
+  }) || null;
+}
+
+function localServerLabel(row, port, project) {
+  const haystack = `${row.process} ${row.executablePath} ${row.commandLine}`.toLowerCase();
+  const known = [
+    ["next", "Next.js"], ["vite", "Vite"], ["aspnet", "ASP.NET"],
+    ["dotnet", "ASP.NET"], ["postgres", "PostgreSQL"], ["redis", "Redis"],
+    ["webpack", "Webpack"], ["ng serve", "Angular"], ["django", "Django"],
+    ["flask", "Flask"], ["uvicorn", "FastAPI"], ["fastapi", "FastAPI"],
+    ["rails", "Rails"], ["spring", "Spring Boot"],
+  ];
+  const commandMatch = known.find(([needle]) => haystack.includes(needle));
+  if (commandMatch) return commandMatch[1];
+  const projectNames = (project?.tech || []).map((tech) => tech.name);
+  const projectMatch = ["Next.js", "Vite", "ASP.NET", "PostgreSQL", "Redis", "Angular", "Django", "Flask", "FastAPI", "Spring Boot"]
+    .find((name) => projectNames.includes(name));
+  if (projectMatch) return projectMatch;
+  return ({ 3000: "Web app", 4200: "Angular", 5000: "Web server", 5001: "ASP.NET", 5173: "Vite", 5432: "PostgreSQL", 6379: "Redis", 8000: "Web server", 8080: "Web server" })[port]
+    || portProcessName(row).replace(/\.exe$/i, "");
+}
+
+function isLikelyDevelopmentProcess(row, project) {
+  if (project) return true;
+  const executable = portProcessName(row).toLowerCase();
+  const runtimes = new Set([
+    "node.exe", "bun.exe", "deno.exe", "dotnet.exe", "python.exe", "pythonw.exe",
+    "ruby.exe", "php.exe", "java.exe", "javaw.exe", "go.exe", "cargo.exe", "air.exe",
+  ]);
+  if (runtimes.has(executable)) return true;
+  const command = `${row.commandLine || ""} ${row.executablePath || ""}`.toLowerCase();
+  return [
+    "next dev", "vite", "webpack", "ng serve", "aspnetcore", "dotnet watch",
+    "django", "manage.py runserver", "flask run", "uvicorn", "fastapi", "rails server",
+    "spring-boot", "npm run", "pnpm run", "yarn dev", "bun run", "deno run",
+  ].some((marker) => command.includes(marker));
+}
+
+function localDevelopment(rows) {
+  const entries = [];
+  for (const row of rows) {
+    const project = projectForProcess(row);
+    if (!isLikelyDevelopmentProcess(row, project)) continue;
+    for (const binding of row.ports || []) {
+      if (!binding.browserUrl) continue;
+      entries.push({ row, binding, project, label: localServerLabel(row, binding.port, project) });
+    }
+  }
+  return entries.sort((a, b) => Number(Boolean(b.project)) - Number(Boolean(a.project)) || a.binding.port - b.binding.port);
+}
+
+function isLocalDevelopmentProcess(row) {
+  return localDevelopment([row]).length > 0;
+}
+
+function renderPorts() {
+  const host = el["ports-content"];
+  if (!host || state.activeView !== "ports") return;
+  const rows = visiblePorts();
+  const body = rows.map((row) => {
+    const browserUrl = primaryBrowserUrl(row);
+    const matchedProject = projectForProcess(row);
+    const folderActionPath = matchedProject?.path || row.cwd;
+    const local = localDevelopment([row]);
+    const localLabels = [...new Set(local.map((entry) => `${entry.label} · HTTP ${entry.binding.httpStatus}`))].join(", ");
+    const project = local.find((entry) => entry.project)?.project;
+    const bindings = (row.ports || []).map((binding) => `<span class="port-binding" title="${esc(binding.protocol)} on ${esc(binding.address || "*")}${binding.httpStatus ? ` · HTTP ${binding.httpStatus}` : ""}"><strong>${binding.port}</strong><small>${esc(binding.protocol)}${binding.httpStatus ? ` · HTTP ${binding.httpStatus}` : ""}</small></span>`).join("");
+    return `<tr class="${local.length ? "local-process-row" : ""}">
+    <td class="port-number">${bindings || '<span class="port-none">—</span>'}</td>
+    <td><strong>${esc(portProcessName(row))}</strong>${local.length ? `<small class="local-process-label"><i></i>${esc(localLabels)}${project ? ` · ${esc(project.name)}` : ""}</small>` : ""}</td>
+    <td class="port-pid">${row.pid}</td>
+    <td class="port-path" title="${esc(row.cwd || row.executablePath)}"><div class="port-path-content">${matchedProject
+      ? `<button class="port-project-link" type="button" data-port-project="${esc(matchedProject.path)}" title="Open ${esc(matchedProject.name)} details"><span>${esc(row.cwd || matchedProject.path)}</span></button>`
+      : `<span class="port-path-text"><span>${esc(row.cwd || row.executablePath || "Unavailable")}</span></span>`}
+      ${folderActionPath ? `<span class="port-path-actions"><button type="button" data-port-path-copy="${esc(folderActionPath)}" title="Copy ${matchedProject ? "project folder" : "working folder"}">${icon("content_copy")}</button><button type="button" data-port-path-reveal="${esc(folderActionPath)}" title="Reveal ${matchedProject ? "project folder" : "working folder"} in Explorer">${icon("folder_open")}</button></span>` : ""}</div></td>
+    <td><div class="port-actions">
+      ${browserUrl ? `<button type="button" data-port-open="${esc(browserUrl)}" title="Open ${esc(browserUrl)}">${icon("open_in_new")}</button>
+      <button type="button" data-port-copy="${esc(browserUrl)}" title="Copy URL">${icon("content_copy")}</button>` : ""}
+      <button type="button" data-port-inspect="${row.pid}" title="Inspect process">${icon("info")}</button>
+      <button type="button" class="port-kill" data-port-kill="${row.pid}" title="Kill process">${icon("stop_circle")}</button>
+    </div></td>
+  </tr>`;
+  }).join("");
+  const inspected = state.portInspect === null ? null : state.ports.find((row) => row.pid === state.portInspect);
+  const confirming = state.portConfirm === null ? null : state.ports.find((row) => row.pid === state.portConfirm);
+  const totalBindings = state.ports.reduce((total, row) => total + (row.ports || []).length, 0);
+  const processHeader = (key, label) => {
+    const active = state.processSortKey === key;
+    const direction = active ? (state.processSortDirection === 1 ? "ascending" : "descending") : "none";
+    return `<th aria-sort="${direction}"><button class="ports-table-sort${active ? " on" : ""}" type="button" data-process-sort="${key}">${label}<span>${active ? (state.processSortDirection === 1 ? "▲" : "▼") : ""}</span></button></th>`;
+  };
+
+  const localButton = el["port-local-only"];
+  localButton.classList.toggle("on", state.portLocalOnly);
+  localButton.setAttribute("aria-pressed", String(state.portLocalOnly));
+  el["ports-count"].textContent = state.portsLoading ? "Reading processes and ports…" : `${rows.length} of ${state.ports.length} processes · ${totalBindings} port bindings`;
+  host.innerHTML = `${state.portsError ? `<div class="banner">${esc(state.portsError)}</div>` : ""}
+    <div class="ports-table-wrap"><table class="ports-table"><thead><tr>
+      ${processHeader("ports", "Ports")}${processHeader("process", "Process")}${processHeader("pid", "PID")}${processHeader("path", "Working folder")}<th>Actions</th>
+    </tr></thead><tbody>${body || `<tr><td colspan="5" class="ports-empty">${state.portsLoading ? "Reading processes and ports…" : "No processes match this filter."}</td></tr>`}</tbody></table></div>
+    ${inspected ? `<div class="port-overlay"><section class="port-dialog" role="dialog" aria-modal="true" aria-labelledby="port-inspect-title">
+      <header><h3 id="port-inspect-title">${esc(portProcessName(inspected))}</h3><button data-port-dialog-close>${icon("close")}</button></header>
+      <dl><dt>PID</dt><dd>${inspected.pid}</dd><dt>Ports</dt><dd>${esc(processPortText(inspected))}</dd>
+      <dt>Executable</dt><dd>${esc(inspected.executablePath || "Unavailable")}</dd><dt>Working folder</dt><dd>${esc(inspected.cwd || "Unavailable")}</dd>
+      <dt>Command line</dt><dd>${esc(inspected.commandLine || "Unavailable")}</dd></dl>
+    </section></div>` : ""}
+    ${confirming ? `<div class="port-overlay"><section class="port-dialog port-confirm" role="alertdialog" aria-modal="true" aria-labelledby="port-kill-title">
+      <header><h3 id="port-kill-title">Kill ${esc(portProcessName(confirming))}?</h3><button data-port-dialog-close>${icon("close")}</button></header>
+      <p>This will terminate PID ${confirming.pid}${confirming.ports?.length ? ` and close its ports: ${esc(processPortText(confirming))}` : ""}.</p>
+      <footer><button class="btn" data-port-dialog-close>Cancel</button><button class="btn danger" data-port-kill-confirm="${confirming.pid}">Kill process</button></footer>
+    </section></div>` : ""}`;
+}
+
+async function killPortProcess(pid) {
+  const expected = state.ports.find((row) => row.pid === pid);
+  if (!expected) return;
+  state.portConfirm = null;
+  beginWork(`port-kill:${pid}`, `Terminating process ${pid}`);
+  markDirty("ports");
+  try {
+    await invoke("port_kill", {
+      pid,
+      expectedExecutable: expected.executablePath || "",
+      expectedProcess: expected.process || "",
+    });
+    await loadPorts();
+  } catch (error) {
+    state.portsError = String(error);
+    markDirty("ports");
+  } finally {
+    endWork(`port-kill:${pid}`);
+  }
 }
 
 /* ---------- the version button and what changed in each release ---------- */
@@ -1200,7 +1439,7 @@ function currentPath() {
   if (changelogOpen()) return "/changelog";
   if (state.settingsOpen) return "/settings";
   if (state.selectedPath) return "/project";
-  return "/overview";
+  return state.activeView === "ports" ? "/ports" : "/overview";
 }
 
 function openChangelog() {
@@ -1375,14 +1614,15 @@ function renderTechMenu() {
  *  a row without one reads as a hole in the list. */
 const COMMAND_KIND_ICONS = {
   CMD: "bolt",
-  TERM: "terminal",
+  KILL: "stop_circle",
+  TERM: "code",
   VIEW: "filter_alt",
   REPO: "folder_open",
   RUN: "play_arrow",
   PULL: "download",
 };
 
-function availableSearchCommands() {
+function availableSearchCommands(query = "") {
   const commands = [
     { kind: "CMD", label: "Rescan projects", detail: "F5", action: "rescan" },
     { kind: "TERM", label: "Toggle terminal panel", detail: "Ctrl+`", action: "terminal-panel" },
@@ -1413,6 +1653,18 @@ function availableSearchCommands() {
       });
     }
   }
+  if (/\bkill\b/i.test(query)) {
+    for (const row of state.ports) {
+      const ports = (row.ports || []).map((binding) => binding.port);
+      commands.push({
+        kind: "KILL",
+        label: `Kill ${portProcessName(row)} (PID ${row.pid})`,
+        detail: [ports.length ? `port${ports.length === 1 ? "" : "s"} ${ports.join(", ")}` : "no ports", row.cwd || row.executablePath].filter(Boolean).join(" · "),
+        action: "kill-process",
+        process: row,
+      });
+    }
+  }
   return commands;
 }
 
@@ -1429,14 +1681,18 @@ function openSearchCommands() {
   el["search-input"]?.select();
   searchCommandIndex = 0;
   renderSearchCommands();
+  if (!state.ports.length && !state.portsLoading) loadPorts();
 }
 
 function renderSearchCommands() {
   const menu = el["search-menu"];
   const input = el["search-input"];
   if (!menu || document.activeElement !== input) return;
-  const terms = searchQuery(input.value).toLowerCase().trim().split(/\s+/).filter(Boolean);
-  searchCommands = availableSearchCommands()
+  const query = searchQuery(input.value);
+  const killQuery = /\bkill\b/i.test(query);
+  if (killQuery && !state.ports.length && !state.portsLoading && !state.portsError) loadPorts();
+  const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  searchCommands = availableSearchCommands(query)
     .filter((command) => {
       const hay = `${command.kind} ${command.label} ${command.detail}`.toLowerCase();
       return terms.every((term) => hay.includes(term));
@@ -1446,13 +1702,17 @@ function renderSearchCommands() {
   menu.innerHTML = searchCommands.length
     ? searchCommands.map((command, index) => `<button class="search-command${
         index === searchCommandIndex ? " on" : ""
-      }" data-command="${index}"><span class="command-kind ${command.kind.toLowerCase()}" title="${esc(
+      }" data-command="${index}"><span class="command-kind kind-${command.kind.toLowerCase()}" title="${esc(
         command.kind
       )}">${icon(COMMAND_KIND_ICONS[command.kind] || "chevron_right")}</span><span
         class="command-label">${esc(command.label)}</span><span class="command-detail">${esc(
         command.detail
       )}</span></button>`).join("")
-    : '<div class="search-command-empty">No commands or projects found</div>';
+    : `<div class="search-command-empty">${killQuery && state.portsLoading
+      ? "Finding processes…"
+      : killQuery && state.portsError
+      ? `Could not read processes: ${esc(state.portsError)}`
+      : "No commands, projects or processes found"}</div>`;
   menu.hidden = false;
   menu.querySelector(".search-command.on")?.scrollIntoView({ block: "nearest" });
 }
@@ -1470,11 +1730,22 @@ function runSearchCommand(index) {
   markDirty("grid", "filters");
   if (command.action === "rescan") rescan();
   else if (command.action === "terminal-panel") openTerminalPanel();
-  else if (command.action === "filter") toggleFilter(command.key);
-  else if (command.action === "repo") openDetail(command.project);
+  else if (command.action === "filter") {
+    if (state.activeView !== "overview") switchMainView("overview");
+    toggleFilter(command.key);
+  } else if (command.action === "repo") {
+    if (state.activeView !== "overview") switchMainView("overview");
+    openDetail(command.project);
+  }
   else if (command.action === "run") projectAction("run", command.project);
   else if (command.action === "terminal") projectAction("terminal", command.project);
   else if (command.action === "pull") projectAction("pull", command.project);
+  else if (command.action === "kill-process") {
+    if (state.activeView !== "ports") switchMainView("ports");
+    state.portInspect = null;
+    state.portConfirm = command.process.pid;
+    markDirty("ports");
+  }
 }
 
 /* ----------------------------------------------------------------- views */
@@ -2144,6 +2415,7 @@ function flushRender() {
   }
   if (regions.has("detail")) renderDetail();
   if (regions.has("settings")) renderSettings();
+  if (regions.has("ports")) renderPorts();
 }
 
 /** The shell is built once. Inputs live for the lifetime of the window, so
@@ -2175,7 +2447,20 @@ function mountShell() {
 
     <div class="toolbar">
       <div class="loading" id="loadbar" hidden><i></i></div>
-      <div class="roots" id="roots">
+      <nav class="top-nav" id="top-nav" aria-label="Main views">
+        <button type="button" data-main-view="overview">${icon("dashboard")}Overview</button>
+        <button type="button" data-main-view="ports">${icon("lan")}Processes</button>
+      </nav>
+      <div class="field search" id="search-box">${icon("search")}
+        <input id="search-input" spellcheck="false"
+               placeholder="Search projects and commands..." />
+        <div class="search-menu" id="search-menu" hidden></div>
+      </div>
+    </div>
+
+    <div class="summary" id="summary">
+      <div class="summary-stats" id="summary-stats"></div>
+      <div class="roots summary-roots" id="roots">
         <button class="rootchip" id="roots-btn">${icon("folder")}<span
           class="label" id="roots-label"></span>${icon("edit")}</button>
         <div class="rootpop" id="roots-pop" hidden>
@@ -2187,13 +2472,22 @@ function mountShell() {
           </div>
         </div>
       </div>
-      <button class="btn primary" id="rescan">${icon("refresh")}<span class="label">Rescan</span></button>
-      <div class="field search" id="search-box">${icon("search")}
-        <input id="search-input" spellcheck="false"
-               placeholder="Search projects and commands..." />
-        <div class="search-menu" id="search-menu" hidden></div>
+      <button class="btn primary summary-rescan" id="rescan">${icon("refresh")}<span class="label">Rescan</span></button>
+      <div class="sort-buttons summary-sort" id="sort-buttons" aria-label="Sort projects">
+        <button data-sort="activity" title="Sort by recent activity">Recent</button>
+        <button data-sort="name" title="Sort by project name">Name</button>
+        <button data-sort="changes" title="Sort by most changes">Changes</button>
+        <button data-sort="running" title="Show running projects first">Running</button>
+        <button data-sort="tech" title="Sort by technology">Tech</button>
       </div>
-      <div class="tech-picker" id="tech-picker">
+      <div class="sort-buttons view-buttons summary-view" id="view-buttons" aria-label="Project view">
+        <button data-view="cards">Cards</button>
+        <button data-view="table">Table</button>
+      </div>
+    </div>
+    <div class="filters" id="filters">
+      <div class="filter-chips" id="filter-chips"></div>
+      <div class="tech-picker filter-tech" id="tech-picker">
         <button class="tech-button" id="tech-filter" type="button" aria-haspopup="listbox"
                 title="Choose a technology to filter by" aria-expanded="false">${icon("category")}<span class="tech-button-label"
           id="tech-filter-label">All tech</span>${icon("keyboard_arrow_down")}</button>
@@ -2206,29 +2500,29 @@ function mountShell() {
           <div class="tech-menu-list" id="tech-menu-list"></div>
         </div>
       </div>
-      <div class="sort-buttons" id="sort-buttons" aria-label="Sort projects">
-        <button data-sort="activity" title="Sort by recent activity">Recent</button>
-        <button data-sort="name" title="Sort by project name">Name</button>
-        <button data-sort="changes" title="Sort by most changes">Changes</button>
-        <button data-sort="running" title="Show running projects first">Running</button>
-        <button data-sort="tech" title="Sort by technology">Tech</button>
-      </div>
-      <div class="sort-buttons view-buttons" id="view-buttons" aria-label="Project view">
-        <button data-view="cards">Cards</button>
-        <button data-view="table">Table</button>
-      </div>
     </div>
-
-    <div class="filters" id="filters"></div>
     <div id="banner-host"></div>
-    <div class="summary" id="summary"></div>
     <div class="scroll" id="scroll"><div class="grid" id="grid"></div></div>
+    <main class="ports-page" id="ports-host" hidden>
+      <header class="ports-head">
+        <div><h2>Process &amp; Port Explorer</h2><p id="ports-count">Reading processes and ports…</p></div>
+        <button class="btn" type="button" data-ports-refresh>${icon("refresh")}Refresh</button>
+      </header>
+      <div class="ports-filter-row"><label class="field ports-filter" for="port-filter-input">${icon("filter_alt")}
+        <input id="port-filter-input" spellcheck="false" placeholder="Filter by port, process, PID, protocol or path..." />
+      </label><button class="btn port-local-only" id="port-local-only" type="button" aria-pressed="false"><span class="local-filter-dot"></span>Local development</button></div>
+      <div id="ports-content"></div>
+    </main>
     <div class="statusbar">
       <div class="activity" id="activity"></div>
       <div class="status-version-wrap" id="status-version-wrap">
         <button class="status-btn status-version" id="status-version" title="What's new in DevHQ"
                 aria-haspopup="dialog" aria-expanded="false"></button>
         <div class="changelog-pop" id="changelog-pop" role="dialog" aria-label="What's new" hidden></div>
+      </div>
+      <div class="status-orphan-wrap" id="status-orphan-wrap" hidden>
+        <button class="status-btn status-orphan" id="status-orphan" title="Processes left running after terminal closure" aria-haspopup="dialog" aria-expanded="false">${icon("warning")}<span>Still running</span><b>0</b></button>
+        <div class="orphan-pop" id="orphan-pop" role="dialog" aria-label="Processes still running" hidden></div>
       </div>
       <button class="status-btn" id="status-term" title="Open a terminal" aria-expanded="false">${icon(
         "terminal"
@@ -2240,10 +2534,10 @@ function mountShell() {
   `;
 
   for (const id of [
-    "brand-sub", "loadbar", "roots-btn", "roots-label", "roots-pop", "roots-list",
+    "brand-sub", "loadbar", "top-nav", "roots-btn", "roots-label", "roots-pop", "roots-list",
     "rescan", "search-input", "search-menu", "tech-picker", "tech-filter", "tech-filter-label",
-    "tech-menu", "tech-menu-input", "tech-menu-list", "tech-clear", "sort-buttons", "view-buttons", "activity", "filters",
-    "banner-host", "summary", "grid", "detail-host", "settings-host", "open-settings", "toggle-theme",
+    "tech-menu", "tech-menu-input", "tech-menu-list", "tech-clear", "sort-buttons", "view-buttons", "activity", "filters", "filter-chips",
+    "banner-host", "summary", "summary-stats", "scroll", "grid", "ports-host", "ports-count", "port-filter-input", "port-local-only", "ports-content", "detail-host", "settings-host", "open-settings", "toggle-theme",
     "status-term", "status-progress", "status-version", "changelog-pop",
   ]) {
     el[id] = document.getElementById(id);
@@ -2255,6 +2549,7 @@ function mountShell() {
   applyTheme();
   syncSettingsButton();
   window.syncTerminalButton?.();
+  syncMainView();
 }
 
 function renderToolbar() {
@@ -2342,7 +2637,7 @@ function idleDetail() {
   const parts = [`${state.projects.length} projects`];
   if (dirty) parts.push(`${dirty} with uncommitted changes`);
   if (running) parts.push(`${running} running`);
-  if (state.scannedAt) parts.push(`scanned in ${state.durationMs}ms`);
+  if (state.scannedAt) parts.push(`scanned at ${new Date(state.scannedAt).toLocaleTimeString()}`);
   return parts.join(" · ");
 }
 
@@ -2363,7 +2658,7 @@ function renderFilters() {
     state.filters.size > 1
       ? `<span class="chip-hint">showing any of ${state.filters.size}</span>`
       : "";
-  el.filters.innerHTML =
+  el["filter-chips"].innerHTML =
     chips +
     hint +
     (state.filters.size || state.techFilter || state.search
@@ -2384,12 +2679,10 @@ function renderSummary() {
   const tail = state.scanning
     ? `${state.settled} of ${state.total} read`
     : state.scannedAt
-    ? `scanned in ${state.durationMs}ms &middot; ${esc(
-        new Date(state.scannedAt).toLocaleTimeString()
-      )}`
+    ? `scanned at ${esc(new Date(state.scannedAt).toLocaleTimeString())}`
     : "";
 
-  el.summary.innerHTML = `
+  el["summary-stats"].innerHTML = `
     <span><span class="dot" style="background:var(--green)"></span><b>${count(
       "running"
     )}</b> running</span>
@@ -2399,7 +2692,7 @@ function renderSummary() {
     <span><span class="dot" style="background:var(--accent)"></span><b>${count(
       "unpushed"
     )}</b> unpushed</span>
-    <span style="margin-left:auto">${tail}</span>`;
+    <span class="summary-tail">${tail}</span>`;
 }
 
 function renderGrid() {
@@ -2526,7 +2819,7 @@ function renderSettings() {
             <input class="setting-check" id="setting-compact-tech" type="checkbox" />
           </label>
           <label class="settings-row" for="setting-analytics">
-            <span><strong>Send anonymous usage data</strong><small>Lets PageRain Analytics know someone is using DevHQ - a random number and the screen you opened, never your projects.</small>
+            <span><strong>Send anonymous usage data</strong><small>Let us know you're using DevHQ, via PageRain. It's a random number and the screen you opened - never your projects.</small>
               <button class="linklike" type="button" id="setting-analytics-source">Read the code that sends it</button>
             </span>
             <input class="setting-check" id="setting-analytics" type="checkbox" />
@@ -2738,6 +3031,10 @@ function renderDiffSelection() {
 /** All handlers are bound once, on elements that live forever, or delegated
  *  from a container - so a redraw never has to rewire anything. */
 function wireShell() {
+  el["top-nav"].onclick = (e) => {
+    const button = e.target.closest("[data-main-view]");
+    if (button) switchMainView(button.dataset.mainView);
+  };
   el["open-settings"].onclick = openSettings;
   el["toggle-theme"].onclick = () => {
     state.theme = state.theme === "light" ? "dark" : "light";
@@ -2941,6 +3238,85 @@ function wireShell() {
     if (command) runSearchCommand(Number(command.dataset.command));
   };
 
+  el["ports-host"].onclick = (e) => {
+    if (e.target.closest("[data-ports-refresh]")) return loadPorts();
+    const copyPath = e.target.closest("[data-port-path-copy]");
+    if (copyPath) {
+      navigator.clipboard?.writeText(copyPath.dataset.portPathCopy).catch(() => {});
+      copyPath.innerHTML = icon("check");
+      copyPath.classList.add("copied");
+      beginWork("port-path-copy", "Copied working folder");
+      setTimeout(() => {
+        if (copyPath.isConnected) {
+          copyPath.innerHTML = icon("content_copy");
+          copyPath.classList.remove("copied");
+        }
+        endWork("port-path-copy");
+      }, 1400);
+      return;
+    }
+    const revealPath = e.target.closest("[data-port-path-reveal]");
+    if (revealPath) {
+      return trackWork("port-path-reveal", "Opening working folder", invoke("open_in", {
+        path: revealPath.dataset.portPathReveal,
+        target: "explorer",
+      })).catch(() => {});
+    }
+    const projectLink = e.target.closest("[data-port-project]");
+    if (projectLink) {
+      const project = state.byPath.get(projectLink.dataset.portProject);
+      if (!project) return;
+      switchMainView("overview");
+      return openDetail(project);
+    }
+    const sort = e.target.closest("[data-process-sort]");
+    if (sort) {
+      const key = sort.dataset.processSort;
+      if (state.processSortKey === key) state.processSortDirection *= -1;
+      else {
+        state.processSortKey = key;
+        state.processSortDirection = 1;
+      }
+      return markDirty("ports");
+    }
+    const open = e.target.closest("[data-port-open]");
+    if (open) return openUrl(open.dataset.portOpen);
+    const copy = e.target.closest("[data-port-copy]");
+    if (copy) {
+      navigator.clipboard?.writeText(copy.dataset.portCopy).catch(() => {});
+      beginWork("port-copy", `Copied ${copy.dataset.portCopy}`);
+      setTimeout(() => endWork("port-copy"), 1400);
+      return;
+    }
+    const inspect = e.target.closest("[data-port-inspect]");
+    if (inspect) {
+      state.portInspect = Number(inspect.dataset.portInspect);
+      state.portConfirm = null;
+      return markDirty("ports");
+    }
+    const kill = e.target.closest("[data-port-kill]");
+    if (kill) {
+      state.portConfirm = Number(kill.dataset.portKill);
+      state.portInspect = null;
+      return markDirty("ports");
+    }
+    const confirm = e.target.closest("[data-port-kill-confirm]");
+    if (confirm) return killPortProcess(Number(confirm.dataset.portKillConfirm));
+    if (e.target.closest("[data-port-dialog-close]") || e.target.classList.contains("port-overlay")) {
+      state.portInspect = null;
+      state.portConfirm = null;
+      markDirty("ports");
+    }
+  };
+  el["port-filter-input"].oninput = (e) => {
+    state.portSearch = e.target.value;
+    markDirty("ports");
+  };
+  el["port-local-only"].onclick = () => {
+    state.portLocalOnly = !state.portLocalOnly;
+    markDirty("ports");
+  };
+
   el.filters.onclick = (e) => {
     const chip = e.target.closest("[data-filter]");
     if (chip) return toggleFilter(chip.dataset.filter);
@@ -3133,7 +3509,11 @@ function typingSomewhereElse(target) {
 }
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && changelogOpen()) {
+  if (e.key === "Escape" && state.activeView === "ports" && (state.portInspect !== null || state.portConfirm !== null)) {
+    state.portInspect = null;
+    state.portConfirm = null;
+    markDirty("ports");
+  } else if (e.key === "Escape" && changelogOpen()) {
     closeChangelog();
     el["status-version"].focus();
   } else if (e.key === "Escape" && (state.settingsOpen || state.selectedPath)) {
@@ -3141,7 +3521,8 @@ document.addEventListener("keydown", (e) => {
     else closeDetail();
   } else if (e.key === "F5" || (e.ctrlKey && e.key.toLowerCase() === "r")) {
     e.preventDefault();
-    rescan();
+    if (state.activeView === "ports") loadPorts();
+    else rescan();
   } else if (e.ctrlKey && e.key === "`") {
     e.preventDefault();
     setDockOpen(!window.termsState.open);

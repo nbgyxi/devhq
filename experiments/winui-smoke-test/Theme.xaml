@@ -1,0 +1,552 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  The DevHQ palette and control looks, ported from src/styles.css so the
+  native shell can be held up next to the web one and compared honestly.
+  Every colour here is the value the web app already uses.
+-->
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Default">
+            <SolidColorBrush x:Key="BgBrush" Color="#0c0d11" />
+            <SolidColorBrush x:Key="Bg1Brush" Color="#121319" />
+            <SolidColorBrush x:Key="Bg2Brush" Color="#171922" />
+            <SolidColorBrush x:Key="Bg3Brush" Color="#1e212c" />
+            <SolidColorBrush x:Key="LineBrush" Color="#272b38" />
+            <SolidColorBrush x:Key="LineHoverBrush" Color="#3b435c" />
+            <SolidColorBrush x:Key="TextBrush" Color="#e8eaf0" />
+            <SolidColorBrush x:Key="DimBrush" Color="#9aa1b4" />
+            <SolidColorBrush x:Key="Dim2Brush" Color="#6b7285" />
+            <SolidColorBrush x:Key="AccentBrush" Color="#6d8bff" />
+            <SolidColorBrush x:Key="TealBrush" Color="#3ad6c8" />
+            <SolidColorBrush x:Key="AmberBrush" Color="#f2b544" />
+            <SolidColorBrush x:Key="RedBrush" Color="#f2545b" />
+            <SolidColorBrush x:Key="GreenBrush" Color="#3fca7f" />
+            <SolidColorBrush x:Key="PurpleBrush" Color="#b48bff" />
+
+            <!-- The accent wash the chips and segments wear while they are on. -->
+            <SolidColorBrush x:Key="OnFillBrush" Color="#6d8bff" Opacity="0.18" />
+            <SolidColorBrush x:Key="OnTextBrush" Color="#c3cfff" />
+            <SolidColorBrush x:Key="PrimaryFillBrush" Color="#6d8bff" />
+            <SolidColorBrush x:Key="PrimaryTextBrush" Color="#0b0d14" />
+
+            <SolidColorBrush x:Key="TagLangBg" Color="#2b2440" />
+            <SolidColorBrush x:Key="TagLangFg" Color="#cdb4ff" />
+            <SolidColorBrush x:Key="TagRuntimeBg" Color="#16311f" />
+            <SolidColorBrush x:Key="TagRuntimeFg" Color="#8fe3b4" />
+            <SolidColorBrush x:Key="TagFrameworkBg" Color="#212843" />
+            <SolidColorBrush x:Key="TagFrameworkFg" Color="#a9bcff" />
+            <SolidColorBrush x:Key="TagUiBg" Color="#123231" />
+            <SolidColorBrush x:Key="TagUiFg" Color="#8fe4dc" />
+            <SolidColorBrush x:Key="TagDataBg" Color="#33291a" />
+            <SolidColorBrush x:Key="TagDataFg" Color="#f0cf8f" />
+            <SolidColorBrush x:Key="TagInfraBg" Color="#331d20" />
+            <SolidColorBrush x:Key="TagInfraFg" Color="#f5a1a5" />
+            <SolidColorBrush x:Key="TagPlainBg" Color="#1e212c" />
+            <SolidColorBrush x:Key="TagPlainFg" Color="#9aa1b4" />
+        </ResourceDictionary>
+
+        <ResourceDictionary x:Key="Light">
+            <SolidColorBrush x:Key="BgBrush" Color="#f4f5f8" />
+            <SolidColorBrush x:Key="Bg1Brush" Color="#ffffff" />
+            <SolidColorBrush x:Key="Bg2Brush" Color="#f0f1f5" />
+            <SolidColorBrush x:Key="Bg3Brush" Color="#e4e7ed" />
+            <SolidColorBrush x:Key="LineBrush" Color="#d5d9e2" />
+            <SolidColorBrush x:Key="LineHoverBrush" Color="#b8bec9" />
+            <SolidColorBrush x:Key="TextBrush" Color="#171923" />
+            <SolidColorBrush x:Key="DimBrush" Color="#596174" />
+            <SolidColorBrush x:Key="Dim2Brush" Color="#7a8292" />
+            <SolidColorBrush x:Key="AccentBrush" Color="#4868df" />
+            <SolidColorBrush x:Key="TealBrush" Color="#087f76" />
+            <SolidColorBrush x:Key="AmberBrush" Color="#9a6400" />
+            <SolidColorBrush x:Key="RedBrush" Color="#c73542" />
+            <SolidColorBrush x:Key="GreenBrush" Color="#16834c" />
+            <SolidColorBrush x:Key="PurpleBrush" Color="#7047bd" />
+
+            <SolidColorBrush x:Key="OnFillBrush" Color="#dfe2e8" />
+            <SolidColorBrush x:Key="OnTextBrush" Color="#222733" />
+            <SolidColorBrush x:Key="PrimaryFillBrush" Color="#e1e4ea" />
+            <SolidColorBrush x:Key="PrimaryTextBrush" Color="#222733" />
+
+            <SolidColorBrush x:Key="TagLangBg" Color="#eee7fa" />
+            <SolidColorBrush x:Key="TagLangFg" Color="#62409c" />
+            <SolidColorBrush x:Key="TagRuntimeBg" Color="#e0f3e8" />
+            <SolidColorBrush x:Key="TagRuntimeFg" Color="#166b43" />
+            <SolidColorBrush x:Key="TagFrameworkBg" Color="#e5eaff" />
+            <SolidColorBrush x:Key="TagFrameworkFg" Color="#3f58b4" />
+            <SolidColorBrush x:Key="TagUiBg" Color="#ddf3f1" />
+            <SolidColorBrush x:Key="TagUiFg" Color="#176e68" />
+            <SolidColorBrush x:Key="TagDataBg" Color="#f7ecd5" />
+            <SolidColorBrush x:Key="TagDataFg" Color="#805900" />
+            <SolidColorBrush x:Key="TagInfraBg" Color="#f7e2e4" />
+            <SolidColorBrush x:Key="TagInfraFg" Color="#a12f39" />
+            <SolidColorBrush x:Key="TagPlainBg" Color="#e4e7ed" />
+            <SolidColorBrush x:Key="TagPlainFg" Color="#596174" />
+        </ResourceDictionary>
+    </ResourceDictionary.ThemeDictionaries>
+
+    <FontFamily x:Key="MonoFont">Cascadia Mono,Consolas,Courier New</FontFamily>
+
+    <!--
+      The terminal keeps its own colours whichever way the app theme goes: the
+      tab bar sits against the terminal, not against the window, so it is mixed
+      out of the scheme the way applyTermTheme() does it in terminal.js. These
+      are the DevHQ Dark preset and the chrome mixed from it.
+    -->
+    <SolidColorBrush x:Key="TermBg" Color="#0a0b0f" />
+    <SolidColorBrush x:Key="TermFg" Color="#d7dbe6" />
+    <SolidColorBrush x:Key="TermBar" Color="#181a1e" />
+    <SolidColorBrush x:Key="TermBar2" Color="#25262b" />
+    <SolidColorBrush x:Key="TermHover" Color="#212227" />
+    <SolidColorBrush x:Key="TermLine" Color="#37393e" />
+    <SolidColorBrush x:Key="TermDim" Color="#91949d" />
+    <SolidColorBrush x:Key="TermDim2" Color="#666970" />
+    <SolidColorBrush x:Key="TermRed" Color="#e05561" />
+    <SolidColorBrush x:Key="TermGreen" Color="#8cc265" />
+    <SolidColorBrush x:Key="TermYellow" Color="#d5a458" />
+    <SolidColorBrush x:Key="TermBlue" Color="#4d9df5" />
+    <SolidColorBrush x:Key="TermCyan" Color="#42b3c2" />
+    <SolidColorBrush x:Key="TermBrightGreen" Color="#a5e075" />
+    <SolidColorBrush x:Key="TermBrightYellow" Color="#e6c07b" />
+    <SolidColorBrush x:Key="TermBrightBlue" Color="#61afef" />
+    <SolidColorBrush x:Key="TermBrightMagenta" Color="#d55fde" />
+    <SolidColorBrush x:Key="TermAccent" Color="#6d8bff" />
+
+    <!-- ~~~~~ the dock's own buttons: 36 wide, a square of the tab bar ~~~~~ -->
+    <Style x:Key="DockAction" TargetType="Button">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Foreground" Value="{StaticResource TermDim}" />
+        <Setter Property="Width" Value="36" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="VerticalAlignment" Value="Stretch" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Root" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}">
+                        <ContentPresenter x:Name="Presenter" Content="{TemplateBinding Content}"
+                                          Foreground="{TemplateBinding Foreground}"
+                                          HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Background" Value="{StaticResource TermHover}" />
+                                        <Setter Target="Presenter.Foreground" Value="{StaticResource TermFg}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Opacity" Value="0.7" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Disabled">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Opacity" Value="0.35" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ~~~~~ a terminal tab: lit from below when it is the one on screen ~~~~~ -->
+    <Style x:Key="DockTab" TargetType="ToggleButton">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0,0,0,2" />
+        <Setter Property="Foreground" Value="{StaticResource TermDim}" />
+        <Setter Property="Padding" Value="12,0,6,0" />
+        <Setter Property="FontSize" Value="12.5" />
+        <Setter Property="FontWeight" Value="Medium" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="VerticalAlignment" Value="Stretch" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="Root" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter x:Name="Presenter" Content="{TemplateBinding Content}"
+                                          Foreground="{TemplateBinding Foreground}"
+                                          VerticalAlignment="Center" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Presenter.Foreground" Value="{StaticResource TermFg}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed" />
+                                <VisualState x:Name="Checked">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Background" Value="{StaticResource TermBg}" />
+                                        <Setter Target="Root.BorderBrush" Value="{StaticResource TermAccent}" />
+                                        <Setter Target="Presenter.Foreground" Value="{StaticResource TermFg}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="CheckedPointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Background" Value="{StaticResource TermBg}" />
+                                        <Setter Target="Root.BorderBrush" Value="{StaticResource TermAccent}" />
+                                        <Setter Target="Presenter.Foreground" Value="{StaticResource TermFg}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="CheckedPressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Background" Value="{StaticResource TermBg}" />
+                                        <Setter Target="Root.BorderBrush" Value="{StaticResource TermAccent}" />
+                                        <Setter Target="Presenter.Foreground" Value="{StaticResource TermFg}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ~~~~~ a toolbar button: a bg2 box, 34 high, radius 9 ~~~~~ -->
+    <Style x:Key="ToolButton" TargetType="Button">
+        <Setter Property="Background" Value="{ThemeResource Bg2Brush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource LineBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="9" />
+        <Setter Property="Height" Value="34" />
+        <Setter Property="Padding" Value="13,0" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Root" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter x:Name="Presenter"
+                                          Content="{TemplateBinding Content}"
+                                          ContentTemplate="{TemplateBinding ContentTemplate}"
+                                          Foreground="{TemplateBinding Foreground}"
+                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="Center" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Background" Value="{ThemeResource Bg3Brush}" />
+                                        <Setter Target="Root.BorderBrush" Value="{ThemeResource LineHoverBrush}" />
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource TextBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Opacity" Value="0.75" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Disabled">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Opacity" Value="0.5" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource ToolButton}">
+        <Setter Property="Background" Value="{ThemeResource PrimaryFillBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource PrimaryFillBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource PrimaryTextBrush}" />
+    </Style>
+
+    <!-- The scan-folder chip: quiet until you go near it. -->
+    <Style x:Key="RootChip" TargetType="Button" BasedOn="{StaticResource ToolButton}">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="Foreground" Value="{ThemeResource DimBrush}" />
+        <Setter Property="Height" Value="28" />
+        <Setter Property="Padding" Value="8,0" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="FontWeight" Value="Normal" />
+    </Style>
+
+    <!-- ~~~~~ one cell of a segmented control ~~~~~ -->
+    <Style x:Key="Segment" TargetType="ToggleButton">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="{ThemeResource LineBrush}" />
+        <Setter Property="BorderThickness" Value="1,0,0,0" />
+        <Setter Property="Foreground" Value="{ThemeResource DimBrush}" />
+        <Setter Property="Padding" Value="10,0" />
+        <Setter Property="FontSize" Value="12.5" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="Root" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter x:Name="Presenter"
+                                          Content="{TemplateBinding Content}"
+                                          Foreground="{TemplateBinding Foreground}"
+                                          HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Background" Value="{ThemeResource Bg3Brush}" />
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource TextBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Background" Value="{ThemeResource Bg3Brush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Checked">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Background" Value="{ThemeResource OnFillBrush}" />
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource TextBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="CheckedPointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Background" Value="{ThemeResource OnFillBrush}" />
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource TextBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="CheckedPressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Background" Value="{ThemeResource OnFillBrush}" />
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource TextBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ~~~~~ a filter chip: a pill that lights up when it is on ~~~~~ -->
+    <Style x:Key="Chip" TargetType="ToggleButton">
+        <Setter Property="Background" Value="{ThemeResource Bg2Brush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource LineBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Foreground" Value="{ThemeResource DimBrush}" />
+        <Setter Property="CornerRadius" Value="99" />
+        <Setter Property="Height" Value="27" />
+        <Setter Property="Padding" Value="11,0" />
+        <Setter Property="FontSize" Value="12.5" />
+        <Setter Property="FontWeight" Value="Medium" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="Root" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter x:Name="Presenter"
+                                          Content="{TemplateBinding Content}"
+                                          Foreground="{TemplateBinding Foreground}"
+                                          HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.BorderBrush" Value="{ThemeResource LineHoverBrush}" />
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource TextBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed" />
+                                <VisualState x:Name="Checked">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Background" Value="{ThemeResource OnFillBrush}" />
+                                        <Setter Target="Root.BorderBrush" Value="{ThemeResource AccentBrush}" />
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource OnTextBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="CheckedPointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Background" Value="{ThemeResource OnFillBrush}" />
+                                        <Setter Target="Root.BorderBrush" Value="{ThemeResource AccentBrush}" />
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource OnTextBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="CheckedPressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Background" Value="{ThemeResource OnFillBrush}" />
+                                        <Setter Target="Root.BorderBrush" Value="{ThemeResource AccentBrush}" />
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource OnTextBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ~~~~~ what a card lets you do: flat, and equal in width ~~~~~ -->
+    <Style x:Key="CardAction" TargetType="Button">
+        <Setter Property="Background" Value="{ThemeResource Bg2Brush}" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Foreground" Value="{ThemeResource DimBrush}" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="Height" Value="28" />
+        <Setter Property="Padding" Value="8,0" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="FontWeight" Value="Medium" />
+        <Setter Property="HorizontalAlignment" Value="Stretch" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Root" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter x:Name="Presenter" Content="{TemplateBinding Content}"
+                                          Foreground="{TemplateBinding Foreground}"
+                                          HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Background" Value="{ThemeResource Bg3Brush}" />
+                                        <Setter Target="Root.BorderBrush" Value="{ThemeResource LineHoverBrush}" />
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource TextBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Opacity" Value="0.75" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Disabled">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Opacity" Value="0.4" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ~~~~~ the status bar's own buttons: full height, ruled off ~~~~~ -->
+    <Style x:Key="StatusButton" TargetType="Button">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="{ThemeResource LineBrush}" />
+        <Setter Property="BorderThickness" Value="1,0,0,0" />
+        <Setter Property="Foreground" Value="{ThemeResource DimBrush}" />
+        <Setter Property="Padding" Value="16,0" />
+        <Setter Property="FontSize" Value="12.5" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="VerticalAlignment" Value="Stretch" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Root" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter x:Name="Presenter" Content="{TemplateBinding Content}"
+                                          Foreground="{TemplateBinding Foreground}"
+                                          HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Background" Value="{ThemeResource Bg3Brush}" />
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource TextBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Opacity" Value="0.8" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--
+      A text field with no chrome of its own. The stock TextBox paints a box
+      that turns near-white when it takes focus, which would fight both the
+      toolbar's own border and the terminal it sits in; the surrounding Border
+      draws the field, so the control only has to draw the text.
+    -->
+    <Style x:Key="BareTextBox" TargetType="TextBox">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Foreground" Value="{ThemeResource TextBrush}" />
+        <Setter Property="PlaceholderForeground" Value="{ThemeResource Dim2Brush}" />
+        <Setter Property="SelectionHighlightColor" Value="#2f5c8f" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TextBox">
+                    <Grid Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                        <ContentControl x:Name="PlaceholderTextContentPresenter"
+                                        Content="{TemplateBinding PlaceholderText}"
+                                        Foreground="{TemplateBinding PlaceholderForeground}"
+                                        FontSize="{TemplateBinding FontSize}"
+                                        FontFamily="{TemplateBinding FontFamily}"
+                                        IsHitTestVisible="False" IsTabStop="False"
+                                        VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+                        <ScrollViewer x:Name="ContentElement"
+                                      HorizontalScrollMode="Auto" VerticalScrollMode="Disabled"
+                                      HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"
+                                      IsTabStop="False" ZoomMode="Disabled"
+                                      AutomationProperties.AccessibilityView="Raw" />
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>

@@ -197,6 +197,8 @@
   "May we send that to PageRain Analytics? It is completely anonymous - a random number and the name of the screen you opened, nothing else. Never a project, never a folder, never your code. The few lines that do it are open source, so you can read exactly what leaves your machine.": "¿Podemos enviarlo a PageRain Analytics? Es completamente anónimo: un número aleatorio y el nombre de la pantalla que abriste, nada más. Nunca un proyecto, nunca una carpeta, nunca tu código. Las pocas líneas que lo hacen son de código abierto, así que puedes leer exactamente qué sale de tu equipo.",
   "Read the code that sends it": "Lee el código que lo envía",
   "Yes, say hello": "Sí, saluda",
-  "Lets PageRain Analytics know someone is using DevHQ - a random number and the screen you opened, never your projects.": "Le indica a PageRain Analytics que alguien está usando DevHQ: un número aleatorio y la pantalla que abriste, nunca tus proyectos.",
-  "Opening your browser": "Abriendo tu navegador"
+  "Opening your browser": "Abriendo tu navegador",
+  "Let us know you're using DevHQ, via PageRain. It's a random number and the screen you opened - never your projects.": "Cuéntanos que estás usando DevHQ, a través de PageRain. Es un número aleatorio y la pantalla que abriste: nunca tus proyectos.",
+  "Keep this window on top": "Mantener esta ventana encima",
+  "Stop keeping this window on top": "Dejar de mantener esta ventana encima"
 }

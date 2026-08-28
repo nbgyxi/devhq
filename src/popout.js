@@ -22,6 +22,9 @@
   // without raising a close request nobody needs to hear.
   let handedOver = false;
   let closed = false;
+  let shuttingDown = false;
+  let shutdownTimer = 0;
+  let shutdownEscalationTimer = 0;
   const handOver = async () => {
     if (handedOver || closed) return;
     handedOver = true;
@@ -32,11 +35,80 @@
   // tab in the panel does; only the dock button and a drag onto the panel hand
   // the session back. DevHQ is told so it can forget the terminal instead of
   // reopening it on the next launch.
-  const closeSession = async () => {
+  const gracefulCloseEnabled = () => {
+    try {
+      const prefs = JSON.parse(localStorage.getItem("devhq.terminals.v1") || "{}");
+      return prefs.gracefulClose !== false;
+    } catch {
+      return true;
+    }
+  };
+
+  const neverWaitFor = (commandName) => {
+    if (!commandName) return false;
+    try {
+      const prefs = JSON.parse(localStorage.getItem("devhq.terminals.v1") || "{}");
+      return Array.isArray(prefs.neverWaitFor) && prefs.neverWaitFor.includes(commandName);
+    } catch {
+      return false;
+    }
+  };
+
+  const finishClose = async () => {
     if (handedOver || closed) return;
     closed = true;
-    await invoke("term_close", { id }).catch(() => {});
+    clearTimeout(shutdownTimer);
+    clearTimeout(shutdownEscalationTimer);
+    await emit("term:close-watch", { id }).catch(() => {});
     await emit("term:closed", { id }).catch(() => {});
+    await win.destroy().catch(() => {});
+  };
+
+  const waitForInterrupt = () => {
+    if (!shuttingDown || closed) return;
+    if (view.isAtPrompt()) return finishClose();
+    shutdownTimer = setTimeout(waitForInterrupt, 100);
+  };
+
+  const closeSession = async (force = false) => {
+    if (handedOver || closed || shuttingDown) return;
+    const commandName = view.runningCommandName();
+    if (commandName && neverWaitFor(commandName)) return finishClose();
+    if (force || !gracefulCloseEnabled() || info?.alive === false) return finishClose();
+    shuttingDown = true;
+    const dialog = document.getElementById("pop-shutdown");
+    dialog.querySelector("strong").textContent = "Closing…";
+    dialog.querySelector("p").textContent = "Giving the terminal a moment to finish safely.";
+    dialog.querySelector("#pop-interrupt-again").hidden = true;
+    dialog.querySelector("#pop-close-now").hidden = true;
+    const neverWait = document.getElementById("pop-never-wait");
+    neverWait.hidden = !commandName;
+    document.getElementById("pop-never-wait-name").textContent = commandName;
+    const neverWaitInput = document.getElementById("pop-never-wait-input");
+    neverWaitInput.dataset.commandName = commandName;
+    neverWaitInput.checked = neverWaitFor(commandName);
+    dialog.hidden = false;
+    shutdownEscalationTimer = setTimeout(() => {
+      if (!shuttingDown || closed) return;
+      dialog.querySelector("strong").textContent = "Shutting down";
+      dialog.querySelector("p").textContent = "The terminal is taking longer than expected to finish…";
+      dialog.querySelector("#pop-interrupt-again").hidden = false;
+      dialog.querySelector("#pop-close-now").hidden = false;
+    }, 3000);
+    await invoke("term_write", { id, data: "\u0003" })
+      .then(() => new Promise((resolve) => setTimeout(resolve, 75)))
+      .then(() => shuttingDown && !closed ? invoke("term_write", { id, data: "\u0003" }) : undefined)
+      .catch(() => finishClose());
+    if (shuttingDown && !closed) waitForInterrupt();
+  };
+
+  const cancelShutdown = () => {
+    if (!shuttingDown || closed) return;
+    clearTimeout(shutdownTimer);
+    clearTimeout(shutdownEscalationTimer);
+    shuttingDown = false;
+    document.getElementById("pop-shutdown").hidden = true;
+    view?.focus();
   };
 
   document.querySelectorAll("[data-win]").forEach((btn) => {
@@ -45,10 +117,9 @@
       if (act === "min") win.minimize();
       else if (act === "max") win.toggleMaximize();
       else {
-        // Ending the shell first, then leaving without a close request: the
-        // request handler is for Alt+F4, and running both would race.
+        // The window stays up while Ctrl+C is being handled; finishClose uses
+        // destroy so this click cannot race the native close request.
         await closeSession();
-        win.destroy();
       }
     };
   });
@@ -64,6 +135,7 @@
   };
   view.onExit = () => {
     document.getElementById("pop-title").textContent = "exited";
+    if (shuttingDown) finishClose();
   };
 
   let info;
@@ -120,6 +192,81 @@
     await handOver();
     win.destroy();
   };
+  document.getElementById("pop-close-now").onclick = () => {
+    if (shuttingDown) {
+      shuttingDown = false;
+      finishClose();
+    }
+  };
+  document.getElementById("pop-shutdown-cancel").onclick = cancelShutdown;
+  document.getElementById("pop-interrupt-again").onclick = () => {
+    if (shuttingDown && !closed) invoke("term_write", { id, data: "\u0003" }).catch(() => {});
+  };
+  document.getElementById("pop-never-wait-input").onchange = (event) => {
+    const commandName = event.target.dataset.commandName;
+    if (!commandName) return;
+    try {
+      const prefs = JSON.parse(localStorage.getItem("devhq.terminals.v1") || "{}");
+      const names = new Set(Array.isArray(prefs.neverWaitFor) ? prefs.neverWaitFor : []);
+      if (event.target.checked) names.add(commandName);
+      else names.delete(commandName);
+      prefs.neverWaitFor = [...names];
+      localStorage.setItem("devhq.terminals.v1", JSON.stringify(prefs));
+      emit("term:never-wait", { name: commandName, enabled: event.target.checked }).catch(() => {});
+    } catch {}
+  };
+  document.getElementById("pop-shutdown").onclick = (event) => {
+    if (event.target.id === "pop-shutdown") cancelShutdown();
+  };
+
+  // Staying on top is remembered per session, not per window: a terminal that
+  // was pinned, docked and popped out again comes back pinned. The list is
+  // this window's own key, so writing it can never tread on the settings the
+  // main window keeps in its own.
+  const ONTOP_KEY = "devhq.terminals.ontop.v1";
+  const readPinned = () => {
+    try {
+      const list = JSON.parse(localStorage.getItem(ONTOP_KEY) || "[]");
+      return Array.isArray(list) ? list.filter((value) => typeof value === "string") : [];
+    } catch {
+      return [];
+    }
+  };
+  const writePinned = (list) => {
+    try {
+      localStorage.setItem(ONTOP_KEY, JSON.stringify(list));
+    } catch {
+      /* storage disabled - the window still pins, it just does not remember */
+    }
+  };
+
+  const ontopButton = document.getElementById("pop-ontop");
+  let onTop = readPinned().includes(id);
+  const applyOnTop = async () => {
+    ontopButton.classList.toggle("on", onTop);
+    ontopButton.setAttribute("aria-pressed", String(onTop));
+    ontopButton.title = onTop ? "Stop keeping this window on top" : "Keep this window on top";
+    window.devhqI18n?.refresh(ontopButton);
+    await win.setAlwaysOnTop(onTop).catch(() => {});
+  };
+  ontopButton.onclick = async () => {
+    onTop = !onTop;
+    const list = readPinned().filter((value) => value !== id);
+    if (onTop) list.push(id);
+    writePinned(list);
+    await applyOnTop();
+  };
+  await applyOnTop();
+
+  // Sessions that no longer exist would keep their pin for ever, so the list is
+  // measured against the live ones whenever a window opens.
+  invoke("term_list", {})
+    .then((sessions) => {
+      const live = new Set(sessions.map((session) => session.id));
+      const kept = readPinned().filter((value) => live.has(value));
+      if (kept.length !== readPinned().length) writePinned(kept);
+    })
+    .catch(() => {});
 
   // Native window dragging keeps movement smooth. Once Windows releases the
   // drag, report the pointer's physical screen position; DevHQ accepts it only
@@ -147,7 +294,8 @@
 
   // Alt+F4 and anything else Windows counts as a close request mean the same
   // as the cross: the shell ends here.
-  win.onCloseRequested(async () => {
+  win.onCloseRequested(async (event) => {
+    if (!closed && !handedOver) event.preventDefault();
     await closeSession();
   });
 })();

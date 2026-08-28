@@ -197,6 +197,8 @@
   "May we send that to PageRain Analytics? It is completely anonymous - a random number and the name of the screen you opened, nothing else. Never a project, never a folder, never your code. The few lines that do it are open source, so you can read exactly what leaves your machine.": "هل يمكننا إرسال ذلك إلى PageRain Analytics؟ الأمر مجهول تمامًا — رقم عشوائي واسم الشاشة التي فتحتها، لا أكثر. لا مشروع، ولا مجلد، ولا شيفرتك أبدًا. الأسطر القليلة التي تقوم بذلك مفتوحة المصدر، فيمكنك أن تقرأ بنفسك ما الذي يغادر جهازك.",
   "Read the code that sends it": "اقرأ الشيفرة التي ترسلها",
   "Yes, say hello": "نعم، ألقِ التحية",
-  "Lets PageRain Analytics know someone is using DevHQ - a random number and the screen you opened, never your projects.": "يخبر PageRain Analytics أن أحدهم يستخدم DevHQ — رقم عشوائي والشاشة التي فتحتها، ولا مشاريعك أبدًا.",
-  "Opening your browser": "جارٍ فتح متصفحك"
+  "Opening your browser": "جارٍ فتح متصفحك",
+  "Let us know you're using DevHQ, via PageRain. It's a random number and the screen you opened - never your projects.": "أخبرنا عبر PageRain أنك تستخدم DevHQ. إنه رقم عشوائي والشاشة التي فتحتها — ولا مشاريعك أبدًا.",
+  "Keep this window on top": "إبقاء هذه النافذة في المقدمة",
+  "Stop keeping this window on top": "إيقاف إبقاء هذه النافذة في المقدمة"
 }

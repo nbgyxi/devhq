@@ -109,6 +109,10 @@ fn lookup(id: &str) -> Result<Arc<Session>, String> {
         .ok_or_else(|| "That terminal is gone.".to_string())
 }
 
+pub fn term_pid(id: &str) -> Result<u32, String> {
+    Ok(lookup(id)?.pid)
+}
+
 // ---- wire types --------------------------------------------------------
 
 /// One stretch of cells sharing a colour and attributes, which is how a row

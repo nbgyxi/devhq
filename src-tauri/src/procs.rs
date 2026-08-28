@@ -1,7 +1,10 @@
 use crate::cwd;
 use crate::util::{norm, run_lossy};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
+use std::time::Duration;
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -31,8 +34,187 @@ struct RawProc {
     name: String,
     cmd: String,
     cwd: String,
+    exe: String,
     /// Command line + image path, normalised once so matching is a substring test.
     haystack: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessIdentity {
+    pub pid: u32,
+    pub process: String,
+    pub executable_path: String,
+}
+
+pub fn descendants(root_pid: u32) -> Vec<ProcessIdentity> {
+    let processes = list_processes();
+    let mut wanted = HashSet::from([root_pid]);
+    loop {
+        let before = wanted.len();
+        for process in &processes {
+            if wanted.contains(&process.parent) {
+                wanted.insert(process.pid);
+            }
+        }
+        if wanted.len() == before { break; }
+    }
+    processes.into_iter().filter(|process| process.pid != root_pid && wanted.contains(&process.pid))
+        .map(|process| ProcessIdentity { pid: process.pid, process: process.name, executable_path: process.exe })
+        .collect()
+}
+
+pub fn survivors(expected: Vec<ProcessIdentity>) -> Vec<ProcessIdentity> {
+    let current = list_processes();
+    expected.into_iter().filter(|expected| current.iter().any(|process| {
+        process.pid == expected.pid
+            && process.name.eq_ignore_ascii_case(&expected.process)
+            && process.exe.eq_ignore_ascii_case(&expected.executable_path)
+    })).collect()
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PortBinding {
+    pub port: u16,
+    pub protocol: String,
+    pub address: String,
+    pub browser_url: Option<String>,
+    pub http_status: Option<u16>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessEntry {
+    pub pid: u32,
+    pub process: String,
+    pub executable_path: String,
+    pub cwd: String,
+    pub command_line: String,
+    pub ports: Vec<PortBinding>,
+}
+
+/// Every process on the machine, enriched with all of its TCP listeners and
+/// UDP bindings. Kept separate from project matching: the explorer must also
+/// show tools, databases and services outside scanned folders.
+pub fn port_list() -> Vec<ProcessEntry> {
+    let processes = list_processes();
+    let endpoints = listening_endpoints();
+    let local_ports: HashSet<u16> = endpoints
+        .iter()
+        .filter(|(protocol, address, _, _)| protocol == "TCP" && is_local_address(address))
+        .map(|(_, _, port, _)| *port)
+        .collect();
+    // Probes run together so closed/non-HTTP ports cost one short timeout, not
+    // one timeout each. A port is browser-capable only after an HTTP status
+    // line comes back; merely listening on localhost is not enough.
+    let probes: HashMap<u16, Option<(String, u16)>> = local_ports
+        .into_iter()
+        .map(|port| std::thread::spawn(move || (port, probe_browser_url(port))))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .filter_map(|thread| thread.join().ok())
+        .collect();
+    let mut ports: HashMap<u32, Vec<PortBinding>> = HashMap::new();
+    for (protocol, address, port, pid) in endpoints {
+        let bindings = ports.entry(pid).or_default();
+        if !bindings.iter().any(|binding| binding.port == port && binding.protocol == protocol) {
+            let probe = probes.get(&port).and_then(|result| result.as_ref());
+            bindings.push(PortBinding {
+                browser_url: probe.map(|(url, _)| url.clone()),
+                http_status: probe.map(|(_, status)| *status),
+                port,
+                protocol,
+                address,
+            });
+        }
+    }
+    for bindings in ports.values_mut() {
+        bindings.sort_by(|a, b| a.port.cmp(&b.port).then(a.protocol.cmp(&b.protocol)));
+    }
+    let mut out: Vec<_> = processes
+        .into_iter()
+        .map(|process| ProcessEntry {
+            ports: ports.remove(&process.pid).unwrap_or_default(),
+            pid: process.pid,
+            process: process.name,
+            executable_path: process.exe,
+            cwd: process.cwd,
+            command_line: process.cmd,
+        })
+        .collect();
+    // A protected process may own a socket even when CIM withheld its details.
+    out.extend(ports.into_iter().map(|(pid, ports)| ProcessEntry {
+        pid,
+        process: String::new(),
+        executable_path: String::new(),
+        cwd: String::new(),
+        command_line: String::new(),
+        ports,
+    }));
+    out.sort_by(|a, b| a.process.to_lowercase().cmp(&b.process.to_lowercase()).then(a.pid.cmp(&b.pid)));
+    out
+}
+
+fn is_local_address(address: &str) -> bool {
+    matches!(address.to_ascii_lowercase().as_str(), "0.0.0.0" | "::" | "127.0.0.1" | "::1" | "localhost" | "*")
+}
+
+fn probe_browser_url(port: u16) -> Option<(String, u16)> {
+    let timeout = Duration::from_millis(220);
+    let addresses = [
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+        SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port),
+    ];
+    for address in addresses {
+        let Ok(mut stream) = TcpStream::connect_timeout(&address, timeout) else { continue };
+        let _ = stream.set_read_timeout(Some(timeout));
+        let _ = stream.set_write_timeout(Some(timeout));
+        if stream.write_all(b"HEAD / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n").is_err() {
+            continue;
+        }
+        let mut response = [0u8; 64];
+        let Some(read) = stream.read(&mut response).ok().filter(|read| *read >= 12) else { continue };
+        let first_line = String::from_utf8_lossy(&response[..read]);
+        let mut fields = first_line.split_whitespace();
+        let (Some(version), Some(status)) = (fields.next(), fields.next()) else { continue };
+        if version.starts_with("HTTP/") {
+            if let Ok(status) = status.parse::<u16>() {
+                return Some((format!("http://localhost:{port}"), status));
+            }
+        }
+    }
+    None
+}
+
+pub fn kill(pid: u32, expected_executable: &str, expected_process: &str) -> Result<(), String> {
+    if pid <= 4 || pid == std::process::id() {
+        return Err("DevHQ will not terminate this protected process.".into());
+    }
+    let processes = list_processes();
+    let current = processes.iter().find(|process| process.pid == pid)
+        .ok_or_else(|| "That process is no longer running.".to_string())?;
+    let same_executable = expected_executable.is_empty() || current.exe.eq_ignore_ascii_case(expected_executable);
+    let same_name = expected_process.is_empty() || current.name.eq_ignore_ascii_case(expected_process);
+    if !same_executable || !same_name {
+        return Err("The PID now belongs to a different process. Refresh before trying again.".into());
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+        let handle = OpenProcess(PROCESS_TERMINATE, false, pid)
+            .map_err(|e| format!("Could not open process {pid}: {e}"))?;
+        let result = TerminateProcess(handle, 1)
+            .map_err(|e| format!("Could not terminate process {pid}: {e}"));
+        let _ = CloseHandle(handle);
+        result
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (pid, expected_executable, expected_process);
+        Err("Process termination is only available on Windows.".into())
+    }
 }
 
 /// Shells, terminals, editors and VCS tools. A terminal sitting in a folder is
@@ -168,7 +350,7 @@ fn list_processes() -> Vec<RawProc> {
             let exe = v.get("ExecutablePath").and_then(|x| x.as_str()).unwrap_or("");
             let haystack = norm(&format!("{cmd} {exe}"));
             let cwd = cwd::of(pid).unwrap_or_default();
-            Some(RawProc { pid, parent, name, cmd, cwd, haystack })
+            Some(RawProc { pid, parent, name, cmd, cwd, exe: exe.to_string(), haystack })
         })
         .collect()
 }
@@ -205,4 +387,30 @@ fn listening_ports() -> HashMap<u32, Vec<u16>> {
         ports.sort_unstable();
     }
     map
+}
+
+fn listening_endpoints() -> Vec<(String, String, u16, u32)> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    let Some(out) = run_lossy("netstat", &["-ano"], None) else { return Vec::new() };
+    let mut endpoints = Vec::new();
+    for line in out.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 4 {
+            continue;
+        }
+        let protocol = fields[0].to_ascii_uppercase();
+        let (local, pid_text) = if protocol == "TCP" && fields.len() >= 5 && fields[3].eq_ignore_ascii_case("LISTENING") {
+            (fields[1], fields[4])
+        } else if protocol == "UDP" && fields.len() >= 4 {
+            (fields[1], fields[3])
+        } else {
+            continue;
+        };
+        let Some((address, port_text)) = local.rsplit_once(':') else { continue };
+        let (Ok(port), Ok(pid)) = (port_text.parse::<u16>(), pid_text.parse::<u32>()) else { continue };
+        endpoints.push((protocol, address.trim_matches(['[', ']']).to_string(), port, pid));
+    }
+    endpoints
 }

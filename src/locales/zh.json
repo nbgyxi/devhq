@@ -197,6 +197,8 @@
   "May we send that to PageRain Analytics? It is completely anonymous - a random number and the name of the screen you opened, nothing else. Never a project, never a folder, never your code. The few lines that do it are open source, so you can read exactly what leaves your machine.": "可以把这件事发送给 PageRain Analytics 吗？它完全匿名——只有一个随机数字和你打开的界面名称，除此之外什么都没有。绝不包含项目、文件夹或你的代码。负责发送的那几行代码是开源的，你可以亲自看看究竟有什么离开了你的电脑。",
   "Read the code that sends it": "查看发送它的代码",
   "Yes, say hello": "可以，打个招呼",
-  "Lets PageRain Analytics know someone is using DevHQ - a random number and the screen you opened, never your projects.": "让 PageRain Analytics 知道有人在使用 DevHQ——只有一个随机数字和你打开的界面，绝不包含你的项目。",
-  "Opening your browser": "正在打开你的浏览器"
+  "Opening your browser": "正在打开你的浏览器",
+  "Let us know you're using DevHQ, via PageRain. It's a random number and the screen you opened - never your projects.": "通过 PageRain 让我们知道你在使用 DevHQ。只有一个随机数字和你打开的界面——绝不包含你的项目。",
+  "Keep this window on top": "让此窗口保持在最前",
+  "Stop keeping this window on top": "取消此窗口保持在最前"
 }

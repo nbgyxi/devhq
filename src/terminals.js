@@ -48,6 +48,12 @@ const terms = {
   shellAvailability: new Map(),
   shellColors: { ...DEFAULT_SHELL_COLORS },
   shellMarkerStyle: "code",
+  gracefulClose: true,
+  shuttingDown: new Set(),
+  shutdownTimers: new Map(),
+  shutdownEscalationTimers: new Map(),
+  neverWaitFor: new Set(),
+  orphanWarnings: new Map(),
   restoring: false,
   /** id -> generation. Output increments it; a successful snapshot only
    *  clears the generation it actually captured. */
@@ -74,6 +80,8 @@ function termsSavePrefs() {
     splitRatio: terms.splitRatio,
     shellColors: terms.shellColors,
     shellMarkerStyle: terms.shellMarkerStyle,
+    gracefulClose: terms.gracefulClose,
+    neverWaitFor: [...terms.neverWaitFor],
   }));
 }
 
@@ -88,6 +96,8 @@ function termsLoadPrefs() {
       }
     }
     if (["none", "dot", "code"].includes(saved.shellMarkerStyle)) terms.shellMarkerStyle = saved.shellMarkerStyle;
+    if (typeof saved.gracefulClose === "boolean") terms.gracefulClose = saved.gracefulClose;
+    if (Array.isArray(saved.neverWaitFor)) terms.neverWaitFor = new Set(saved.neverWaitFor.filter((name) => typeof name === "string"));
     if (TERM_SHELLS.some((profile) => profile.value === saved.defaultShell)) {
       terms.defaultShell = saved.defaultShell;
       terms.nextShell = saved.defaultShell;
@@ -165,6 +175,14 @@ function dockEl() {
         ${termIcon("error")}
         <div><strong id="term-shell-error-title"></strong><p></p></div>
         <button data-shell-error-close>OK</button>
+      </div>
+    </div>
+    <div class="term-shutdown" role="alertdialog" aria-modal="true" aria-labelledby="term-shutdown-title" hidden>
+      <div class="term-shutdown-card">
+        <span class="term-shutdown-spinner" aria-hidden="true"></span>
+        <div><strong id="term-shutdown-title">Shutting down</strong><p>Waiting for the terminal to finish&hellip;</p></div>
+        <label class="term-never-wait" hidden><input type="checkbox" data-never-wait /><span>Never wait for <b data-never-wait-name></b></span></label>
+        <div class="term-shutdown-actions"><button type="button" data-interrupt-again hidden>Send Ctrl+C again</button><button type="button" data-shutdown-cancel>Cancel</button><button type="button" class="danger" data-close-now hidden>Close now</button></div>
       </div>
     </div>`;
   document.body.appendChild(el);
@@ -356,6 +374,25 @@ function dockEl() {
     if (e.key === "Escape") closeTerminalTabMenu();
   });
   el.querySelector("[data-shell-error-close]").onclick = closeShellError;
+  el.querySelector("[data-close-now]").onclick = () => {
+    const id = el.querySelector(".term-shutdown").dataset.session;
+    if (id) forceCloseTerminal(id);
+  };
+  el.querySelector("[data-shutdown-cancel]").onclick = cancelTerminalClose;
+  el.querySelector("[data-interrupt-again]").onclick = () => {
+    const id = el.querySelector(".term-shutdown").dataset.session;
+    if (id && terms.shuttingDown.has(id)) term_dock_invoke("term_write", { id, data: "\u0003" }).catch(() => {});
+  };
+  el.querySelector("[data-never-wait]").onchange = (e) => {
+    const name = e.target.dataset.commandName;
+    if (!name) return;
+    if (e.target.checked) terms.neverWaitFor.add(name);
+    else terms.neverWaitFor.delete(name);
+    termsSavePrefs();
+  };
+  el.querySelector(".term-shutdown").onclick = (e) => {
+    if (e.target.classList.contains("term-shutdown")) cancelTerminalClose();
+  };
   el.querySelector(".term-shell-error").onclick = (e) => {
     if (e.target.classList.contains("term-shell-error")) closeShellError();
   };
@@ -425,6 +462,7 @@ function syncTerminalButton() {
     badge.textContent = count;
     badge.hidden = count === 0;
   }
+  renderOrphanWarnings();
   button.classList.toggle("on", terms.open);
   button.setAttribute("aria-expanded", String(terms.open));
   button.title = terms.open
@@ -432,6 +470,71 @@ function syncTerminalButton() {
     : count
       ? `Show ${count} open terminal${count === 1 ? "" : "s"}`
       : "Open a terminal";
+}
+
+function renderOrphanWarnings(error = "") {
+  const wrap = document.getElementById("status-orphan-wrap");
+  const button = document.getElementById("status-orphan");
+  const pop = document.getElementById("orphan-pop");
+  if (!wrap || !button || !pop) return;
+  wireOrphanWarnings(button, pop);
+  const processes = [...terms.orphanWarnings.values()];
+  wrap.hidden = processes.length === 0;
+  button.querySelector("b").textContent = processes.length;
+  if (!processes.length) {
+    pop.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+    return;
+  }
+  pop.innerHTML = `<header><strong>${processes.length} process${processes.length === 1 ? "" : "es"} still running</strong><button type="button" data-orphan-kill-all>Kill all</button></header>${processes.map((process) => `<div class="orphan-row"><strong>${termEsc(process.process || "Unknown process")} <span class="mono">${process.pid}</span></strong><small title="${termEsc(process.executablePath || "")}">${termEsc(process.executablePath || "Path unavailable")}</small><button type="button" data-orphan-kill="${process.pid}">Kill</button></div>`).join("")}${error ? `<div class="orphan-error">${termEsc(error)}</div>` : ""}`;
+}
+
+async function refreshOrphanWarnings() {
+  const expected = [...terms.orphanWarnings.values()];
+  if (!expected.length) return renderOrphanWarnings();
+  const survivors = await term_dock_invoke("process_survivors", { expected }).catch(() => expected);
+  terms.orphanWarnings = new Map((survivors || []).map((process) => [process.pid, process]));
+  renderOrphanWarnings();
+}
+
+async function killOrphan(process) {
+  await term_dock_invoke("port_kill", {
+    pid: process.pid,
+    expectedExecutable: process.executablePath || "",
+    expectedProcess: process.process || "",
+  });
+  terms.orphanWarnings.delete(process.pid);
+}
+
+function wireOrphanWarnings(button, pop) {
+  if (button.dataset.wired) return;
+  button.dataset.wired = "true";
+  button.onclick = async () => {
+    const opening = pop.hidden;
+    if (opening) await refreshOrphanWarnings();
+    pop.hidden = !opening || terms.orphanWarnings.size === 0;
+    button.setAttribute("aria-expanded", String(!pop.hidden));
+  };
+  pop.onclick = async (event) => {
+    const one = event.target.closest("[data-orphan-kill]");
+    const all = event.target.closest("[data-orphan-kill-all]");
+    if (!one && !all) return;
+    const targets = one
+      ? [terms.orphanWarnings.get(Number(one.dataset.orphanKill))].filter(Boolean)
+      : [...terms.orphanWarnings.values()];
+    try {
+      for (const process of targets) await killOrphan(process);
+      renderOrphanWarnings();
+    } catch (error) {
+      renderOrphanWarnings(String(error));
+    }
+  };
+  document.addEventListener("pointerdown", (event) => {
+    if (!event.target.closest("#status-orphan-wrap")) {
+      pop.hidden = true;
+      button.setAttribute("aria-expanded", "false");
+    }
+  });
 }
 
 /** The dock can never be taller than the window it sits in. `#root` is laid out
@@ -807,7 +910,14 @@ async function mountSession(id, restoredHistory = "", restoredPane = 0) {
   view.onTitle = (title) => {
     session.info.title = title;
   };
-  view.onExit = () => renderTabs();
+  view.onExit = () => {
+    if (terms.shuttingDown.has(id)) {
+      term_dock_invoke("term_close", { id }).catch(() => {});
+      removeTerminal(id);
+    } else {
+      renderTabs();
+    }
+  };
 
   setActive(id);
   view.fit();
@@ -837,7 +947,7 @@ function focusNext() {
   if (!terms.pending.size) setDockOpen(false);
 }
 
-function closeTerminal(id) {
+function removeTerminal(id) {
   const session = terms.sessions.get(id);
   if (!session) return;
   session.view.dispose();
@@ -846,9 +956,110 @@ function closeTerminal(id) {
   terms.known.delete(id);
   terms.dirtyHistory.delete(id);
   terms.interacted.delete(id);
-  term_dock_invoke("term_close", { id }).catch(() => {});
+  terms.shuttingDown.delete(id);
+  clearTimeout(terms.shutdownTimers.get(id));
+  terms.shutdownTimers.delete(id);
+  clearTimeout(terms.shutdownEscalationTimers.get(id));
+  terms.shutdownEscalationTimers.delete(id);
+  const dialog = terms.el?.querySelector(".term-shutdown");
+  if (dialog?.dataset.session === id) {
+    dialog.hidden = true;
+    delete dialog.dataset.session;
+  }
   focusNext();
   termsSavePrefs();
+}
+
+function forceCloseTerminal(id) {
+  if (!terms.sessions.has(id)) return;
+  term_dock_invoke("term_close", { id }).catch(() => {});
+  removeTerminal(id);
+}
+
+function scheduleOrphanCheck(expected) {
+  if (!expected?.length) return;
+  setTimeout(() => {
+    const key = `terminal-orphans:${Date.now()}`;
+    window.devhqWork?.beginWork(key, "Checking for terminal processes left running");
+    term_dock_invoke("process_survivors", { expected })
+      .then((survivors) => {
+        for (const process of survivors || []) terms.orphanWarnings.set(process.pid, process);
+        syncTerminalButton();
+      })
+      .finally(() => window.devhqWork?.endWork(key));
+  }, 2000);
+}
+
+function closeTerminalAndWatch(id) {
+  if (!terms.sessions.has(id)) return;
+  term_dock_invoke("term_close_snapshot", { id })
+    .then(scheduleOrphanCheck)
+    .catch(() => term_dock_invoke("term_close", { id }).catch(() => {}));
+  removeTerminal(id);
+}
+
+function cancelTerminalClose() {
+  const dialog = terms.el?.querySelector(".term-shutdown");
+  const id = dialog?.dataset.session;
+  if (!id) return;
+  clearTimeout(terms.shutdownTimers.get(id));
+  terms.shutdownTimers.delete(id);
+  clearTimeout(terms.shutdownEscalationTimers.get(id));
+  terms.shutdownEscalationTimers.delete(id);
+  terms.shuttingDown.delete(id);
+  dialog.hidden = true;
+  delete dialog.dataset.session;
+  terms.sessions.get(id)?.view.focus();
+}
+
+/** A returned empty prompt is Ctrl+C's practical success signal. Give the
+ * terminal a few repaint frames to show it, then fall back to asking the shell
+ * to exit normally. No forced-close deadline is involved. */
+function waitForInterrupt(id) {
+  if (!terms.shuttingDown.has(id)) return;
+  const session = terms.sessions.get(id);
+  if (!session) return;
+  if (session.view.isAtPrompt()) return forceCloseTerminal(id);
+  const timer = setTimeout(() => waitForInterrupt(id), 100);
+  terms.shutdownTimers.set(id, timer);
+}
+
+/** Send Ctrl+C twice immediately because interactive tools can reserve the
+ * first press for cancellation and the second for exit. Never type `exit`:
+ * TUIs can treat it as ordinary input instead of a shell command. */
+function closeTerminal(id) {
+  const session = terms.sessions.get(id);
+  if (!session || terms.shuttingDown.has(id)) return;
+  return closeTerminalAndWatch(id);
+  terms.shuttingDown.add(id);
+  const dialog = dockEl().querySelector(".term-shutdown");
+  dialog.dataset.session = id;
+  dialog.querySelector("p").textContent = `Waiting for ${session.info.projectName || "the terminal"} to finish…`;
+  dialog.hidden = false;
+  dialog.querySelector("strong").textContent = "Closing…";
+  dialog.querySelector("p").textContent = "Giving the terminal a moment to finish safely.";
+  dialog.querySelector("[data-close-now]").hidden = true;
+  dialog.querySelector("[data-interrupt-again]").hidden = true;
+  const neverWait = dialog.querySelector(".term-never-wait");
+  neverWait.hidden = !commandName;
+  neverWait.querySelector("[data-never-wait-name]").textContent = commandName;
+  const neverWaitInput = neverWait.querySelector("[data-never-wait]");
+  neverWaitInput.dataset.commandName = commandName;
+  neverWaitInput.checked = terms.neverWaitFor.has(commandName);
+  const escalation = setTimeout(() => {
+    terms.shutdownEscalationTimers.delete(id);
+    if (!terms.shuttingDown.has(id) || dialog.dataset.session !== id) return;
+    dialog.querySelector("strong").textContent = "Shutting down";
+    dialog.querySelector("p").textContent = `Still waiting for ${session.info.projectName || "the terminal"} to finish…`;
+    dialog.querySelector("[data-interrupt-again]").hidden = false;
+    dialog.querySelector("[data-close-now]").hidden = false;
+  }, 3000);
+  terms.shutdownEscalationTimers.set(id, escalation);
+  term_dock_invoke("term_write", { id, data: "\u0003" })
+    .then(() => new Promise((resolve) => setTimeout(resolve, 75)))
+    .then(() => terms.shuttingDown.has(id) ? term_dock_invoke("term_write", { id, data: "\u0003" }) : undefined)
+    .then(() => waitForInterrupt(id))
+    .catch(() => forceCloseTerminal(id));
 }
 
 /** Hands the session to its own window. The shell is untouched — only the view
@@ -903,8 +1114,23 @@ term_dock_listen("term:closed", (event) => {
   terms.known.delete(id);
   terms.dirtyHistory.delete(id);
   terms.interacted.delete(id);
-  term_dock_invoke("term_close", { id }).catch(() => {});
   renderTabs();
+  termsSavePrefs();
+});
+
+term_dock_listen("term:close-watch", (event) => {
+  const id = event.payload?.id;
+  if (!id) return;
+  term_dock_invoke("term_close_snapshot", { id })
+    .then(scheduleOrphanCheck)
+    .catch(() => term_dock_invoke("term_close", { id }).catch(() => {}));
+});
+
+term_dock_listen("term:never-wait", (event) => {
+  const { name, enabled } = event.payload || {};
+  if (!name) return;
+  if (enabled) terms.neverWaitFor.add(name);
+  else terms.neverWaitFor.delete(name);
   termsSavePrefs();
 });
 
@@ -1056,6 +1282,11 @@ window.devhqTerminalSettings = {
   scan: loadShellAvailability,
   shellColors: () => ({ ...terms.shellColors }),
   getShellMarkerStyle: () => terms.shellMarkerStyle,
+  getGracefulClose: () => terms.gracefulClose,
+  setGracefulClose: (enabled) => {
+    terms.gracefulClose = Boolean(enabled);
+    termsSavePrefs();
+  },
   setShellMarkerStyle: (style) => {
     if (!["none", "dot", "code"].includes(style)) return;
     terms.shellMarkerStyle = style;

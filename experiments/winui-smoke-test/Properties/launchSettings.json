@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "DevHQ.WinUISmokeTest (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "DevHQ.WinUISmokeTest (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

@@ -383,6 +383,7 @@ class TermView {
     /** Fired once, the first time the session paints anything - the moment the
      *  shell is known to be up and reading. */
     this.onFirstOutput = null;
+    this.lastCommandName = "";
     this.stickToBottom = true;
     this.cx = 0;
     this.cy = 0;
@@ -530,10 +531,10 @@ class TermView {
     const sel = window.getSelection();
     if (!sel || typeof sel.modify !== "function") return false;
 
-    // Ctrl+A takes the whole scrollback, with or without Shift. That is the
-    // one chord where the editor meaning wins over the shell's: readline reads
-    // Ctrl+A as "start of line", which Home does here anyway.
+    // The first Ctrl+A on an editable command selects that command. Repeating
+    // it expands to the whole terminal, preserving the previous shortcut.
     if (e.ctrlKey && (e.key === "a" || e.key === "A")) {
+      if (this.selectCurrentCommand(sel)) return true;
       const range = document.createRange();
       range.setStartBefore(this.history);
       range.setEndAfter(this.screen);
@@ -569,8 +570,162 @@ class TermView {
     const step = this.selectionStep(e);
     if (!step) return false;
     this.anchorSelection(sel);
+    if (!e.ctrlKey && e.key === "Home" && this.extendCommandHome(sel)) {
+      this.scrollSelectionIntoView(sel);
+      return true;
+    }
+    if (!e.ctrlKey && e.key === "End" && this.extendCommandEnd(sel)) {
+      this.scrollSelectionIntoView(sel);
+      return true;
+    }
+    if (e.ctrlKey && e.key === "ArrowLeft" && this.extendWordLeft(sel)) {
+      this.scrollSelectionIntoView(sel);
+      return true;
+    }
     sel.modify("extend", step[0], step[1]);
     this.scrollSelectionIntoView(sel);
+    return true;
+  }
+
+  /** Selects the command after the visible shell prompt. Returns false when
+   * the cursor is not on a recognizable, non-empty command, or when that
+   * command is already selected so the caller can expand to all output. */
+  selectCurrentCommand(sel) {
+    if (this.host.classList.contains("alt") || !this.cursorVisible) return false;
+    const row = this.rowEls[this.cy];
+    if (!row) return false;
+    const text = row.textContent || "";
+    const cursor = Math.min(this.cx, text.length);
+    const start = this.commandStart(text, cursor);
+    const end = text.length;
+    if (start === null || !text.slice(start, end).trim() || cursor < start || cursor > end) return false;
+
+    const current = sel.rangeCount ? sel.getRangeAt(0) : null;
+    if (current && row.contains(current.startContainer) && row.contains(current.endContainer)) {
+      const selectedStart = this.colInRow(row, current.startContainer, current.startOffset);
+      const selectedEnd = this.colInRow(row, current.endContainer, current.endOffset);
+      if (selectedStart === start && selectedEnd === end) return false;
+    }
+
+    const [startNode, startOffset] = this.caretAt(row, start);
+    const [endNode, endOffset] = this.caretAt(row, end);
+    const range = document.createRange();
+    range.setStart(startNode, startOffset);
+    range.setEnd(endNode, endOffset);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    this.scrollSelectionIntoView(sel);
+    return true;
+  }
+
+  /** Finds the first editable column for the prompt formats used by DevHQ's
+   * shell profiles. Anchoring the patterns keeps `>` and `$` inside commands
+   * from being mistaken for a second prompt. */
+  commandStart(text, cursor) {
+    const beforeCursor = text.slice(0, cursor);
+    const patterns = [
+      /^PS\s+[^>]*>\s?/,                       // PowerShell
+      /^[A-Za-z]:[\\/][^>]*>\s?/,             // Command Prompt
+      /^.*?[$#❯➜〉]\s+/,                       // Bash, WSL, Git Bash, NuShell
+      /^>\s+/,                                  // Minimal/NuShell prompt
+    ];
+    for (const pattern of patterns) {
+      const match = beforeCursor.match(pattern);
+      if (match) return match[0].length;
+    }
+    return null;
+  }
+
+  /** True when the cursor is sitting after a recognizable empty shell prompt.
+   * This is the shell's observable acknowledgement that Ctrl+C returned
+   * control; unlike a quiet output stream, it does not mistake a paused task
+   * for a completed interrupt. */
+  isAtPrompt() {
+    if (this.exited || this.host.classList.contains("alt") || !this.cursorVisible) return false;
+    const row = this.rowEls[this.cy];
+    if (!row) return false;
+    const text = row.textContent || "";
+    const cursor = Math.min(this.cx, text.length);
+    const start = this.commandStart(text, cursor);
+    return start !== null && !text.slice(start).trim();
+  }
+
+  commandName(commandLine) {
+    const match = String(commandLine || "").trim().match(/^(?:&\s+)?(?:"([^"]+)"|'([^']+)'|([^\s]+))/);
+    const executable = match?.[1] || match?.[2] || match?.[3] || "";
+    return executable.split(/[\\/]/).pop().replace(/\.(exe|cmd|bat|ps1)$/i, "").toLowerCase();
+  }
+
+  runningCommandName() {
+    return this.lastCommandName;
+  }
+
+  /** Shift+Home behaves like it does in an editor, except the shell prompt is
+   * not editable text and therefore is not included in the selection. The
+   * moving end of the selection lands on the command's first character, so the
+   * next Shift+Right shrinks it from the left the way a text box does -
+   * sel.extend moves the focus and leaves the anchor where it was. */
+  extendCommandHome(sel) {
+    const row = this.rowEls[this.cy];
+    if (!row || this.host.classList.contains("alt")) return false;
+    const text = row.textContent || "";
+    const cursor = Math.min(this.cx, text.length);
+    const start = this.commandStart(text, cursor);
+    if (start === null) return false;
+    const [startNode, startOffset] = this.caretAt(row, start);
+    sel.extend(startNode, startOffset);
+    return true;
+  }
+
+  /** The other half of editor-style line selection: extend to the command's
+   * visible end without selecting the terminal row's blank cell padding. */
+  extendCommandEnd(sel) {
+    const row = this.rowEls[this.cy];
+    if (!row || this.host.classList.contains("alt")) return false;
+    const text = row.textContent || "";
+    const cursor = Math.min(this.cx, text.length);
+    const start = this.commandStart(text, cursor);
+    if (start === null) return false;
+    const end = text.trimEnd().length;
+    if (cursor < start || cursor > end) return false;
+    const [cursorNode, cursorOffset] = this.caretAt(row, cursor);
+    const [endNode, endOffset] = this.caretAt(row, end);
+    const range = document.createRange();
+    range.setStart(cursorNode, cursorOffset);
+    range.setEnd(endNode, endOffset);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return true;
+  }
+
+  /** Chromium's word-left selection sometimes stops at a styling span instead
+   *  of the word boundary. Terminal rows use spans for colours and attributes,
+   *  so calculate that boundary from the row's plain text and extend to the
+   *  equivalent DOM caret ourselves. */
+  extendWordLeft(sel) {
+    if (!sel.focusNode) return false;
+    const element = sel.focusNode.nodeType === Node.ELEMENT_NODE
+      ? sel.focusNode
+      : sel.focusNode.parentElement;
+    const row = element?.closest(".term-history > div, .term-screen > div");
+    if (!row || !this.host.contains(row)) return false;
+    let col = this.colInRow(row, sel.focusNode, sel.focusOffset);
+    if (col <= 0) return false;
+    const text = row.textContent || "";
+    while (col > 0 && /\s/u.test(text[col - 1])) col--;
+    if (col <= 0) {
+      const [node, offset] = this.caretAt(row, col);
+      sel.extend(node, offset);
+      return true;
+    }
+    const kind = /[\p{L}\p{N}_]/u.test(text[col - 1]) ? "word" : "punctuation";
+    while (col > 0) {
+      const charKind = /[\p{L}\p{N}_]/u.test(text[col - 1]) ? "word" : "punctuation";
+      if (/\s/u.test(text[col - 1]) || charKind !== kind) break;
+      col--;
+    }
+    const [node, offset] = this.caretAt(row, col);
+    sel.extend(node, offset);
     return true;
   }
 
@@ -592,7 +747,7 @@ class TermView {
   /** A selection has to start somewhere. If this terminal does not already own
    *  one, the caret is dropped at the cursor - the place the user is looking. */
   anchorSelection(sel) {
-    if (sel.rangeCount && this.host.contains(sel.anchorNode) && this.host.contains(sel.focusNode)) return;
+    if (!sel.isCollapsed && sel.rangeCount && this.host.contains(sel.anchorNode) && this.host.contains(sel.focusNode)) return;
     const row = this.rowEls[this.cy];
     if (!row) return;
     const [node, offset] = this.caretAt(row, this.cx);
@@ -661,10 +816,13 @@ class TermView {
     const start = this.colInRow(row, range.startContainer, range.startOffset);
     const end = this.colInRow(row, range.endContainer, range.endOffset);
     if (end <= start) return "";
+    const text = row.textContent || "";
+    const commandStart = this.commandStart(text, Math.min(this.cx, text.length));
+    if (commandStart === null || start < commandStart || end > text.trimEnd().length) return "";
     sel.removeAllRanges();
-    const dx = end - this.cx;
+    const dx = start - this.cx;
     const walk = dx > 0 ? "\x1b[C".repeat(dx) : "\x1b[D".repeat(-dx);
-    return walk + "\x7f".repeat(end - start);
+    return walk + "\x1b[3~".repeat(end - start);
   }
 
   /** The column a DOM position sits at within `row`, counted as the text in
@@ -699,6 +857,19 @@ class TermView {
   }
 
   send(text) {
+    if (text.includes("\r")) {
+      const inline = text.slice(0, text.indexOf("\r"));
+      let commandLine = inline.trim();
+      if (!commandLine && !this.host.classList.contains("alt")) {
+        const row = this.rowEls[this.cy];
+        const rowText = row?.textContent || "";
+        const cursor = Math.min(this.cx, rowText.length);
+        const start = this.commandStart(rowText, cursor);
+        if (start !== null) commandLine = rowText.slice(start, cursor).trim();
+      }
+      const name = this.commandName(commandLine);
+      if (name) this.lastCommandName = name;
+    }
     this.stickToBottom = true;
     term_invoke("term_write", { id: this.id, data: text }).catch(() => {});
   }

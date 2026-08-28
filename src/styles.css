@@ -105,6 +105,10 @@ svg.ms,svg.ms rect,svg.ms path{fill:none;stroke:currentColor}
 .win-btn.on .theme-sun{display:block}
 .win-btn.on .theme-moon{display:none}
 .win-btn:hover{background:rgba(255,255,255,.07);color:var(--text)}
+/* Pinned reads as a state, not a hover: the pin stays lit while the window
+   is held above everything else. */
+#pop-ontop.on{color:var(--accent)}
+#pop-ontop.on .ms{font-variation-settings:'FILL' 1}
 .win-btn.close:hover{background:#e2334b;color:#fff}
 :root[data-theme="light"] #toggle-theme.on{color:#27324a}
 :root[data-theme="light"] #toggle-theme .theme-moon{width:18px;height:18px}
@@ -115,6 +119,12 @@ svg.ms,svg.ms rect,svg.ms path{fill:none;stroke:currentColor}
   flex:0 0 auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
   padding:12px 16px;border-bottom:1px solid var(--line);background:var(--bg1);
 }
+.top-nav{height:34px;display:inline-flex;overflow:hidden;flex:0 0 auto;border:1px solid var(--line);border-radius:9px;background:var(--bg2)}
+.top-nav button{display:flex;align-items:center;gap:6px;padding:0 11px;border-left:1px solid var(--line);color:var(--dim);font-size:12.5px;font-weight:550}
+.top-nav button:first-child{border-left:0}
+.top-nav button:hover{color:var(--text);background:var(--bg3)}
+.top-nav button.on{color:var(--text);background:rgba(109,139,255,.18)}
+.top-nav .ms{font-size:16px}
 .field{
   display:flex;align-items:center;gap:8px;background:var(--bg2);border:1px solid var(--line);
   border-radius:9px;padding:0 10px;height:34px;transition:border-color .15s;
@@ -140,11 +150,12 @@ svg.ms,svg.ms rect,svg.ms path{fill:none;stroke:currentColor}
 .command-kind{display:grid;place-items:center;width:24px;height:24px;background:none;
   color:var(--dim2)}
 .command-kind .ms{font-size:18px}
-.command-kind.run{color:var(--green)}
-.command-kind.term{color:var(--accent)}
-.command-kind.repo{color:var(--purple)}
-.command-kind.view{color:var(--amber)}
-.command-kind.cmd{color:var(--teal)}
+.command-kind.kind-run{color:var(--green)}
+.command-kind.kind-kill{color:var(--red)}
+.command-kind.kind-term{color:var(--accent)}
+.command-kind.kind-repo{color:var(--purple)}
+.command-kind.kind-view{color:var(--amber)}
+.command-kind.kind-cmd{color:var(--teal)}
 .command-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
 .command-detail{
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;color:var(--dim2);
@@ -305,6 +316,10 @@ html[dir="rtl"] .tech-menu{left:auto;right:0}
   flex:0 0 auto;display:flex;align-items:center;gap:7px;flex-wrap:wrap;
   padding:10px 16px;border-bottom:1px solid var(--line);background:var(--bg);
 }
+.filter-chips{display:contents}
+.filter-tech{margin-left:auto}
+.filter-tech .tech-button{height:29px;font-size:12px}
+.filter-tech .tech-menu{left:auto;right:0}
 .chip{
   display:inline-flex;align-items:center;gap:6px;height:27px;padding:0 11px;border-radius:99px;
   border:1px solid var(--line);background:var(--bg2);color:var(--dim);
@@ -328,6 +343,68 @@ html[dir="rtl"] .tech-menu{left:auto;right:0}
 }
 .summary b{color:var(--text);font-variant-numeric:tabular-nums}
 .summary .dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:5px}
+.summary-stats{display:contents}
+.summary-tail{margin-left:auto}
+.summary-sort,.summary-view{height:29px}
+.summary-sort button,.summary-view button{padding:0 8px;font-size:11.5px}
+.summary-roots .rootchip{max-width:260px}
+.summary-rescan{height:29px;padding:0 10px;font-size:12px}
+
+/* ---------- port manager ---------- */
+.ports-page{flex:1;min-height:0;overflow:auto;padding:16px;background:var(--bg)}
+.ports-page[hidden],.summary[hidden],.filters[hidden],.scroll[hidden],[id="banner-host"][hidden]{display:none}
+.ports-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px}
+.ports-head h2{font-size:19px;line-height:1.2}
+.ports-head p{margin-top:4px;color:var(--dim2);font-size:12px}
+.ports-filter-row{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.ports-filter{width:min(720px,100%);background:var(--bg1)}
+.port-local-only{height:34px;color:var(--dim)}
+.port-local-only.on{color:var(--text);border-color:var(--green);background:color-mix(in srgb,var(--green) 11%,var(--bg2))}
+.local-filter-dot,.local-process-label i{width:7px;height:7px;display:inline-block;flex:0 0 auto;border-radius:50%;background:var(--green)}
+.ports-table-wrap{overflow:auto;border:1px solid var(--line);border-radius:11px;background:var(--bg1)}
+.ports-table{width:100%;min-width:900px;border-collapse:collapse;table-layout:fixed;font-size:12.5px}
+.ports-table th{padding:10px 12px;border-bottom:1px solid var(--line);background:var(--bg2);color:var(--dim2);font-size:10.5px;font-weight:650;letter-spacing:.06em;text-align:left;text-transform:uppercase}
+.ports-table-sort{width:100%;display:flex;align-items:center;justify-content:space-between;gap:7px;color:inherit;text-align:left;text-transform:inherit;letter-spacing:inherit;font:inherit}
+.ports-table-sort:hover,.ports-table-sort.on{color:var(--text)}
+.ports-table-sort span{min-width:9px;color:var(--accent);font-size:8px}
+.ports-table th:nth-child(1){width:220px}.ports-table th:nth-child(2){width:170px}.ports-table th:nth-child(3){width:90px}.ports-table th:nth-child(5){width:154px}
+.ports-table td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+.ports-table tbody tr:last-child td{border-bottom:0}
+.ports-table tbody tr:hover{background:var(--bg2)}
+.ports-table tbody tr.local-process-row{background:color-mix(in srgb,var(--green) 4%,var(--bg1))}
+.ports-table tbody tr.local-process-row:hover{background:color-mix(in srgb,var(--green) 8%,var(--bg2))}
+.port-number strong,.ports-table td>strong{color:var(--text);font-weight:600}
+.port-binding{display:inline-flex;align-items:center;gap:4px;margin:2px 5px 2px 0;padding:2px 6px;border-radius:5px;background:var(--bg3);white-space:nowrap}
+.port-binding small{color:var(--dim2);font-size:9px;text-transform:uppercase}
+.port-none{color:var(--dim2)}
+.local-process-label{display:flex;align-items:center;gap:5px;margin-top:4px;overflow:hidden;color:var(--green);font-size:10.5px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}
+.port-pid{color:var(--dim);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace}
+.port-path{overflow:hidden;color:var(--dim);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-size:11.5px;text-overflow:ellipsis;white-space:nowrap}
+.port-path-content{display:flex;align-items:center;gap:5px;min-width:0}
+.port-path-text,.port-project-link{min-width:0;max-width:100%;flex:0 1 auto;height:23px;margin:0;padding:0;display:flex;align-items:center;overflow:hidden;font:inherit;line-height:23px;text-align:left;white-space:nowrap}
+.port-path-content:has(.port-path-actions)>.port-path-text,.port-path-content:has(.port-path-actions)>.port-project-link{max-width:calc(100% - 51px)}
+.port-path-text>span,.port-project-link>span{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.port-project-link{color:var(--accent);appearance:none}.port-project-link:hover span{text-decoration:underline}
+.port-path-actions{display:flex;flex:0 0 auto;gap:2px}.port-path-actions button{width:23px;height:23px;display:grid;place-items:center;border-radius:5px;color:var(--dim2)}
+.port-path-actions button:hover{color:var(--text);background:var(--bg3)}.port-path-actions .ms{font-size:14px}
+.port-path-actions button.copied{color:var(--green)}
+.port-actions{display:flex;justify-content:flex-end;align-items:center;gap:3px}
+.port-actions button{width:29px;height:28px;display:grid;place-items:center;border-radius:6px;color:var(--dim)}
+.port-actions button:hover{color:var(--text);background:var(--bg3)}
+.port-actions button:disabled{opacity:.28;pointer-events:none}
+.port-actions button.port-kill:hover{color:var(--red)}
+.port-actions .ms{font-size:16px}
+.ports-empty{height:110px;color:var(--dim2);text-align:center}
+.port-overlay{position:fixed;inset:0;z-index:120;display:grid;place-items:center;padding:20px;background:rgba(0,0,0,.58)}
+.port-dialog{width:min(620px,100%);max-height:min(680px,85vh);overflow:auto;padding:18px;border:1px solid var(--line);border-radius:12px;background:var(--bg1);box-shadow:0 20px 60px rgba(0,0,0,.6)}
+.port-dialog header{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:16px}
+.port-dialog header h3{font-size:16px}.port-dialog header button{width:30px;height:30px;display:grid;place-items:center;border-radius:6px;color:var(--dim)}
+.port-dialog header button:hover{background:var(--bg3);color:var(--text)}
+.port-dialog dl{display:grid;grid-template-columns:120px minmax(0,1fr);border:1px solid var(--line);border-radius:9px;overflow:hidden}
+.port-dialog dt,.port-dialog dd{padding:9px 11px;border-bottom:1px solid var(--line)}
+.port-dialog dt{background:var(--bg2);color:var(--dim2);font-size:11px;font-weight:600}.port-dialog dd{overflow-wrap:anywhere;color:var(--text);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-size:11.5px}
+.port-dialog dt:nth-last-of-type(1),.port-dialog dd:last-child{border-bottom:0}
+.port-confirm{width:min(470px,100%)}.port-confirm p{color:var(--dim);line-height:1.55}.port-confirm footer{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 
 /* ---------- grid ---------- */
 .scroll{flex:1;overflow-y:auto;overflow-x:hidden}
@@ -990,6 +1067,17 @@ body.popout .brand .shell-mark{margin-left:2px}
 .term-shell-error-card strong{display:block;color:var(--text);font-size:15px;margin:2px 0 6px}
 .term-shell-error-card p{margin:0;color:var(--dim);font-size:12.5px;line-height:1.5}
 .term-shell-error-card button{grid-column:2;justify-self:end;min-width:76px;height:32px;padding:0 16px;border-radius:7px;background:var(--accent);color:#fff;font-size:12px;font-weight:600}
+.term-shutdown{position:fixed;inset:0;z-index:131;display:grid;place-items:center;padding:20px;background:rgba(0,0,0,.58)}
+#term-dock .term-shutdown{position:absolute;inset:39px 0 0}
+.term-shutdown[hidden]{display:none}
+.term-shutdown-card{width:min(410px,100%);display:grid;grid-template-columns:38px 1fr;gap:12px 14px;padding:20px;border:1px solid var(--line);border-radius:12px;background:var(--bg2);box-shadow:0 20px 60px rgba(0,0,0,.6)}
+.term-shutdown-card strong{display:block;color:var(--text);font-size:15px;margin:2px 0 6px}
+.term-shutdown-card p{margin:0;color:var(--dim);font-size:12.5px}
+.term-never-wait{grid-column:2;display:flex;align-items:center;gap:8px;color:var(--dim);font-size:12px;cursor:pointer}.term-never-wait[hidden]{display:none}.term-never-wait input{accent-color:var(--accent)}.term-never-wait b{color:var(--text);font-weight:600}
+.term-shutdown-actions{grid-column:2;justify-self:end;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}
+.term-shutdown-card button{min-width:82px;height:32px;padding:0 16px;border-radius:7px;background:var(--bg3);color:var(--text);font-size:12px;font-weight:600}
+.term-shutdown-card button.danger{background:var(--red);color:#fff}
+.term-shutdown-spinner{width:24px;height:24px;margin:4px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
 
 /* The status bar: always there, always saying what the app is doing, with the
    way into a terminal on the end of it. */
@@ -1010,6 +1098,11 @@ body.popout .brand .shell-mark{margin-left:2px}
   font-variant-numeric:tabular-nums;
 }
 .term-count[hidden]{display:none}
+.status-orphan-wrap{position:relative;display:flex;flex:0 0 auto}.status-orphan-wrap[hidden]{display:none}
+.status-orphan{color:var(--amber);padding:0 11px}.status-orphan b{font-size:11px;font-variant-numeric:tabular-nums}
+.orphan-pop{position:absolute;z-index:115;left:0;bottom:calc(100% + 7px);width:420px;max-width:calc(100vw - 24px);padding:8px;border:1px solid var(--line);border-radius:10px;background:var(--bg1);box-shadow:0 16px 44px rgba(0,0,0,.55)}
+.orphan-pop[hidden]{display:none}.orphan-pop header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:5px 6px 9px}.orphan-pop header strong{font-size:12.5px}.orphan-pop header button{color:var(--red);font-size:11.5px}
+.orphan-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 10px;align-items:center;padding:8px;border-radius:7px}.orphan-row:hover{background:var(--bg2)}.orphan-row strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.orphan-row small{grid-column:1;overflow:hidden;color:var(--dim2);font:10.5px 'Cascadia Mono','Cascadia Code',Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.orphan-row button{grid-column:2;grid-row:1/3;height:27px;padding:0 10px;border-radius:6px;color:var(--red);background:var(--bg3);font-size:11.5px}.orphan-error{padding:6px 8px;color:var(--red);font-size:11.5px}
 /* The version button, and the release list it opens above the status bar. */
 .status-version-wrap{position:relative;display:flex;flex:0 0 auto}
 .status-version{

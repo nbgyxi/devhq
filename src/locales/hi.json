@@ -197,6 +197,8 @@
   "May we send that to PageRain Analytics? It is completely anonymous - a random number and the name of the screen you opened, nothing else. Never a project, never a folder, never your code. The few lines that do it are open source, so you can read exactly what leaves your machine.": "क्या हम यह PageRain Analytics को भेज सकते हैं? यह पूरी तरह गुमनाम है — एक यादृच्छिक संख्या और आपने जो स्क्रीन खोली उसका नाम, और कुछ नहीं। कोई प्रोजेक्ट नहीं, कोई फ़ोल्डर नहीं, आपका कोड कभी नहीं। जो चंद पंक्तियाँ यह करती हैं वे ओपन सोर्स हैं, इसलिए आप खुद पढ़ सकते हैं कि आपकी मशीन से क्या जाता है।",
   "Read the code that sends it": "भेजने वाला कोड पढ़ें",
   "Yes, say hello": "हाँ, नमस्ते कहिए",
-  "Lets PageRain Analytics know someone is using DevHQ - a random number and the screen you opened, never your projects.": "PageRain Analytics को बताता है कि कोई DevHQ का उपयोग कर रहा है — एक यादृच्छिक संख्या और आपने जो स्क्रीन खोली, आपके प्रोजेक्ट कभी नहीं।",
-  "Opening your browser": "आपका ब्राउज़र खोला जा रहा है"
+  "Opening your browser": "आपका ब्राउज़र खोला जा रहा है",
+  "Let us know you're using DevHQ, via PageRain. It's a random number and the screen you opened - never your projects.": "PageRain के ज़रिए हमें बताएँ कि आप DevHQ का उपयोग कर रहे हैं। यह एक यादृच्छिक संख्या और आपने जो स्क्रीन खोली है — आपके प्रोजेक्ट कभी नहीं।",
+  "Keep this window on top": "इस विंडो को सबसे ऊपर रखें",
+  "Stop keeping this window on top": "इस विंडो को सबसे ऊपर रखना बंद करें"
 }
