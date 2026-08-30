@@ -10,6 +10,16 @@ const term_dock_listen = window.__TAURI__.event.listen;
 const term_dock_emit = window.__TAURI__.event.emit;
 
 const TERM_PREFS = "devhq.terminals.v1";
+
+/** Names one terminal's kept stream. The output itself never comes through
+ *  here: the session in Rust keeps the bytes the shell wrote and replays them
+ *  into the parser when the terminal is opened again, so what a restored
+ *  terminal shows is its own scrollback rather than a drawing of it. All this
+ *  side has to remember is which stream belongs to which terminal. */
+function newHistoryKey() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return `t${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 const TERM_SHELLS = [
   { value: "auto", label: "Auto" },
   { value: "pwsh", label: "PowerShell 7" },
@@ -48,41 +58,37 @@ const terms = {
   shellAvailability: new Map(),
   shellColors: { ...DEFAULT_SHELL_COLORS },
   shellMarkerStyle: "code",
-  gracefulClose: true,
-  shuttingDown: new Set(),
-  shutdownTimers: new Map(),
-  shutdownEscalationTimers: new Map(),
-  neverWaitFor: new Set(),
   orphanWarnings: new Map(),
   restoring: false,
-  /** id -> generation. Output increments it; a successful snapshot only
-   *  clears the generation it actually captured. */
-  dirtyHistory: new Map(),
-  interacted: new Set(),
-  persistenceRunning: null,
   el: null,
 };
 
-function markTerminalHistoryDirty(id) {
-  if (!terms.known.has(id) || !terms.interacted.has(id)) return;
-  terms.dirtyHistory.set(id, (terms.dirtyHistory.get(id) || 0) + 1);
-}
-
+/** Writes the panel down: which shells are open, where, in what order, and the
+ *  key that names each one's kept stream. No output passes through here - it
+ *  never has to, and a terminal's scrollback was never something localStorage
+ *  should have been holding. */
 function termsSavePrefs() {
   if (terms.restoring || window.devhqResetting) return;
   const entries = [...terms.known.entries()];
-  localStorage.setItem(TERM_PREFS, JSON.stringify({
-    height: terms.height,
-    open: terms.open,
-    active: Math.max(0, entries.findIndex(([id]) => id === terms.active)),
-    sessions: entries.map(([, spec]) => spec),
-    defaultShell: terms.defaultShell,
-    splitRatio: terms.splitRatio,
-    shellColors: terms.shellColors,
-    shellMarkerStyle: terms.shellMarkerStyle,
-    gracefulClose: terms.gracefulClose,
-    neverWaitFor: [...terms.neverWaitFor],
-  }));
+  try {
+    localStorage.setItem(TERM_PREFS, JSON.stringify({
+      height: terms.height,
+      open: terms.open,
+      active: Math.max(0, entries.findIndex(([id]) => id === terms.active)),
+      sessions: entries.map(([, spec]) => ({
+        projectPath: spec.projectPath,
+        projectName: spec.projectName,
+        popped: spec.popped,
+        shell: spec.shell,
+        pane: spec.pane,
+        key: spec.key,
+      })),
+      defaultShell: terms.defaultShell,
+      splitRatio: terms.splitRatio,
+      shellColors: terms.shellColors,
+      shellMarkerStyle: terms.shellMarkerStyle,
+    }));
+  } catch { /* nothing here is worth failing a render over */ }
 }
 
 function termsLoadPrefs() {
@@ -96,8 +102,6 @@ function termsLoadPrefs() {
       }
     }
     if (["none", "dot", "code"].includes(saved.shellMarkerStyle)) terms.shellMarkerStyle = saved.shellMarkerStyle;
-    if (typeof saved.gracefulClose === "boolean") terms.gracefulClose = saved.gracefulClose;
-    if (Array.isArray(saved.neverWaitFor)) terms.neverWaitFor = new Set(saved.neverWaitFor.filter((name) => typeof name === "string"));
     if (TERM_SHELLS.some((profile) => profile.value === saved.defaultShell)) {
       terms.defaultShell = saved.defaultShell;
       terms.nextShell = saved.defaultShell;
@@ -175,14 +179,6 @@ function dockEl() {
         ${termIcon("error")}
         <div><strong id="term-shell-error-title"></strong><p></p></div>
         <button data-shell-error-close>OK</button>
-      </div>
-    </div>
-    <div class="term-shutdown" role="alertdialog" aria-modal="true" aria-labelledby="term-shutdown-title" hidden>
-      <div class="term-shutdown-card">
-        <span class="term-shutdown-spinner" aria-hidden="true"></span>
-        <div><strong id="term-shutdown-title">Shutting down</strong><p>Waiting for the terminal to finish&hellip;</p></div>
-        <label class="term-never-wait" hidden><input type="checkbox" data-never-wait /><span>Never wait for <b data-never-wait-name></b></span></label>
-        <div class="term-shutdown-actions"><button type="button" data-interrupt-again hidden>Send Ctrl+C again</button><button type="button" data-shutdown-cancel>Cancel</button><button type="button" class="danger" data-close-now hidden>Close now</button></div>
       </div>
     </div>`;
   document.body.appendChild(el);
@@ -374,25 +370,6 @@ function dockEl() {
     if (e.key === "Escape") closeTerminalTabMenu();
   });
   el.querySelector("[data-shell-error-close]").onclick = closeShellError;
-  el.querySelector("[data-close-now]").onclick = () => {
-    const id = el.querySelector(".term-shutdown").dataset.session;
-    if (id) forceCloseTerminal(id);
-  };
-  el.querySelector("[data-shutdown-cancel]").onclick = cancelTerminalClose;
-  el.querySelector("[data-interrupt-again]").onclick = () => {
-    const id = el.querySelector(".term-shutdown").dataset.session;
-    if (id && terms.shuttingDown.has(id)) term_dock_invoke("term_write", { id, data: "\u0003" }).catch(() => {});
-  };
-  el.querySelector("[data-never-wait]").onchange = (e) => {
-    const name = e.target.dataset.commandName;
-    if (!name) return;
-    if (e.target.checked) terms.neverWaitFor.add(name);
-    else terms.neverWaitFor.delete(name);
-    termsSavePrefs();
-  };
-  el.querySelector(".term-shutdown").onclick = (e) => {
-    if (e.target.classList.contains("term-shutdown")) cancelTerminalClose();
-  };
   el.querySelector(".term-shell-error").onclick = (e) => {
     if (e.target.classList.contains("term-shell-error")) closeShellError();
   };
@@ -502,6 +479,9 @@ async function killOrphan(process) {
     pid: process.pid,
     expectedExecutable: process.executablePath || "",
     expectedProcess: process.process || "",
+    // The warning lists every survivor separately, so each one is killed on its
+    // own - taking a tree here would terminate rows the user has not clicked.
+    tree: false,
   });
   terms.orphanWarnings.delete(process.pid);
 }
@@ -746,17 +726,16 @@ async function switchTerminalShell(id, shell) {
   window.devhqWork?.beginWork(key, `Restarting ${label} with ${TERM_SHELLS.find((profile) => profile.value === shell)?.label || shell}`);
   let replacement = null;
   try {
+    const historyKey = newHistoryKey();
     replacement = await term_dock_invoke("term_open", {
-      args: { projectPath: old.info.projectPath, projectName: label, shell },
+      args: { projectPath: old.info.projectPath, projectName: label, shell, historyKey },
     });
-    await mountSession(replacement.id, "", pane);
+    await mountSession(replacement.id, historyKey, pane);
 
     old.view.dispose();
     old.host.remove();
     terms.sessions.delete(id);
     terms.known.delete(id);
-    terms.dirtyHistory.delete(id);
-    terms.interacted.delete(id);
     await term_dock_invoke("term_close", { id }).catch(() => {});
 
     const replacementSession = terms.sessions.get(replacement.id);
@@ -845,11 +824,17 @@ async function openTerminal(project, opts = {}) {
     opts.run ? `Starting ${opts.run} in ${project.name}` : `Starting a shell in ${project.name}`
   );
   try {
+    const historyKey = newHistoryKey();
     const info = await term_dock_invoke("term_open", {
-      args: { projectPath: project.path, projectName: label, shell: opts.shell || terms.defaultShell },
+      args: {
+        projectPath: project.path,
+        projectName: label,
+        shell: opts.shell || terms.defaultShell,
+        historyKey,
+      },
     });
     terms.pending.delete(key);
-    await mountSession(info.id, "", pane);
+    await mountSession(info.id, historyKey, pane);
     if (opts.run) sendWhenReady(info.id, opts.run);
   } catch (e) {
     terms.pending.delete(key);
@@ -883,7 +868,7 @@ function sendWhenReady(id, command) {
 
 /** Attaches a view to a session that already exists — a new one, or one coming
  *  back from a popped-out window. */
-async function mountSession(id, restoredHistory = "", restoredPane = 0) {
+async function mountSession(id, historyKey = "", restoredPane = 0) {
   if (terms.sessions.has(id)) {
     setActive(id);
     return;
@@ -892,17 +877,19 @@ async function mountSession(id, restoredHistory = "", restoredPane = 0) {
   host.className = "term-host";
   dockEl().querySelector(".dock-views").appendChild(host);
 
+  const remembered = terms.known.get(id);
+
   const view = new TermView(host, id);
   const info = await view.attach();
-  view.prependRestoredHistory(restoredHistory);
   const session = { info, view, host };
   terms.sessions.set(id, session);
-  const remembered = terms.known.get(id);
   terms.known.set(id, {
     projectPath: info.projectPath,
     projectName: info.projectName || "shell",
     popped: false,
-    history: restoredHistory,
+    // The stream this terminal is kept as. A terminal coming back from its own
+    // window keeps the one it already had.
+    key: historyKey || remembered?.key || "",
     shell: shellProfileFromCommand(info.command),
     pane: remembered?.pane === 1 || restoredPane === 1 ? 1 : 0,
   });
@@ -911,12 +898,7 @@ async function mountSession(id, restoredHistory = "", restoredPane = 0) {
     session.info.title = title;
   };
   view.onExit = () => {
-    if (terms.shuttingDown.has(id)) {
-      term_dock_invoke("term_close", { id }).catch(() => {});
-      removeTerminal(id);
-    } else {
-      renderTabs();
-    }
+    renderTabs();
   };
 
   setActive(id);
@@ -954,26 +936,8 @@ function removeTerminal(id) {
   session.host.remove();
   terms.sessions.delete(id);
   terms.known.delete(id);
-  terms.dirtyHistory.delete(id);
-  terms.interacted.delete(id);
-  terms.shuttingDown.delete(id);
-  clearTimeout(terms.shutdownTimers.get(id));
-  terms.shutdownTimers.delete(id);
-  clearTimeout(terms.shutdownEscalationTimers.get(id));
-  terms.shutdownEscalationTimers.delete(id);
-  const dialog = terms.el?.querySelector(".term-shutdown");
-  if (dialog?.dataset.session === id) {
-    dialog.hidden = true;
-    delete dialog.dataset.session;
-  }
   focusNext();
   termsSavePrefs();
-}
-
-function forceCloseTerminal(id) {
-  if (!terms.sessions.has(id)) return;
-  term_dock_invoke("term_close", { id }).catch(() => {});
-  removeTerminal(id);
 }
 
 function scheduleOrphanCheck(expected) {
@@ -998,68 +962,9 @@ function closeTerminalAndWatch(id) {
   removeTerminal(id);
 }
 
-function cancelTerminalClose() {
-  const dialog = terms.el?.querySelector(".term-shutdown");
-  const id = dialog?.dataset.session;
-  if (!id) return;
-  clearTimeout(terms.shutdownTimers.get(id));
-  terms.shutdownTimers.delete(id);
-  clearTimeout(terms.shutdownEscalationTimers.get(id));
-  terms.shutdownEscalationTimers.delete(id);
-  terms.shuttingDown.delete(id);
-  dialog.hidden = true;
-  delete dialog.dataset.session;
-  terms.sessions.get(id)?.view.focus();
-}
-
-/** A returned empty prompt is Ctrl+C's practical success signal. Give the
- * terminal a few repaint frames to show it, then fall back to asking the shell
- * to exit normally. No forced-close deadline is involved. */
-function waitForInterrupt(id) {
-  if (!terms.shuttingDown.has(id)) return;
-  const session = terms.sessions.get(id);
-  if (!session) return;
-  if (session.view.isAtPrompt()) return forceCloseTerminal(id);
-  const timer = setTimeout(() => waitForInterrupt(id), 100);
-  terms.shutdownTimers.set(id, timer);
-}
-
-/** Send Ctrl+C twice immediately because interactive tools can reserve the
- * first press for cancellation and the second for exit. Never type `exit`:
- * TUIs can treat it as ordinary input instead of a shell command. */
+/** Close immediately — same as the tab ×. The old Ctrl+C wait dialog is gone. */
 function closeTerminal(id) {
-  const session = terms.sessions.get(id);
-  if (!session || terms.shuttingDown.has(id)) return;
-  return closeTerminalAndWatch(id);
-  terms.shuttingDown.add(id);
-  const dialog = dockEl().querySelector(".term-shutdown");
-  dialog.dataset.session = id;
-  dialog.querySelector("p").textContent = `Waiting for ${session.info.projectName || "the terminal"} to finish…`;
-  dialog.hidden = false;
-  dialog.querySelector("strong").textContent = "Closing…";
-  dialog.querySelector("p").textContent = "Giving the terminal a moment to finish safely.";
-  dialog.querySelector("[data-close-now]").hidden = true;
-  dialog.querySelector("[data-interrupt-again]").hidden = true;
-  const neverWait = dialog.querySelector(".term-never-wait");
-  neverWait.hidden = !commandName;
-  neverWait.querySelector("[data-never-wait-name]").textContent = commandName;
-  const neverWaitInput = neverWait.querySelector("[data-never-wait]");
-  neverWaitInput.dataset.commandName = commandName;
-  neverWaitInput.checked = terms.neverWaitFor.has(commandName);
-  const escalation = setTimeout(() => {
-    terms.shutdownEscalationTimers.delete(id);
-    if (!terms.shuttingDown.has(id) || dialog.dataset.session !== id) return;
-    dialog.querySelector("strong").textContent = "Shutting down";
-    dialog.querySelector("p").textContent = `Still waiting for ${session.info.projectName || "the terminal"} to finish…`;
-    dialog.querySelector("[data-interrupt-again]").hidden = false;
-    dialog.querySelector("[data-close-now]").hidden = false;
-  }, 3000);
-  terms.shutdownEscalationTimers.set(id, escalation);
-  term_dock_invoke("term_write", { id, data: "\u0003" })
-    .then(() => new Promise((resolve) => setTimeout(resolve, 75)))
-    .then(() => terms.shuttingDown.has(id) ? term_dock_invoke("term_write", { id, data: "\u0003" }) : undefined)
-    .then(() => waitForInterrupt(id))
-    .catch(() => forceCloseTerminal(id));
+  closeTerminalAndWatch(id);
 }
 
 /** Hands the session to its own window. The shell is untouched — only the view
@@ -1068,7 +973,6 @@ async function popOutTerminal(id, screenX, screenY) {
   const session = terms.sessions.get(id);
   if (!session) return;
   const remembered = terms.known.get(id);
-  if (remembered) remembered.history = session.view.exportHistory();
   // The panel lets go on the same frame as the click; the window is opened
   // behind it. Waiting for the window first would leave the terminal sitting
   // in the dock looking as though nothing happened.
@@ -1091,7 +995,9 @@ async function popOutTerminal(id, screenX, screenY) {
     // The window never came up, so the session has no view at all — take it
     // back into the panel rather than leaving it running unseen, and open the
     // panel again if letting go of this one had closed it.
-    await mountSession(id, remembered?.history || "").catch(() => {});
+    // Only what came from before this run: the session itself still holds
+    // everything it has printed, and `attach` brings that back on its own.
+    await mountSession(id).catch(() => {});
     setDockOpen(true);
   } finally {
     window.devhqWork?.endWork(key);
@@ -1112,8 +1018,6 @@ applyDockHeight();
 term_dock_listen("term:closed", (event) => {
   const id = event.payload.id;
   terms.known.delete(id);
-  terms.dirtyHistory.delete(id);
-  terms.interacted.delete(id);
   renderTabs();
   termsSavePrefs();
 });
@@ -1124,14 +1028,6 @@ term_dock_listen("term:close-watch", (event) => {
   term_dock_invoke("term_close_snapshot", { id })
     .then(scheduleOrphanCheck)
     .catch(() => term_dock_invoke("term_close", { id }).catch(() => {}));
-});
-
-term_dock_listen("term:never-wait", (event) => {
-  const { name, enabled } = event.payload || {};
-  if (!name) return;
-  if (enabled) terms.neverWaitFor.add(name);
-  else terms.neverWaitFor.delete(name);
-  termsSavePrefs();
 });
 
 term_dock_listen("term:docked", async (event) => {
@@ -1149,6 +1045,11 @@ term_dock_listen("term:docked", async (event) => {
  *  folders and retain their tab order. */
 async function restoreTerminals() {
   const specs = terms.restoreSpecs;
+  // Streams nobody is going to open again - a terminal closed while DevHQ was
+  // not running, or one lost with a crash - are dropped before anything else
+  // touches them.
+  term_dock_invoke("term_prune_history", { keys: specs.map((spec) => spec.key).filter(Boolean) })
+    .catch(() => {});
   if (!specs.length) return;
   terms.restoring = true;
   setDockOpen(true);
@@ -1160,15 +1061,20 @@ async function restoreTerminals() {
     renderTabs();
     window.devhqWork?.beginWork(key, `Restoring terminal in ${spec.projectName || spec.projectPath}`);
     try {
+      // The shell is new; the scrollback is not. `term_open` replays this
+      // terminal's kept stream into the parser before the shell starts, so
+      // what comes back is the session's own history rather than a copy.
+      const historyKey = spec.key || newHistoryKey();
       const info = await term_dock_invoke("term_open", {
         args: {
           projectPath: spec.projectPath,
           projectName: spec.projectName || "shell",
           shell: spec.shell || terms.defaultShell,
+          historyKey,
         },
       });
       terms.pending.delete(key);
-      await mountSession(info.id, spec.history || "", spec.pane);
+      await mountSession(info.id, historyKey, spec.pane);
       restored.push(info.id);
       if (spec.popped) await popOutTerminal(info.id);
     } catch {
@@ -1183,52 +1089,6 @@ async function restoreTerminals() {
   const active = terms.sessions.has(preferred) ? preferred : terms.sessions.keys().next().value;
   if (active) setActive(active);
   setDockOpen(terms.restoreOpen && terms.sessions.size > 0);
-  termsSavePrefs();
-}
-
-function snapshotText(snapshot) {
-  const line = (runs) => (runs || []).map((run) => run.t).join("");
-  const lines = [
-    ...snapshot.history.map(line),
-    ...snapshot.screen.map((row) => line(row.runs)),
-  ];
-  while (lines.length && !lines[lines.length - 1]) lines.pop();
-  return lines.slice(-1500).join("\n").slice(-150000);
-}
-
-/** Captures only sessions whose output changed since their last snapshot.
- *  Calls coalesce so autosave and shutdown never start competing snapshots. */
-async function persistTerminalState() {
-  if (terms.persistenceRunning) return terms.persistenceRunning;
-  const pending = [...terms.dirtyHistory.entries()];
-  if (!pending.length) return false;
-  terms.persistenceRunning = Promise.allSettled(pending.map(async ([id, generation]) => {
-    try {
-      const snapshot = await term_dock_invoke("term_attach", { id });
-      const remembered = terms.known.get(id);
-      if (remembered) remembered.history = snapshotText(snapshot);
-      if (terms.dirtyHistory.get(id) === generation) terms.dirtyHistory.delete(id);
-    } catch {}
-  })).then(() => {
-    termsSavePrefs();
-    return true;
-  }).finally(() => {
-    terms.persistenceRunning = null;
-  });
-  return terms.persistenceRunning;
-}
-
-/** Last-chance persistence that never crosses the native bridge. Docked views
- *  already hold their complete rendered history, so copying it to localStorage
- *  is synchronous and cannot delay or deadlock window shutdown. */
-function persistDockedTerminalState() {
-  for (const [id, session] of terms.sessions) {
-    if (!terms.dirtyHistory.has(id)) continue;
-    const remembered = terms.known.get(id);
-    if (!remembered) continue;
-    remembered.history = session.view.exportHistory();
-    terms.dirtyHistory.delete(id);
-  }
   termsSavePrefs();
 }
 
@@ -1250,19 +1110,11 @@ term_dock_listen("term:drop", async (event) => {
   } catch {}
 });
 
-term_dock_listen("term:input", (event) => {
-  terms.interacted.add(event.payload);
-});
-
 window.openTerminal = openTerminal;
 window.openTerminalPanel = openTerminalPanel;
 window.setDockOpen = setDockOpen;
 window.syncTerminalButton = syncTerminalButton;
 window.termsState = terms;
-window.persistTerminalState = persistTerminalState;
-window.persistDockedTerminalState = persistDockedTerminalState;
-window.terminalStateDirty = () => terms.dirtyHistory.size > 0;
-window.devhqTerminalChanged = markTerminalHistoryDirty;
 
 function shellProfileFromCommand(command) {
   const value = String(command || "").toLowerCase();
@@ -1282,11 +1134,6 @@ window.devhqTerminalSettings = {
   scan: loadShellAvailability,
   shellColors: () => ({ ...terms.shellColors }),
   getShellMarkerStyle: () => terms.shellMarkerStyle,
-  getGracefulClose: () => terms.gracefulClose,
-  setGracefulClose: (enabled) => {
-    terms.gracefulClose = Boolean(enabled);
-    termsSavePrefs();
-  },
   setShellMarkerStyle: (style) => {
     if (!["none", "dot", "code"].includes(style)) return;
     terms.shellMarkerStyle = style;
@@ -1322,7 +1169,3 @@ window.devhqTerminalSettings = {
 
 restoreTerminals();
 loadShellAvailability();
-
-// Keep shutdown cheap: in normal use it only has to flush output from the last
-// few seconds, and often has nothing left to do at all.
-setInterval(() => persistTerminalState().catch(() => {}), 5_000);

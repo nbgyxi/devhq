@@ -21,6 +21,140 @@ pub const ATTR_UNDERLINE: u8 = 8;
 pub const ATTR_REVERSE: u8 = 16;
 pub const ATTR_STRIKE: u8 = 32;
 
+/// Marks the second column of a double-width glyph. The glyph itself lives in
+/// the cell before it; this one exists only so every column of the row still
+/// has a cell, and it is never drawn.
+pub const CONT: char = '\0';
+
+/// How many columns a character occupies on the screen.
+///
+/// This is the terminal's own arithmetic, not the font's: a program pads its
+/// table to a column count, and the only way its columns land where it meant
+/// them to is for us to count a CJK ideograph or an emoji as the two columns
+/// ConPTY charged it for. The ranges are East Asian Wide and Fullwidth plus
+/// the emoji that render double-width, and the marks that take no column at
+/// all - combining accents, variation selectors and the zero-width joiners.
+pub fn char_width(c: char) -> usize {
+    let u = c as u32;
+    if u < 0x7F {
+        // The common case, and the whole of it: printable ASCII is one column,
+        // and no control character reaches here.
+        return 1;
+    }
+    match u {
+        // Marks and joiners that hang off the character before them.
+        0x0300..=0x036F
+        | 0x0483..=0x0489
+        | 0x0591..=0x05BD
+        | 0x0610..=0x061A
+        | 0x064B..=0x065F
+        | 0x0670
+        | 0x06D6..=0x06DC
+        | 0x0730..=0x074A
+        | 0x07A6..=0x07B0
+        | 0x0816..=0x0819
+        | 0x081B..=0x0823
+        | 0x0951..=0x0954
+        | 0x1AB0..=0x1AFF
+        | 0x1DC0..=0x1DFF
+        | 0x200B..=0x200F
+        | 0x2060..=0x2064
+        | 0x20D0..=0x20F0
+        | 0xFE00..=0xFE0F
+        | 0xFE20..=0xFE2F
+        | 0xFEFF
+        | 0xE0100..=0xE01EF => 0,
+
+        // East Asian Wide and Fullwidth.
+        0x1100..=0x115F
+        | 0x2E80..=0x303E
+        | 0x3041..=0x33FF
+        | 0x3400..=0x4DBF
+        | 0x4E00..=0x9FFF
+        | 0xA000..=0xA4CF
+        | 0xA960..=0xA97F
+        | 0xAC00..=0xD7A3
+        | 0xF900..=0xFAFF
+        | 0xFE10..=0xFE19
+        | 0xFE30..=0xFE6F
+        | 0xFF00..=0xFF60
+        | 0xFFE0..=0xFFE6
+        | 0x16FE0..=0x16FFF
+        | 0x17000..=0x18AFF
+        | 0x1B000..=0x1B2FF
+        | 0x20000..=0x3FFFD => 2,
+
+        // Emoji that a terminal gives two columns to. The scattered singles in
+        // the symbol blocks are the ones the emoji-presentation tables list;
+        // everything else down there is a one-column symbol.
+        0x231A..=0x231B
+        | 0x23E9..=0x23EC
+        | 0x23F0
+        | 0x23F3
+        | 0x25FD..=0x25FE
+        | 0x2614..=0x2615
+        | 0x2648..=0x2653
+        | 0x267F
+        | 0x2693
+        | 0x26A1
+        | 0x26AA..=0x26AB
+        | 0x26BD..=0x26BE
+        | 0x26C4..=0x26C5
+        | 0x26CE
+        | 0x26D4
+        | 0x26EA
+        | 0x26F2..=0x26F3
+        | 0x26F5
+        | 0x26FA
+        | 0x26FD
+        | 0x2705
+        | 0x270A..=0x270B
+        | 0x2728
+        | 0x274C
+        | 0x274E
+        | 0x2753..=0x2755
+        | 0x2757
+        | 0x2795..=0x2797
+        | 0x27B0
+        | 0x27BF
+        | 0x2B1B..=0x2B1C
+        | 0x2B50
+        | 0x2B55
+        | 0x1F004
+        | 0x1F0CF
+        | 0x1F18E
+        | 0x1F191..=0x1F19A
+        | 0x1F200..=0x1F320
+        | 0x1F32D..=0x1F335
+        | 0x1F337..=0x1F37C
+        | 0x1F37E..=0x1F393
+        | 0x1F3A0..=0x1F3CA
+        | 0x1F3CF..=0x1F3D3
+        | 0x1F3E0..=0x1F3F0
+        | 0x1F3F4
+        | 0x1F3F8..=0x1F43E
+        | 0x1F440
+        | 0x1F442..=0x1F4FC
+        | 0x1F4FF..=0x1F53D
+        | 0x1F54B..=0x1F54E
+        | 0x1F550..=0x1F567
+        | 0x1F57A
+        | 0x1F595..=0x1F596
+        | 0x1F5A4
+        | 0x1F5FB..=0x1F64F
+        | 0x1F680..=0x1F6C5
+        | 0x1F6CC
+        | 0x1F6D0..=0x1F6D2
+        | 0x1F6EB..=0x1F6EC
+        | 0x1F6F4..=0x1F6FC
+        | 0x1F7E0..=0x1F7EB
+        | 0x1F90C..=0x1F9FF
+        | 0x1FA70..=0x1FAFF => 2,
+
+        _ => 1,
+    }
+}
+
 /// How many lines that have scrolled off the top we keep.
 const SCROLLBACK_MAX: usize = 5000;
 
@@ -34,7 +168,56 @@ pub struct Cell {
 
 #[cfg(test)]
 mod tests {
-    use super::Grid;
+    use super::{char_width, Grid, CONT};
+
+    #[test]
+    fn a_wide_glyph_takes_two_columns() {
+        let mut grid = Grid::new(10, 3);
+        grid.feed("a你b".as_bytes());
+        assert_eq!(grid.row(0)[0].ch, 'a');
+        assert_eq!(grid.row(0)[1].ch, '你');
+        assert_eq!(grid.row(0)[2].ch, CONT);
+        assert_eq!(grid.row(0)[3].ch, 'b');
+        assert_eq!(grid.cx, 4);
+    }
+
+    #[test]
+    fn overwriting_half_a_wide_glyph_clears_the_other_half() {
+        let mut grid = Grid::new(10, 3);
+        grid.feed("你好".as_bytes());
+        // Land on the second column of the first glyph.
+        grid.feed(b"[1;2Hx");
+        assert_eq!(grid.row(0)[0].ch, ' ');
+        assert_eq!(grid.row(0)[1].ch, 'x');
+        // The glyph after it is untouched.
+        assert_eq!(grid.row(0)[2].ch, '好');
+        assert_eq!(grid.row(0)[3].ch, CONT);
+    }
+
+    #[test]
+    fn a_wide_glyph_wraps_whole_rather_than_straddling_the_edge() {
+        let mut grid = Grid::new(4, 3);
+        grid.feed("abc你".as_bytes());
+        assert_eq!(grid.row(0)[3].ch, ' ');
+        assert_eq!(grid.row(1)[0].ch, '你');
+        assert_eq!(grid.row(1)[1].ch, CONT);
+    }
+
+    #[test]
+    fn a_combining_mark_does_not_eat_the_letter_it_belongs_to() {
+        let mut grid = Grid::new(10, 3);
+        grid.feed("éf".as_bytes());
+        assert_eq!(grid.row(0)[0].ch, 'e');
+        assert_eq!(grid.row(0)[1].ch, 'f');
+        assert_eq!(grid.cx, 2);
+    }
+
+    #[test]
+    fn box_drawing_is_one_column() {
+        for c in ['─', '│', '┌', '┼', '█'] {
+            assert_eq!(char_width(c), 1, "{c:?}");
+        }
+    }
 
     #[test]
     fn alternate_screen_cursor_is_not_overwritten_by_tui_cursor_saves() {
@@ -629,20 +812,63 @@ impl Grid {
 
     // ---- screen operations ---------------------------------------------
 
+    /// Clears whichever half of a double-width glyph the cell at `i` belongs
+    /// to. Writing into either half leaves the other one stranded - a lead
+    /// with no continuation draws two columns wide into one, a continuation
+    /// with no lead draws nothing - so the partner is blanked first. The
+    /// cell's own colours stay: only the character is being taken away.
+    fn split_wide(&mut self, i: usize) {
+        let col = i % self.cols;
+        let clear = |cell: &mut Cell| cell.ch = ' ';
+        if self.cells[i].ch == CONT {
+            if col > 0 {
+                clear(&mut self.cells[i - 1]);
+            }
+        } else if char_width(self.cells[i].ch) == 2 && col + 1 < self.cols {
+            clear(&mut self.cells[i + 1]);
+        }
+    }
+
     fn put(&mut self, c: char) {
+        let w = char_width(c);
+        // A combining mark owns no column. A cell holds one character, so
+        // there is nowhere to attach it - and writing it into a column of its
+        // own would eat the letter it belongs to and shift the rest of the
+        // line. Losing the accent keeps every column where the program put it.
+        if w == 0 {
+            return;
+        }
         if self.wrap_pending {
             self.cx = 0;
             self.linefeed();
             self.wrap_pending = false;
         }
+        // A double-width glyph cannot straddle the right edge: it wraps whole,
+        // leaving the last column blank, which is what the program's own
+        // column arithmetic assumed.
+        if w == 2 && self.cx + 1 >= self.cols {
+            let i = self.idx(self.cx, self.cy);
+            self.split_wide(i);
+            self.cells[i].ch = ' ';
+            let y = self.cy;
+            self.touch(y);
+            self.cx = 0;
+            self.linefeed();
+        }
         let i = self.idx(self.cx, self.cy);
+        self.split_wide(i);
         self.cells[i] = Cell { ch: c, fg: self.pen.fg, bg: self.pen.bg, attr: self.pen.attr };
+        if w == 2 {
+            self.split_wide(i + 1);
+            self.cells[i + 1] = Cell { ch: CONT, fg: self.pen.fg, bg: self.pen.bg, attr: self.pen.attr };
+        }
         let y = self.cy;
         self.touch(y);
-        if self.cx + 1 >= self.cols {
+        if self.cx + w >= self.cols {
+            self.cx = self.cols - 1;
             self.wrap_pending = true;
         } else {
-            self.cx += 1;
+            self.cx += w;
         }
     }
 
@@ -807,6 +1033,54 @@ impl Grid {
     /// Reflows to a new size, keeping the top-left of the existing content.
     /// ConPTY repaints after its own resize, so this only has to stay coherent
     /// until that arrives.
+    /// True when the parser is holding nothing half-read: no escape sequence
+    /// in progress, no partial UTF-8. A stream may be cut here, and fed from
+    /// here, which is what lets a kept session log be shortened from the front
+    /// without the replay coming apart on a sequence that lost its beginning.
+    pub fn at_ground(&self) -> bool {
+        self.state == State::Ground && self.utf8_need == 0
+    }
+
+    /// Moves what is on screen into the scrollback and leaves a blank screen,
+    /// the same way lines that scroll off the top become history.
+    ///
+    /// This is what a session does after its kept stream has been replayed:
+    /// the shell that drew that screen is gone, and the one about to start
+    /// must not paint over its output. `through` is the row to stop at - the
+    /// row the old shell was standing on, holding a prompt nobody submitted.
+    pub fn retire_screen(&mut self, through: usize) {
+        // A full-screen program was still running when the stream ended. What
+        // it drew was never output; the primary screen underneath it is. So
+        // the alternate screen is dropped exactly as leaving it would drop it.
+        if self.alt {
+            if let Some(primary) = self.saved_primary.take() {
+                self.cells = primary;
+            }
+            self.alt = false;
+            self.cx = self.saved_primary_cursor.0.min(self.cols - 1);
+            self.cy = self.saved_primary_cursor.1.min(self.rows - 1);
+        }
+        // Blank rows at the end of the range are unused screen, not output.
+        let mut end = through.min(self.rows);
+        while end > 0 && self.row(end - 1).iter().all(|c| c.ch == ' ' && c.bg == DEFAULT_COLOR && c.attr == 0) {
+            end -= 1;
+        }
+        for y in 0..end {
+            self.scrollback.push_back(self.row(y).to_vec());
+            while self.scrollback.len() > SCROLLBACK_MAX {
+                self.scrollback.pop_front();
+            }
+        }
+        self.cells = vec![Cell::default(); self.cols * self.rows];
+        self.cx = 0;
+        self.cy = 0;
+        self.pen = Cell::default();
+        self.saved_cursor = (0, 0);
+        self.wrap_pending = false;
+        self.pending_scroll.clear();
+        self.dirty = vec![true; self.rows];
+    }
+
     pub fn resize(&mut self, cols: usize, rows: usize) {
         let cols = cols.max(1);
         let rows = rows.max(1);

@@ -6,11 +6,14 @@
 //! something. If they agree but the screen is still wrong, the parser in
 //! `vt.rs` is. That tells you which half to look at without opening the window.
 //!
+//! The streams are the ones DevHQ keeps a terminal as: every open terminal has
+//! one in `%LOCALAPPDATA%\DevHQ\sessions`, named after its history key, and
+//! `DEVHQ_TERM_LOG` moves them somewhere a bug report can pick them up.
+//!
 //! ```bash
-//! # In the app: set DEVHQ_TERM_LOG to a directory, reproduce, then
 //! cd src-tauri
-//! cargo run --example term_replay -- C:\tmp\termlog\t1.bin
-//! cargo run --example term_replay -- C:\tmp\termlog\t1.bin --chunk 4096
+//! cargo run --example term_replay -- "$LOCALAPPDATA/DevHQ/sessions"
+//! cargo run --example term_replay -- C:\tmp\termlog\<key>.bin --chunk 4096
 //! ```
 
 use devhq_lib::vt::{Cell, Grid};

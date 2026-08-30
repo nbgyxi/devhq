@@ -9,14 +9,15 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::conpty::{self, ConPty};
 use crate::off_thread;
-use crate::vt::{Cell, Grid, DEFAULT_COLOR};
+use crate::vt::{char_width, Cell, Grid, CONT, DEFAULT_COLOR};
 
 /// How much history an attaching view is handed. The session keeps more than
 /// this; the rest is simply older than anyone scrolls back to on open.
@@ -75,19 +76,35 @@ fn git_bash_path() -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
+/// Something to do to the pseudoconsole. Both of these can block - a full
+/// input pipe, or a `ResizePseudoConsole` waiting on the console's own pump -
+/// which is why neither is ever done on the thread that draws the window.
+enum Job {
+    Write(Vec<u8>),
+    /// The acknowledgement lets `term_resize` stay a promise the front end can
+    /// repaint behind, without the wait landing on the window thread.
+    Resize(usize, usize, Sender<()>),
+}
+
 struct Session {
     id: String,
     project_path: String,
     project_name: String,
+    /// Keystrokes and resizes, in the order the window handed them over. The
+    /// window thread only posts here; the writer thread does the blocking part.
+    jobs: Sender<Job>,
     pty: Mutex<ConPty>,
     grid: Mutex<Grid>,
     alive: AtomicBool,
     pid: u32,
     command: String,
-    /// Bytes written to the raw capture so far, which is what lets a resize be
-    /// recorded at the point in the stream where it happened. Always counted;
-    /// it means nothing when no capture is running.
-    captured: AtomicU64,
+    /// The stream this terminal is kept as, if it is being kept. The reader
+    /// thread appends what the shell says; the writer thread notes the resizes,
+    /// which never appear in the bytes themselves.
+    log: Mutex<Option<HistoryLog>>,
+    /// What names this terminal's stream across runs, so it can be forgotten
+    /// when the terminal is closed for good.
+    history_key: Option<String>,
 }
 
 fn registry() -> &'static Mutex<HashMap<String, Arc<Session>>> {
@@ -117,12 +134,22 @@ pub fn term_pid(id: &str) -> Result<u32, String> {
 
 /// One stretch of cells sharing a colour and attributes, which is how a row
 /// reaches the front end: a handful of runs instead of hundreds of cells.
+///
+/// `x` and `w` are terminal columns, not characters: they are what the front
+/// end pins the run to, and they are the only reason a row containing a glyph
+/// of the wrong width still lines up with the row above it. `c` asks for the
+/// run to be clipped to those columns, which is wanted for anything the
+/// terminal font might not have and wrong for plain text, where an italic can
+/// lean a pixel past its last column without hurting anyone.
 #[derive(Serialize, Clone)]
 struct Run {
     t: String,
     f: u32,
     b: u32,
     a: u8,
+    x: usize,
+    w: usize,
+    c: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -185,6 +212,10 @@ pub struct OpenArgs {
     pub shell: Option<String>,
     pub cols: Option<usize>,
     pub rows: Option<usize>,
+    /// Names this terminal's kept stream. The window mints one per terminal and
+    /// remembers it, which is how a shell that is gone hands its scrollback to
+    /// the one that replaces it.
+    pub history_key: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -195,8 +226,33 @@ pub struct ShellAvailability {
     reason: Option<&'static str>,
 }
 
+/// The character under the cursor, for a block cursor to draw over.
+///
+/// The cursor can be sitting on the second column of a double-width glyph,
+/// whose cell holds a marker rather than anything printable - a space is what
+/// the block should show there.
+fn cursor_char(grid: &Grid) -> char {
+    let ch = grid.row(grid.cy)[grid.cx].ch;
+    if ch == CONT {
+        ' '
+    } else {
+        ch
+    }
+}
+
 /// Packs a row into runs, dropping the trailing default-background blanks that
 /// make up most of a typical line.
+///
+/// Every run carries the column it starts at and how many columns it covers,
+/// because the front end pins each one to that column rather than letting the
+/// browser flow them one after another. A glyph the terminal font does not
+/// have is drawn from a fallback font at some other width, and in a flowed row
+/// that shifts everything to its right - the table below it stops lining up.
+/// Anchored runs keep the damage inside the run.
+///
+/// So runs also break where that damage would start: plain ASCII, which the
+/// terminal font always has, is kept apart from everything else, and a
+/// double-width glyph is a run of its own with exactly two columns to sit in.
 fn pack(cells: &[Cell]) -> Vec<Run> {
     let end = cells
         .iter()
@@ -204,20 +260,242 @@ fn pack(cells: &[Cell]) -> Vec<Run> {
         .map(|i| i + 1)
         .unwrap_or(0);
     let mut runs: Vec<Run> = Vec::new();
-    for cell in &cells[..end] {
-        match runs.last_mut() {
-            Some(run) if run.f == cell.fg && run.b == cell.bg && run.a == cell.attr => {
-                run.t.push(cell.ch)
+    // Whether the run being built can still take another character, and
+    // whether that character would have to be plain to join it.
+    let mut open: Option<bool> = None;
+    for (x, cell) in cells[..end].iter().enumerate() {
+        // The second column of a double-width glyph is not drawn; the glyph
+        // in the column before it already covers this one.
+        if cell.ch == CONT {
+            continue;
+        }
+        let w = char_width(cell.ch).max(1);
+        let plain = cell.ch == ' ' || cell.ch.is_ascii_graphic();
+        let join = match (runs.last(), open) {
+            (Some(run), Some(run_plain)) => {
+                w == 1
+                    && run_plain == plain
+                    && run.f == cell.fg
+                    && run.b == cell.bg
+                    && run.a == cell.attr
+                    && run.x + run.w == x
             }
-            _ => runs.push(Run {
+            _ => false,
+        };
+        if join {
+            let run = runs.last_mut().expect("join implies a run");
+            run.t.push(cell.ch);
+            run.w += 1;
+        } else {
+            runs.push(Run {
                 t: cell.ch.to_string(),
                 f: cell.fg,
                 b: cell.bg,
                 a: cell.attr,
-            }),
+                x,
+                w,
+                c: !plain,
+            });
+            // A double-width run is closed the moment it opens: it owns its
+            // two columns and nothing else may share them.
+            open = if w == 2 { None } else { Some(plain) };
         }
     }
     runs
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// `DEVHQ_TERM_LOG` is process-wide, so the tests that move it take turns.
+    static ENV: Mutex<()> = Mutex::new(());
+
+    /// A failing test must not take the rest down with it: the guard is only
+    /// here to serialise them, and it carries no state worth protecting.
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("devhq-history-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn line(grid: &Grid, y: usize) -> String {
+        grid.row(y).iter().map(|c| c.ch).collect::<String>().trim_end().to_string()
+    }
+
+    fn back(grid: &Grid, i: usize) -> String {
+        grid.scrollback[i].iter().map(|c| c.ch).collect::<String>().trim_end().to_string()
+    }
+
+    /// The whole point: what a restored terminal shows is not rebuilt from a
+    /// picture of the screen, it is the same bytes through the same parser. So
+    /// a session fed live and a session replayed from its stream have to hold
+    /// the same scrollback, colours and all.
+    #[test]
+    fn a_replayed_stream_is_the_session_it_came_from() {
+        let _guard = serial();
+        let dir = scratch("replay");
+        std::env::set_var("DEVHQ_TERM_LOG", &dir);
+
+        // Green text, then a prompt the shell is standing on - exactly the
+        // shape that used to come back grey, and one line too far down.
+        let stream = b"PS C:\\code> npm test\r\n\x1b[32mPASS\x1b[0m 12 tests\r\nPS C:\\code> ";
+
+        let mut live = Grid::new(40, 6);
+        live.feed(stream);
+
+        let mut log = HistoryLog::open("session-a", 40, 6).unwrap();
+        log.append(stream, true);
+        drop(log);
+
+        let replayed = replay_history("session-a", 40, 6);
+
+        // Everything the old shell finished saying is history now, and it is
+        // the very same cells the live grid is holding.
+        assert_eq!(back(&replayed, 0), line(&live, 0));
+        assert_eq!(back(&replayed, 1), line(&live, 1));
+        assert_eq!(replayed.scrollback.len(), 2, "the standing prompt is not output");
+        assert_eq!(
+            replayed.scrollback[1].iter().map(|c| c.fg).collect::<Vec<_>>(),
+            live.row(1).iter().map(|c| c.fg).collect::<Vec<_>>(),
+            "the colours are not copied over, they are parsed again",
+        );
+        // And the screen is clear, so the replacement shell starts underneath.
+        assert_eq!(line(&replayed, 0), "");
+        assert_eq!((replayed.cx, replayed.cy), (0, 0));
+
+        std::env::remove_var("DEVHQ_TERM_LOG");
+    }
+
+    /// A stream that outgrows its cap loses its front at a mark, and what is
+    /// left still parses from its first byte.
+    #[test]
+    fn a_trimmed_stream_still_reads_from_the_front() {
+        let _guard = serial();
+        let dir = scratch("trim");
+        std::env::set_var("DEVHQ_TERM_LOG", &dir);
+
+        let mut log = HistoryLog::open("session-b", 40, 6).unwrap();
+        // Past the cap, in chunks that each end on a line boundary.
+        let chunk = vec![b'x'; 200 * 1024];
+        for _ in 0..40 {
+            log.append(&chunk, true);
+            log.append(b"\r\n", true);
+        }
+        let kept = log.written;
+        drop(log);
+
+        let (bin, _) = history_paths("session-b").unwrap();
+        let len = std::fs::metadata(&bin).unwrap().len();
+        assert!(len <= HISTORY_COMPACT_AT, "{len} bytes kept, trimmed at {HISTORY_COMPACT_AT}");
+        assert!(len > 0);
+        assert_eq!(len, kept, "the log knows how long it is after a trim");
+        // Cut at a mark, so the first byte is still the start of a line.
+        let replayed = replay_history("session-b", 40, 6);
+        assert!(replayed.scrollback.iter().all(|row| row.iter().all(|c| c.ch == 'x' || c.ch == ' ')));
+
+        std::env::remove_var("DEVHQ_TERM_LOG");
+    }
+
+    /// Closing a terminal is the one thing that ends its history.
+    #[test]
+    fn forgetting_a_terminal_drops_its_stream() {
+        let _guard = serial();
+        let dir = scratch("forget");
+        std::env::set_var("DEVHQ_TERM_LOG", &dir);
+
+        let mut log = HistoryLog::open("session-c", 40, 6).unwrap();
+        log.append(b"something\r\n", true);
+        drop(log);
+        let (bin, meta) = history_paths("session-c").unwrap();
+        assert!(bin.exists() && meta.exists());
+
+        forget_history("session-c");
+        assert!(!bin.exists() && !meta.exists());
+        assert_eq!(replay_history("session-c", 40, 6).scrollback.len(), 0);
+
+        std::env::remove_var("DEVHQ_TERM_LOG");
+    }
+
+    /// A key becomes a file name, so it is checked rather than trusted.
+    #[test]
+    fn a_key_cannot_leave_its_folder() {
+        let _guard = serial();
+        let dir = scratch("keys");
+        std::env::set_var("DEVHQ_TERM_LOG", &dir);
+
+        assert!(history_paths("../../etc/passwd").is_none());
+        assert!(history_paths("has space").is_none());
+        assert!(history_paths("").is_none());
+        assert!(history_paths(&"x".repeat(65)).is_none());
+        assert!(history_paths("2f8a1c-4b_9").is_some());
+
+        std::env::remove_var("DEVHQ_TERM_LOG");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pack;
+    use crate::vt::Grid;
+
+    fn row_runs(cols: usize, bytes: &[u8]) -> Vec<(String, usize, usize, bool)> {
+        let mut grid = Grid::new(cols, 3);
+        grid.feed(bytes);
+        pack(grid.row(0))
+            .into_iter()
+            .map(|r| (r.t, r.x, r.w, r.c))
+            .collect()
+    }
+
+    #[test]
+    fn plain_text_is_one_run_covering_its_columns() {
+        let runs = row_runs(20, b"hello");
+        assert_eq!(runs, vec![("hello".into(), 0, 5, false)]);
+    }
+
+    #[test]
+    fn a_glyph_the_font_may_not_have_is_split_off_and_clipped() {
+        // A table's rule: text, box drawing, text. The middle stretch is the
+        // one that can be drawn from a fallback font, so it gets its own run
+        // and is clipped to the columns it was given.
+        let runs = row_runs(20, "a──b".as_bytes());
+        assert_eq!(
+            runs,
+            vec![
+                ("a".into(), 0, 1, false),
+                ("──".into(), 1, 2, true),
+                ("b".into(), 3, 1, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_wide_glyph_is_its_own_run_of_two_columns() {
+        let runs = row_runs(20, "a你好b".as_bytes());
+        assert_eq!(
+            runs,
+            vec![
+                ("a".into(), 0, 1, false),
+                ("你".into(), 1, 2, true),
+                ("好".into(), 3, 2, true),
+                ("b".into(), 5, 1, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn columns_survive_a_colour_change_mid_row() {
+        let runs = row_runs(20, b"ab[31mcd[0mef");
+        let columns: Vec<(usize, usize)> = runs.iter().map(|r| (r.1, r.2)).collect();
+        assert_eq!(columns, vec![(0, 2), (2, 2), (4, 2)]);
+    }
 }
 
 impl Session {
@@ -279,6 +557,16 @@ fn term_open_sync(app: AppHandle, args: OpenArgs) -> Result<TermInfo, String> {
     let cols = args.cols.unwrap_or(80).clamp(20, 500);
     let rows = args.rows.unwrap_or(24).clamp(5, 200);
 
+    // What this terminal was, before there is a shell to say otherwise. The
+    // kept stream is fed back through the parser first, so the screen and the
+    // scrollback are the ones the last shell left - not a redrawing of them -
+    // and the new shell starts underneath.
+    let history_key = args.history_key.filter(|key| history_paths(key).is_some());
+    let grid = match &history_key {
+        Some(key) => replay_history(key, cols, rows),
+        None => Grid::new(cols, rows),
+    };
+
     let (pty, command) = match &args.command {
         Some(cmd) => (ConPty::spawn(cmd, &dir, cols as u16, rows as u16)?, cmd.clone()),
         None => match args.shell.as_deref().unwrap_or("auto") {
@@ -291,21 +579,26 @@ fn term_open_sync(app: AppHandle, args: OpenArgs) -> Result<TermInfo, String> {
     };
 
     let id = next_id();
+    let (jobs, inbox) = channel::<Job>();
+    let log = history_key.as_deref().and_then(|key| HistoryLog::open(key, cols, rows));
     let session = Arc::new(Session {
         id: id.clone(),
+        jobs,
         project_path: args.project_path.clone(),
         project_name: args
             .project_name
             .unwrap_or_else(|| dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()),
         pid: pty.pid(),
         pty: Mutex::new(pty),
-        grid: Mutex::new(Grid::new(cols, rows)),
+        grid: Mutex::new(grid),
         alive: AtomicBool::new(true),
         command,
-        captured: AtomicU64::new(0),
+        log: Mutex::new(log),
+        history_key,
     });
     registry().lock().unwrap().insert(id.clone(), session.clone());
 
+    spawn_writer(Arc::downgrade(&session), inbox);
     spawn_reader(app, session.clone());
     Ok(session.info())
 }
@@ -322,57 +615,283 @@ fn spawn_shell(dir: &Path, cols: u16, rows: u16) -> Result<(ConPty, String), Str
     Err(last)
 }
 
-/// Opt-in raw capture of everything the pseudoconsole says, so a rendering bug
-/// can be reproduced away from the window. Set `DEVHQ_TERM_LOG` to a directory;
-/// each session then writes `<run>-<id>.bin` (the exact bytes) beside
-/// `<run>-<id>.meta` (the size it started at, then one line per resize), which
-/// `cargo run --example term_replay` replays. Unset — the normal case — this
-/// costs one env lookup per session.
-fn capture_dir() -> Option<PathBuf> {
-    let dir = PathBuf::from(std::env::var_os("DEVHQ_TERM_LOG")?);
+// ---- kept history ------------------------------------------------------
+//
+// A terminal that comes back after a restart shows the scrollback it had, and
+// it is the same scrollback rather than a copy of one: the bytes the shell
+// wrote are kept, and on open they are fed back through the parser that drew
+// them the first time. Nothing is rebuilt out of a picture of the screen, so
+// nothing in the restored history can be subtly different from what was really
+// there - the colours, the columns and the wrapping are not reproduced, they
+// are simply produced again.
+//
+// `cargo run --example term_replay` reads the same pair of files.
+
+/// What a trim leaves behind. The front is cut at a mark, so what is left is
+/// still a stream that reads from its first byte.
+const HISTORY_KEEP_BYTES: u64 = 4 * 1024 * 1024;
+/// When a trim runs. Trimming rewrites the file, so it is worth doing rarely:
+/// a stream is allowed half as much again before it is cut back to the size
+/// above, rather than being rewritten on every chunk past the line.
+const HISTORY_COMPACT_AT: u64 = HISTORY_KEEP_BYTES + HISTORY_KEEP_BYTES / 2;
+/// How often a mark is laid down. Small enough that a trim loses little, large
+/// enough that the sidecar stays a handful of lines.
+const HISTORY_MARK_EVERY: u64 = 64 * 1024;
+
+/// Where the streams live. `DEVHQ_TERM_LOG` moves them, which is how a session
+/// can be recorded somewhere a bug report can pick it up.
+fn history_dir() -> Option<PathBuf> {
+    let dir = match std::env::var_os("DEVHQ_TERM_LOG") {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("DevHQ").join("sessions"),
+    };
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }
 
-/// Session ids restart at `t1` every time the app starts, so a capture named
-/// after the id alone is silently overwritten by the next run — and half-stale
-/// pairs read as a bug that isn't there. Stamping the run keeps them apart.
-fn capture_run() -> &'static str {
-    static RUN: OnceLock<String> = OnceLock::new();
-    RUN.get_or_init(|| {
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        format!("run{secs}")
-    })
+/// A key names one terminal across runs. It comes from the window, so it is
+/// checked rather than trusted - it becomes a file name.
+fn history_paths(key: &str) -> Option<(PathBuf, PathBuf)> {
+    if key.is_empty()
+        || key.len() > 64
+        || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    let dir = history_dir()?;
+    Some((dir.join(format!("{key}.bin")), dir.join(format!("{key}.meta"))))
 }
 
-fn open_capture(session: &Session) -> Option<std::fs::File> {
-    let dir = capture_dir()?;
-    let (cols, rows) = {
-        let grid = session.grid.lock().unwrap();
-        (grid.cols, grid.rows)
-    };
-    let stem = format!("{}-{}", capture_run(), session.id);
-    let _ = std::fs::write(dir.join(format!("{stem}.meta")), format!("{cols} {rows}\n"));
-    std::fs::File::create(dir.join(format!("{stem}.bin"))).ok()
+/// The sidecar beside a stream: the size it starts at, then one line per
+/// resize and one per mark, each stamped with how far into the
+/// stream it sits.
+struct Meta {
+    cols: usize,
+    rows: usize,
+    resizes: Vec<(u64, usize, usize)>,
+    marks: Vec<u64>,
 }
 
-/// Notes a resize in the sidecar, stamped with how far into the byte stream it
-/// landed. Resizes never appear in the bytes themselves, so without this a
-/// replay silently runs the whole session at the size it opened at.
-fn note_capture_resize(session: &Session, cols: usize, rows: usize) {
-    let Some(dir) = capture_dir() else { return };
-    let Ok(mut file) = std::fs::OpenOptions::new()
-        .append(true)
-        .open(dir.join(format!("{}-{}.meta", capture_run(), session.id)))
-    else {
-        return;
-    };
-    use std::io::Write;
-    let at = session.captured.load(Ordering::Relaxed);
-    let _ = writeln!(file, "resize {at} {cols} {rows}");
+fn read_meta(path: &Path) -> Meta {
+    let mut meta = Meta { cols: 80, rows: 24, resizes: Vec::new(), marks: Vec::new() };
+    let Ok(text) = std::fs::read_to_string(path) else { return meta };
+    for (i, line) in text.lines().enumerate() {
+        let mut parts = line.split_whitespace();
+        match parts.next() {
+            Some("resize") => {
+                let at = parts.next().and_then(|v| v.parse().ok());
+                let cols = parts.next().and_then(|v| v.parse().ok());
+                let rows = parts.next().and_then(|v| v.parse().ok());
+                if let (Some(at), Some(cols), Some(rows)) = (at, cols, rows) {
+                    meta.resizes.push((at, cols, rows));
+                }
+            }
+            Some("mark") => {
+                if let Some(at) = parts.next().and_then(|v| v.parse().ok()) {
+                    meta.marks.push(at);
+                }
+            }
+            Some(first) if i == 0 => {
+                if let (Ok(cols), Some(Ok(rows))) = (first.parse(), parts.next().map(str::parse)) {
+                    meta.cols = cols;
+                    meta.rows = rows;
+                }
+            }
+            _ => {}
+        }
+    }
+    meta
+}
+
+fn write_meta(path: &Path, meta: &Meta) {
+    let mut out = format!("{} {}\n", meta.cols, meta.rows);
+    for (at, cols, rows) in &meta.resizes {
+        out.push_str(&format!("resize {at} {cols} {rows}\n"));
+    }
+    for at in &meta.marks {
+        out.push_str(&format!("mark {at}\n"));
+    }
+    let _ = std::fs::write(path, out);
+}
+
+/// The size in force at a point in the stream.
+fn size_at(meta: &Meta, at: u64) -> (usize, usize) {
+    let mut size = (meta.cols, meta.rows);
+    for &(offset, cols, rows) in &meta.resizes {
+        if offset <= at {
+            size = (cols, rows);
+        }
+    }
+    size
+}
+
+/// One terminal's stream, open for appending.
+struct HistoryLog {
+    bin: PathBuf,
+    meta_path: PathBuf,
+    file: std::fs::File,
+    written: u64,
+    marks: Vec<u64>,
+    since_mark: u64,
+}
+
+impl HistoryLog {
+    /// Opens the stream for this key, trimming it first if the last run left it
+    /// over the cap, and noting the size this run opens at.
+    fn open(key: &str, cols: usize, rows: usize) -> Option<HistoryLog> {
+        let (bin, meta_path) = history_paths(key)?;
+        let mut meta = read_meta(&meta_path);
+        let log = HistoryLog {
+            written: std::fs::metadata(&bin).map(|m| m.len()).unwrap_or(0),
+            marks: std::mem::take(&mut meta.marks),
+            since_mark: 0,
+            file: std::fs::OpenOptions::new().create(true).append(true).open(&bin).ok()?,
+            bin,
+            meta_path,
+        };
+        if log.written == 0 {
+            write_meta(&log.meta_path, &Meta { cols, rows, resizes: Vec::new(), marks: Vec::new() });
+        } else {
+            // The stream continues at whatever size this window is now, and a
+            // resize never appears in the bytes themselves.
+            meta.resizes.push((log.written, cols, rows));
+            meta.marks = log.marks.clone();
+            write_meta(&log.meta_path, &meta);
+        }
+        Some(log)
+    }
+
+    /// Appends what the pseudoconsole just said. `settled` is the parser saying
+    /// it holds nothing half-read and the cursor is at the start of a line -
+    /// the only kind of place a stream may later be cut.
+    fn append(&mut self, bytes: &[u8], settled: bool) {
+        use std::io::Write;
+        if self.file.write_all(bytes).is_err() {
+            return;
+        }
+        let _ = self.file.flush();
+        self.written += bytes.len() as u64;
+        self.since_mark += bytes.len() as u64;
+        if settled && self.since_mark >= HISTORY_MARK_EVERY {
+            self.marks.push(self.written);
+            self.since_mark = 0;
+            if let Ok(mut meta) = std::fs::OpenOptions::new().append(true).open(&self.meta_path) {
+                let _ = writeln!(meta, "mark {}", self.written);
+            }
+        }
+        if self.written > HISTORY_COMPACT_AT {
+            self.compact();
+        }
+    }
+
+    fn note_resize(&mut self, cols: usize, rows: usize) {
+        use std::io::Write;
+        if let Ok(mut meta) = std::fs::OpenOptions::new().append(true).open(&self.meta_path) {
+            let _ = writeln!(meta, "resize {} {cols} {rows}", self.written);
+        }
+    }
+
+    /// Drops the front of a stream that has outgrown the cap, cutting at a mark
+    /// so what is left still parses from its first byte.
+    fn compact(&mut self) {
+        let mut meta = read_meta(&self.meta_path);
+        let Some(&cut) = self.marks.iter().find(|&&at| self.written - at <= HISTORY_KEEP_BYTES) else {
+            return;
+        };
+        if cut == 0 {
+            return;
+        }
+        let Ok(bytes) = std::fs::read(&self.bin) else { return };
+        let cut = cut.min(bytes.len() as u64);
+        if std::fs::write(&self.bin, &bytes[cut as usize..]).is_err() {
+            return;
+        }
+        let (cols, rows) = size_at(&meta, cut);
+        meta.cols = cols;
+        meta.rows = rows;
+        meta.resizes.retain(|(at, _, _)| *at > cut);
+        for entry in &mut meta.resizes {
+            entry.0 -= cut;
+        }
+        self.marks.retain(|at| *at > cut);
+        for at in &mut self.marks {
+            *at -= cut;
+        }
+        meta.marks = self.marks.clone();
+        write_meta(&self.meta_path, &meta);
+        self.written -= cut;
+        if let Ok(file) = std::fs::OpenOptions::new().append(true).open(&self.bin) {
+            self.file = file;
+        }
+    }
+}
+
+/// Rebuilds a terminal from its kept stream: the bytes go through the parser
+/// exactly as they did when the shell wrote them, and what they leave on screen
+/// is retired into the scrollback so the replacement shell starts underneath it
+/// rather than over it.
+fn replay_history(key: &str, cols: usize, rows: usize) -> Grid {
+    let Some((bin, meta_path)) = history_paths(key) else { return Grid::new(cols, rows) };
+    let Ok(bytes) = std::fs::read(&bin) else { return Grid::new(cols, rows) };
+    if bytes.is_empty() {
+        return Grid::new(cols, rows);
+    }
+    let meta = read_meta(&meta_path);
+    let mut grid = Grid::new(meta.cols, meta.rows);
+    let mut at = 0usize;
+    for (offset, c, r) in meta.resizes {
+        let offset = (offset as usize).min(bytes.len());
+        if offset > at {
+            grid.feed(&bytes[at..offset]);
+            at = offset;
+        }
+        grid.resize(c, r);
+    }
+    grid.feed(&bytes[at..]);
+    // Everything the old shell left on screen is finished output. Its own
+    // standing prompt is not: the new shell prints one for itself.
+    grid.retire_screen(if grid.alt { usize::MAX } else { grid.cy });
+    grid.resize(cols, rows);
+    // Nobody is attached yet; the first view is handed the whole screen.
+    grid.take_dirty();
+    grid.take_scrolled();
+    grid
+}
+
+/// Forgets a terminal's stream. Closing a terminal is the one thing that means
+/// its history is over.
+fn forget_history(key: &str) {
+    if let Some((bin, meta)) = history_paths(key) {
+        let _ = std::fs::remove_file(bin);
+        let _ = std::fs::remove_file(meta);
+    }
+}
+
+/// The writer thread: everything the window asks of the pseudoconsole, done in
+/// the order it was asked and never on the window's own thread.
+///
+/// The session is held weakly on purpose. The sender lives in the session, so
+/// the last thing to release the session closes the channel, `recv` fails and
+/// this thread ends - holding it strongly would keep both alive forever.
+fn spawn_writer(session: Weak<Session>, inbox: Receiver<Job>) {
+    std::thread::spawn(move || {
+        for job in inbox {
+            let Some(session) = session.upgrade() else { break };
+            match job {
+                Job::Write(bytes) => {
+                    let _ = session.pty.lock().unwrap().write(&bytes);
+                }
+                Job::Resize(cols, rows, ack) => {
+                    if let Some(log) = session.log.lock().unwrap().as_mut() {
+                        log.note_resize(cols, rows);
+                    }
+                    session.grid.lock().unwrap().resize(cols, rows);
+                    let _ = session.pty.lock().unwrap().resize(cols as u16, rows as u16);
+                    let _ = ack.send(());
+                }
+            }
+        }
+    });
 }
 
 /// The reader thread: block on the pseudoconsole, feed the screen, ship the
@@ -380,39 +899,42 @@ fn note_capture_resize(session: &Session, cols: usize, rows: usize) {
 /// hands us one batched repaint per flush rather than a byte at a time.
 fn spawn_reader(app: AppHandle, session: Arc<Session>) {
     let handle = session.pty.lock().unwrap().output();
-    let mut capture = open_capture(&session);
     std::thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
         loop {
             let Some(n) = conpty::read_chunk(handle, &mut buf) else { break };
-            if let Some(file) = capture.as_mut() {
-                use std::io::Write;
-                let _ = file.write_all(&buf[..n]);
-                let _ = file.flush();
-                session.captured.fetch_add(n as u64, Ordering::Relaxed);
-            }
-            let update = {
+            // Where the parser stands after this chunk is what says whether the
+            // stream may later be cut here, so the bytes are kept alongside the
+            // feed rather than before it.
+            let (update, settled) = {
                 let mut grid = session.grid.lock().unwrap();
                 grid.feed(&buf[..n]);
+                let settled = grid.at_ground() && grid.cx == 0 && !grid.alt;
                 let scrolled = grid.take_scrolled().iter().map(|l| pack(l)).collect();
                 let rows = grid
                     .take_dirty()
                     .into_iter()
                     .map(|y| RowUpdate { y, runs: pack(grid.row(y)) })
                     .collect();
-                Update {
-                    id: session.id.clone(),
-                    rows,
-                    scrolled,
-                    cx: grid.cx,
-                    cy: grid.cy,
-                    cursor_visible: grid.cursor_visible,
-                    cursor_style: grid.effective_cursor_style(),
-                    cursor_char: grid.row(grid.cy)[grid.cx].ch,
-                    alt: grid.alt,
-                    title: grid.title.clone(),
-                }
+                (
+                    Update {
+                        id: session.id.clone(),
+                        rows,
+                        scrolled,
+                        cx: grid.cx,
+                        cy: grid.cy,
+                        cursor_visible: grid.cursor_visible,
+                        cursor_style: grid.effective_cursor_style(),
+                        cursor_char: cursor_char(&grid),
+                        alt: grid.alt,
+                        title: grid.title.clone(),
+                    },
+                    settled,
+                )
             };
+            if let Some(log) = session.log.lock().unwrap().as_mut() {
+                log.append(&buf[..n], settled);
+            }
             let _ = app.emit("term:update", update);
         }
         session.alive.store(false, Ordering::Relaxed);
@@ -451,11 +973,18 @@ fn term_attach_sync(id: String) -> Result<Snapshot, String> {
         cy: grid.cy,
         cursor_visible: grid.cursor_visible,
         cursor_style: grid.effective_cursor_style(),
-        cursor_char: grid.row(grid.cy)[grid.cx].ch,
+        cursor_char: cursor_char(&grid),
         alt: grid.alt,
     })
 }
 
+/// A keystroke, posted to the session's queue.
+///
+/// This one stays synchronous, and that is the point: the window thread is what
+/// defines the order keystrokes were typed in, and handing them to a thread
+/// pool would let two of them reach the shell the wrong way round. All it does
+/// here is post to a queue - no lock the pseudoconsole holds, no write that can
+/// block on a full pipe.
 #[tauri::command]
 pub fn term_write(app: AppHandle, id: String, data: String) -> Result<(), String> {
     let session = lookup(&id)?;
@@ -463,33 +992,84 @@ pub fn term_write(app: AppHandle, id: String, data: String) -> Result<(), String
         return Ok(());
     }
     let _ = app.emit("term:input", id.clone());
-    let result = session.pty.lock().unwrap().write(data.as_bytes());
-    result
+    session
+        .jobs
+        .send(Job::Write(data.into_bytes()))
+        .map_err(|_| "That terminal is gone.".to_string())
 }
 
+/// Resizes go through the same queue as the keystrokes, so a shell is never
+/// told about a size in a different order than the window applied it. The
+/// promise still resolves only once the grid really is that size - which is
+/// what the front end repaints against - but the wait is on a pool thread.
 #[tauri::command]
-pub fn term_resize(id: String, cols: usize, rows: usize) -> Result<(), String> {
+pub async fn term_resize(id: String, cols: usize, rows: usize) -> Result<(), String> {
     let session = lookup(&id)?;
     let cols = cols.clamp(20, 500);
     let rows = rows.clamp(5, 200);
-    note_capture_resize(&session, cols, rows);
-    session.grid.lock().unwrap().resize(cols, rows);
-    let result = session.pty.lock().unwrap().resize(cols as u16, rows as u16);
-    result
+    let (ack, done) = channel();
+    session
+        .jobs
+        .send(Job::Resize(cols, rows, ack))
+        .map_err(|_| "That terminal is gone.".to_string())?;
+    let _ = tauri::async_runtime::spawn_blocking(move || done.recv()).await;
+    Ok(())
 }
 
+/// Tearing a pseudoconsole down blocks until the console's own pump lets go, so
+/// this never runs on the window thread. `term_close_snapshot` already calls
+/// the inner form from a pool thread; the command is the direct route.
 #[tauri::command]
-pub fn term_close(id: String) -> Result<(), String> {
+pub async fn term_close(id: String) -> Result<(), String> {
+    off_thread(move || term_close_now(id)).await;
+    Ok(())
+}
+
+pub fn term_close_now(id: String) -> Result<(), String> {
     if let Some(session) = registry().lock().unwrap().remove(&id) {
         session.alive.store(false, Ordering::Relaxed);
+        // Closing a terminal is the one thing that means its history is over.
+        // Quitting is not: that is what the streams are kept for.
+        *session.log.lock().unwrap() = None;
+        if let Some(key) = &session.history_key {
+            forget_history(key);
+        }
         session.pty.lock().unwrap().close();
     }
     Ok(())
 }
 
-/// Sessions for one project, or every session when `project_path` is omitted.
+/// Drops the streams of terminals nobody is going to open again - a terminal
+/// closed while the app was not running, or one lost to a crash. The window
+/// sends the keys it still knows about as it restores them.
 #[tauri::command]
-pub fn term_list(project_path: Option<String>) -> Vec<TermInfo> {
+pub async fn term_prune_history(keys: Vec<String>) {
+    off_thread(move || {
+        let Some(dir) = history_dir() else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let keep = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| keys.iter().any(|key| key == stem));
+            if !keep && matches!(path.extension().and_then(|e| e.to_str()), Some("bin") | Some("meta")) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    })
+    .await;
+}
+
+/// Sessions for one project, or every session when `project_path` is omitted.
+/// Every `info` reads a title out of a grid the reader thread is writing to,
+/// so the list waits on those locks - off the window thread it goes.
+#[tauri::command]
+pub async fn term_list(project_path: Option<String>) -> Vec<TermInfo> {
+    off_thread(move || term_list_now(project_path)).await.unwrap_or_default()
+}
+
+fn term_list_now(project_path: Option<String>) -> Vec<TermInfo> {
     let sessions: Vec<Arc<Session>> = registry().lock().unwrap().values().cloned().collect();
     let mut out: Vec<TermInfo> = sessions
         .iter()

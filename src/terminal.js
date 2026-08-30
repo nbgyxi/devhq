@@ -258,8 +258,44 @@ function termEsc(s) {
   return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
 }
 
-/** Renders one row's runs into HTML. */
-function rowHtml(runs) {
+/** Where column `col` begins, in whole pixels.
+ *
+ *  A cell is a fraction of a pixel wide, so a run placed by adding those
+ *  fractions up lands slightly off the column above it, and the two rows of a
+ *  table stop agreeing. Rounding makes the left edge a function of the column
+ *  alone: the same column is the same pixel on every row, and two runs that
+ *  meet share an edge exactly, with no seam of background between them. */
+function colX(col, cellW) {
+  return Math.round(col * cellW);
+}
+
+/** The column a word step lands on, going `dir` from `col` in `text`.
+ *
+ *  Spaces first, then the run of characters of one kind - letters and digits,
+ *  or punctuation - which is the rule an editor uses and the one a terminal
+ *  row needs, since the colour a shell painted a word in says nothing about
+ *  where the word ends. */
+function wordEdge(text, col, dir) {
+  const wordish = (ch) => /[\p{L}\p{N}_]/u.test(ch);
+  const at = (i) => (dir < 0 ? text[i - 1] : text[i]);
+  const inside = (i) => (dir < 0 ? i > 0 : i < text.length);
+  while (inside(col) && /\s/u.test(at(col))) col += dir;
+  if (!inside(col)) return col;
+  const kind = wordish(at(col));
+  while (inside(col) && !/\s/u.test(at(col)) && wordish(at(col)) === kind) col += dir;
+  return col;
+}
+
+/** Renders one row's runs into HTML.
+ *
+ *  Every run is pinned to the column it starts at rather than being flowed
+ *  after the one before it. A glyph the terminal font does not have is drawn
+ *  from a fallback font at some other width; flowed, that pushes the whole
+ *  rest of the line sideways and the table below stops lining up. Pinned, the
+ *  next run starts where its column says it does whatever happened in the one
+ *  before, and a run that might hold such a glyph is clipped to its own
+ *  columns so it cannot even lean into its neighbour. */
+function rowHtml(runs, cellW) {
   if (!runs || !runs.length) return "";
   let out = "";
   for (const run of runs) {
@@ -276,7 +312,9 @@ function rowHtml(runs) {
       fg = b;
       bg = f;
     }
-    const style = [];
+    const left = colX(run.x, cellW);
+    const style = [`left:${left}px`, `width:${colX(run.x + run.w, cellW) - left}px`];
+    if (run.c) style.push("overflow:hidden");
     if (fg) style.push(`color:${fg}`);
     if (bg) style.push(`background:${bg}`);
     if (run.a & ATTR.BOLD) style.push("font-weight:700");
@@ -359,12 +397,10 @@ async function wireEvents() {
   if (wired) return;
   wired = true;
   await term_listen("term:update", (event) => {
-    window.devhqTerminalChanged?.(event.payload.id);
     const view = views.get(event.payload.id);
     if (view) view.apply(event.payload);
   });
   await term_listen("term:exit", (event) => {
-    window.devhqTerminalChanged?.(event.payload.id);
     const view = views.get(event.payload.id);
     if (view) view.markExited();
   });
@@ -407,6 +443,16 @@ class TermView {
     this.screen = host.querySelector(".term-screen");
     this.cursorEl = host.querySelector(".term-cursor");
     this.rowEls = [];
+    /** The runs behind the history rows, and the cell they were drawn against.
+     *
+     *  A row's columns are baked into it as pixels, so a history row drawn
+     *  before the cell could be measured keeps that guess forever: every run
+     *  after the first sits a fraction of a cell off, and by the middle of a
+     *  line that fraction is a whole character of gap between two runs. The
+     *  screen is redrawn when the measurement lands; the history has to be
+     *  too, and this is what it is redrawn from. */
+    this.historyRuns = [];
+    this.historyCellW = 0;
 
     this.measure();
     this.remeasureWhenFontLoads();
@@ -417,22 +463,43 @@ class TermView {
    *
    *  The probe is a row inside `.term-screen`, not a bare span, so it picks up
    *  exactly the rules real rows are drawn with - a span's box is the font's
-   *  inline height, which is not the line height the rows actually occupy. */
+   *  inline height, which is not the line height the rows actually occupy. A
+   *  hundred characters at once because the answer is a fraction of a pixel and
+   *  every column is drawn at a multiple of it: an error of a hundredth walks
+   *  a character out of line by the end of a long row, and dividing by a
+   *  hundred keeps the error a hundredth of what one character could hide. */
   measure() {
     const probe = document.createElement("div");
     probe.className = "term-probe";
-    probe.innerHTML = `<div>${"M".repeat(10)}</div>`;
+    probe.innerHTML = `<div>${"M".repeat(100)}</div>`;
     this.screen.appendChild(probe);
     const box = probe.firstElementChild.getBoundingClientRect();
-    this.cellW = box.width / 10 || 8;
-    this.cellH = box.height || 17;
     probe.remove();
+    const w = box.width / 100;
+    const h = box.height;
+    // A terminal built into a panel that is not on screen yet has no layout to
+    // measure, and a guessed cell is half a pixel out - which used to be
+    // invisible and now is not, because the columns are drawn at multiples of
+    // it. So a guess is remembered as a guess, and `fit` measures again the
+    // first time the panel is real.
+    this.measured = w > 1 && h > 1;
+    this.cellW = this.measured ? w : this.cellW || 8;
+    this.cellH = this.measured ? h : this.cellH || 17;
   }
 
   /** Font availability can settle after construction. A cell a fraction of a
    *  pixel out is invisible at column 1 and a whole character out by column 40,
    *  which is exactly where the cursor is seen to drift - so measure again once
    *  the local font is ready and realign the cursor and grid if needed. */
+  /** Resolves once the cell measurement can be trusted. */
+  async fontsSettled() {
+    if (!document.fonts?.ready) return;
+    try {
+      await document.fonts.ready;
+    } catch {}
+    this.measure();
+  }
+
   remeasureWhenFontLoads() {
     if (!document.fonts?.ready) return;
     document.fonts.ready.then(() => {
@@ -442,6 +509,9 @@ class TermView {
       if (Math.abs(w - this.cellW) < 0.01 && Math.abs(h - this.cellH) < 0.01) return;
       this.moveCursor(this.cx, this.cy, this.cursorVisible);
       this.fit();
+      // Columns are baked into the rows as pixels, so a different cell means
+      // every row on screen is now drawn to the wrong grid.
+      this.attachRepaint();
     });
   }
 
@@ -518,8 +588,7 @@ class TermView {
     });
     this.host.addEventListener("mousedown", () => this.host.focus());
     this.scroll.addEventListener("scroll", () => {
-      const slack = this.scroll.scrollHeight - this.scroll.clientHeight - this.scroll.scrollTop;
-      this.stickToBottom = slack < 4;
+      this.stickToBottom = this.maxScroll() - this.scroll.scrollTop < 4;
     });
   }
 
@@ -529,7 +598,7 @@ class TermView {
   selectionKey(e) {
     if (e.altKey) return false;
     const sel = window.getSelection();
-    if (!sel || typeof sel.modify !== "function") return false;
+    if (!sel || typeof sel.extend !== "function") return false;
 
     // The first Ctrl+A on an editable command selects that command. Repeating
     // it expands to the whole terminal, preserving the previous shortcut.
@@ -549,40 +618,13 @@ class TermView {
     if (e.ctrlKey && !e.shiftKey && (e.key === "Home" || e.key === "End")) {
       this.clearSelection();
       this.stickToBottom = e.key === "End";
-      this.scroll.scrollTop = e.key === "Home" ? 0 : this.scroll.scrollHeight;
+      this.scroll.scrollTop = e.key === "Home" ? 0 : this.maxScroll();
       return true;
     }
 
-    if (!e.shiftKey) return false;
-
-    // A page is however many lines are on screen, less one for continuity -
-    // the same overlap Notepad leaves. There is no page granularity to ask
-    // for, so it is that many line steps.
-    if (e.key === "PageUp" || e.key === "PageDown") {
-      const dir = e.key === "PageUp" ? "backward" : "forward";
-      const lines = Math.max(1, Math.floor(this.scroll.clientHeight / this.cellH) - 1);
-      this.anchorSelection(sel);
-      for (let i = 0; i < lines; i++) sel.modify("extend", dir, "line");
-      this.scrollSelectionIntoView(sel);
-      return true;
-    }
-
-    const step = this.selectionStep(e);
-    if (!step) return false;
+    if (!e.shiftKey || !this.selectionStep(e)) return false;
     this.anchorSelection(sel);
-    if (!e.ctrlKey && e.key === "Home" && this.extendCommandHome(sel)) {
-      this.scrollSelectionIntoView(sel);
-      return true;
-    }
-    if (!e.ctrlKey && e.key === "End" && this.extendCommandEnd(sel)) {
-      this.scrollSelectionIntoView(sel);
-      return true;
-    }
-    if (e.ctrlKey && e.key === "ArrowLeft" && this.extendWordLeft(sel)) {
-      this.scrollSelectionIntoView(sel);
-      return true;
-    }
-    sel.modify("extend", step[0], step[1]);
+    if (!this.extendSelection(sel, e)) return false;
     this.scrollSelectionIntoView(sel);
     return true;
   }
@@ -660,88 +702,105 @@ class TermView {
     return this.lastCommandName;
   }
 
-  /** Shift+Home behaves like it does in an editor, except the shell prompt is
-   * not editable text and therefore is not included in the selection. The
-   * moving end of the selection lands on the command's first character, so the
-   * next Shift+Right shrinks it from the left the way a text box does -
-   * sel.extend moves the focus and leaves the anchor where it was. */
-  extendCommandHome(sel) {
-    const row = this.rowEls[this.cy];
-    if (!row || this.host.classList.contains("alt")) return false;
-    const text = row.textContent || "";
-    const cursor = Math.min(this.cx, text.length);
-    const start = this.commandStart(text, cursor);
-    if (start === null) return false;
-    const [startNode, startOffset] = this.caretAt(row, start);
-    sel.extend(startNode, startOffset);
-    return true;
+  // ------------------------------------------------------- moving a selection
+  //
+  // Every selection chord moves the loose end of the selection, and every one
+  // of them moves it the same way: work out the row and column it should land
+  // on, then put it there with `sel.extend`. One mechanism, one set of
+  // coordinates.
+  //
+  // The browser's own `Selection.modify` is not that mechanism, and mixing the
+  // two is what made Ctrl+Shift+Right need pressing twice after a
+  // Ctrl+Shift+Left: `modify` works from directional state it keeps for
+  // itself, `extend` does not update that state, and the first `modify` after
+  // an `extend` is spent catching up. Anything else built out of the pair
+  // would have had a bug of the same shape waiting in it.
+  //
+  // Doing it here is also the only way to be right about a terminal. `modify`
+  // reads the DOM as prose, and a terminal row is spans of colour: its word
+  // steps stop at a change of colour rather than at a word. What a step means
+  // is decided from the row's text, in columns, which is what the row is.
+
+  /** Every drawn row, history first, in the order they appear. */
+  rowList() {
+    return [...this.history.children, ...this.rowEls];
   }
 
-  /** The other half of editor-style line selection: extend to the command's
-   * visible end without selecting the terminal row's blank cell padding. */
-  extendCommandEnd(sel) {
-    const row = this.rowEls[this.cy];
-    if (!row || this.host.classList.contains("alt")) return false;
-    const text = row.textContent || "";
-    const cursor = Math.min(this.cx, text.length);
-    const start = this.commandStart(text, cursor);
-    if (start === null) return false;
-    const end = text.trimEnd().length;
-    if (cursor < start || cursor > end) return false;
-    const [cursorNode, cursorOffset] = this.caretAt(row, cursor);
-    const [endNode, endOffset] = this.caretAt(row, end);
-    const range = document.createRange();
-    range.setStart(cursorNode, cursorOffset);
-    range.setEnd(endNode, endOffset);
-    sel.removeAllRanges();
-    sel.addRange(range);
-    return true;
-  }
-
-  /** Chromium's word-left selection sometimes stops at a styling span instead
-   *  of the word boundary. Terminal rows use spans for colours and attributes,
-   *  so calculate that boundary from the row's plain text and extend to the
-   *  equivalent DOM caret ourselves. */
-  extendWordLeft(sel) {
-    if (!sel.focusNode) return false;
+  /** Where the loose end of the selection sits, as a row and a column, or null
+   *  if it is not in this terminal. */
+  focusPoint(sel) {
+    if (!sel.focusNode) return null;
     const element = sel.focusNode.nodeType === Node.ELEMENT_NODE
       ? sel.focusNode
       : sel.focusNode.parentElement;
     const row = element?.closest(".term-history > div, .term-screen > div");
-    if (!row || !this.host.contains(row)) return false;
-    let col = this.colInRow(row, sel.focusNode, sel.focusOffset);
-    if (col <= 0) return false;
-    const text = row.textContent || "";
-    while (col > 0 && /\s/u.test(text[col - 1])) col--;
-    if (col <= 0) {
-      const [node, offset] = this.caretAt(row, col);
-      sel.extend(node, offset);
-      return true;
-    }
-    const kind = /[\p{L}\p{N}_]/u.test(text[col - 1]) ? "word" : "punctuation";
-    while (col > 0) {
-      const charKind = /[\p{L}\p{N}_]/u.test(text[col - 1]) ? "word" : "punctuation";
-      if (/\s/u.test(text[col - 1]) || charKind !== kind) break;
-      col--;
-    }
-    const [node, offset] = this.caretAt(row, col);
+    if (!row || !this.host.contains(row)) return null;
+    const rows = this.rowList();
+    const index = rows.indexOf(row);
+    if (index < 0) return null;
+    return { rows, index, col: this.colInRow(row, sel.focusNode, sel.focusOffset) };
+  }
+
+  /** Moves the loose end of the selection by whatever the key asked for. */
+  extendSelection(sel, e) {
+    const at = this.focusPoint(sel);
+    if (!at) return false;
+    const to = this.stepFrom(at, e);
+    if (!to) return false;
+    const [node, offset] = this.caretAt(at.rows[to.index], to.col);
     sel.extend(node, offset);
     return true;
   }
 
-  /** The direction and granularity one movement key asks for, or null if it
-   *  is not a movement key. */
-  selectionStep(e) {
+  /** The row and column one movement key leads to.
+   *
+   *  Rows are stored without their trailing blanks, so a row's text is its
+   *  columns and the end of the text is the end of the line. */
+  stepFrom({ rows, index, col }, e) {
+    const text = (i) => rows[i]?.textContent || "";
+    const line = text(index);
+    const last = rows.length - 1;
     const ctrl = e.ctrlKey;
     switch (e.key) {
-      case "ArrowLeft": return ["left", ctrl ? "word" : "character"];
-      case "ArrowRight": return ["right", ctrl ? "word" : "character"];
-      case "ArrowUp": return ["backward", ctrl ? "paragraph" : "line"];
-      case "ArrowDown": return ["forward", ctrl ? "paragraph" : "line"];
-      case "Home": return ["backward", ctrl ? "documentboundary" : "lineboundary"];
-      case "End": return ["forward", ctrl ? "documentboundary" : "lineboundary"];
-      default: return null;
+      case "ArrowLeft":
+        if (col <= 0) {
+          return index > 0 ? { index: index - 1, col: text(index - 1).length } : { index, col: 0 };
+        }
+        return { index, col: ctrl ? wordEdge(line, col, -1) : col - 1 };
+      case "ArrowRight":
+        if (col >= line.length) {
+          return index < last ? { index: index + 1, col: 0 } : { index, col: line.length };
+        }
+        return { index, col: ctrl ? wordEdge(line, col, 1) : col + 1 };
+      // A terminal's paragraph is its line, so Ctrl adds nothing to up and down.
+      case "ArrowUp":
+        return { index: Math.max(0, index - 1), col };
+      case "ArrowDown":
+        return { index: Math.min(last, index + 1), col };
+      case "PageUp":
+      case "PageDown": {
+        // A page is the lines on screen less one, the overlap Notepad leaves.
+        const page = Math.max(1, Math.floor(this.scroll.clientHeight / this.cellH) - 1);
+        const to = e.key === "PageUp" ? index - page : index + page;
+        return { index: Math.min(last, Math.max(0, to)), col };
+      }
+      case "Home":
+        if (ctrl) return { index: 0, col: 0 };
+        // The shell prompt is not editable text, so Home stops at the command
+        // rather than swallowing the prompt in front of it.
+        return { index, col: this.commandStart(line, Math.min(col, line.length)) ?? 0 };
+      case "End":
+        if (ctrl) return { index: last, col: text(last).length };
+        return { index, col: line.length };
+      default:
+        return null;
     }
+  }
+
+  /** Whether this key moves a selection at all. */
+  selectionStep(e) {
+    return ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]
+      .includes(e.key);
   }
 
   /** A selection has to start somewhere. If this terminal does not already own
@@ -877,37 +936,23 @@ class TermView {
   /** Pulls the current screen and starts following updates. */
   async attach() {
     await wireEvents();
+    // Columns are drawn at a multiple of the measured cell, so the cell has to
+    // be the real one before a single row is painted - a row measured against
+    // a stand-in font would keep its wrong columns until it scrolled away.
+    await this.fontsSettled();
     views.set(this.id, this);
     const snap = await term_invoke("term_attach", { id: this.id });
     this.cols = snap.cols;
     this.rows = snap.rows;
     this.exited = !snap.info.alive;
-    this.history.innerHTML = snap.history.map((runs) => `<div>${rowHtml(runs)}</div>`).join("");
+    this.history.innerHTML = snap.history.map((runs) => `<div>${rowHtml(runs, this.cellW)}</div>`).join("");
+    this.historyRuns = snap.history.slice();
+    this.historyCellW = this.cellW;
     this.buildScreen();
     for (const row of snap.screen) this.paintRow(row.y, row.runs);
     this.moveCursor(snap.cx, snap.cy, snap.cursorVisible, snap.cursorStyle, snap.cursorChar);
     this.settleScroll();
     return snap.info;
-  }
-
-  /** Restored output belongs above the new shell's screen. It is deliberately
-   *  plain text: colours and cursor state belonged to the process that exited,
-   *  while the readable command/output history remains useful. */
-  prependRestoredHistory(text) {
-    if (!text) return;
-    const html = text.split("\n").map((line) => `<div>${termEsc(line)}</div>`).join("");
-    this.history.insertAdjacentHTML("afterbegin", html);
-    this.settleScroll();
-  }
-
-  /** A bounded text snapshot for persistence between application runs. */
-  exportHistory() {
-    const lines = [
-      ...[...this.history.children].map((row) => row.textContent || ""),
-      ...this.rowEls.map((row) => row.textContent || ""),
-    ];
-    while (lines.length && !lines[lines.length - 1]) lines.pop();
-    return lines.slice(-1500).join("\n").slice(-150000);
   }
 
   buildScreen() {
@@ -917,7 +962,7 @@ class TermView {
 
   paintRow(y, runs) {
     const el = this.rowEls[y];
-    if (el) el.innerHTML = rowHtml(runs);
+    if (el) el.innerHTML = rowHtml(runs, this.cellW);
   }
 
   apply(payload) {
@@ -926,13 +971,15 @@ class TermView {
       const frag = document.createDocumentFragment();
       for (const runs of payload.scrolled) {
         const div = document.createElement("div");
-        div.innerHTML = rowHtml(runs);
+        div.innerHTML = rowHtml(runs, this.cellW);
         frag.appendChild(div);
       }
       this.history.appendChild(frag);
+      this.historyRuns.push(...payload.scrolled);
       // Keep the DOM bounded; the session still holds the full scrollback.
       const excess = this.history.childElementCount - 3000;
       for (let i = 0; i < excess; i++) this.history.firstElementChild.remove();
+      if (excess > 0) this.historyRuns.splice(0, excess);
     }
     for (const row of payload.rows) this.paintRow(row.y, row.runs);
     // A full-screen program owns the viewport and redraws it constantly, so it
@@ -947,16 +994,15 @@ class TermView {
     // A full-screen program owns the viewport, so history is hidden while it runs.
     this.host.classList.toggle("alt", payload.alt);
     if (payload.title && this.onTitle) this.onTitle(payload.title);
-    if (this.stickToBottom) this.toBottom();
+    if (this.stickToBottom) this.settle();
   }
 
-  /** Puts the cursor where the text really is.
+  /** Puts the cursor on a column of the grid.
    *
-   *  A cell width is a fraction of a pixel, and the browser lays out a line by
-   *  accumulating those fractions - so column 40 is never exactly 40 cells from
-   *  the left, and a cursor placed by multiplication sits a whole character out
-   *  by the end of a prompt. Asking the row itself where its characters are is
-   *  the only measurement that cannot drift. */
+   *  Rows are drawn column by column, so the column is all the position the
+   *  cursor needs - and the only one that is right, since the row's own
+   *  characters no longer answer for where a column is once a wide glyph or a
+   *  fallback font is involved. */
   moveCursor(cx, cy, visible, style = this.cursorStyle, cursorChar = this.cursorChar) {
     this.cx = cx;
     this.cy = cy;
@@ -1020,60 +1066,38 @@ class TermView {
     this.cursorEl.classList.toggle("bar", bar);
     this.cursorEl.classList.toggle("underline", underline);
     this.cursorEl.textContent = busy || bar || underline ? "" : this.cursorChar;
-    this.cursorEl.style.width = `${bar ? 2 : this.cellW}px`;
+    const cellLeft = colX(cx, this.cellW);
+    this.cursorEl.style.width = `${bar ? 2 : colX(cx + 1, this.cellW) - cellLeft}px`;
     const rowHeight = row?.offsetHeight || this.cellH;
     this.cursorEl.style.height = `${underline ? 2 : rowHeight}px`;
-    const x = this.columnX(cx, row);
+    const x = this.screen.offsetLeft + cellLeft;
     const y = row ? row.offsetTop : this.screen.offsetTop + cy * this.cellH;
     this.cursorEl.style.transform = `translate(${x}px, ${y + (underline ? rowHeight - 2 : 0)}px)`;
   }
 
-  /** The left edge of column `cx` on `row`, in the coordinates the cursor is
-   *  positioned in. Rows are packed without their trailing blanks, so the
-   *  cursor usually sits past the end of the text - that last stretch is the
-   *  only part stepped over in whole cells, and it is short. */
-  columnX(cx, row) {
-    const fallback = this.screen.offsetLeft + cx * this.cellW;
-    if (!row || !row.firstChild) return fallback;
-    const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
-    let seen = 0;
-    let last = null;
-    let node;
-    while ((node = walker.nextNode())) {
-      if (seen + node.data.length >= cx) return this.textX(node, cx - seen, fallback);
-      seen += node.data.length;
-      last = node;
-    }
-    if (!last) return fallback;
-    return this.textX(last, last.data.length, fallback) + (cx - seen) * this.cellW;
-  }
-
-  /** Viewport x of one character boundary, brought back into the scroller's
-   *  own coordinates - the box the cursor is absolutely positioned in. */
-  textX(node, offset, fallback) {
-    const range = document.createRange();
-    range.setStart(node, offset);
-    range.setEnd(node, offset);
-    const rect = range.getBoundingClientRect();
-    // A collapsed range in a node that is not laid out reports nothing at all.
-    if (!rect.left && !rect.top) return fallback;
-    return rect.left - this.scroll.getBoundingClientRect().left;
+  /** How far the scroller may go before it runs off the end of what has been
+   *  written. The screen grid is always a full window tall, so scrolling to
+   *  scrollHeight would park the blank rows under the cursor in the window and
+   *  push the last real line up to the top edge - which is what a terminal
+   *  losing height used to do to itself. */
+  maxScroll() {
+    return Math.max(0, this.usedHeight() - this.scroll.clientHeight);
   }
 
   toBottom() {
-    this.scroll.scrollTop = this.scroll.scrollHeight;
+    this.scroll.scrollTop = this.maxScroll();
   }
 
-  /** Where a terminal rests when it is first shown.
+  /** How far down the last row with anything in it reaches.
    *
-   *  Everything written so far is what matters, and the screen grid is as tall
-   *  as the viewport whether or not anything has been printed into it - so
-   *  "does it fit" is asked of the rows actually in use, not of the scroll
-   *  height. If it fits, the top is the honest place to be: the first line of
-   *  the restored session is the one worth reading. If it does not, the live
-   *  end is. */
-  settleScroll() {
-    let last = this.cy;
+   *  The screen grid is as tall as the viewport whether or not anything has
+   *  been printed into it, so "does it fit" has to be asked of the rows
+   *  actually in use and not of the scroll height. */
+  usedHeight() {
+    if (!this.rowEls.length) return this.scroll.clientHeight;
+    // A shrink blanks the grid before the session has repainted into it, and
+    // the cursor still points at a row that is no longer there.
+    let last = Math.max(0, Math.min(this.cy, this.rowEls.length - 1));
     for (let y = this.rowEls.length - 1; y > last; y--) {
       if (this.rowEls[y].textContent.trim()) {
         last = y;
@@ -1081,22 +1105,38 @@ class TermView {
       }
     }
     const row = this.rowEls[last];
-    const used = row ? row.offsetTop + row.offsetHeight : this.screen.offsetTop + this.screen.offsetHeight;
-    if (used <= this.scroll.clientHeight) {
-      this.scroll.scrollTop = 0;
-      // Follow the output again the moment it outgrows the window, or the
-      // moment anything is typed - `send` sticks it back to the bottom.
-      this.stickToBottom = false;
-      return;
-    }
+    return row ? row.offsetTop + row.offsetHeight : this.screen.offsetTop + this.screen.offsetHeight;
+  }
+
+  /** Where the scroller belongs: the top for as long as everything written
+   *  fits, the bottom once it does not.
+   *
+   *  Anchoring to the top while there is room is the whole point - a session
+   *  that has printed five lines into a tall window reads from its first line,
+   *  and typing into it must not shove those five lines up to the bottom edge.
+   *  The moment the output outgrows the window the live end is what matters,
+   *  and the bottom of it sits on the bottom of the window. */
+  settle() {
+    this.scroll.scrollTop = this.maxScroll();
+  }
+
+  /** Where a terminal rests when it is first shown. Following the output is
+   *  the resting state; only scrolling up by hand turns it off. */
+  settleScroll() {
     this.stickToBottom = true;
-    this.toBottom();
+    this.settle();
   }
 
   /** Recomputes the grid size from the element and tells the session. */
   fit() {
     const box = this.host.getBoundingClientRect();
     if (box.width < 20 || box.height < 20) return;
+    // The first time there is a real box there is a real cell to measure, and
+    // whatever was drawn against the guess has to be drawn again.
+    if (!this.measured) {
+      this.measure();
+      if (this.measured) this.attachRepaint();
+    }
     const cols = Math.max(20, Math.floor((box.width - 16) / this.cellW));
     const rows = Math.max(5, Math.floor((box.height - 12) / this.cellH));
     if (cols === this.cols && rows === this.rows) return;
@@ -1108,14 +1148,30 @@ class TermView {
       .catch(() => {});
   }
 
+  /** Redraws the history against the cell as it is now.
+   *
+   *  Nothing else ever changes a history row - it is finished output - so this
+   *  does nothing unless the measurement it was drawn against has changed,
+   *  which is once: the first time the panel is real, or when the terminal
+   *  font finishes loading. A resize does not move a column, so it does not
+   *  cost the redraw. */
+  repaintHistory() {
+    if (this.historyCellW === this.cellW || !this.historyRuns.length) return;
+    this.historyCellW = this.cellW;
+    this.history.innerHTML = this.historyRuns
+      .map((runs) => `<div>${rowHtml(runs, this.cellW)}</div>`)
+      .join("");
+  }
+
   /** After a resize the session repaints; pull the new screen immediately so
    *  the grid is never briefly blank. */
   async attachRepaint() {
+    this.repaintHistory();
     try {
       const snap = await term_invoke("term_attach", { id: this.id });
       for (const row of snap.screen) this.paintRow(row.y, row.runs);
       this.moveCursor(snap.cx, snap.cy, snap.cursorVisible, snap.cursorStyle, snap.cursorChar);
-      if (this.stickToBottom) this.toBottom();
+      if (this.stickToBottom) this.settle();
     } catch {}
   }
 

@@ -2,17 +2,21 @@ pub mod analytics;
 #[cfg(windows)]
 pub mod conpty;
 mod cwd;
+pub mod dns;
 mod git;
+mod network;
 #[cfg(windows)]
 mod picker;
 mod procs;
 mod tech;
-pub mod todo;
 #[cfg(windows)]
 mod term;
+pub mod todo;
+mod tool_window;
 mod util;
 #[cfg(windows)]
 pub mod vt;
+mod windows_tools;
 
 use procs::{ProcessSnapshot, RunningProc};
 use serde::Serialize;
@@ -26,17 +30,48 @@ use tauri::{AppHandle, Emitter, Manager};
 /// Directories that are never projects themselves and are never worth
 /// descending into when looking for one.
 const NOISE: &[&str] = &[
-    "node_modules", "target", "dist", "build", "out", "vendor", "venv", ".venv",
-    "__pycache__", "bin", "obj", "coverage", ".next", ".nuxt", ".cache", ".idea",
-    ".vs", ".vscode",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "out",
+    "vendor",
+    "venv",
+    ".venv",
+    "__pycache__",
+    "bin",
+    "obj",
+    "coverage",
+    ".next",
+    ".nuxt",
+    ".cache",
+    ".idea",
+    ".vs",
+    ".vscode",
 ];
 
 /// Any one of these in a directory makes it a project, even without a `.git`.
 const MARKERS: &[&str] = &[
-    "package.json", "Cargo.toml", "go.mod", "pyproject.toml", "requirements.txt",
-    "Pipfile", "setup.py", "pom.xml", "build.gradle", "Gemfile", "composer.json",
-    "deno.json", "Makefile", "CMakeLists.txt", "manifest.json", "Dockerfile",
-    "index.html", "CLAUDE.md", ".claude", ".gitignore",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+    "pyproject.toml",
+    "requirements.txt",
+    "Pipfile",
+    "setup.py",
+    "pom.xml",
+    "build.gradle",
+    "Gemfile",
+    "composer.json",
+    "deno.json",
+    "Makefile",
+    "CMakeLists.txt",
+    "manifest.json",
+    "Dockerfile",
+    "index.html",
+    "CLAUDE.md",
+    ".claude",
+    ".gitignore",
 ];
 
 /// How many worker threads fan out over the discovered projects. Each project's
@@ -248,15 +283,22 @@ fn phase(app: &AppHandle, token: u64, key: &str, label: &str, done: bool) {
         app,
         token,
         "scan:phase",
-        ScanPhase { token, key: key.into(), label: label.into(), done },
+        ScanPhase {
+            token,
+            key: key.into(),
+            label: label.into(),
+            done,
+        },
     );
 }
 
 fn scan_stream(app: &AppHandle, roots: Vec<String>, token: u64) {
     let started = Instant::now();
     let now_ms = epoch_ms();
-    let (present, missing): (Vec<String>, Vec<String>) =
-        roots.iter().cloned().partition(|root| Path::new(root).is_dir());
+    let (present, missing): (Vec<String>, Vec<String>) = roots
+        .iter()
+        .cloned()
+        .partition(|root| Path::new(root).is_dir());
 
     // A folder that is not there is worth saying out loud, but it only stops
     // the scan when it leaves nothing to look at.
@@ -273,18 +315,46 @@ fn scan_stream(app: &AppHandle, roots: Vec<String>, token: u64) {
             app,
             token,
             "scan:start",
-            ScanStart { token, roots, scanned_at_ms: now_ms, stubs: Vec::new(), error: error.clone() },
+            ScanStart {
+                token,
+                roots,
+                scanned_at_ms: now_ms,
+                stubs: Vec::new(),
+                error: error.clone(),
+            },
         );
-        emit_scan(app, token, "scan:done", ScanDone { token, duration_ms: 0, error, cancelled: false });
+        emit_scan(
+            app,
+            token,
+            "scan:done",
+            ScanDone {
+                token,
+                duration_ms: 0,
+                error,
+                cancelled: false,
+            },
+        );
         return;
     }
 
-    phase(app, token, "discover", &format!("Listing folders in {}", present.join(", ")), false);
+    phase(
+        app,
+        token,
+        "discover",
+        &format!("Listing folders in {}", present.join(", ")),
+        false,
+    );
     let dirs = discover_roots(&present);
     if !scan_is_current(token) {
         return;
     }
-    phase(app, token, "discover", &format!("Found {} folders", dirs.len()), true);
+    phase(
+        app,
+        token,
+        "discover",
+        &format!("Found {} folders", dirs.len()),
+        true,
+    );
     let stubs: Vec<Stub> = dirs
         .iter()
         .map(|(path, group)| Stub {
@@ -297,7 +367,13 @@ fn scan_stream(app: &AppHandle, roots: Vec<String>, token: u64) {
         app,
         token,
         "scan:start",
-        ScanStart { token, roots, scanned_at_ms: now_ms, stubs, error },
+        ScanStart {
+            token,
+            roots,
+            scanned_at_ms: now_ms,
+            stubs,
+            error,
+        },
     );
 
     let (tx, rx) = channel::<Project>();
@@ -321,10 +397,15 @@ fn scan_stream(app: &AppHandle, roots: Vec<String>, token: u64) {
                     if running.is_empty() {
                         return None;
                     }
-                    let mut ports: Vec<u16> = running.iter().flat_map(|p| p.ports.clone()).collect();
+                    let mut ports: Vec<u16> =
+                        running.iter().flat_map(|p| p.ports.clone()).collect();
                     ports.sort_unstable();
                     ports.dedup();
-                    Some(ProcPatch { path, running, ports })
+                    Some(ProcPatch {
+                        path,
+                        running,
+                        ports,
+                    })
                 })
                 .collect();
             let matched = items.len();
@@ -338,7 +419,13 @@ fn scan_stream(app: &AppHandle, roots: Vec<String>, token: u64) {
             );
         });
 
-        phase(app, token, "inspect", "Reading git status and project metadata", false);
+        phase(
+            app,
+            token,
+            "inspect",
+            "Reading git status and project metadata",
+            false,
+        );
 
         // Fan out across a fixed pool: each worker claims whole stripes of the
         // list so no shared queue or extra dependency is needed.
@@ -430,7 +517,11 @@ pub fn scan_root(root: String) -> ScanResult {
 
     for project in &mut projects {
         project.running = snapshot.matching(&project.path);
-        let mut ports: Vec<u16> = project.running.iter().flat_map(|p| p.ports.clone()).collect();
+        let mut ports: Vec<u16> = project
+            .running
+            .iter()
+            .flat_map(|p| p.ports.clone())
+            .collect();
         ports.sort_unstable();
         ports.dedup();
         project.ports = ports;
@@ -544,7 +635,10 @@ fn detect_run(path: &Path, report: &tech::TechReport) -> String {
     // one is just an error with extra steps.
     if let Ok(text) = std::fs::read_to_string(path.join("Makefile")) {
         for target in ["dev", "run", "start"] {
-            if text.lines().any(|line| line.starts_with(&format!("{target}:"))) {
+            if text
+                .lines()
+                .any(|line| line.starts_with(&format!("{target}:")))
+            {
                 return format!("make {target}");
             }
         }
@@ -571,7 +665,9 @@ fn discover_roots(roots: &[String]) -> Vec<(PathBuf, String)> {
 /// only containers (a group directory holding several repos).
 fn discover(root: &Path) -> Vec<(PathBuf, String)> {
     let mut found = Vec::new();
-    let Ok(entries) = std::fs::read_dir(root) else { return found };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return found;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if !is_candidate_dir(&path) {
@@ -581,8 +677,13 @@ fn discover(root: &Path) -> Vec<(PathBuf, String)> {
             found.push((path, String::new()));
             continue;
         }
-        let group = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let Ok(children) = std::fs::read_dir(&path) else { continue };
+        let group = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let Ok(children) = std::fs::read_dir(&path) else {
+            continue;
+        };
         for child in children.flatten() {
             let child = child.path();
             if is_candidate_dir(&child) && is_project(&child) {
@@ -597,7 +698,9 @@ fn is_candidate_dir(path: &Path) -> bool {
     if !path.is_dir() {
         return false;
     }
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return false };
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
     !name.starts_with('.') && !NOISE.iter().any(|n| n.eq_ignore_ascii_case(name))
 }
 
@@ -613,7 +716,9 @@ fn newest_child_mtime(path: &Path) -> u64 {
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
             let child = entry.path();
-            let Some(name) = child.file_name().and_then(|n| n.to_str()) else { continue };
+            let Some(name) = child.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
             if NOISE.iter().any(|n| n.eq_ignore_ascii_case(name)) {
                 continue;
             }
@@ -627,7 +732,9 @@ fn newest_child_mtime(path: &Path) -> u64 {
 /// otherwise the user profile.
 #[tauri::command]
 async fn default_root() -> String {
-    off_thread(default_root_sync).await.unwrap_or_else(|| "C:\\".to_string())
+    off_thread(default_root_sync)
+        .await
+        .unwrap_or_else(|| "C:\\".to_string())
 }
 
 fn default_root_sync() -> String {
@@ -663,6 +770,31 @@ async fn pick_folder(app: AppHandle, start: Option<String>) -> Result<Option<Str
 #[tauri::command]
 async fn pick_folder(_start: Option<String>) -> Result<Option<String>, String> {
     Err("Choosing a folder is only available on Windows - type the path instead.".into())
+}
+
+/// Native Save As for utility-tool output. Returns the path written, or `None`
+/// when the dialog was dismissed. Dialog + write run off the UI thread.
+#[cfg(windows)]
+#[tauri::command]
+async fn save_text_file(
+    app: AppHandle,
+    text: String,
+    default_name: String,
+) -> Result<Option<String>, String> {
+    let owner = app
+        .get_webview_window("main")
+        .and_then(|w| w.hwnd().ok())
+        .map(|hwnd| hwnd.0 as isize)
+        .unwrap_or(0);
+    off_thread(move || picker::save_text_file(owner, default_name, text))
+        .await
+        .unwrap_or_else(|| Err("Could not open the save dialog.".into()))
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+async fn save_text_file(_text: String, _default_name: String) -> Result<Option<String>, String> {
+    Err("Saving a file is only available on Windows.".into())
 }
 
 /// Opens a project in Explorer, VS Code or a terminal. `target` is validated
@@ -736,7 +868,10 @@ fn git_diff_sync(path: String) -> Result<Diff, String> {
         text.push('\n');
     }
     text.push_str(&unstaged);
-    let files = text.lines().filter(|l| l.starts_with("diff --git ")).count() as u32;
+    let files = text
+        .lines()
+        .filter(|l| l.starts_with("diff --git "))
+        .count() as u32;
 
     let truncated = text.len() > MAX_DIFF_BYTES;
     if truncated {
@@ -747,7 +882,11 @@ fn git_diff_sync(path: String) -> Result<Diff, String> {
         }
         text.truncate(end);
     }
-    Ok(Diff { text, truncated, files })
+    Ok(Diff {
+        text,
+        truncated,
+        files,
+    })
 }
 
 /// What `git pull` did: whether it worked, the line worth showing for it, and
@@ -789,7 +928,9 @@ fn git_pull_sync(path: String, group: String) -> Result<PullResult, String> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let out = cmd.output().map_err(|_| "Could not start git.".to_string())?;
+    let out = cmd
+        .output()
+        .map_err(|_| "Could not start git.".to_string())?;
     let ok = out.status.success();
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -797,7 +938,11 @@ fn git_pull_sync(path: String, group: String) -> Result<PullResult, String> {
 
     // Only a pull that worked can have changed anything worth re-reading.
     let project = ok.then(|| inspect_project(&dir, &group));
-    Ok(PullResult { ok, summary, project })
+    Ok(PullResult {
+        ok,
+        summary,
+        project,
+    })
 }
 
 /// The one line of git's output worth putting in the status bar.
@@ -827,7 +972,13 @@ fn pull_summary(stdout: &str, stderr: &str, ok: bool) -> String {
     } else {
         pick(stderr).or_else(|| pick(stdout))
     };
-    line.unwrap_or_else(|| if ok { "Pulled".into() } else { "git pull failed".into() })
+    line.unwrap_or_else(|| {
+        if ok {
+            "Pulled".into()
+        } else {
+            "git pull failed".into()
+        }
+    })
 }
 
 /// Every `TODO` / `FIXME` left in a project's own source.
@@ -864,26 +1015,266 @@ async fn port_list() -> Vec<procs::ProcessEntry> {
 }
 
 #[tauri::command]
-async fn port_kill(pid: u32, expected_executable: String, expected_process: String) -> Result<(), String> {
-    off_thread(move || procs::kill(pid, &expected_executable, &expected_process))
+async fn port_kill(
+    pid: u32,
+    expected_executable: String,
+    expected_process: String,
+    tree: bool,
+) -> Result<(), String> {
+    off_thread(move || {
+        if tree {
+            procs::kill_tree(pid, &expected_executable, &expected_process)
+        } else {
+            procs::kill(pid, &expected_executable, &expected_process)
+        }
+    })
+    .await
+    .unwrap_or_else(|| Err("Could not terminate the process.".into()))
+}
+
+/// The live readings behind the explorer's sparklines. Called every couple of
+/// seconds with only the PIDs on screen, so it stays a handful of native calls.
+#[tauri::command]
+async fn port_sample(pids: Vec<u32>) -> Vec<procs::ProcSample> {
+    off_thread(move || procs::sample(pids))
         .await
-        .unwrap_or_else(|| Err("Could not terminate the process.".into()))
+        .unwrap_or_default()
 }
 
 #[tauri::command]
 async fn term_close_snapshot(id: String) -> Result<Vec<procs::ProcessIdentity>, String> {
     off_thread(move || {
         let descendants = procs::descendants(term::term_pid(&id)?);
-        term::term_close(id)?;
+        term::term_close_now(id)?;
         Ok(descendants)
-    }).await.unwrap_or_else(|| Err("Could not close the terminal.".into()))
+    })
+    .await
+    .unwrap_or_else(|| Err("Could not close the terminal.".into()))
 }
 
 #[tauri::command]
 async fn process_survivors(expected: Vec<procs::ProcessIdentity>) -> Vec<procs::ProcessIdentity> {
-    off_thread(move || procs::survivors(expected)).await.unwrap_or_default()
+    off_thread(move || procs::survivors(expected))
+        .await
+        .unwrap_or_default()
 }
 
+/* ------------------------------------------------------------------- dns
+
+Every one of these talks to the network, the process table or a file in
+System32, so every one of them is `async` and does its work on a pool
+thread. A DNS query that times out must cost the window nothing. */
+
+/// Every record type for one name, from one resolver. `server` is an IP, or
+/// empty for whatever Windows is configured to use.
+#[tauri::command]
+async fn dns_lookup(name: String, server: String, types: Vec<String>) -> dns::Lookup {
+    off_thread(move || dns::lookup(&name, &server, &types))
+        .await
+        .unwrap_or_else(|| dns::lookup("", "", &[]))
+}
+
+/// The same question put to this machine's resolver and to the public ones, so
+/// disagreement is visible rather than guessed at.
+#[tauri::command]
+async fn dns_compare(name: String, rtype: String) -> Vec<dns::ResolverAnswer> {
+    off_thread(move || dns::compare(&name, &rtype))
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn dns_reverse(address: String) -> dns::Lookup {
+    off_thread(move || dns::reverse(&address))
+        .await
+        .unwrap_or_else(|| dns::reverse(""))
+}
+
+#[tauri::command]
+async fn dns_flush() -> String {
+    off_thread(dns::flush_cache)
+        .await
+        .unwrap_or_else(|| "Could not flush the cache".into())
+}
+
+#[tauri::command]
+async fn dns_hosts_read() -> dns::HostsFile {
+    off_thread(dns::hosts_read)
+        .await
+        .unwrap_or_else(dns::hosts_read)
+}
+
+/// Writes the hosts file back, taking a copy first and asking Windows for
+/// administrator rights only if the plain write is refused.
+#[tauri::command]
+async fn dns_hosts_write(request: dns::HostsWrite) -> dns::HostsWriteResult {
+    off_thread(move || dns::hosts_write(request))
+        .await
+        .unwrap_or_else(|| dns::HostsWriteResult {
+            ok: false,
+            elevated: false,
+            backup: String::new(),
+            error: "The write did not finish.".into(),
+            file: dns::hosts_read(),
+        })
+}
+
+/// The text of one of the copies this tool took, so a restore can be staged
+/// and looked at before it is applied like any other edit.
+#[tauri::command]
+async fn dns_hosts_backup(id: String) -> Result<String, String> {
+    off_thread(move || dns::backup_text(&id))
+        .await
+        .unwrap_or_else(|| Err("Could not read the backup.".into()))
+}
+
+/// The names the scanned projects talk to, so the tool opens on something
+/// worth looking up rather than an empty field.
+#[tauri::command]
+async fn dns_project_domains(paths: Vec<String>, names: Vec<String>) -> Vec<dns::ProjectDomain> {
+    off_thread(move || dns::project_domains(paths, names))
+        .await
+        .unwrap_or_default()
+}
+
+/* --------------------------------------------------------- Windows tools */
+
+#[tauri::command]
+async fn event_log_query(
+    query: windows_tools::EventQuery,
+) -> Result<Vec<windows_tools::EventRecord>, String> {
+    off_thread(move || windows_tools::event_query(query))
+        .await
+        .unwrap_or_else(|| Err("The Event Log query did not finish.".into()))
+}
+
+#[tauri::command]
+async fn registry_list(path: String) -> Result<Vec<windows_tools::RegistryItem>, String> {
+    off_thread(move || windows_tools::registry_list(&path))
+        .await
+        .unwrap_or_else(|| Err("The registry query did not finish.".into()))
+}
+
+#[tauri::command]
+async fn registry_change(change: windows_tools::RegistryChange) -> windows_tools::ToolResult {
+    off_thread(move || windows_tools::registry_change(change))
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn system_report() -> Result<windows_tools::SystemReport, String> {
+    off_thread(windows_tools::system_report)
+        .await
+        .unwrap_or_else(|| Err("The system scan did not finish.".into()))
+}
+
+#[tauri::command]
+async fn repair_run(id: String) -> windows_tools::ToolResult {
+    off_thread(move || windows_tools::repair_run(&id))
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn log_tail(path: String, lines: u32) -> Result<windows_tools::LogTail, String> {
+    off_thread(move || windows_tools::log_tail(&path, lines))
+        .await
+        .unwrap_or_else(|| Err("The log read did not finish.".into()))
+}
+
+#[tauri::command]
+async fn lock_inspect(path: String) -> Result<Vec<windows_tools::LockProcess>, String> {
+    off_thread(move || windows_tools::lock_inspect(&path))
+        .await
+        .unwrap_or_else(|| Err("The lock inspection did not finish.".into()))
+}
+
+#[tauri::command]
+async fn audio_devices() -> Result<Vec<windows_tools::AudioDevice>, String> {
+    off_thread(windows_tools::audio_devices).await
+        .unwrap_or_else(|| Err("The audio device scan did not finish.".into()))
+}
+
+#[tauri::command]
+async fn audio_set_default(id: String) -> windows_tools::ToolResult {
+    off_thread(move || windows_tools::audio_set_default(&id)).await.unwrap_or_default()
+}
+
+#[tauri::command]
+async fn repair_targets(id:String)->Result<Vec<windows_tools::RepairTarget>,String>{off_thread(move||windows_tools::repair_targets(&id)).await.unwrap_or_else(||Err("The device scan did not finish.".into()))}
+
+#[tauri::command]
+async fn repair_target_run(id:String,target:String)->windows_tools::ToolResult{off_thread(move||windows_tools::repair_target_run(&id,&target)).await.unwrap_or_default()}
+
+/* ------------------------------------------------------------- the network
+
+   Every one of these drives `pktmon`, which means spawning a process and, for
+   the capture itself, reading a pipe for as long as it runs. That reading has
+   a thread of its own inside `network`; the commands here only ever start,
+   stop or ask, and none of them holds the window. */
+
+/// Whether pktmon is here, and whether it will talk to us. Asked when the tool
+/// is opened, so the page can explain itself before offering a button that was
+/// never going to work.
+#[tauri::command]
+async fn net_capability() -> network::Capability {
+    off_thread(network::capability).await.unwrap_or_default()
+}
+
+#[tauri::command]
+async fn net_components() -> Result<Vec<network::Component>, String> {
+    off_thread(network::components)
+        .await
+        .unwrap_or_else(|| Err("The component list did not finish.".into()))
+}
+
+/// Starts a capture. Returns once pktmon is up; the frames themselves arrive
+/// as `net:frames` events.
+#[tauri::command]
+async fn net_start(
+    app: AppHandle,
+    options: network::StartOptions,
+) -> Result<network::Started, String> {
+    off_thread(move || network::start(app, options))
+        .await
+        .unwrap_or_else(|| Err("The capture did not start.".into()))
+}
+
+#[tauri::command]
+async fn net_stop() -> Result<String, String> {
+    off_thread(network::stop)
+        .await
+        .unwrap_or_else(|| Err("The capture did not stop cleanly.".into()))
+}
+
+#[tauri::command]
+async fn net_clear() {
+    off_thread(network::clear).await;
+}
+
+/// The frames already in the ring, for a tool opened onto a capture that was
+/// running before anybody looked at it.
+#[tauri::command]
+async fn net_backlog(limit: usize) -> Vec<network::Frame> {
+    off_thread(move || network::backlog(limit))
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn net_rate() -> network::Rate {
+    off_thread(network::rate).await.unwrap_or_default()
+}
+
+/// Writes the ring out as pcapng. An empty `path` puts it under the captures
+/// folder under a stamped name.
+#[tauri::command]
+async fn net_export(path: String) -> Result<network::Exported, String> {
+    off_thread(move || network::export(Some(path)))
+        .await
+        .unwrap_or_else(|| Err("The export did not finish.".into()))
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -898,6 +1289,7 @@ pub fn run() {
             scan_cancel,
             default_root,
             pick_folder,
+            save_text_file,
             open_in,
             git_diff,
             git_pull,
@@ -905,7 +1297,9 @@ pub fn run() {
             todo_excerpt,
             port_list,
             port_kill,
+            port_sample,
             term_close_snapshot,
+            term::term_prune_history,
             process_survivors,
             term::term_shell_availability,
             term::term_open,
@@ -916,7 +1310,38 @@ pub fn run() {
             term::term_list,
             term::term_popout,
             term::term_drag_preview,
-            term::term_dock
+            term::term_dock,
+            tool_window::tool_popout,
+            tool_window::tool_focus,
+            tool_window::tool_drag_preview,
+            tool_window::tool_dock,
+            dns_lookup,
+            dns_compare,
+            dns_reverse,
+            dns_flush,
+            dns_hosts_read,
+            dns_hosts_write,
+            dns_hosts_backup,
+            dns_project_domains,
+            net_capability,
+            net_components,
+            net_start,
+            net_stop,
+            net_clear,
+            net_backlog,
+            net_rate,
+            net_export,
+            event_log_query,
+            registry_list,
+            registry_change,
+            system_report,
+            repair_run,
+            log_tail,
+            lock_inspect
+            ,audio_devices,
+            audio_set_default
+            ,repair_targets,
+            repair_target_run
         ])
         .on_window_event(|window, event| {
             // The main window going away means the app is going away, so every
@@ -929,25 +1354,63 @@ pub fn run() {
                         let _ = child.destroy();
                     }
                 }
+                tool_window::destroy_all(&window.app_handle());
                 term::shutdown();
+                // A pktmon session outliving the window would go on
+                // filtering this machine's traffic with nothing left to
+                // show for it.
+                network::shutdown();
             }
         });
 
     #[cfg(not(windows))]
-    let builder =
-        builder.invoke_handler(tauri::generate_handler![
-            scan,
-            app_version,
-            analytics_page_view,
-            scan_cancel,
-            default_root,
-            pick_folder,
-            open_in,
-            git_diff,
-            git_pull,
-            todos,
-            todo_excerpt
-        ]);
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        scan,
+        app_version,
+        analytics_page_view,
+        scan_cancel,
+        default_root,
+        pick_folder,
+        save_text_file,
+        open_in,
+        git_diff,
+        git_pull,
+        todos,
+        todo_excerpt,
+        dns_lookup,
+        dns_compare,
+        dns_reverse,
+        dns_flush,
+        dns_hosts_read,
+        dns_hosts_write,
+        dns_hosts_backup,
+        dns_project_domains,
+        net_capability,
+        net_components,
+        net_start,
+        net_stop,
+        net_clear,
+        net_backlog,
+        net_rate,
+        net_export,
+        event_log_query,
+        registry_list,
+        registry_change,
+        system_report,
+        repair_run,
+        log_tail,
+            lock_inspect
+            ,audio_devices,
+            audio_set_default
+            ,repair_targets,
+            repair_target_run,
+        tool_window::tool_popout,
+        tool_window::tool_focus,
+        tool_window::tool_drag_preview,
+        tool_window::tool_dock
+    ]);
 
-    builder.run(tauri::generate_context!()).expect("error while running DevHQ");
+    builder
+        .run(tauri::generate_context!())
+        .expect("error while running DevHQ");
 }

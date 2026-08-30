@@ -57,20 +57,33 @@ pub fn descendants(root_pid: u32) -> Vec<ProcessIdentity> {
                 wanted.insert(process.pid);
             }
         }
-        if wanted.len() == before { break; }
+        if wanted.len() == before {
+            break;
+        }
     }
-    processes.into_iter().filter(|process| process.pid != root_pid && wanted.contains(&process.pid))
-        .map(|process| ProcessIdentity { pid: process.pid, process: process.name, executable_path: process.exe })
+    processes
+        .into_iter()
+        .filter(|process| process.pid != root_pid && wanted.contains(&process.pid))
+        .map(|process| ProcessIdentity {
+            pid: process.pid,
+            process: process.name,
+            executable_path: process.exe,
+        })
         .collect()
 }
 
 pub fn survivors(expected: Vec<ProcessIdentity>) -> Vec<ProcessIdentity> {
     let current = list_processes();
-    expected.into_iter().filter(|expected| current.iter().any(|process| {
-        process.pid == expected.pid
-            && process.name.eq_ignore_ascii_case(&expected.process)
-            && process.exe.eq_ignore_ascii_case(&expected.executable_path)
-    })).collect()
+    expected
+        .into_iter()
+        .filter(|expected| {
+            current.iter().any(|process| {
+                process.pid == expected.pid
+                    && process.name.eq_ignore_ascii_case(&expected.process)
+                    && process.exe.eq_ignore_ascii_case(&expected.executable_path)
+            })
+        })
+        .collect()
 }
 
 #[derive(Serialize, Clone)]
@@ -87,6 +100,7 @@ pub struct PortBinding {
 #[serde(rename_all = "camelCase")]
 pub struct ProcessEntry {
     pub pid: u32,
+    pub parent_pid: u32,
     pub process: String,
     pub executable_path: String,
     pub cwd: String,
@@ -118,7 +132,10 @@ pub fn port_list() -> Vec<ProcessEntry> {
     let mut ports: HashMap<u32, Vec<PortBinding>> = HashMap::new();
     for (protocol, address, port, pid) in endpoints {
         let bindings = ports.entry(pid).or_default();
-        if !bindings.iter().any(|binding| binding.port == port && binding.protocol == protocol) {
+        if !bindings
+            .iter()
+            .any(|binding| binding.port == port && binding.protocol == protocol)
+        {
             let probe = probes.get(&port).and_then(|result| result.as_ref());
             bindings.push(PortBinding {
                 browser_url: probe.map(|(url, _)| url.clone()),
@@ -137,6 +154,7 @@ pub fn port_list() -> Vec<ProcessEntry> {
         .map(|process| ProcessEntry {
             ports: ports.remove(&process.pid).unwrap_or_default(),
             pid: process.pid,
+            parent_pid: process.parent,
             process: process.name,
             executable_path: process.exe,
             cwd: process.cwd,
@@ -146,18 +164,27 @@ pub fn port_list() -> Vec<ProcessEntry> {
     // A protected process may own a socket even when CIM withheld its details.
     out.extend(ports.into_iter().map(|(pid, ports)| ProcessEntry {
         pid,
+        parent_pid: 0,
         process: String::new(),
         executable_path: String::new(),
         cwd: String::new(),
         command_line: String::new(),
         ports,
     }));
-    out.sort_by(|a, b| a.process.to_lowercase().cmp(&b.process.to_lowercase()).then(a.pid.cmp(&b.pid)));
+    out.sort_by(|a, b| {
+        a.process
+            .to_lowercase()
+            .cmp(&b.process.to_lowercase())
+            .then(a.pid.cmp(&b.pid))
+    });
     out
 }
 
 fn is_local_address(address: &str) -> bool {
-    matches!(address.to_ascii_lowercase().as_str(), "0.0.0.0" | "::" | "127.0.0.1" | "::1" | "localhost" | "*")
+    matches!(
+        address.to_ascii_lowercase().as_str(),
+        "0.0.0.0" | "::" | "127.0.0.1" | "::1" | "localhost" | "*"
+    )
 }
 
 fn probe_browser_url(port: u16) -> Option<(String, u16)> {
@@ -167,17 +194,26 @@ fn probe_browser_url(port: u16) -> Option<(String, u16)> {
         SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port),
     ];
     for address in addresses {
-        let Ok(mut stream) = TcpStream::connect_timeout(&address, timeout) else { continue };
+        let Ok(mut stream) = TcpStream::connect_timeout(&address, timeout) else {
+            continue;
+        };
         let _ = stream.set_read_timeout(Some(timeout));
         let _ = stream.set_write_timeout(Some(timeout));
-        if stream.write_all(b"HEAD / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n").is_err() {
+        if stream
+            .write_all(b"HEAD / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .is_err()
+        {
             continue;
         }
         let mut response = [0u8; 64];
-        let Some(read) = stream.read(&mut response).ok().filter(|read| *read >= 12) else { continue };
+        let Some(read) = stream.read(&mut response).ok().filter(|read| *read >= 12) else {
+            continue;
+        };
         let first_line = String::from_utf8_lossy(&response[..read]);
         let mut fields = first_line.split_whitespace();
-        let (Some(version), Some(status)) = (fields.next(), fields.next()) else { continue };
+        let (Some(version), Some(status)) = (fields.next(), fields.next()) else {
+            continue;
+        };
         if version.starts_with("HTTP/") {
             if let Ok(status) = status.parse::<u16>() {
                 return Some((format!("http://localhost:{port}"), status));
@@ -192,12 +228,18 @@ pub fn kill(pid: u32, expected_executable: &str, expected_process: &str) -> Resu
         return Err("DevHQ will not terminate this protected process.".into());
     }
     let processes = list_processes();
-    let current = processes.iter().find(|process| process.pid == pid)
+    let current = processes
+        .iter()
+        .find(|process| process.pid == pid)
         .ok_or_else(|| "That process is no longer running.".to_string())?;
-    let same_executable = expected_executable.is_empty() || current.exe.eq_ignore_ascii_case(expected_executable);
-    let same_name = expected_process.is_empty() || current.name.eq_ignore_ascii_case(expected_process);
+    let same_executable =
+        expected_executable.is_empty() || current.exe.eq_ignore_ascii_case(expected_executable);
+    let same_name =
+        expected_process.is_empty() || current.name.eq_ignore_ascii_case(expected_process);
     if !same_executable || !same_name {
-        return Err("The PID now belongs to a different process. Refresh before trying again.".into());
+        return Err(
+            "The PID now belongs to a different process. Refresh before trying again.".into(),
+        );
     }
     #[cfg(windows)]
     unsafe {
@@ -221,21 +263,50 @@ pub fn kill(pid: u32, expected_executable: &str, expected_process: &str) -> Resu
 /// not the project running — but its children may be, so these are dropped only
 /// after match propagation, and never when the process holds a listening port.
 const NOISE_NAMES: &[&str] = &[
-    "explorer.exe", "code.exe", "cursor.exe", "devenv.exe", "svchost.exe",
-    "conhost.exe", "WindowsTerminal.exe", "OpenConsole.exe", "cmd.exe",
-    "powershell.exe", "pwsh.exe", "bash.exe", "sh.exe", "zsh.exe", "git.exe",
-    "ssh.exe", "claude.exe", "devhq.exe", "scan_cli.exe",
+    "explorer.exe",
+    "code.exe",
+    "cursor.exe",
+    "devenv.exe",
+    "svchost.exe",
+    "conhost.exe",
+    "WindowsTerminal.exe",
+    "OpenConsole.exe",
+    "cmd.exe",
+    "powershell.exe",
+    "pwsh.exe",
+    "bash.exe",
+    "sh.exe",
+    "zsh.exe",
+    "git.exe",
+    "ssh.exe",
+    "claude.exe",
+    "devhq.exe",
+    "scan_cli.exe",
     // Git-for-Windows ports of the usual shell utilities, which appear whenever
     // a terminal in the folder runs a pipeline.
-    "grep.exe", "sed.exe", "awk.exe", "find.exe", "head.exe", "tail.exe",
-    "ls.exe", "cat.exe", "tr.exe", "xargs.exe", "sort.exe", "wc.exe",
+    "grep.exe",
+    "sed.exe",
+    "awk.exe",
+    "find.exe",
+    "head.exe",
+    "tail.exe",
+    "ls.exe",
+    "cat.exe",
+    "tr.exe",
+    "xargs.exe",
+    "sort.exe",
+    "wc.exe",
 ];
 
 /// Command-line fragments belonging to tools that merely run *in* a project —
 /// coding agents and editor extensions — rather than being the project itself.
 const NOISE_CMD: &[&str] = &[
-    "cursor-agent", "\\.vscode\\extensions\\", "claude-code", "\\.cursor\\extensions\\",
-    "language-server", "typescript\\lib\\tsserver",
+    "cursor-agent",
+    "\\.vscode\\extensions\\",
+    "claude-code",
+    "\\.cursor\\extensions\\",
+    "language-server",
+    "typescript\\lib\\tsserver",
 ];
 
 impl ProcessSnapshot {
@@ -280,7 +351,9 @@ impl ProcessSnapshot {
         let mut queue: Vec<u32> = how.keys().copied().collect();
         let mut seen: HashSet<u32> = queue.iter().copied().collect();
         while let Some(pid) = queue.pop() {
-            let Some(kids) = self.children.get(&pid) else { continue };
+            let Some(kids) = self.children.get(&pid) else {
+                continue;
+            };
             for &kid in kids {
                 if seen.insert(kid) {
                     how.entry(kid).or_insert("child");
@@ -344,13 +417,35 @@ fn list_processes() -> Vec<RawProc> {
         .into_iter()
         .filter_map(|v| {
             let pid = v.get("ProcessId")?.as_u64()? as u32;
-            let parent = v.get("ParentProcessId").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
-            let name = v.get("Name").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            let cmd = v.get("CommandLine").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            let exe = v.get("ExecutablePath").and_then(|x| x.as_str()).unwrap_or("");
+            let parent = v
+                .get("ParentProcessId")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0) as u32;
+            let name = v
+                .get("Name")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let cmd = v
+                .get("CommandLine")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let exe = v
+                .get("ExecutablePath")
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
             let haystack = norm(&format!("{cmd} {exe}"));
             let cwd = cwd::of(pid).unwrap_or_default();
-            Some(RawProc { pid, parent, name, cmd, cwd, exe: exe.to_string(), haystack })
+            Some(RawProc {
+                pid,
+                parent,
+                name,
+                cmd,
+                cwd,
+                exe: exe.to_string(),
+                haystack,
+            })
         })
         .collect()
 }
@@ -393,7 +488,9 @@ fn listening_endpoints() -> Vec<(String, String, u16, u32)> {
     if !cfg!(windows) {
         return Vec::new();
     }
-    let Some(out) = run_lossy("netstat", &["-ano"], None) else { return Vec::new() };
+    let Some(out) = run_lossy("netstat", &["-ano"], None) else {
+        return Vec::new();
+    };
     let mut endpoints = Vec::new();
     for line in out.lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();
@@ -401,16 +498,114 @@ fn listening_endpoints() -> Vec<(String, String, u16, u32)> {
             continue;
         }
         let protocol = fields[0].to_ascii_uppercase();
-        let (local, pid_text) = if protocol == "TCP" && fields.len() >= 5 && fields[3].eq_ignore_ascii_case("LISTENING") {
+        let (local, pid_text) = if protocol == "TCP"
+            && fields.len() >= 5
+            && fields[3].eq_ignore_ascii_case("LISTENING")
+        {
             (fields[1], fields[4])
         } else if protocol == "UDP" && fields.len() >= 4 {
             (fields[1], fields[3])
         } else {
             continue;
         };
-        let Some((address, port_text)) = local.rsplit_once(':') else { continue };
-        let (Ok(port), Ok(pid)) = (port_text.parse::<u16>(), pid_text.parse::<u32>()) else { continue };
-        endpoints.push((protocol, address.trim_matches(['[', ']']).to_string(), port, pid));
+        let Some((address, port_text)) = local.rsplit_once(':') else {
+            continue;
+        };
+        let (Ok(port), Ok(pid)) = (port_text.parse::<u16>(), pid_text.parse::<u32>()) else {
+            continue;
+        };
+        endpoints.push((
+            protocol,
+            address.trim_matches(['[', ']']).to_string(),
+            port,
+            pid,
+        ));
     }
     endpoints
+}
+
+/// One cheap reading of a process's cost. Deliberately native and per-PID:
+/// the explorer refreshes these every couple of seconds, which a `Get-CimInstance`
+/// sweep could never carry. `cpu_seconds` is the running total of user + kernel
+/// time — the caller turns two readings into a percentage.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcSample {
+    pub pid: u32,
+    pub cpu_seconds: f64,
+    pub memory_bytes: u64,
+    pub uptime_seconds: f64,
+}
+
+/// Samples the given PIDs. A process that has exited, or that refuses to be
+/// opened, is simply absent from the answer — the caller reads that as "gone".
+#[cfg(windows)]
+pub fn sample(pids: Vec<u32>) -> Vec<ProcSample> {
+    use windows::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let ticks = |time: FILETIME| ((time.dwHighDateTime as u64) << 32) | time.dwLowDateTime as u64;
+    // A FILETIME counts 100-nanosecond units from 1601, so "now" has to be moved
+    // onto the same epoch before a creation time can be subtracted from it.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs_f64() + 11_644_473_600.0)
+        .unwrap_or(0.0);
+
+    pids.into_iter()
+        .filter_map(|pid| unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+            let (mut created, mut exited, mut kernel, mut user) = (
+                FILETIME::default(),
+                FILETIME::default(),
+                FILETIME::default(),
+                FILETIME::default(),
+            );
+            let timed =
+                GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user).is_ok();
+            let mut memory = PROCESS_MEMORY_COUNTERS::default();
+            let sized = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+            let measured = GetProcessMemoryInfo(handle, &mut memory, sized).is_ok();
+            let _ = CloseHandle(handle);
+            if !timed {
+                return None;
+            }
+            let started = ticks(created) as f64 / 1e7;
+            Some(ProcSample {
+                pid,
+                cpu_seconds: (ticks(kernel) + ticks(user)) as f64 / 1e7,
+                memory_bytes: if measured {
+                    memory.WorkingSetSize as u64
+                } else {
+                    0
+                },
+                uptime_seconds: (now - started).max(0.0),
+            })
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+pub fn sample(pids: Vec<u32>) -> Vec<ProcSample> {
+    let _ = pids;
+    Vec::new()
+}
+
+/// Kills a process and everything below it, the descendants first so that a
+/// supervisor cannot notice a worker die and restart it on the way down. The
+/// root is verified exactly as a single kill is, and each descendant is checked
+/// against the name and image it was just enumerated with, so a PID recycled
+/// between the sweep and the kill is left alone.
+pub fn kill_tree(
+    pid: u32,
+    expected_executable: &str,
+    expected_process: &str,
+) -> Result<(), String> {
+    for child in descendants(pid) {
+        let _ = kill(child.pid, &child.executable_path, &child.process);
+    }
+    kill(pid, expected_executable, expected_process)
 }

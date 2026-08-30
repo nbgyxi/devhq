@@ -17,6 +17,9 @@ const listen = window.__TAURI__.event.listen;
 const appWindow = window.__TAURI__.window.getCurrentWindow();
 
 const PREFS_KEY = "devhq.prefs.v1";
+/** Last finished scan, kept so a restart within a few minutes can skip the disk. */
+const SCAN_CACHE_KEY = "devhq.scanCache.v1";
+const SCAN_CACHE_TTL_MS = 5 * 60 * 1000;
 
 /** Set once a reset is under way, so nothing writes remembered state back
  *  between the wipe and the reload. */
@@ -57,16 +60,49 @@ const state = {
   settingsOpen: false,
   settingsSection: "general",
   activeView: "overview",
+  /** Which shared util-tool is on screen when `activeView` is `"tools"`. */
+  utilToolId: "any",
+  /** Which native Windows tool is on screen in their shared host. */
+  windowsToolId: "events",
   portSearch: "",
-  portLocalOnly: false,
-  processSortKey: "process",
-  processSortDirection: 1,
+  /** Which slice of the machine the explorer is listing: every listening
+   *  socket, or every process whether it holds a port or not. */
+  portTab: "listen",
+  /** How the rows are ordered, across the whole list: by what they are costing
+   *  right now. 1 is ascending, -1 descending. */
+  portSortKey: "mem",
+  portSortDirection: -1,
   ports: [],
   portsLoading: false,
   portsError: "",
-  portInspect: null,
-  portConfirm: null,
   portToken: 0,
+  /** The port row the detail pane is describing, keyed "<pid>:<port>". */
+  portSelected: null,
+  /** The ports kept on the shelf along the top. Pinned by port number, not by
+   *  PID: the point of a pin is to still find :3000 after the server restarted
+   *  under a new PID. */
+  portPins: [],
+  /** The tools pinned to the dock in the status bar, in the order they were
+   *  pinned, by tool id. Empty by default: a tool is found by searching for
+   *  it, and only earns a permanent seat once it has been pinned there. */
+  toolPins: [],
+  /** Tools and places opened recently, most recent first. An empty Ctrl+K
+   *  list is these, plus Help. */
+  toolRecent: [],
+  /** Whether the "all pins" panel that opens upward from the dock is showing. */
+  toolPinsOpen: false,
+  /** Where the pins live: false keeps the handful of chips in the status bar,
+   *  true gives them a shelf of their own above it with room to wrap. */
+  pinsPanel: false,
+  /** Tool ids currently open in their own window. Opening one from a pin
+   *  focuses that window instead of remounting the tool in the main view. */
+  toolPopouts: [],
+  /** The kill confirmation: which row, and whether the whole tree goes. */
+  portKill: null,
+  portRestarting: 0,
+  /** pid -> the rolling CPU and memory readings behind the sparklines. */
+  portSamples: new Map(),
+  portLive: true,
   selectedPath: null,
   /** What the open project's detail view is showing. Both arrive after the
    *  view does, so both start null and are drawn as skeletons until they land.
@@ -162,6 +198,24 @@ function loadPrefs() {
       state.tableColumnWidths = Object.fromEntries(Object.entries(p.tableColumnWidths)
         .filter(([, width]) => Number.isFinite(width) && width >= 70 && width <= 800));
     }
+    if (["listen", "all"].includes(p.portTab)) state.portTab = p.portTab;
+    if (["cpu", "mem"].includes(p.portSortKey)) state.portSortKey = p.portSortKey;
+    if (p.portSortDirection === 1) state.portSortDirection = 1;
+    if (Array.isArray(p.portPins)) state.portPins = p.portPins.filter((port) => Number.isInteger(port)).slice(0, 12);
+    // A pin for a tool this build no longer has is dropped rather than left in
+    // the bar as a chip that leads nowhere.
+    if (typeof p.pinsPanel === "boolean") state.pinsPanel = p.pinsPanel;
+    if (Array.isArray(p.toolPins)) {
+      state.toolPins = p.toolPins.filter((id) => TOOLS.some((tool) => tool.id === id));
+    }
+    if (Array.isArray(p.toolPopouts)) {
+      state.toolPopouts = p.toolPopouts.filter((id) => TOOLS.some((tool) => tool.id === id));
+    }
+    if (Array.isArray(p.toolRecent)) {
+      state.toolRecent = p.toolRecent
+        .filter((id) => typeof id === "string" && (TOOLS.some((tool) => tool.id === id) || PLACES.some((place) => place.id === id)))
+        .slice(0, TOOL_RECENT_MAX);
+    }
     applyTheme();
     applyLanguage();
   } catch {
@@ -188,6 +242,14 @@ function savePrefs() {
         tableSortDirection: state.tableSortDirection,
         tableColumns: state.tableColumns,
         tableColumnWidths: state.tableColumnWidths,
+        portTab: state.portTab,
+        portSortKey: state.portSortKey,
+        portSortDirection: state.portSortDirection,
+        portPins: state.portPins,
+        toolPins: state.toolPins,
+        pinsPanel: state.pinsPanel,
+        toolPopouts: state.toolPopouts,
+        toolRecent: state.toolRecent,
       })
     );
   } catch {
@@ -751,6 +813,27 @@ function rootEditorOpen() {
   return !el["roots-pop"].hidden;
 }
 
+/** Keep the folder editor inside the window. Anchored under the chip with
+ *  fixed coordinates so a mid-row chip cannot hang the browse button off the
+ *  right edge (and so no ancestor overflow can clip it). */
+function placeRootPop() {
+  const pop = el["roots-pop"];
+  const btn = el["roots-btn"];
+  if (!pop || !btn || pop.hidden) return;
+  const pad = 12;
+  const gap = 8;
+  const btnRect = btn.getBoundingClientRect();
+  pop.style.position = "fixed";
+  pop.style.top = `${Math.round(btnRect.bottom + gap)}px`;
+  pop.style.left = "0px";
+  pop.style.right = "auto";
+  const popWidth = pop.getBoundingClientRect().width || 420;
+  let left = btnRect.left;
+  left = Math.min(left, window.innerWidth - pad - popWidth);
+  left = Math.max(pad, left);
+  pop.style.left = `${Math.round(left)}px`;
+}
+
 /** Opens the folder editor with one row per folder. The rows are built here
  *  and afterwards only added or removed one at a time, so nothing holding a
  *  caret is ever replaced under the user. */
@@ -761,6 +844,8 @@ function openRootEditor() {
   }
   el["roots-pop"].hidden = false;
   el["roots-btn"].classList.add("on");
+  placeRootPop();
+  requestAnimationFrame(placeRootPop);
   el["roots-list"].querySelector("input")?.focus();
 }
 
@@ -768,6 +853,11 @@ function closeRootEditor() {
   if (!rootEditorOpen()) return;
   el["roots-pop"].hidden = true;
   el["roots-btn"].classList.remove("on");
+  const pop = el["roots-pop"];
+  pop.style.position = "";
+  pop.style.top = "";
+  pop.style.left = "";
+  pop.style.right = "";
 }
 
 /** Takes what the editor holds and scans it. Blanks and repeats drop out. */
@@ -907,9 +997,98 @@ function listenScan() {
     // One reordering pass at the end, so the list settles into the chosen sort
     // instead of shuffling under the pointer while results stream in.
     markDirty("toolbar", "grid", "summary", "filters", "banner", "detail");
+    // A finished scan (not stopped mid-way) is what a quick restart can reuse.
+    if (!p.cancelled) saveScanCache();
   });
 
   return Promise.all(registered);
+}
+
+/** Roots match when the same folders are listed in the same order. */
+function sameScanRoots(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((root, index) => String(root).toLowerCase() === String(b[index]).toLowerCase());
+}
+
+/** Drop live process fields — they go stale the moment the window closes. */
+function projectForCache(project) {
+  return {
+    name: project.name,
+    path: project.path,
+    group: project.group,
+    description: project.description || "",
+    version: project.version || "",
+    packageManager: project.packageManager || "",
+    scripts: Array.isArray(project.scripts) ? project.scripts : [],
+    depCount: project.depCount || 0,
+    devDepCount: project.devDepCount || 0,
+    flags: Array.isArray(project.flags) ? project.flags : [],
+    tech: Array.isArray(project.tech) ? project.tech : [],
+    git: project.git || null,
+    runCmd: project.runCmd || "",
+    touchedMs: project.touchedMs || 0,
+    running: [],
+    ports: [],
+  };
+}
+
+/** Remember the finished list so the next open can skip a full scan. */
+function saveScanCache() {
+  if (resetting) return;
+  const projects = state.projects.filter((project) => !project.pending && !project.stopped);
+  // An interrupted list is not worth keeping; leave whatever was saved before.
+  if (state.projects.some((project) => project.pending || project.stopped)) return;
+  try {
+    localStorage.setItem(
+      SCAN_CACHE_KEY,
+      JSON.stringify({
+        roots: [...state.roots],
+        scannedAt: state.scannedAt,
+        durationMs: state.durationMs,
+        completedAt: Date.now(),
+        projects: projects.map(projectForCache),
+      })
+    );
+  } catch {
+    /* quota or storage disabled - next launch simply rescans */
+  }
+}
+
+/** A cache that is still warm and matches the folders we would scan. */
+function loadScanCache() {
+  try {
+    const cache = JSON.parse(localStorage.getItem(SCAN_CACHE_KEY) || "null");
+    if (!cache || !Array.isArray(cache.projects) || !Array.isArray(cache.roots)) return null;
+    if (!sameScanRoots(cache.roots, state.roots)) return null;
+    const completedAt = Number(cache.completedAt) || Number(cache.scannedAt) || 0;
+    if (!completedAt) return null;
+    const age = Date.now() - completedAt;
+    if (age < 0 || age > SCAN_CACHE_TTL_MS) return null;
+    return cache;
+  } catch {
+    return null;
+  }
+}
+
+/** Put the remembered list on screen without touching the disk. */
+function restoreScanCache(cache) {
+  state.error = "";
+  state.scanning = false;
+  state.scannedAt = cache.scannedAt || cache.completedAt;
+  state.durationMs = cache.durationMs || 0;
+  state.total = cache.projects.length;
+  state.settled = cache.projects.length;
+  state.projects = cache.projects.map((project) => ({
+    ...projectForCache(project),
+    name: demoName(project.name),
+    group: demoGroup(project.group),
+    pending: false,
+  }));
+  state.byPath = new Map(state.projects.map((project) => [project.path, project]));
+  const when = new Date(cache.completedAt || cache.scannedAt).toLocaleTimeString();
+  beginWork("scan-cache", "Restored last scan", `from ${when}`);
+  setTimeout(() => endWork("scan-cache"), 2200);
+  markDirty("toolbar", "grid", "summary", "filters", "banner", "detail", "activity");
 }
 
 /** Swaps a stub for the real thing, in the list and in the index. */
@@ -1126,86 +1305,150 @@ function openSettings() {
 
 function closeSettings() {
   state.settingsOpen = false;
-  window.devhqTrackPageView?.(state.activeView === "ports" ? "/ports" : "/overview");
+  window.devhqTrackPageView?.(`/${state.activeView}`);
   syncSettingsButton();
   markDirty("settings");
 }
 
 /* --------------------------------------------------------------- ports */
 
+/** Everything the main area can be showing. The overview is the one that is
+ *  always there; the rest are tools, each with a host of its own that
+ *  `syncMainView` shows and hides. */
+const MAIN_VIEWS = ["overview", "ports", "dns", "hosts", "network", "tools", "windows-tools"];
+
 function switchMainView(view) {
-  if (!['overview', 'ports'].includes(view) || state.activeView === view) return;
+  if (!MAIN_VIEWS.includes(view) || state.activeView === view) return;
   state.activeView = view;
   state.selectedPath = null;
   state.settingsOpen = false;
   clearDetailData();
   syncSettingsButton();
   syncMainView();
-  window.devhqTrackPageView?.(`/${view}`);
+  window.devhqTrackPageView?.(
+    view === "tools" ? `/tools/${state.utilToolId}` : `/${view}`
+  );
   if (view === "ports" && !state.ports.length) loadPorts();
+  if (view === "dns") window.devhqDns?.opened();
+  if (view === "hosts") window.devhqHosts?.opened();
+  if (view === "network") window.devhqNetwork?.opened();
+  if (view === "tools") window.devhqUtilTools?.opened();
+  if (view === "windows-tools") window.devhqWindowsTools?.opened();
 }
+
+/** Open one of the shared util tools. They all share `#tools-host`; only the
+ *  catalog id changes, so switching Base64 → JWT does not rebuild the page. */
+function openUtilTool(id) {
+  const entry = window.devhqUtilTools?.byId?.(id);
+  if (!entry) return;
+  const same = state.activeView === "tools" && state.utilToolId === id;
+  state.utilToolId = id;
+  rememberToolUse(id);
+  window.devhqUtilTools?.open(id);
+  if (state.activeView !== "tools") {
+    switchMainView("tools");
+    return;
+  }
+  if (same) return;
+  window.devhqTrackPageView?.(`/tools/${id}`);
+  markDirty("tools", "toolbar", "pins");
+}
+
+function openWindowsTool(id) {
+  const entry = window.devhqWindowsTools?.catalog?.().find((tool) => tool.id === id);
+  if (!entry) return;
+  const same = state.activeView === "windows-tools" && state.windowsToolId === id;
+  state.windowsToolId = id;
+  rememberToolUse(id);
+  window.devhqWindowsTools?.open(id);
+  if (state.activeView !== "windows-tools") return switchMainView("windows-tools");
+  if (!same) window.devhqTrackPageView?.(`/tools/${id}`);
+  markDirty("toolbar", "pins");
+}
+
+// A narrower window wraps the shelf onto another row: what is under it has to
+// be told, and a resize is the one time nothing else re-renders the pins.
+window.addEventListener("resize", () => {
+  measurePinsPanel();
+  if (rootEditorOpen()) placeRootPop();
+});
+
+window.addEventListener("devhq:open-tool", (event) => {
+  const id = event.detail?.id;
+  if (id) openTool(id);
+});
 
 function syncMainView() {
-  if (!el["top-nav"]) return;
+  if (!el["ports-host"]) return;
   const ports = state.activeView === "ports";
-  for (const button of el["top-nav"].querySelectorAll("[data-main-view]")) {
-    const active = button.dataset.mainView === state.activeView;
-    button.classList.toggle("on", active);
-    button.setAttribute("aria-pressed", String(active));
-  }
-  for (const id of ["summary", "filters", "banner-host", "scroll"]) el[id].hidden = ports;
+  const overview = state.activeView === "overview";
+  for (const id of ["summary", "filters", "banner-host", "scroll"]) el[id].hidden = !overview;
   el["ports-host"].hidden = !ports;
+  el["dns-host"].hidden = state.activeView !== "dns";
+  el["hosts-host"].hidden = state.activeView !== "hosts";
+  if (el["network-host"]) el["network-host"].hidden = state.activeView !== "network";
+  if (el["tools-host"]) el["tools-host"].hidden = state.activeView !== "tools";
+  if (el["windows-tools-host"]) el["windows-tools-host"].hidden = state.activeView !== "windows-tools";
   el["search-input"].value = state.search;
   if (el["port-filter-input"]) el["port-filter-input"].value = state.portSearch;
-  el["search-input"].placeholder = "Search projects and commands...";
+  el["search-input"].placeholder = "Search projects, tools and commands...";
   closeSearchCommands();
-  markDirty(ports ? "ports" : "grid", "toolbar");
+  // The sampler only runs while the explorer is on screen - nothing else reads
+  // it, and it is the one thing in the app that ticks on its own.
+  setPortsLive(ports && state.portLive);
+  // The dock says which tool is on screen, and offers to keep an unpinned one.
+  markDirty(overview ? "grid" : state.activeView, "toolbar", "pins");
 }
 
-async function loadPorts() {
-  const token = ++state.portToken;
-  state.portsLoading = true;
-  state.portsError = "";
-  markDirty("ports");
-  beginWork("ports", "Reading processes and ports");
-  try {
-    const rows = await invoke("port_list");
-    if (token === state.portToken) state.ports = Array.isArray(rows) ? rows : [];
-  } catch (error) {
-    if (token === state.portToken) state.portsError = String(error);
-  } finally {
-    if (token === state.portToken) {
-      state.portsLoading = false;
-      markDirty("ports");
-      if (document.activeElement === el["search-input"]) renderSearchCommands();
-    }
-    endWork("ports");
-  }
-}
+/* --------------------------------------------------- what the explorer lists
 
-function visiblePorts() {
-  const words = state.portSearch.toLowerCase().trim().split(/\s+/).filter(Boolean);
-  const rows = state.ports.filter((row) => {
-    if (state.portLocalOnly && !isLocalDevelopmentProcess(row)) return false;
-    if (!words.length) return true;
-    const bindings = (row.ports || []).map((binding) => `${binding.port} ${binding.protocol} ${binding.address} ${binding.browserUrl || ""}`).join(" ");
-    const haystack = `${bindings} ${row.pid} ${row.process} ${row.cwd} ${row.executablePath} ${row.commandLine}`.toLowerCase();
-    return words.every((word) => haystack.includes(word));
-  });
-  const direction = state.processSortDirection;
-  const value = (row) => {
-    if (state.processSortKey === "ports") return Math.min(...(row.ports || []).map((binding) => binding.port), 65536);
-    if (state.processSortKey === "pid") return row.pid;
-    if (state.processSortKey === "path") return row.cwd || row.executablePath || "";
-    return portProcessName(row);
-  };
-  return rows.sort((a, b) => {
-    const av = value(a);
-    const bv = value(b);
-    const compared = typeof av === "number" ? av - bv : String(av).localeCompare(String(bv));
-    return compared * direction || a.pid - b.pid;
-  });
-}
+   The list is about ports, not processes: one row per port a process holds, so
+   ":3000 is taken" has a row of its own even when one process is holding four
+   of them. The servers you started keep a shelf of their own at the top, since
+   that is the question usually being asked; everything else is one list in
+   whatever order the sort asks for, so "what is eating the memory" is answered
+   by the row at the top of it and not by four separate shelves.
+*/
+
+/** Services worth telling apart from "the rest of Windows": you did not start
+ *  them this morning, but you do care that they are up. */
+const SERVICE_MARKERS = [
+  ["postgres", "PostgreSQL"], ["mysqld", "MySQL"], ["mariadb", "MariaDB"],
+  ["mongod", "MongoDB"], ["redis", "Redis"], ["sqlservr", "SQL Server"],
+  ["docker", "Docker"], ["com.docker", "Docker"], ["rabbitmq", "RabbitMQ"],
+  ["elasticsearch", "Elasticsearch"], ["opensearch", "OpenSearch"],
+  ["nginx", "nginx"], ["httpd", "Apache"], ["memcached", "Memcached"],
+  ["influxd", "InfluxDB"], ["clickhouse", "ClickHouse"], ["cassandra", "Cassandra"],
+  ["kafka", "Kafka"], ["zookeeper", "ZooKeeper"], ["minio", "MinIO"],
+  ["ollama", "Ollama"], ["azurite", "Azurite"], ["func.exe", "Azure Functions"],
+];
+
+/** The two shelves the list is drawn on. A row still carries the finer group it
+ *  was classified into — dev, svc, sys, off — which is what colours its rail. */
+const PORT_SHELVES = [
+  { key: "dev", title: "Your dev servers", tone: "green" },
+  { key: "rest", title: "Everything else", tone: "grey" },
+];
+
+const PORT_TABS = [
+  { key: "listen", label: "Ports" },
+  { key: "all", label: "All" },
+];
+
+/** The expensive end is the one being looked for, so a cost column starts at
+ *  the top of it. */
+const PORT_SORTS = [
+  { key: "cpu", label: "CPU", title: "CPU", first: -1 },
+  { key: "mem", label: "Mem", title: "memory", first: -1 },
+];
+
+/** How many readings a sparkline is drawn from, and how often they are taken. */
+const SAMPLE_POINTS = 40;
+const SAMPLE_MS = 2000;
+/** The full sweep is expensive — a CIM sweep, netstat and an HTTP probe per
+ *  local port — so it runs far more rarely than the sampler, which is a handful
+ *  of native calls. New servers appear within this; their cost does not. */
+const RELIST_MS = 30000;
 
 function portProcessName(row) {
   return row.process || row.executablePath?.split(/[\\/]/).pop() || "Unknown process";
@@ -1239,6 +1482,8 @@ function localServerLabel(row, port, project) {
   ];
   const commandMatch = known.find(([needle]) => haystack.includes(needle));
   if (commandMatch) return commandMatch[1];
+  const serviceMatch = SERVICE_MARKERS.find(([needle]) => haystack.includes(needle));
+  if (serviceMatch) return serviceMatch[1];
   const projectNames = (project?.tech || []).map((tech) => tech.name);
   const projectMatch = ["Next.js", "Vite", "ASP.NET", "PostgreSQL", "Redis", "Angular", "Django", "Flask", "FastAPI", "Spring Boot"]
     .find((name) => projectNames.includes(name));
@@ -1263,99 +1508,656 @@ function isLikelyDevelopmentProcess(row, project) {
   ].some((marker) => command.includes(marker));
 }
 
-function localDevelopment(rows) {
-  const entries = [];
-  for (const row of rows) {
-    const project = projectForProcess(row);
-    if (!isLikelyDevelopmentProcess(row, project)) continue;
-    for (const binding of row.ports || []) {
-      if (!binding.browserUrl) continue;
-      entries.push({ row, binding, project, label: localServerLabel(row, binding.port, project) });
-    }
-  }
-  return entries.sort((a, b) => Number(Boolean(b.project)) - Number(Boolean(a.project)) || a.binding.port - b.binding.port);
+/** Which shelf a row belongs on. A service is recognised by its image name, so
+ *  Postgres is a service whether or not it happens to sit inside a project
+ *  folder; anything else that looks like something you started is a dev server. */
+function portGroup(row, project) {
+  const haystack = `${row.process} ${row.executablePath}`.toLowerCase();
+  if (SERVICE_MARKERS.some(([needle]) => haystack.includes(needle))) return "svc";
+  if (isLikelyDevelopmentProcess(row, project)) return "dev";
+  return "sys";
 }
 
-function isLocalDevelopmentProcess(row) {
-  return localDevelopment([row]).length > 0;
+// Deriving the rows walks every process on the machine, and the sampler asks
+// for them twice a second. They only change when the sweep brings back a new
+// table, so they are worked out once per table and kept.
+let portEntryCache = { source: null, projects: null, listening: [], portless: [] };
+
+function portCache() {
+  // A scan landing after the sweep is what ties rows to projects, so the
+  // project list is part of what the rows were derived from.
+  if (portEntryCache.source !== state.ports || portEntryCache.projects !== state.projects) {
+    portEntryCache = {
+      source: state.ports, projects: state.projects,
+      listening: buildPortEntries(), portless: buildPortlessEntries(),
+    };
+  }
+  return portEntryCache;
 }
+
+function portEntries() {
+  return portCache().listening;
+}
+
+function portlessEntries() {
+  return portCache().portless;
+}
+
+/** Every listening socket as its own row. The same port on TCP and UDP is one
+ *  row carrying both protocols — it is one port either way. */
+function buildPortEntries() {
+  const entries = [];
+  for (const row of state.ports) {
+    const project = projectForProcess(row);
+    const group = portGroup(row, project);
+    const byPort = new Map();
+    for (const binding of row.ports || []) {
+      const existing = byPort.get(binding.port);
+      if (existing) {
+        if (!existing.protocols.includes(binding.protocol)) existing.protocols.push(binding.protocol);
+        existing.browserUrl = existing.browserUrl || binding.browserUrl;
+        existing.httpStatus = existing.httpStatus || binding.httpStatus;
+        continue;
+      }
+      byPort.set(binding.port, {
+        key: `${row.pid}:${binding.port}`,
+        row, project, group,
+        pid: row.pid,
+        port: binding.port,
+        protocols: [binding.protocol],
+        address: binding.address,
+        browserUrl: binding.browserUrl || null,
+        httpStatus: binding.httpStatus || 0,
+        label: localServerLabel(row, binding.port, project),
+      });
+    }
+    entries.push(...byPort.values());
+  }
+  return entries.sort((a, b) => a.port - b.port || a.pid - b.pid);
+}
+
+/** A process holding nothing, shown only on the All tab so the explorer still
+ *  answers "what is this thing running?" the way the old table did. */
+function buildPortlessEntries() {
+  return state.ports.filter((row) => !(row.ports || []).length).map((row) => {
+    const project = projectForProcess(row);
+    return {
+      key: `${row.pid}:none`, row, project, group: "off",
+      pid: row.pid, port: 0, protocols: [], address: "",
+      browserUrl: null, httpStatus: 0,
+      label: portProcessName(row).replace(/\.exe$/i, ""),
+    };
+  }).sort((a, b) => a.label.localeCompare(b.label) || a.pid - b.pid);
+}
+
+function portMatches(entry, words) {
+  if (!words.length) return true;
+  const haystack = `${entry.port || ""} ${entry.protocols.join(" ")} ${entry.address} ${entry.label} ${entry.project?.name || ""} ${entry.row.pid} ${entry.row.process} ${entry.row.cwd} ${entry.row.executablePath} ${entry.row.commandLine}`.toLowerCase();
+  return words.every((word) => haystack.includes(word));
+}
+
+/** What a row is worth under the current ordering. CPU and memory come from the
+ *  live readings, so a row that has not been measured yet has no value at all
+ *  rather than a zero that would claim it is idle. */
+function portSortValue(entry) {
+  const slot = state.portSamples.get(entry.pid);
+  if (state.portSortKey === "cpu") {
+    const cpu = slot?.cpu;
+    return cpu?.length ? cpu[cpu.length - 1] : null;
+  }
+  return slot?.memoryBytes || null;
+}
+
+/** Ordering runs across the whole list, not inside a shelf: asked for the
+ *  hungriest process, the answer has to be the hungriest one there is, wherever
+ *  it happens to live. Anything unmeasured sinks to the bottom whichever way
+ *  the arrow points, and the port number breaks ties so the order is never
+ *  arbitrary. */
+function sortPortRows(rows) {
+  const direction = state.portSortDirection;
+  return [...rows].sort((a, b) => {
+    const av = portSortValue(a);
+    const bv = portSortValue(b);
+    if (av === null || bv === null) {
+      if (av === bv) return a.port - b.port || a.pid - b.pid;
+      return av === null ? 1 : -1;
+    }
+    return (av - bv) * direction || a.port - b.port || a.pid - b.pid;
+  });
+}
+
+/** The rows the current tab and filter leave standing. One shelf survives as a
+ *  shelf — the servers you started, which are the ones usually being looked for
+ *  and are worth keeping in reach at the top. Everything else is a single list
+ *  in whatever order the sort asks for, so the top of it really is the most
+ *  expensive thing on the machine. */
+function visiblePortGroups() {
+  const words = state.portSearch.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  const all = state.portTab === "all" ? [...portEntries(), ...portlessEntries()] : portEntries();
+  const kept = all.filter((entry) => portMatches(entry, words));
+  return PORT_SHELVES
+    .map((shelf) => ({
+      ...shelf,
+      rows: sortPortRows(kept.filter((entry) => (shelf.key === "dev") === (entry.group === "dev"))),
+    }))
+    .filter((shelf) => shelf.rows.length);
+}
+
+function portEntryByKey(key) {
+  if (!key) return null;
+  const all = [...portEntries(), ...portlessEntries()];
+  return all.find((entry) => entry.key === key) || null;
+}
+
+/** The row the detail pane describes. Falls back to the first thing on screen,
+ *  so the pane is never empty while the list has something in it. */
+function selectedPortEntry() {
+  const groups = visiblePortGroups();
+  const rows = groups.flatMap((group) => group.rows);
+  return rows.find((entry) => entry.key === state.portSelected) || portEntryByKey(state.portSelected) || rows[0] || null;
+}
+
+/* ------------------------------------------------------ the live readings */
+
+/** Whose cost is worth measuring: every row the list is currently showing, plus
+ *  whatever the detail pane is showing and its tree. The list is ordered by
+ *  those readings, so a row on screen that was never measured would sit at the
+ *  bottom for ever and make the ordering a lie. */
+function sampledPids() {
+  const pids = new Set(visiblePortGroups().flatMap((group) => group.rows).map((entry) => entry.pid));
+  const selected = selectedPortEntry();
+  if (selected) for (const node of processTree(selected.row)) pids.add(node.pid);
+  return [...pids].slice(0, 600);
+}
+
+function sampleSlot(pid) {
+  let slot = state.portSamples.get(pid);
+  if (!slot) {
+    slot = { cpu: [], mem: [], cpuSeconds: 0, at: 0, uptime: 0, memoryBytes: 0 };
+    state.portSamples.set(pid, slot);
+  }
+  return slot;
+}
+
+/** One reading turned into a point on each line. CPU only exists as a
+ *  difference between two readings, so the first one for a process draws
+ *  nothing — it is the baseline. */
+function recordSample(sample, at) {
+  const slot = sampleSlot(sample.pid);
+  const cores = navigator.hardwareConcurrency || 4;
+  const seconds = (at - slot.at) / 1000;
+  if (slot.at && seconds > 0.2) {
+    const busy = Math.max(0, sample.cpuSeconds - slot.cpuSeconds);
+    slot.cpu = [...slot.cpu, Math.min(100, (busy / seconds / cores) * 100)].slice(-SAMPLE_POINTS);
+    slot.mem = [...slot.mem, sample.memoryBytes / 1048576].slice(-SAMPLE_POINTS);
+  }
+  slot.cpuSeconds = sample.cpuSeconds;
+  slot.memoryBytes = sample.memoryBytes;
+  slot.uptime = sample.uptimeSeconds;
+  slot.at = at;
+}
+
+let portSampleInFlight = false;
+
+async function samplePorts() {
+  if (portSampleInFlight || state.activeView !== "ports") return;
+  const pids = sampledPids();
+  if (!pids.length) return;
+  portSampleInFlight = true;
+  try {
+    const samples = await invoke("port_sample", { pids });
+    const at = Date.now();
+    const alive = new Set();
+    for (const sample of samples || []) {
+      recordSample(sample, at);
+      alive.add(sample.pid);
+    }
+    // A process that stopped answering has gone; forget its history so a PID
+    // reused by something else does not inherit a stranger's graph.
+    const asked = new Set(pids);
+    for (const pid of [...state.portSamples.keys()]) {
+      // Also drops anything that has fallen out of what is worth measuring, so
+      // a long session does not keep a graph per process it once looked at.
+      if (!asked.has(pid) || !alive.has(pid)) state.portSamples.delete(pid);
+    }
+    if (state.activeView === "ports") {
+      // Ordering by cost means the order is a live thing: a reading that moves
+      // a row has to move it. Nothing is rebuilt when the order came out the
+      // same, and nothing moves while the pointer is over the list - a row
+      // sliding out from under a click is worse than a stale position.
+      if (!portListHovered && portOrderChanged()) renderPortList();
+      patchPortMetrics();
+    }
+  } catch {
+    /* a sampling round that fails simply leaves the lines where they were */
+  } finally {
+    portSampleInFlight = false;
+  }
+}
+
+let portLiveTimer = 0;
+let portRelistTimer = 0;
+
+/** The sampler runs only while the explorer is on screen: off it, there is
+ *  nothing for the readings to draw on. */
+function setPortsLive(on) {
+  clearInterval(portLiveTimer);
+  clearInterval(portRelistTimer);
+  portLiveTimer = 0;
+  portRelistTimer = 0;
+  if (!on) return;
+  samplePorts();
+  portLiveTimer = setInterval(samplePorts, SAMPLE_MS);
+  portRelistTimer = setInterval(() => {
+    if (state.activeView === "ports" && !state.portsLoading && !state.portKill) loadPorts({ quiet: true });
+  }, RELIST_MS);
+}
+
+/* ---------------------------------------------------------- process trees */
+
+/** The chain the row hangs off: its ancestors above it, its descendants below,
+ *  each with the depth to indent it by. Built from the process table the
+ *  explorer already has, so it costs nothing extra. */
+function processTree(row) {
+  const byPid = new Map(state.ports.map((entry) => [entry.pid, entry]));
+  const chain = [];
+  let walker = row;
+  const seen = new Set();
+  while (walker && !seen.has(walker.pid) && chain.length < 8) {
+    seen.add(walker.pid);
+    chain.unshift(walker);
+    walker = walker.parentPid && walker.parentPid !== walker.pid ? byPid.get(walker.parentPid) : null;
+  }
+  const nodes = chain.map((entry, depth) => ({ row: entry, pid: entry.pid, depth, holder: entry.pid === row.pid }));
+  const children = new Map();
+  for (const entry of state.ports) {
+    if (!children.has(entry.parentPid)) children.set(entry.parentPid, []);
+    children.get(entry.parentPid).push(entry);
+  }
+  const descend = (parent, depth) => {
+    if (depth > chain.length + 3) return;
+    for (const child of (children.get(parent.pid) || []).sort((a, b) => a.pid - b.pid)) {
+      if (seen.has(child.pid)) continue;
+      seen.add(child.pid);
+      nodes.push({ row: child, pid: child.pid, depth, holder: false });
+      descend(child, depth + 1);
+    }
+  };
+  descend(row, chain.length);
+  return nodes.slice(0, 24);
+}
+
+/* ------------------------------------------------------------- formatting */
+
+function portUptimeText(pid) {
+  const seconds = state.portSamples.get(pid)?.uptime || 0;
+  if (!seconds) return "—";
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (hours >= 24) return `${Math.floor(hours / 24)}d ${String(hours % 24).padStart(2, "0")}h`;
+  if (hours) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  return `${minutes}m`;
+}
+
+function portCpuText(pid) {
+  const cpu = state.portSamples.get(pid)?.cpu;
+  return cpu?.length ? `${cpu[cpu.length - 1].toFixed(1)}%` : "—";
+}
+
+function portMemText(pid) {
+  const bytes = state.portSamples.get(pid)?.memoryBytes || 0;
+  return bytes ? `${Math.round(bytes / 1048576)} MB` : "—";
+}
+
+/** A polyline through the readings, scaled to whatever the tallest one is so a
+ *  quiet process still shows its shape rather than a flat line on the floor. */
+function sparkPoints(values, width, height, pad) {
+  if (!values?.length) return "";
+  const max = Math.max(...values, 0.1) * 1.15;
+  const step = width / Math.max(values.length - 1, 1);
+  return values
+    .map((value, index) => `${(index * step).toFixed(1)},${(height - pad - (value / max) * (height - pad * 2)).toFixed(1)}`)
+    .join(" ");
+}
+
+function portTone(entry) {
+  if (entry.httpStatus >= 500) return "amber";
+  if (entry.group === "dev") return "green";
+  if (entry.group === "svc") return "teal";
+  return "grey";
+}
+
+/* --------------------------------------------------------------- drawing */
 
 function renderPorts() {
-  const host = el["ports-content"];
-  if (!host || state.activeView !== "ports") return;
-  const rows = visiblePorts();
-  const body = rows.map((row) => {
-    const browserUrl = primaryBrowserUrl(row);
-    const matchedProject = projectForProcess(row);
-    const folderActionPath = matchedProject?.path || row.cwd;
-    const local = localDevelopment([row]);
-    const localLabels = [...new Set(local.map((entry) => `${entry.label} · HTTP ${entry.binding.httpStatus}`))].join(", ");
-    const project = local.find((entry) => entry.project)?.project;
-    const bindings = (row.ports || []).map((binding) => `<span class="port-binding" title="${esc(binding.protocol)} on ${esc(binding.address || "*")}${binding.httpStatus ? ` · HTTP ${binding.httpStatus}` : ""}"><strong>${binding.port}</strong><small>${esc(binding.protocol)}${binding.httpStatus ? ` · HTTP ${binding.httpStatus}` : ""}</small></span>`).join("");
-    return `<tr class="${local.length ? "local-process-row" : ""}">
-    <td class="port-number">${bindings || '<span class="port-none">—</span>'}</td>
-    <td><strong>${esc(portProcessName(row))}</strong>${local.length ? `<small class="local-process-label"><i></i>${esc(localLabels)}${project ? ` · ${esc(project.name)}` : ""}</small>` : ""}</td>
-    <td class="port-pid">${row.pid}</td>
-    <td class="port-path" title="${esc(row.cwd || row.executablePath)}"><div class="port-path-content">${matchedProject
-      ? `<button class="port-project-link" type="button" data-port-project="${esc(matchedProject.path)}" title="Open ${esc(matchedProject.name)} details"><span>${esc(row.cwd || matchedProject.path)}</span></button>`
-      : `<span class="port-path-text"><span>${esc(row.cwd || row.executablePath || "Unavailable")}</span></span>`}
-      ${folderActionPath ? `<span class="port-path-actions"><button type="button" data-port-path-copy="${esc(folderActionPath)}" title="Copy ${matchedProject ? "project folder" : "working folder"}">${icon("content_copy")}</button><button type="button" data-port-path-reveal="${esc(folderActionPath)}" title="Reveal ${matchedProject ? "project folder" : "working folder"} in Explorer">${icon("folder_open")}</button></span>` : ""}</div></td>
-    <td><div class="port-actions">
-      ${browserUrl ? `<button type="button" data-port-open="${esc(browserUrl)}" title="Open ${esc(browserUrl)}">${icon("open_in_new")}</button>
-      <button type="button" data-port-copy="${esc(browserUrl)}" title="Copy URL">${icon("content_copy")}</button>` : ""}
-      <button type="button" data-port-inspect="${row.pid}" title="Inspect process">${icon("info")}</button>
-      <button type="button" class="port-kill" data-port-kill="${row.pid}" title="Kill process">${icon("stop_circle")}</button>
-    </div></td>
-  </tr>`;
-  }).join("");
-  const inspected = state.portInspect === null ? null : state.ports.find((row) => row.pid === state.portInspect);
-  const confirming = state.portConfirm === null ? null : state.ports.find((row) => row.pid === state.portConfirm);
-  const totalBindings = state.ports.reduce((total, row) => total + (row.ports || []).length, 0);
-  const processHeader = (key, label) => {
-    const active = state.processSortKey === key;
-    const direction = active ? (state.processSortDirection === 1 ? "ascending" : "descending") : "none";
-    return `<th aria-sort="${direction}"><button class="ports-table-sort${active ? " on" : ""}" type="button" data-process-sort="${key}">${label}<span>${active ? (state.processSortDirection === 1 ? "▲" : "▼") : ""}</span></button></th>`;
-  };
-
-  const localButton = el["port-local-only"];
-  localButton.classList.toggle("on", state.portLocalOnly);
-  localButton.setAttribute("aria-pressed", String(state.portLocalOnly));
-  el["ports-count"].textContent = state.portsLoading ? "Reading processes and ports…" : `${rows.length} of ${state.ports.length} processes · ${totalBindings} port bindings`;
-  host.innerHTML = `${state.portsError ? `<div class="banner">${esc(state.portsError)}</div>` : ""}
-    <div class="ports-table-wrap"><table class="ports-table"><thead><tr>
-      ${processHeader("ports", "Ports")}${processHeader("process", "Process")}${processHeader("pid", "PID")}${processHeader("path", "Working folder")}<th>Actions</th>
-    </tr></thead><tbody>${body || `<tr><td colspan="5" class="ports-empty">${state.portsLoading ? "Reading processes and ports…" : "No processes match this filter."}</td></tr>`}</tbody></table></div>
-    ${inspected ? `<div class="port-overlay"><section class="port-dialog" role="dialog" aria-modal="true" aria-labelledby="port-inspect-title">
-      <header><h3 id="port-inspect-title">${esc(portProcessName(inspected))}</h3><button data-port-dialog-close>${icon("close")}</button></header>
-      <dl><dt>PID</dt><dd>${inspected.pid}</dd><dt>Ports</dt><dd>${esc(processPortText(inspected))}</dd>
-      <dt>Executable</dt><dd>${esc(inspected.executablePath || "Unavailable")}</dd><dt>Working folder</dt><dd>${esc(inspected.cwd || "Unavailable")}</dd>
-      <dt>Command line</dt><dd>${esc(inspected.commandLine || "Unavailable")}</dd></dl>
-    </section></div>` : ""}
-    ${confirming ? `<div class="port-overlay"><section class="port-dialog port-confirm" role="alertdialog" aria-modal="true" aria-labelledby="port-kill-title">
-      <header><h3 id="port-kill-title">Kill ${esc(portProcessName(confirming))}?</h3><button data-port-dialog-close>${icon("close")}</button></header>
-      <p>This will terminate PID ${confirming.pid}${confirming.ports?.length ? ` and close its ports: ${esc(processPortText(confirming))}` : ""}.</p>
-      <footer><button class="btn" data-port-dialog-close>Cancel</button><button class="btn danger" data-port-kill-confirm="${confirming.pid}">Kill process</button></footer>
-    </section></div>` : ""}`;
+  if (state.activeView !== "ports") return;
+  renderPortPins();
+  renderPortTabs();
+  renderPortList();
+  renderPortDetail();
+  renderPortDialogs();
+  patchPortMetrics();
 }
 
-async function killPortProcess(pid) {
-  const expected = state.ports.find((row) => row.pid === pid);
-  if (!expected) return;
-  state.portConfirm = null;
-  beginWork(`port-kill:${pid}`, `Terminating process ${pid}`);
+function renderPortTabs() {
+  const entries = portEntries();
+  const counts = { listen: entries.length, all: state.ports.length };
+  el["port-tabs"].innerHTML = PORT_TABS.map((tab) => `<button type="button" class="${state.portTab === tab.key ? "on" : ""}"
+    data-port-tab="${tab.key}" aria-pressed="${state.portTab === tab.key}">${tab.label}<span>${counts[tab.key]}</span></button>`).join("");
+  el["port-sort"].innerHTML = PORT_SORTS.map((sort) => {
+    const on = state.portSortKey === sort.key;
+    const arrow = state.portSortDirection === 1 ? "▲" : "▼";
+    return `<button type="button" class="${on ? "on" : ""}" data-port-sort="${sort.key}"
+      aria-pressed="${on}" title="${on ? `Sort by ${sort.title} the other way` : `Sort by ${sort.title}`}"
+      >${sort.label}<span>${on ? arrow : ""}</span></button>`;
+  }).join("");
+  el["port-live"].classList.toggle("off", !state.portLive);
+  el["port-live"].textContent = state.portLive ? `Live · ${SAMPLE_MS / 1000}s` : "Paused";
+}
+
+function renderPortPins() {
+  const entries = portEntries();
+  el["port-pins"].innerHTML = state.portPins.length
+    ? state.portPins.map((port) => {
+        const entry = entries.find((candidate) => candidate.port === port);
+        if (!entry) {
+          // A pinned port nothing is holding is worth saying out loud, but there
+          // is nothing behind it to open.
+          return `<div class="port-pin-tile free" title=":${port} is free">
+            <span class="port-pin-top"><i class="dot grey"></i><b>:${port}</b></span>
+            <span class="port-pin-sub"><span>Not listening</span></span></div>`;
+        }
+        return `<button type="button" class="port-pin-tile ${entry.key === state.portSelected ? "on" : ""}"
+          data-port-select="${esc(entry.key)}" title="${esc(entry.label)} · PID ${entry.pid}">
+          <span class="port-pin-top"><i class="dot ${portTone(entry)}"></i><b>:${entry.port}</b>
+            <svg class="port-spark" data-spark-pid="${entry.pid}" data-spark="pin" viewBox="0 0 64 18" preserveAspectRatio="none"><polyline points="" /></svg></span>
+          <span class="port-pin-sub"><span>${esc(entry.label)}</span><small>${esc(entry.project?.name || portProcessName(entry.row))}</small></span>
+        </button>`;
+      }).join("")
+    : `<div class="port-pins-empty">Nothing pinned yet</div>`;
+}
+
+function portRowHtml(entry) {
+  const tone = portTone(entry);
+  const pinned = state.portPins.includes(entry.port);
+  const badge = entry.httpStatus
+    ? `<span class="port-badge ${entry.httpStatus >= 500 ? "bad" : entry.httpStatus >= 400 ? "warn" : "ok"}">HTTP ${entry.httpStatus}</span>`
+    : "";
+  const sub = [portProcessName(entry.row), entry.pid, entry.project?.name].filter(Boolean).join(" · ");
+  return `<div class="port-row ${entry.key === state.portSelected ? "on" : ""}" data-port-select="${esc(entry.key)}"
+      data-port-row="${esc(entry.key)}" data-port-pid="${entry.pid}" role="button" tabindex="0">
+    <i class="port-rail ${tone}"></i>
+    <span class="port-num ${entry.group}">${entry.port ? `<b>${entry.port}</b><small>${esc(entry.protocols.join("/"))}</small>` : `<b class="none">—</b>`}</span>
+    <span class="port-what"><span class="port-what-top"><strong>${esc(entry.label)}</strong>${badge}</span>
+      <small>${esc(sub)}</small></span>
+    ${entry.port ? `<svg class="port-spark" data-spark-pid="${entry.pid}" data-spark="row" viewBox="0 0 64 20" preserveAspectRatio="none"><polyline points="" /></svg>
+    <span class="port-cpu" data-cpu-pid="${entry.pid}">—</span>` : `<span class="port-spark"></span><span class="port-cpu"></span>`}
+    ${entry.port ? `<button type="button" class="port-pin ${pinned ? "on" : ""}" data-port-pin="${entry.port}"
+      title="${pinned ? "Unpin" : "Pin"} :${entry.port}">${icon("push_pin")}</button>` : `<span class="port-pin"></span>`}
+  </div>`;
+}
+
+/** Whether the pointer is somewhere in the list, and what order the list was
+ *  last drawn in — together they decide whether a live re-sort is allowed to
+ *  move anything. */
+let portListHovered = false;
+let portDrawnOrder = "";
+
+function portOrderSignature(groups) {
+  return groups.flatMap((group) => group.rows.map((entry) => entry.key)).join("|");
+}
+
+function portOrderChanged() {
+  return portOrderSignature(visiblePortGroups()) !== portDrawnOrder;
+}
+
+function renderPortList() {
+  const groups = visiblePortGroups();
+  const host = el["ports-list"];
+  portDrawnOrder = portOrderSignature(groups);
+  // The list is rebuilt whenever a sweep lands, which is every half minute even
+  // when nothing about it changed. Putting the scroll back means a list being
+  // read does not jump to the top under the reader.
+  const scrolled = host.scrollTop;
+  if (!groups.length) {
+    host.innerHTML = `<div class="ports-empty">${state.portsLoading ? "Reading processes and ports…" : "Nothing matches this filter."}</div>`;
+    return;
+  }
+  host.innerHTML = groups.map((group) => `<section class="port-group">
+    <header class="port-group-head"><i class="dot ${group.tone}"></i>${esc(group.title)}<span>${group.rows.length}</span></header>
+    ${group.rows.map(portRowHtml).join("")}
+  </section>`).join("");
+  host.scrollTop = scrolled;
+}
+
+function portFactsHtml(entry) {
+  const facts = [
+    ["Local URL", entry.browserUrl ? `<a href="#open" data-port-open="${esc(entry.browserUrl)}">${esc(entry.browserUrl)}</a>` : "—"],
+    ["Listening on", entry.port ? `${esc(entry.address || "*")}:${entry.port} (${esc(entry.protocols.join(", "))})` : "Nothing"],
+    ["Executable", esc(entry.row.executablePath || "Unavailable")],
+    ["Working folder", esc(entry.row.cwd || "Unavailable")],
+    ["Command line", esc(entry.row.commandLine || "Unavailable")],
+  ];
+  return facts.map(([key, value]) => `<div class="port-fact"><dt>${key}</dt><dd>${value}</dd></div>`).join("");
+}
+
+function renderPortDetail() {
+  const host = el["ports-detail"];
+  const body = host.querySelector(".port-detail-body");
+  const scrolled = body ? body.scrollTop : 0;
+  const wasKey = state.portSelected;
+  const entry = selectedPortEntry();
+  if (!entry) {
+    host.innerHTML = `<div class="ports-empty">${state.portsLoading ? "Reading processes and ports…" : "Select a port to see what is holding it."}</div>`;
+    return;
+  }
+  state.portSelected = entry.key;
+  const tone = portTone(entry);
+  const pinned = state.portPins.includes(entry.port);
+  const restarting = state.portRestarting === entry.pid;
+  const runnable = entry.project?.runCmd;
+  const badge = entry.httpStatus
+    ? `<span class="port-badge ${entry.httpStatus >= 500 ? "bad" : entry.httpStatus >= 400 ? "warn" : "ok"}">HTTP ${entry.httpStatus}${entry.httpStatus < 400 ? " · healthy" : ""}</span>`
+    : `<span class="port-badge">${entry.port ? "Listening" : "No ports"}</span>`;
+  const tree = processTree(entry.row);
+  host.innerHTML = `
+    <header class="port-detail-head">
+      <span class="port-plate ${tone}">${entry.port ? `<b>${entry.port}</b><small>${esc(entry.protocols.join("/"))}</small>` : `<b class="none">—</b>`}</span>
+      <span class="port-detail-title">
+        <span class="port-detail-name"><h2>${esc(entry.label)}</h2>${badge}</span>
+        <span class="port-detail-meta"><span>${esc(portProcessName(entry.row))}</span><i>·</i><span>PID ${entry.pid}</span><i>·</i>
+          <span data-uptime-pid="${entry.pid}">up ${esc(portUptimeText(entry.pid))}</span>${entry.port ? `<i>·</i><span>${esc(entry.address || "*")}:${entry.port}</span>` : ""}</span>
+        ${entry.project ? `<span class="port-detail-project">${icon("folder_code")}
+          <button type="button" data-port-project="${esc(entry.project.path)}">${esc(entry.project.name)}</button>
+          <small>${esc(entry.project.git?.branch || "")}</small></span>` : ""}
+      </span>
+      ${entry.port ? `<button type="button" class="btn port-pin-btn ${pinned ? "on" : ""}" data-port-pin="${entry.port}">${icon("push_pin")}${pinned ? "Pinned" : "Pin"}</button>` : ""}
+    </header>
+    <div class="port-detail-actions">
+      ${entry.browserUrl ? `<button type="button" class="btn go" data-port-open="${esc(entry.browserUrl)}">${icon("open_in_new")}Open</button>
+        <button type="button" class="btn" data-port-copy="${esc(entry.browserUrl)}">${icon("content_copy")}Copy URL</button>` : ""}
+      ${runnable ? `<button type="button" class="btn ${restarting ? "busy" : ""}" data-port-restart="${esc(entry.key)}" ${restarting ? "disabled" : ""}>${icon(restarting ? "progress_activity" : "restart_alt")}${restarting ? "Restarting…" : "Restart"}</button>` : ""}
+      ${entry.project ? `<button type="button" class="btn" data-port-detail="${esc(entry.project.path)}">${icon("folder_code")}Project</button>` : ""}
+      ${entry.row.cwd ? `<button type="button" class="btn" data-port-terminal="${esc(entry.key)}">${icon("terminal")}Terminal</button>
+        <button type="button" class="btn" data-port-reveal="${esc(entry.project?.path || entry.row.cwd)}">${icon("folder_open")}Reveal</button>` : ""}
+      <span class="spacer"></span>
+      <button type="button" class="btn danger" data-port-kill="${esc(entry.key)}">${icon("stop_circle")}Kill</button>
+    </div>
+    <div class="port-detail-body">
+      <div class="port-charts">
+        <div class="port-chart cpu">
+          <div class="port-chart-head"><span>CPU</span><b data-cpu-pid="${entry.pid}">—</b><i data-peak="cpu" data-peak-pid="${entry.pid}"></i></div>
+          <svg viewBox="0 0 240 44" preserveAspectRatio="none" data-chart="cpu" data-chart-pid="${entry.pid}">
+            <polyline class="area" points="" /><polyline class="line" points="" /></svg>
+        </div>
+        <div class="port-chart mem">
+          <div class="port-chart-head"><span>Memory</span><b data-mem-pid="${entry.pid}">—</b><i data-peak="mem" data-peak-pid="${entry.pid}"></i></div>
+          <svg viewBox="0 0 240 44" preserveAspectRatio="none" data-chart="mem" data-chart-pid="${entry.pid}">
+            <polyline class="area" points="" /><polyline class="line" points="" /></svg>
+        </div>
+      </div>
+      <section class="port-tree">
+        <header>${icon("account_tree")}<span>Process tree</span><small>${tree.length} process${tree.length === 1 ? "" : "es"}</small></header>
+        ${tree.map((node) => `<div class="port-tree-node ${node.holder ? "holder" : ""}">
+          <i style="width:${node.depth * 16}px"></i>
+          ${icon(node.holder ? "lan" : node.depth === 0 ? "desktop_windows" : "subdirectory_arrow_right")}
+          <b>${esc(portProcessName(node.row))}</b><span>${node.pid}</span>
+          <small>${esc(node.row.cwd || node.row.commandLine || "")}</small>
+          ${node.holder && entry.port ? `<em>HOLDS PORT</em>` : ""}
+        </div>`).join("")}
+      </section>
+      <dl class="port-facts">${portFactsHtml(entry)}</dl>
+    </div>`;
+  // Only worth putting back when it is the same row: a different port is a
+  // different page and starts at the top.
+  if (wasKey === entry.key) host.querySelector(".port-detail-body").scrollTop = scrolled;
+}
+
+function renderPortDialogs() {
+  const host = el["ports-dialogs"];
+  if (!state.portKill) return void (host.innerHTML = "");
+  const entry = portEntryByKey(state.portKill.key);
+  if (!entry) return void (host.innerHTML = "");
+  const tree = processTree(entry.row);
+  // Only what hangs below the row goes with it: the shells and supervisors
+  // above it in the tree are shown for context, never terminated.
+  const holderDepth = tree.find((node) => node.holder)?.depth ?? 0;
+  const below = tree.filter((node) => node.depth > holderDepth);
+  const count = state.portKill.tree ? below.length + 1 : 1;
+  host.innerHTML = `<div class="port-overlay"><section class="port-dialog port-confirm" role="alertdialog" aria-modal="true" aria-labelledby="port-kill-title">
+    <header>${icon("stop_circle")}<h3 id="port-kill-title">Kill ${esc(portProcessName(entry.row))}${entry.port ? ` on :${entry.port}` : ""}?</h3>
+      <button type="button" data-port-dialog-close>${icon("close")}</button></header>
+    <p>PID ${entry.pid} ${entry.port ? `is listening on ${esc(entry.address || "*")}:${entry.port}` : "holds no ports"}${entry.project ? ` for ${esc(entry.project.name)}` : ""}. Terminating it ${entry.port ? "closes that port immediately" : "stops it immediately"}.</p>
+    <button type="button" class="port-kill-tree ${state.portKill.tree ? "on" : ""}" data-port-kill-tree>
+      ${icon(state.portKill.tree ? "check_box" : "check_box_outline_blank")}
+      <span><strong>Kill the whole tree</strong><small>${below.length ? esc(below.map((node) => `${portProcessName(node.row)} ${node.pid}`).join("  →  ")) : "Nothing is running under it"}</small></span>
+    </button>
+    <footer><button type="button" class="btn" data-port-dialog-close>Cancel</button>
+      <button type="button" class="btn danger" data-port-kill-confirm="${esc(entry.key)}">Kill ${count} process${count === 1 ? "" : "es"}</button></footer>
+  </section></div>`;
+}
+
+/** The 2-second refresh. Only the numbers and the lines change, so only those
+ *  are touched — the list itself is never rebuilt under the pointer. */
+function patchPortMetrics() {
+  const host = el["ports-host"];
+  if (!host || host.hidden) return;
+  for (const svg of host.querySelectorAll("[data-spark-pid]")) {
+    const values = state.portSamples.get(Number(svg.dataset.sparkPid))?.cpu || [];
+    const height = svg.dataset.spark === "pin" ? 18 : 20;
+    svg.firstElementChild.setAttribute("points", sparkPoints(values.slice(-24), 64, height, 2));
+  }
+  for (const node of host.querySelectorAll("[data-cpu-pid]")) node.textContent = portCpuText(Number(node.dataset.cpuPid));
+  for (const node of host.querySelectorAll("[data-mem-pid]")) node.textContent = portMemText(Number(node.dataset.memPid));
+  for (const node of host.querySelectorAll("[data-uptime-pid]")) node.textContent = `up ${portUptimeText(Number(node.dataset.uptimePid))}`;
+  for (const node of host.querySelectorAll("[data-peak-pid]")) {
+    const slot = state.portSamples.get(Number(node.dataset.peakPid));
+    const values = (node.dataset.peak === "cpu" ? slot?.cpu : slot?.mem) || [];
+    node.textContent = values.length
+      ? `peak ${node.dataset.peak === "cpu" ? `${Math.max(...values).toFixed(1)}%` : `${Math.round(Math.max(...values))} MB`}`
+      : "";
+  }
+  for (const svg of host.querySelectorAll("[data-chart-pid]")) {
+    const slot = state.portSamples.get(Number(svg.dataset.chartPid));
+    const values = (svg.dataset.chart === "cpu" ? slot?.cpu : slot?.mem) || [];
+    const points = sparkPoints(values, 240, 44, 3);
+    svg.querySelector(".line").setAttribute("points", points);
+    svg.querySelector(".area").setAttribute("points", points ? `0,44 ${points} 240,44` : "");
+  }
+}
+
+/* --------------------------------------------------------------- actions */
+
+async function loadPorts(options = {}) {
+  const token = ++state.portToken;
+  state.portsLoading = !options.quiet;
+  state.portsError = "";
+  if (!options.quiet) markDirty("ports");
+  if (!options.quiet) beginWork("ports", "Reading processes and ports");
+  try {
+    const rows = await invoke("port_list");
+    if (token === state.portToken) state.ports = Array.isArray(rows) ? rows : [];
+  } catch (error) {
+    if (token === state.portToken) state.portsError = String(error);
+  } finally {
+    if (token === state.portToken) {
+      state.portsLoading = false;
+      markDirty("ports");
+      if (document.activeElement === el["search-input"]) renderSearchCommands();
+    }
+    if (!options.quiet) endWork("ports");
+  }
+  samplePorts();
+}
+
+function togglePortPin(port) {
+  state.portPins = state.portPins.includes(port)
+    ? state.portPins.filter((pinned) => pinned !== port)
+    : [...state.portPins, port].slice(-12);
+  savePrefs();
   markDirty("ports");
+}
+
+async function killPortProcess(key, tree) {
+  const entry = portEntryByKey(key);
+  if (!entry) return;
+  state.portKill = null;
+  markDirty("ports");
+  beginWork(`port-kill:${entry.pid}`, tree ? `Terminating ${portProcessName(entry.row)} and everything under it` : `Terminating process ${entry.pid}`);
   try {
     await invoke("port_kill", {
-      pid,
-      expectedExecutable: expected.executablePath || "",
-      expectedProcess: expected.process || "",
+      pid: entry.pid,
+      expectedExecutable: entry.row.executablePath || "",
+      expectedProcess: entry.row.process || "",
+      tree: Boolean(tree),
     });
-    await loadPorts();
+    state.portSamples.delete(entry.pid);
+    await loadPorts({ quiet: true });
   } catch (error) {
     state.portsError = String(error);
     markDirty("ports");
   } finally {
-    endWork(`port-kill:${pid}`);
+    endWork(`port-kill:${entry.pid}`);
+  }
+}
+
+/** The shell opens in the dock, not in a window of its own: the point of
+ *  landing in the folder a port is being served from is to type in it while
+ *  still looking at the port. A row outside any scanned project gets a session
+ *  named after its working folder, which is all `term_open` needs. */
+function openPortTerminal(key) {
+  const entry = portEntryByKey(key);
+  const folder = entry?.project?.path || entry?.row.cwd;
+  if (!folder) return;
+  const name = entry.project?.name || folder.split(/[\\/]/).filter(Boolean).pop() || portProcessName(entry.row);
+  window.openTerminal?.({ path: folder, name });
+}
+
+/** Stop it and start it again the way the project says it starts — which is why
+ *  this is offered only for a row that belongs to a project with a run command. */
+async function restartPortProcess(key) {
+  const entry = portEntryByKey(key);
+  const project = entry?.project;
+  if (!project?.runCmd) return;
+  state.portRestarting = entry.pid;
+  markDirty("ports");
+  beginWork(`port-restart:${entry.pid}`, `Restarting ${project.name}`);
+  try {
+    await invoke("port_kill", {
+      pid: entry.pid,
+      expectedExecutable: entry.row.executablePath || "",
+      expectedProcess: entry.row.process || "",
+      tree: true,
+    });
+    state.portSamples.delete(entry.pid);
+    window.openTerminal?.(project, { run: project.runCmd });
+    await loadPorts({ quiet: true });
+  } catch (error) {
+    state.portsError = String(error);
+  } finally {
+    state.portRestarting = 0;
+    endWork(`port-restart:${entry.pid}`);
+    markDirty("ports");
   }
 }
 
@@ -1439,7 +2241,8 @@ function currentPath() {
   if (changelogOpen()) return "/changelog";
   if (state.settingsOpen) return "/settings";
   if (state.selectedPath) return "/project";
-  return state.activeView === "ports" ? "/ports" : "/overview";
+  if (state.activeView === "tools") return `/tools/${state.utilToolId}`;
+  return `/${state.activeView}`;
 }
 
 function openChangelog() {
@@ -1608,11 +2411,307 @@ function renderTechMenu() {
   el["tech-menu-list"].querySelector(".tech-option.active")?.scrollIntoView({ block: "nearest" });
 }
 
+/* ------------------------------------------------------------------ tools
+
+   Nothing but the project overview has a permanent seat in this window. The
+   Process Explorer, and every big or small tool added beside it, is reached
+   by searching for it — and only keeps a seat once the user has pinned it to
+   the dock on the right of the status bar.
+
+   That keeps the top of the window from growing a tab per tool, and keeps
+   search as the single way to navigate: a tool nobody pins costs nothing but
+   a row in a list nobody has to read.
+
+   Adding a tool is one entry here. `open` puts it on screen, `active` says
+   whether it is the thing currently on screen, and the rest is what search
+   and the dock need to draw it. */
+
+const TOOLS = [
+  {
+    id: "ports",
+    name: "Process Explorer",
+    icon: "lan",
+    hint: "ports, PIDs, what is holding :3000, and kill",
+    /** Extra words the tool should answer to that its name does not contain. */
+    keywords: "processes ports pid sockets listening kill free port task manager",
+    open: () => switchMainView("ports"),
+    active: () => state.activeView === "ports",
+  },
+  {
+    id: "dns",
+    name: "DNS",
+    icon: "dns",
+    hint: "resolve a name, compare resolvers, see who really answers",
+    keywords: "dns resolve lookup nslookup dig domain name record a aaaa cname mx txt ns soa ptr reverse flush cache resolver nameserver ip address localhost",
+    open: () => switchMainView("dns"),
+    active: () => state.activeView === "dns",
+  },
+  {
+    id: "hosts",
+    name: "Hosts file",
+    icon: "edit_note",
+    hint: "point a name at your own machine — it beats every DNS server",
+    keywords: "hosts file etc drivers hosts entry mapping override 127.0.0.1 localhost loopback dev domain redirect block site admin elevate backup",
+    open: () => switchMainView("hosts"),
+    active: () => state.activeView === "hosts",
+  },
+  {
+    id: "network",
+    name: "Network",
+    icon: "network_check",
+    hint: "watch the packets crossing the wire, live",
+    keywords: "network packet capture sniffer pktmon wireshark pcap pcapng traffic tcp udp tls http dns quic icmp arp frames wire monitor throughput adapter nic port ip",
+    open: () => switchMainView("network"),
+    active: () => state.activeView === "network",
+  },
+  // Encode / hash / JWT / time / format tools: one shared host, many pins.
+  ...((window.devhqUtilTools?.catalog?.() || []).map((tool) => ({
+    id: tool.id,
+    name: tool.name,
+    icon: tool.icon,
+    hint: tool.hint,
+    keywords: tool.keywords,
+    open: () => openUtilTool(tool.id),
+    active: () => state.activeView === "tools" && state.utilToolId === tool.id,
+  }))),
+  ...((window.devhqWindowsTools?.catalog?.() || []).map((tool) => ({
+    id: tool.id,
+    name: tool.name,
+    icon: tool.icon,
+    hint: tool.hint,
+    keywords: tool.keywords,
+    open: () => openWindowsTool(tool.id),
+    active: () => state.activeView === "windows-tools" && state.windowsToolId === tool.id,
+  }))),
+];
+
+/** Destinations that are not tools: they answer to search the same way, but
+ *  they cannot be pinned. The overview is where the dock returns you to, and
+ *  settings is a panel over whatever is open rather than a place of its own. */
+const PLACES = [
+  {
+    id: "overview",
+    name: "Overview",
+    icon: "dashboard",
+    hint: "projects, git status and tech at a glance",
+    keywords: "overview projects home dashboard repos",
+    open: () => switchMainView("overview"),
+    active: () => state.activeView === "overview" && !state.settingsOpen,
+  },
+  {
+    id: "settings",
+    name: "Settings",
+    icon: "settings",
+    hint: "folders to scan, theme, language and the terminal",
+    keywords: "settings preferences options theme language folders",
+    open: () => { if (!state.settingsOpen) openSettings(); },
+    active: () => state.settingsOpen,
+  },
+];
+
+/** How many pins sit in the bar itself. The rest open upward under "more", so
+ *  pinning stays unlimited without the status bar ever growing. */
+const DOCK_PINS = 4;
+
+/** How many recently opened tools Ctrl+K keeps at the top of the list. */
+const TOOL_RECENT_MAX = 12;
+
+function toolById(id) {
+  return TOOLS.find((tool) => tool.id === id) || null;
+}
+
+/** The tool currently on screen, or null when the overview is. Only a tool can
+ *  be pinned from the header, and only a tool lights up its chip. */
+function activeTool() {
+  return TOOLS.find((tool) => tool.active()) || null;
+}
+
+function isToolPinned(id) {
+  return state.toolPins.includes(id);
+}
+
+/** Record that a tool or place was opened, so the next empty Ctrl+K leads with
+ *  it. Overview is home, not a destination worth promoting. */
+function rememberToolUse(id) {
+  if (!id || id === "overview") return;
+  if (!toolById(id) && !PLACES.some((place) => place.id === id)) return;
+  const next = [id, ...state.toolRecent.filter((entry) => entry !== id)].slice(0, TOOL_RECENT_MAX);
+  if (next.length === state.toolRecent.length && next.every((entry, index) => entry === state.toolRecent[index])) {
+    return;
+  }
+  state.toolRecent = next;
+  savePrefs();
+}
+
+/** New pins go on the end. Dragging a pin is the explicit way to change its
+ *  position and therefore the Ctrl+number shortcut attached to it. */
+function toggleToolPin(id) {
+  const tool = toolById(id);
+  if (!tool) return;
+  const pinned = isToolPinned(id);
+  state.toolPins = pinned
+    ? state.toolPins.filter((pin) => pin !== id)
+    : [...state.toolPins, id];
+  savePrefs();
+  beginWork("tool-pin", pinned ? `Unpinned ${tool.name}` : `Pinned ${tool.name}`,
+    pinned ? "gone from the status bar" : `status bar · Ctrl+${state.toolPins.length}`);
+  setTimeout(() => endWork("tool-pin"), 1600);
+  markDirty("pins");
+}
+
+/** Move a pin relative to another one. Its position is also its Ctrl+number,
+ *  so the new order is persisted and every place that shows shortcuts redraws. */
+function reorderToolPin(id, targetId, after = false) {
+  if (id === targetId || !isToolPinned(id) || !isToolPinned(targetId)) return;
+  const next = state.toolPins.filter((pin) => pin !== id);
+  const targetIndex = next.indexOf(targetId);
+  if (targetIndex < 0) return;
+  next.splice(targetIndex + (after ? 1 : 0), 0, id);
+  if (next.every((pin, index) => pin === state.toolPins[index])) return;
+  state.toolPins = next;
+  savePrefs();
+  const tool = toolById(id);
+  beginWork("tool-pin-order", `Moved ${tool?.name || "tool"}`, `pin ${next.indexOf(id) + 1}`);
+  setTimeout(() => endWork("tool-pin-order"), 1200);
+  markDirty("pins");
+}
+
+function moveToolPin(id, direction) {
+  const index = state.toolPins.indexOf(id);
+  const target = state.toolPins[index + direction];
+  if (!target) return;
+  reorderToolPin(id, target, direction > 0);
+}
+
+/** Taking a tool out of the bar while you are looking at it reads as closing
+ *  it - there is nothing else the cross on its chip could mean - so it does
+ *  both. The pin button in a tool's own header stays a pin and nothing more:
+ *  it has a close button of its own sitting next to it. */
+function unpinTool(id) {
+  if (!isToolPinned(id)) return;
+  const leaving = Boolean(activeTool()) && activeTool().id === id;
+  toggleToolPin(id);
+  if (leaving) openTool("overview");
+}
+
+function openTool(id) {
+  const target = toolById(id) || PLACES.find((place) => place.id === id);
+  if (!target) return;
+  closeToolPins();
+  rememberToolUse(id);
+  if (toolById(id) && isToolPopped(id)) {
+    focusToolPopout(id);
+    markDirty("pins");
+    return;
+  }
+  target.open();
+  markDirty("pins");
+}
+
+function isToolPopped(id) {
+  return state.toolPopouts.includes(id);
+}
+
+function rememberToolPopout(id, open) {
+  const next = open
+    ? [...state.toolPopouts.filter((pin) => pin !== id), id]
+    : state.toolPopouts.filter((pin) => pin !== id);
+  if (next.length === state.toolPopouts.length && next.every((pin, index) => pin === state.toolPopouts[index])) {
+    return;
+  }
+  state.toolPopouts = next;
+  savePrefs();
+  markDirty("pins");
+}
+
+/** Hand a tool to its own window the way a terminal tab pops out. The main
+ *  view lets go immediately; the window remounts the tool on its own. */
+async function popOutTool(id, screenX, screenY) {
+  const tool = toolById(id);
+  if (!tool) return;
+  if (isToolPopped(id)) {
+    await focusToolPopout(id);
+    return;
+  }
+  if (activeTool()?.id === id) openTool("overview");
+  rememberToolPopout(id, true);
+  const key = `tool-popout:${id}`;
+  beginWork(key, `Opening ${tool.name} in its own window`);
+  try {
+    await invoke("tool_popout", {
+      id,
+      title: tool.name,
+      theme: state.theme === "light" ? "light" : "dark",
+      x: Number.isFinite(screenX) ? screenX - 80 : null,
+      y: Number.isFinite(screenY) ? screenY - 18 : null,
+    });
+  } catch (error) {
+    rememberToolPopout(id, false);
+    beginWork("tool-popout-fail", `Could not pop ${tool.name} out`, String(error));
+    setTimeout(() => endWork("tool-popout-fail"), 4000);
+  } finally {
+    endWork(key);
+  }
+}
+
+async function focusToolPopout(id) {
+  try {
+    await invoke("tool_focus", { id });
+  } catch {
+    rememberToolPopout(id, false);
+    await popOutTool(id);
+  }
+}
+
+async function dockToolPopout(id) {
+  rememberToolPopout(id, false);
+  await invoke("tool_dock", { id }).catch(() => {});
+  const tool = toolById(id);
+  if (tool) {
+    tool.open();
+    markDirty("pins");
+  }
+}
+
+async function restoreToolPopouts() {
+  const ids = [...state.toolPopouts];
+  for (const id of ids) {
+    const tool = toolById(id);
+    if (!tool) {
+      rememberToolPopout(id, false);
+      continue;
+    }
+    try {
+      await invoke("tool_popout", {
+        id,
+        title: tool.name,
+        theme: state.theme === "light" ? "light" : "dark",
+        x: null,
+        y: null,
+      });
+    } catch {
+      rememberToolPopout(id, false);
+    }
+  }
+}
+
+function toolPinsOpen() {
+  return state.toolPinsOpen;
+}
+
+function closeToolPins() {
+  if (!state.toolPinsOpen) return;
+  state.toolPinsOpen = false;
+  markDirty("pins");
+}
+
 /* ------------------------------------------------------ search commands */
 
 /** The icon that stands for each kind of palette row. Every row carries one -
  *  a row without one reads as a hole in the list. */
 const COMMAND_KIND_ICONS = {
+  TOOL: "handyman",
+  GOTO: "arrow_forward",
   CMD: "bolt",
   KILL: "stop_circle",
   TERM: "code",
@@ -1624,6 +2723,19 @@ const COMMAND_KIND_ICONS = {
 
 function availableSearchCommands(query = "") {
   const commands = [
+    // Catalog order here is irrelevant: renderSearchCommands re-ranks by
+    // latest used, then how well the query matches the name.
+    ...TOOLS.map((tool) => ({
+      kind: "TOOL", label: tool.name, icon: tool.icon,
+      detail: isToolPinned(tool.id) ? `pin ${state.toolPins.indexOf(tool.id) + 1} · ${tool.hint}` : tool.hint,
+      // "tool" / "tools" are how you ask for the catalog, not a word any one
+      // tool's name has to carry.
+      keywords: `tool tools ${tool.keywords || ""}`, action: "tool", toolId: tool.id,
+    })),
+    ...PLACES.map((place) => ({
+      kind: "GOTO", label: place.name, icon: place.icon, detail: place.hint,
+      keywords: place.keywords, action: "tool", toolId: place.id,
+    })),
     { kind: "CMD", label: "Rescan projects", detail: "F5", action: "rescan" },
     { kind: "TERM", label: "Toggle terminal panel", detail: "Ctrl+`", action: "terminal-panel" },
     ...Object.entries(FILTERS).map(([key, filter]) => ({
@@ -1668,6 +2780,64 @@ function availableSearchCommands(query = "") {
   return commands;
 }
 
+/** Tools that always appear in an empty Ctrl+K list, after latest-used. Help
+ *  has to be reachable without already knowing its name. */
+const SEARCH_ALWAYS = new Set(["help"]);
+
+/** Empty Ctrl+K is latest-used, plus Help. Pins live on the status bar; typing
+ *  still finds every tool. */
+function searchCommandVisibleWhenEmpty(command) {
+  const id = command.toolId;
+  if (!id) return false;
+  if (command.kind !== "TOOL" && command.kind !== "GOTO") return false;
+  return state.toolRecent.includes(id) || SEARCH_ALWAYS.has(id);
+}
+
+/** How well a row matches what was typed. Name beats detail beats keywords, so
+ *  a stray keyword hit cannot outrank the tool you meant. Kind counts too:
+ *  typing "tool" is asking for the TOOL rows, not a substring in a path. */
+function searchCommandMatchScore(command, terms) {
+  if (!terms.length) return 0;
+  const label = command.label.toLowerCase();
+  const detail = (command.detail || "").toLowerCase();
+  const keywords = (command.keywords || "").toLowerCase();
+  const kind = (command.kind || "").toLowerCase();
+  let score = 0;
+  for (const term of terms) {
+    if (kind === term || (term === "tools" && kind === "tool")) score += 80;
+    else if (label === term) score += 100;
+    else if (label.startsWith(term)) score += 50;
+    else if (label.includes(term)) score += 30;
+    else if (detail.includes(term)) score += 10;
+    else if (keywords.includes(term)) score += 5;
+  }
+  return score;
+}
+
+/** Sort key: latest used first, then always-shown destinations (Help), then
+ *  match score. Pins do not reorder search. */
+function searchCommandRank(command) {
+  const id = command.toolId;
+  if (id) {
+    const recent = state.toolRecent.indexOf(id);
+    if (recent >= 0) return [0, recent];
+    if (SEARCH_ALWAYS.has(id)) return [1, 0];
+  }
+  return [2, 0];
+}
+
+function compareSearchCommands(a, b, terms) {
+  const ra = searchCommandRank(a);
+  const rb = searchCommandRank(b);
+  if (ra[0] !== rb[0]) return ra[0] - rb[0];
+  if (ra[1] !== rb[1]) return ra[1] - rb[1];
+  if (terms.length) {
+    const diff = searchCommandMatchScore(b, terms) - searchCommandMatchScore(a, terms);
+    if (diff) return diff;
+  }
+  return String(a.label).localeCompare(String(b.label));
+}
+
 /** What the search box is actually searching for. A leading ">" is the
  *  command prefix, not part of the words - it opens the palette and is
  *  otherwise ignored, so ">term" narrows the commands without emptying the
@@ -1676,7 +2846,14 @@ function searchQuery(value = el["search-input"]?.value || "") {
   return value.replace(/^>\s*/, "");
 }
 
-function openSearchCommands() {
+function openSearchCommands({ fresh = false } = {}) {
+  // Ctrl+K is a destination list, not a continuation of whatever was filtering
+  // the project grid — start empty so latest-used leads.
+  if (fresh && el["search-input"]) {
+    el["search-input"].value = "";
+    state.search = "";
+    markDirty("grid", "filters");
+  }
   el["search-input"]?.focus();
   el["search-input"]?.select();
   searchCommandIndex = 0;
@@ -1692,23 +2869,38 @@ function renderSearchCommands() {
   const killQuery = /\bkill\b/i.test(query);
   if (killQuery && !state.ports.length && !state.portsLoading && !state.portsError) loadPorts();
   const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  const browsing = terms.length === 0;
   searchCommands = availableSearchCommands(query)
     .filter((command) => {
-      const hay = `${command.kind} ${command.label} ${command.detail}`.toLowerCase();
+      if (browsing) return searchCommandVisibleWhenEmpty(command);
+      const hay = `${command.kind} ${command.label} ${command.detail} ${command.keywords || ""}`.toLowerCase();
       return terms.every((term) => hay.includes(term));
     })
+    .sort((a, b) => compareSearchCommands(a, b, terms))
     .slice(0, 60);
   searchCommandIndex = Math.min(searchCommandIndex, Math.max(0, searchCommands.length - 1));
   menu.innerHTML = searchCommands.length
-    ? searchCommands.map((command, index) => `<button class="search-command${
+    ? searchCommands.map((command, index) => {
+      // Only a tool can be pinned, and the pin sits on the row itself: finding
+      // a tool and keeping it are the same gesture, one key apart.
+      const pinnable = command.action === "tool" && Boolean(toolById(command.toolId));
+      const pinned = pinnable && isToolPinned(command.toolId);
+      return `<div class="search-row"><button class="search-command${
         index === searchCommandIndex ? " on" : ""
       }" data-command="${index}"><span class="command-kind kind-${command.kind.toLowerCase()}" title="${esc(
         command.kind
-      )}">${icon(COMMAND_KIND_ICONS[command.kind] || "chevron_right")}</span><span
+      )}">${icon(command.icon || COMMAND_KIND_ICONS[command.kind] || "chevron_right")}</span><span
         class="command-label">${esc(command.label)}</span><span class="command-detail">${esc(
         command.detail
-      )}</span></button>`).join("")
-    : `<div class="search-command-empty">${killQuery && state.portsLoading
+      )}</span></button>${pinnable ? `<button class="search-pin${pinned ? " on" : ""}" data-pin-tool="${esc(
+        command.toolId
+      )}" title="${pinned ? "Unpin from the status bar" : "Pin to the status bar"}" aria-pressed="${pinned}">${icon(
+        pinned ? "push_pin" : "add"
+      )}</button>` : `<span class="search-pin-slot"></span>`}</div>`;
+    }).join("")
+    : `<div class="search-command-empty">${browsing
+      ? "Type to find a tool"
+      : killQuery && state.portsLoading
       ? "Finding processes…"
       : killQuery && state.portsError
       ? `Could not read processes: ${esc(state.portsError)}`
@@ -1728,7 +2920,8 @@ function runSearchCommand(index) {
   state.search = "";
   el["search-input"].value = "";
   markDirty("grid", "filters");
-  if (command.action === "rescan") rescan();
+  if (command.action === "tool") openTool(command.toolId);
+  else if (command.action === "rescan") rescan();
   else if (command.action === "terminal-panel") openTerminalPanel();
   else if (command.action === "filter") {
     if (state.activeView !== "overview") switchMainView("overview");
@@ -1742,8 +2935,13 @@ function runSearchCommand(index) {
   else if (command.action === "pull") projectAction("pull", command.project);
   else if (command.action === "kill-process") {
     if (state.activeView !== "ports") switchMainView("ports");
-    state.portInspect = null;
-    state.portConfirm = command.process.pid;
+    // The palette names a process; the explorer talks in ports, so the row it
+    // opens is the first port that process holds - or the process itself when
+    // it holds none.
+    const port = (command.process.ports || [])[0];
+    const key = `:`;
+    state.portSelected = key;
+    state.portKill = { key, tree: true };
     markDirty("ports");
   }
 }
@@ -2416,6 +3614,14 @@ function flushRender() {
   if (regions.has("detail")) renderDetail();
   if (regions.has("settings")) renderSettings();
   if (regions.has("ports")) renderPorts();
+  if (regions.has("dns")) window.devhqDns?.render();
+  if (regions.has("hosts")) window.devhqHosts?.render();
+  if (regions.has("network")) window.devhqNetwork?.render();
+  if (regions.has("tools")) {
+    window.devhqUtilTools?.render();
+    syncToolHeads();
+  }
+  if (regions.has("pins")) renderPins();
 }
 
 /** The shell is built once. Inputs live for the lifetime of the window, so
@@ -2423,10 +3629,17 @@ function flushRender() {
 function mountShell() {
   document.getElementById("root").innerHTML = `
     <div class="titlebar">
+      <div class="loading" id="loadbar" hidden><i></i></div>
       <div class="drag">
         <div class="brand"><img src="devhq-icon.png" alt="" /><span>DevHQ</span>
           <span class="sub" id="brand-sub"></span></div>
       </div>
+      <div class="field search" id="search-box">${icon("search")}
+        <input id="search-input" spellcheck="false"
+               placeholder="Search projects, tools and commands..." />
+        <div class="search-menu" id="search-menu" hidden></div>
+      </div>
+      <div class="drag drag-fill"></div>
       <div class="win-btns">
         <button class="win-btn" id="toggle-theme" title="Use light mode" aria-label="Use light mode" aria-pressed="false">
           <svg class="win-icon theme-sun" viewBox="0 0 24 24" aria-hidden="true">
@@ -2442,19 +3655,6 @@ function mountShell() {
         <button class="win-btn" data-win="min">${icon("remove")}</button>
         <button class="win-btn" data-win="max">${icon("crop_square")}</button>
         <button class="win-btn close" data-win="close">${icon("close")}</button>
-      </div>
-    </div>
-
-    <div class="toolbar">
-      <div class="loading" id="loadbar" hidden><i></i></div>
-      <nav class="top-nav" id="top-nav" aria-label="Main views">
-        <button type="button" data-main-view="overview">${icon("dashboard")}Overview</button>
-        <button type="button" data-main-view="ports">${icon("lan")}Processes</button>
-      </nav>
-      <div class="field search" id="search-box">${icon("search")}
-        <input id="search-input" spellcheck="false"
-               placeholder="Search projects and commands..." />
-        <div class="search-menu" id="search-menu" hidden></div>
       </div>
     </div>
 
@@ -2504,15 +3704,49 @@ function mountShell() {
     <div id="banner-host"></div>
     <div class="scroll" id="scroll"><div class="grid" id="grid"></div></div>
     <main class="ports-page" id="ports-host" hidden>
-      <header class="ports-head">
-        <div><h2>Process &amp; Port Explorer</h2><p id="ports-count">Reading processes and ports…</p></div>
-        <button class="btn" type="button" data-ports-refresh>${icon("refresh")}Refresh</button>
+      <header class="tool-head">
+        <button class="btn back tool-back" type="button" data-open-tool="overview"
+                title="Back to the overview">${icon("arrow_back")}Back</button>
+        <span class="tool-plate">${icon("lan")}</span>
+        <span class="tool-title">
+          <strong>Process Explorer</strong>
+          <small>ports, PIDs, what is holding :3000, and kill</small>
+        </span>
+        ${window.devhqMaturity?.badge("ports") ?? ""}
+        <button class="tool-popout" type="button" data-popout-tool="ports"></button>
+        <button class="tool-pin" id="tool-pin-ports" type="button" data-pin-tool="ports"></button>
+        <button class="tool-close" type="button" data-open-tool="overview"
+                title="Back to the overview">${icon("close")}</button>
       </header>
-      <div class="ports-filter-row"><label class="field ports-filter" for="port-filter-input">${icon("filter_alt")}
-        <input id="port-filter-input" spellcheck="false" placeholder="Filter by port, process, PID, protocol or path..." />
-      </label><button class="btn port-local-only" id="port-local-only" type="button" aria-pressed="false"><span class="local-filter-dot"></span>Local development</button></div>
-      <div id="ports-content"></div>
+      <div class="port-pins-wrap">
+        <span class="port-pins-head">${icon("push_pin")}Pinned<i>·</i><small>click the pin on a port to keep it here</small></span>
+        <div class="port-pins" id="port-pins"></div>
+      </div>
+      <div class="ports-body">
+        <section class="ports-list-pane">
+          <div class="ports-list-head">
+            <label class="field ports-filter" for="port-filter-input">${icon("filter_alt")}
+              <input id="port-filter-input" spellcheck="false" placeholder="Port, process, PID or project..." />
+            </label>
+            <div class="ports-list-tools">
+              <div class="seg" id="port-tabs"></div>
+              <div class="seg seg-sort" id="port-sort"></div>
+              <button class="port-live" id="port-live" type="button" title="Pause the live readings"></button>
+              <button class="btn ports-refresh" type="button" data-ports-refresh title="Read the process table again">${icon("refresh")}</button>
+            </div>
+          </div>
+          <div class="ports-list" id="ports-list"></div>
+        </section>
+        <section class="ports-detail" id="ports-detail"></section>
+      </div>
+      <div id="ports-dialogs"></div>
     </main>
+    <main class="dns-page" id="dns-host" hidden></main>
+    <main class="hosts-page" id="hosts-host" hidden></main>
+    <main class="net-page" id="network-host" hidden></main>
+    <main class="tools-page" id="tools-host" hidden></main>
+    <main class="windows-tools-page" id="windows-tools-host" hidden></main>
+    <div class="pins-panel" id="pins-panel" hidden></div>
     <div class="statusbar">
       <div class="activity" id="activity"></div>
       <div class="status-version-wrap" id="status-version-wrap">
@@ -2524,6 +3758,10 @@ function mountShell() {
         <button class="status-btn status-orphan" id="status-orphan" title="Processes left running after terminal closure" aria-haspopup="dialog" aria-expanded="false">${icon("warning")}<span>Still running</span><b>0</b></button>
         <div class="orphan-pop" id="orphan-pop" role="dialog" aria-label="Processes still running" hidden></div>
       </div>
+      <div class="status-pins-wrap" id="status-pins-wrap">
+        <div class="status-pins" id="status-pins"></div>
+        <div class="pins-pop" id="pins-pop" role="dialog" aria-label="All pinned tools" hidden></div>
+      </div>
       <button class="status-btn" id="status-term" title="Open a terminal" aria-expanded="false">${icon(
         "terminal"
       )}<span class="label">Terminal</span><span class="term-count" hidden>0</span></button>
@@ -2534,17 +3772,45 @@ function mountShell() {
   `;
 
   for (const id of [
-    "brand-sub", "loadbar", "top-nav", "roots-btn", "roots-label", "roots-pop", "roots-list",
+    "brand-sub", "loadbar", "roots-btn", "roots-label", "roots-pop", "roots-list",
     "rescan", "search-input", "search-menu", "tech-picker", "tech-filter", "tech-filter-label",
     "tech-menu", "tech-menu-input", "tech-menu-list", "tech-clear", "sort-buttons", "view-buttons", "activity", "filters", "filter-chips",
-    "banner-host", "summary", "summary-stats", "scroll", "grid", "ports-host", "ports-count", "port-filter-input", "port-local-only", "ports-content", "detail-host", "settings-host", "open-settings", "toggle-theme",
+    "banner-host", "summary", "summary-stats", "scroll", "grid", "ports-host", "dns-host", "hosts-host", "network-host", "tools-host", "windows-tools-host", "port-filter-input", "port-pins", "port-tabs", "port-sort", "port-live", "ports-list", "ports-detail", "ports-dialogs", "detail-host", "settings-host", "open-settings", "toggle-theme",
     "status-term", "status-progress", "status-version", "changelog-pop",
+    "status-pins-wrap", "status-pins", "pins-pop", "pins-panel",
   ]) {
     el[id] = document.getElementById(id);
   }
 
+  // Tools that live in a file of their own build their own DOM, once, into the
+  // host the shell has just made for them - before anything is drawn, so the
+  // pin in their header is found by the same pass as every other one. A tool
+  // that throws while mounting must not leave the window buttons unwired.
+  try {
+    window.devhqDns?.mount(el["dns-host"]);
+  } catch (err) {
+    console.error("DNS tool failed to mount", err);
+  }
+  try {
+    window.devhqHosts?.mount(el["hosts-host"]);
+  } catch (err) {
+    console.error("Hosts file tool failed to mount", err);
+  }
+  try {
+    window.devhqNetwork?.mount(el["network-host"]);
+  } catch (err) {
+    console.error("Network tool failed to mount", err);
+  }
+  try {
+    window.devhqUtilTools?.mount(el["tools-host"]);
+    window.devhqWindowsTools?.mount(el["windows-tools-host"]);
+  } catch (err) {
+    console.error("Util tools failed to mount", err);
+  }
+
   el["search-input"].value = state.search;
   renderVersionButton();
+  renderPins();
   wireShell();
   applyTheme();
   syncSettingsButton();
@@ -2639,6 +3905,157 @@ function idleDetail() {
   if (running) parts.push(`${running} running`);
   if (state.scannedAt) parts.push(`scanned at ${new Date(state.scannedAt).toLocaleTimeString()}`);
   return parts.join(" · ");
+}
+
+/* --------------------------------------------------------------- the dock
+
+   Pins live in the status bar and nowhere else, so nothing in the window
+   competes with search as the way to get around. The bar carries the first
+   DOCK_PINS of them and pushes the rest into a panel that opens upward, which
+   is why pinning can stay unlimited without the bar ever growing.
+
+   A pin can be made in three places, and they are the three places you are
+   standing when you want one: beside the row in search, in the header of the
+   tool you are already looking at, and in the empty slot in the bar itself. */
+
+/** Chips are read at a glance, so a long tool name is cut rather than allowed
+ *  to push the terminal button off the end of the bar. */
+function shortToolName(name) {
+  return name.length > 16 ? `${name.slice(0, 15)}\u2026` : name;
+}
+
+function renderPins() {
+  const host = el["status-pins"];
+  if (!host) return;
+  const pins = state.toolPins.map(toolById).filter(Boolean);
+  const current = activeTool();
+  // On its own shelf the row wraps, so there is nothing to hold back: every
+  // pin is on screen and the overflow panel has no reason to exist.
+  const shown = state.pinsPanel ? pins : pins.slice(0, DOCK_PINS);
+  const overflow = pins.length - shown.length;
+  // A panel with nothing left to show closes itself rather than opening empty.
+  if (overflow <= 0) state.toolPinsOpen = false;
+
+  // The chip is the tool, and the cross on the end of it is the way to be rid
+  // of it. The shortcut number it used to carry now lives in the tooltip and in
+  // the all-pins panel, where there is room to say what a number is for.
+  const chips = shown.map((tool, index) => {
+    const here = Boolean(current) && current.id === tool.id;
+    const popped = isToolPopped(tool.id);
+    const off = here ? `Unpin and close ${esc(tool.name)}` : `Unpin ${esc(tool.name)}`;
+    // Only the first nine answer to a number, and a shelf holds far more than
+    // nine, so the tenth chip onwards says its name and nothing about a key.
+    const what = popped ? `${tool.name} — open in its own window` : tool.name;
+    const tip = index < 9 ? `${what}${popped ? " · " : " — "}Ctrl+${index + 1}` : what;
+    return `<span class="pin-chip${here ? " on" : ""}${popped ? " popped" : ""}" data-drag-pin="${esc(tool.id)}"><button class="pin-chip-go" type="button"
+      data-open-tool="${esc(tool.id)}" title="${esc(tip)}">${
+      icon(tool.icon)}<span>${esc(shortToolName(tool.name))}</span>${
+      popped ? icon("open_in_new") : ""}</button><button class="pin-chip-off"
+      type="button" data-unpin-tool="${esc(tool.id)}" title="${off}" aria-label="${off}">${
+      icon("close")}</button></span>`;
+  }).join("");
+
+  const more = overflow > 0
+    ? `<button class="pin-more${state.toolPinsOpen ? " on" : ""}" type="button" data-pins-more
+        aria-haspopup="dialog" aria-expanded="${state.toolPinsOpen}"
+        title="Every pinned tool">${icon("more_horiz")}${overflow} more</button>`
+    : "";
+
+  // The offer to keep what is on screen, made in the place the pin will land.
+  const offer = current && !isToolPinned(current.id)
+    ? `<button class="pin-add" type="button" data-pin-tool="${esc(current.id)}"
+        title="Keep ${esc(current.name)} in the status bar">${icon("add")}Pin ${esc(shortToolName(current.name))}</button>`
+    : "";
+
+  // With nothing pinned and no tool on screen the dock has nothing to say, so
+  // it says nothing: no chips, no standing invitation, not even a divider. It
+  // appears the moment there is a tool to put in it.
+  const dock = `${chips}${more}${offer}`;
+  host.innerHTML = dock;
+  el["status-pins-wrap"].hidden = !dock;
+  applyPinsPlacement(Boolean(dock));
+  renderPinsPop();
+  syncToolHeads();
+}
+
+/** The dock is one element wherever it lives: it is moved between the status
+ *  bar and the shelf rather than built twice, so dragging, the arrow keys and
+ *  every click on it keep working without a second set of handlers. */
+function applyPinsPlacement(any) {
+  const wrap = el["status-pins-wrap"];
+  const panel = el["pins-panel"];
+  if (!wrap || !panel) return;
+  const shelf = state.pinsPanel;
+  wrap.classList.toggle("in-panel", shelf);
+  const home = shelf ? panel : el["status-term"].parentNode;
+  if (wrap.parentNode !== home) {
+    if (shelf) panel.appendChild(wrap);
+    else el["status-term"].before(wrap);
+  }
+  panel.hidden = !shelf || !any;
+  measurePinsPanel();
+}
+
+/** Full-screen views sit above the status bar by a fixed offset, so the shelf
+ *  has to say how tall it grew - it wraps, and its height is not a constant. */
+function measurePinsPanel() {
+  const panel = el["pins-panel"];
+  const height = !panel || panel.hidden ? 0 : panel.offsetHeight;
+  document.documentElement.style.setProperty("--pins-h", `${height}px`);
+}
+
+function renderPinsPop() {
+  const pop = el["pins-pop"];
+  if (!pop) return;
+  const pins = state.toolPins.map(toolById).filter(Boolean);
+  const open = state.toolPinsOpen && pins.length > DOCK_PINS;
+  pop.hidden = !open;
+  // Only rebuilt while it is open, so a pin toggled elsewhere cannot redraw a
+  // list nobody is looking at.
+  if (!open) return;
+  const current = activeTool();
+  pop.innerHTML = `<header>${icon("push_pin")}<strong>All pins</strong><span>${
+    pins.length} pinned</span><button type="button" data-pins-close title="Close">${icon("close")}</button></header>
+    <div class="pins-list">${pins.map((tool, index) => `<div class="pin-row${
+      current && current.id === tool.id ? " on" : ""}${index < DOCK_PINS ? " in-bar" : ""}${
+      isToolPopped(tool.id) ? " popped" : ""}" data-drag-pin="${esc(tool.id)}">
+      <button type="button" class="pin-go" data-open-tool="${esc(tool.id)}">${icon(tool.icon)}<span><strong>${
+        esc(tool.name)}</strong><small>${esc(isToolPopped(tool.id) ? "open in its own window" : tool.hint)}</small></span><i>${
+        index < 9 ? `Ctrl+${index + 1}` : "\u2014"}</i></button>
+      <button type="button" class="pin-off" data-unpin-tool="${esc(tool.id)}" title="${
+        current && current.id === tool.id ? `Unpin and close ${esc(tool.name)}` : `Unpin ${esc(tool.name)}`
+      }">${icon("close")}</button>
+    </div>`).join("")}</div>
+    <footer>${icon("low_priority")}drag to reorder \u00b7 drag out to pop out \u00b7 first ${DOCK_PINS} sit in the bar</footer>`;
+}
+
+/** The pin button in a tool's own header says the same thing the dock does,
+ *  including the number the pin answers to once it has one. The pop-out button
+ *  beside it opens the tool in its own window, or focuses one that is already out. */
+function syncToolHeads() {
+  for (const button of document.querySelectorAll(".tool-pin[data-pin-tool]")) {
+    const tool = toolById(button.dataset.pinTool);
+    if (!tool) continue;
+    const pinned = isToolPinned(tool.id);
+    const index = state.toolPins.indexOf(tool.id);
+    button.classList.toggle("on", pinned);
+    button.setAttribute("aria-pressed", String(pinned));
+    button.title = pinned
+      ? `Unpin ${tool.name} from the status bar`
+      : `Keep ${tool.name} in the status bar`;
+    button.innerHTML = `${icon("push_pin")}${
+      pinned ? (index < 9 ? `Pinned \u00b7 Ctrl+${index + 1}` : "Pinned") : "Pin to dock"}`;
+  }
+  for (const button of document.querySelectorAll(".tool-popout[data-popout-tool]")) {
+    const tool = toolById(button.dataset.popoutTool);
+    if (!tool) continue;
+    const popped = isToolPopped(tool.id);
+    button.classList.toggle("on", popped);
+    button.title = popped
+      ? `Show ${tool.name} in its own window`
+      : `Open ${tool.name} in a new window`;
+    button.innerHTML = `${icon("open_in_new")}${popped ? "Show window" : "Pop out"}`;
+  }
 }
 
 function renderFilters() {
@@ -2818,6 +4235,10 @@ function renderSettings() {
             <span><strong>Compact tech in overview</strong><small>Show technologies in a single neutral line instead of colored tags.</small></span>
             <input class="setting-check" id="setting-compact-tech" type="checkbox" />
           </label>
+          <label class="settings-row" for="setting-pins-panel">
+            <span><strong>Pinned tools on their own shelf</strong><small>Give the pins a panel above the status bar instead of a few chips inside it. The row wraps, so every pin stays on screen however many you keep.</small></span>
+            <input class="setting-check" id="setting-pins-panel" type="checkbox" />
+          </label>
           <label class="settings-row" for="setting-analytics">
             <span><strong>Send anonymous usage data</strong><small>Let us know you're using DevHQ, via PageRain. It's a random number and the screen you opened - never your projects.</small>
               <button class="linklike" type="button" id="setting-analytics-source">Read the code that sends it</button>
@@ -2879,6 +4300,7 @@ function renderSettings() {
     button.setAttribute("aria-pressed", String(active));
   }
   host.querySelector("#setting-compact-tech").checked = state.compactTechOverview;
+  host.querySelector("#setting-pins-panel").checked = state.pinsPanel;
   host.querySelector("#setting-analytics").checked = state.analyticsChosen && state.analytics;
   const shellSetting = window.devhqTerminalSettings;
   const shellSelect = host.querySelector("#setting-terminal-shell");
@@ -3031,10 +4453,6 @@ function renderDiffSelection() {
 /** All handlers are bound once, on elements that live forever, or delegated
  *  from a container - so a redraw never has to rewire anything. */
 function wireShell() {
-  el["top-nav"].onclick = (e) => {
-    const button = e.target.closest("[data-main-view]");
-    if (button) switchMainView(button.dataset.mainView);
-  };
   el["open-settings"].onclick = openSettings;
   el["toggle-theme"].onclick = () => {
     state.theme = state.theme === "light" ? "dark" : "light";
@@ -3054,6 +4472,116 @@ function wireShell() {
       closeChangelog();
       el["status-version"].focus();
     }
+  };
+
+  let pinDragJustEnded = false;
+  const clearPinDropMarks = () => {
+    for (const node of el["status-pins-wrap"].querySelectorAll(".drop-before,.drop-after")) {
+      node.classList.remove("drop-before", "drop-after");
+    }
+  };
+  // Keep pin reordering inside the webview. Native HTML drag does not start
+  // reliably from the buttons inside a chip, while pointer capture gives the
+  // gesture one owner and matches terminal-tab reordering. Dragging a pin past
+  // the window edge pops the tool out the same way a terminal tab does.
+  el["status-pins-wrap"].onpointerdown = (down) => {
+    const pin = down.target.closest("[data-drag-pin]");
+    if (!pin || down.target.closest("[data-unpin-tool]") || down.button !== 0) return;
+    const id = pin.dataset.dragPin;
+    const startX = down.clientX;
+    const startY = down.clientY;
+    let dragging = false;
+    let target = null;
+    let after = false;
+    let ghost = null;
+    let nativePreview = false;
+    let outsideWindow = false;
+    const move = (e) => {
+      if (!dragging && Math.hypot(e.clientX - startX, e.clientY - startY) < 5) return;
+      if (!dragging) {
+        dragging = true;
+        pinDragJustEnded = true;
+        pin.classList.add("dragging");
+        pin.setPointerCapture(down.pointerId);
+        ghost = document.createElement("div");
+        ghost.className = "dock-tab-ghost pin-drag-ghost";
+        ghost.innerHTML = pin.querySelector(".pin-chip-go, .pin-go")?.innerHTML || pin.innerHTML;
+        document.body.appendChild(ghost);
+      }
+      e.preventDefault();
+      outsideWindow = e.clientX < 0 || e.clientX > window.innerWidth ||
+        e.clientY < 0 || e.clientY > window.innerHeight;
+      if (ghost) {
+        ghost.hidden = outsideWindow;
+        ghost.style.transform = `translate(${e.clientX + 12}px,${e.clientY + 12}px)`;
+      }
+      if (outsideWindow) {
+        const action = nativePreview ? "move" : "open";
+        nativePreview = true;
+        invoke("tool_drag_preview", {
+          action,
+          x: e.screenX + 12,
+          y: e.screenY + 12,
+        }).catch(() => {});
+      } else if (nativePreview) {
+        nativePreview = false;
+        invoke("tool_drag_preview", { action: "close", x: 0, y: 0 }).catch(() => {});
+      }
+      clearPinDropMarks();
+      target = outsideWindow
+        ? null
+        : document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-drag-pin]") || null;
+      if (!target || target.dataset.dragPin === id) { target = null; return; }
+      const rect = target.getBoundingClientRect();
+      after = target.classList.contains("pin-chip")
+        ? e.clientX > rect.left + rect.width / 2
+        : e.clientY > rect.top + rect.height / 2;
+      target.classList.add(after ? "drop-after" : "drop-before");
+    };
+    const finish = (e, cancelled = false) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      if (pin.hasPointerCapture(down.pointerId)) pin.releasePointerCapture(down.pointerId);
+      pin.classList.remove("dragging");
+      clearPinDropMarks();
+      ghost?.remove();
+      if (nativePreview) {
+        invoke("tool_drag_preview", { action: "close", x: 0, y: 0 }).catch(() => {});
+      }
+      if (dragging && !cancelled && outsideWindow && (e.screenX || e.screenY)) {
+        popOutTool(id, e.screenX, e.screenY);
+      } else if (dragging && !cancelled && target) {
+        reorderToolPin(id, target.dataset.dragPin, after);
+      }
+      if (dragging) setTimeout(() => { pinDragJustEnded = false; }, 0);
+    };
+    const up = (e) => finish(e);
+    const cancel = (e) => finish(e, true);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+  };
+  el["status-pins-wrap"].onkeydown = (e) => {
+    if (!e.altKey || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+    const pin = e.target.closest("[data-drag-pin]");
+    if (!pin) return;
+    e.preventDefault();
+    moveToolPin(pin.dataset.dragPin, ["ArrowLeft", "ArrowUp"].includes(e.key) ? -1 : 1);
+  };
+  el["status-pins-wrap"].onclick = (e) => {
+    if (pinDragJustEnded) return;
+    const unpin = e.target.closest("[data-unpin-tool]");
+    if (unpin) return unpinTool(unpin.dataset.unpinTool);
+    const pin = e.target.closest("[data-pin-tool]");
+    if (pin) return toggleToolPin(pin.dataset.pinTool);
+    const go = e.target.closest("[data-open-tool]");
+    if (go) return openTool(go.dataset.openTool);
+    if (e.target.closest("[data-pins-more]")) {
+      state.toolPinsOpen = !state.toolPinsOpen;
+      return markDirty("pins");
+    }
+    if (e.target.closest("[data-pins-close]")) return closeToolPins();
   };
 
   el["status-term"].onclick = () => window.openTerminalPanel?.();
@@ -3198,6 +4726,7 @@ function wireShell() {
     if (changelogOpen() && !e.target.closest("#status-version-wrap")) closeChangelog();
     if (!e.target.closest("#search-box")) closeSearchCommands();
     if (techMenuOpen() && !e.target.closest("#tech-picker")) closeTechMenu();
+    if (toolPinsOpen() && !e.target.closest("#status-pins-wrap")) closeToolPins();
     if (!e.target.closest("#table-column-picker")) {
       const menu = document.getElementById("table-column-picker-menu");
       const button = document.getElementById("table-column-picker-button");
@@ -3234,53 +4763,68 @@ function wireShell() {
   };
   el["search-menu"].onpointerdown = (e) => e.preventDefault();
   el["search-menu"].onclick = (e) => {
+    const pin = e.target.closest("[data-pin-tool]");
+    if (pin) {
+      // Pinning is not picking: the list stays open and simply redraws with the
+      // row now carrying its pin number.
+      toggleToolPin(pin.dataset.pinTool);
+      return renderSearchCommands();
+    }
     const command = e.target.closest("[data-command]");
     if (command) runSearchCommand(Number(command.dataset.command));
   };
 
   el["ports-host"].onclick = (e) => {
+    const popTool = e.target.closest("[data-popout-tool]");
+    if (popTool) return popOutTool(popTool.dataset.popoutTool);
+    const pinTool = e.target.closest("[data-pin-tool]");
+    if (pinTool) return toggleToolPin(pinTool.dataset.pinTool);
+    const goTool = e.target.closest("[data-open-tool]");
+    if (goTool) return openTool(goTool.dataset.openTool);
     if (e.target.closest("[data-ports-refresh]")) return loadPorts();
-    const copyPath = e.target.closest("[data-port-path-copy]");
-    if (copyPath) {
-      navigator.clipboard?.writeText(copyPath.dataset.portPathCopy).catch(() => {});
-      copyPath.innerHTML = icon("check");
-      copyPath.classList.add("copied");
-      beginWork("port-path-copy", "Copied working folder");
-      setTimeout(() => {
-        if (copyPath.isConnected) {
-          copyPath.innerHTML = icon("content_copy");
-          copyPath.classList.remove("copied");
-        }
-        endWork("port-path-copy");
-      }, 1400);
-      return;
-    }
-    const revealPath = e.target.closest("[data-port-path-reveal]");
-    if (revealPath) {
-      return trackWork("port-path-reveal", "Opening working folder", invoke("open_in", {
-        path: revealPath.dataset.portPathReveal,
-        target: "explorer",
-      })).catch(() => {});
-    }
-    const projectLink = e.target.closest("[data-port-project]");
+    // Both the name under the title and the Project button lead to the same
+    // place: the scanned project this port belongs to.
+    const projectLink = e.target.closest("[data-port-project], [data-port-detail]");
     if (projectLink) {
-      const project = state.byPath.get(projectLink.dataset.portProject);
+      const project = state.byPath.get(projectLink.dataset.portProject || projectLink.dataset.portDetail);
       if (!project) return;
       switchMainView("overview");
       return openDetail(project);
     }
-    const sort = e.target.closest("[data-process-sort]");
+    const tab = e.target.closest("[data-port-tab]");
+    if (tab) {
+      state.portTab = tab.dataset.portTab;
+      savePrefs();
+      return markDirty("ports");
+    }
+    const sort = e.target.closest("[data-port-sort]");
     if (sort) {
-      const key = sort.dataset.processSort;
-      if (state.processSortKey === key) state.processSortDirection *= -1;
-      else {
-        state.processSortKey = key;
-        state.processSortDirection = 1;
-      }
+      const key = sort.dataset.portSort;
+      // Clicking the column already sorted flips it; a new column starts the
+      // way that column is worth reading.
+      state.portSortDirection = state.portSortKey === key
+        ? -state.portSortDirection
+        : PORT_SORTS.find((candidate) => candidate.key === key).first;
+      state.portSortKey = key;
+      savePrefs();
+      return markDirty("ports");
+    }
+    const pin = e.target.closest("[data-port-pin]");
+    if (pin) {
+      e.stopPropagation();
+      return togglePortPin(Number(pin.dataset.portPin));
+    }
+    const select = e.target.closest("[data-port-select]");
+    if (select) {
+      state.portSelected = select.dataset.portSelect;
+      samplePorts();
       return markDirty("ports");
     }
     const open = e.target.closest("[data-port-open]");
-    if (open) return openUrl(open.dataset.portOpen);
+    if (open) {
+      e.preventDefault();
+      return openUrl(open.dataset.portOpen);
+    }
     const copy = e.target.closest("[data-port-copy]");
     if (copy) {
       navigator.clipboard?.writeText(copy.dataset.portCopy).catch(() => {});
@@ -3288,32 +4832,46 @@ function wireShell() {
       setTimeout(() => endWork("port-copy"), 1400);
       return;
     }
-    const inspect = e.target.closest("[data-port-inspect]");
-    if (inspect) {
-      state.portInspect = Number(inspect.dataset.portInspect);
-      state.portConfirm = null;
-      return markDirty("ports");
-    }
+    const terminal = e.target.closest("[data-port-terminal]");
+    if (terminal) return openPortTerminal(terminal.dataset.portTerminal);
+    const reveal = e.target.closest("[data-port-reveal]");
+    if (reveal) return openIn(reveal.dataset.portReveal, "explorer");
+    const restart = e.target.closest("[data-port-restart]");
+    if (restart) return restartPortProcess(restart.dataset.portRestart);
     const kill = e.target.closest("[data-port-kill]");
     if (kill) {
-      state.portConfirm = Number(kill.dataset.portKill);
-      state.portInspect = null;
+      state.portKill = { key: kill.dataset.portKill, tree: true };
+      return markDirty("ports");
+    }
+    if (e.target.closest("[data-port-kill-tree]")) {
+      state.portKill = { ...state.portKill, tree: !state.portKill.tree };
       return markDirty("ports");
     }
     const confirm = e.target.closest("[data-port-kill-confirm]");
-    if (confirm) return killPortProcess(Number(confirm.dataset.portKillConfirm));
+    if (confirm) return killPortProcess(confirm.dataset.portKillConfirm, state.portKill?.tree);
     if (e.target.closest("[data-port-dialog-close]") || e.target.classList.contains("port-overlay")) {
-      state.portInspect = null;
-      state.portConfirm = null;
+      state.portKill = null;
       markDirty("ports");
     }
   };
+  // A row is a button as far as the keyboard is concerned.
+  el["ports-host"].onkeydown = (e) => {
+    const row = e.target.closest?.("[data-port-select]");
+    if (row && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      state.portSelected = row.dataset.portSelect;
+      markDirty("ports");
+    }
+  };
+  el["ports-list"].onpointerenter = () => { portListHovered = true; };
+  el["ports-list"].onpointerleave = () => { portListHovered = false; };
   el["port-filter-input"].oninput = (e) => {
     state.portSearch = e.target.value;
     markDirty("ports");
   };
-  el["port-local-only"].onclick = () => {
-    state.portLocalOnly = !state.portLocalOnly;
+  el["port-live"].onclick = () => {
+    state.portLive = !state.portLive;
+    setPortsLive(state.portLive && state.activeView === "ports");
     markDirty("ports");
   };
 
@@ -3334,9 +4892,21 @@ function wireShell() {
     const btn = e.target.closest("[data-win]");
     if (!btn) return;
     if (btn.dataset.win === "min") appWindow.minimize();
-    else if (btn.dataset.win === "max") appWindow.toggleMaximize();
-    else appWindow.destroy();
+    else if (btn.dataset.win === "max") {
+      appWindow.toggleMaximize().then(() => syncMaximizeButton()).catch(() => {});
+    } else appWindow.destroy();
   };
+
+  const maxButton = document.querySelector('.titlebar [data-win="max"]');
+  async function syncMaximizeButton() {
+    if (!maxButton) return;
+    const maxed = await appWindow.isMaximized().catch(() => false);
+    maxButton.innerHTML = icon(maxed ? "filter_none" : "crop_square");
+    maxButton.title = maxed ? "Restore" : "Maximize";
+    maxButton.setAttribute("aria-label", maxed ? "Restore" : "Maximize");
+  }
+  syncMaximizeButton();
+  appWindow.onResized(() => syncMaximizeButton());
 
   el.grid.onclick = (e) => {
     if (tableResizeClickSuppressed || e.target.closest("[data-resize-column]")) return;
@@ -3468,6 +5038,11 @@ function wireShell() {
       state.compactTechOverview = e.target.checked;
       savePrefs();
       markDirty("grid");
+    } else if (e.target.id === "setting-pins-panel") {
+      state.pinsPanel = e.target.checked;
+      closeToolPins();
+      savePrefs();
+      markDirty("pins");
     } else if (e.target.id === "setting-analytics") {
       state.analytics = e.target.checked;
       state.analyticsChosen = true;
@@ -3486,18 +5061,24 @@ function wireShell() {
   };
 }
 
-// The mouse's back button leaves the detail view, the way it would leave a
-// page. The webview would otherwise try to navigate its own history, which in
-// a one-page app means nothing happens at all.
+// The mouse's back button leaves whatever you stepped into, the way it would
+// leave a page. The webview would otherwise try to navigate its own history,
+// which in a one-page app means nothing happens at all.
 for (const type of ["mousedown", "mouseup", "auxclick"]) {
   document.addEventListener(type, (e) => {
     if (e.button !== 3 && e.button !== 4) return;
     e.preventDefault();
     if (type === "mouseup" && e.button === 3) {
-      if (state.settingsOpen) closeSettings();
+      if (toolPinsOpen()) closeToolPins();
+      else if (state.settingsOpen) closeSettings();
       else if (state.selectedPath) closeDetail();
+      // A tool is somewhere you went, so back is the way out of it - the same
+      // step the close button in its own header takes. Without this the only
+      // way out of a tool is that one button, which is a poor place to hide
+      // the way home.
+      else if (activeTool()) openTool("overview");
     }
-  });
+  }, true);
 }
 
 /** True when the key belongs to whatever has focus - a field, a terminal,
@@ -3509,10 +5090,11 @@ function typingSomewhereElse(target) {
 }
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && state.activeView === "ports" && (state.portInspect !== null || state.portConfirm !== null)) {
-    state.portInspect = null;
-    state.portConfirm = null;
+  if (e.key === "Escape" && state.activeView === "ports" && state.portKill) {
+    state.portKill = null;
     markDirty("ports");
+  } else if (e.key === "Escape" && toolPinsOpen()) {
+    closeToolPins();
   } else if (e.key === "Escape" && changelogOpen()) {
     closeChangelog();
     el["status-version"].focus();
@@ -3526,20 +5108,79 @@ document.addEventListener("keydown", (e) => {
   } else if (e.ctrlKey && e.key === "`") {
     e.preventDefault();
     setDockOpen(!window.termsState.open);
+  } else if (e.ctrlKey && !e.altKey && /^[1-9]$/.test(e.key)) {
+    // The number a pin carries in the bar is the number that opens it. Nothing
+    // happens on a number nothing is pinned to, so the shortcut never
+    // surprises anyone who has pinned three things and pressed four.
+    const tool = state.toolPins[Number(e.key) - 1];
+    if (tool) {
+      e.preventDefault();
+      openTool(tool);
+    }
   } else if (e.ctrlKey && ["f", "k"].includes(e.key.toLowerCase())) {
     e.preventDefault();
-    openSearchCommands();
+    // The one search shortcut, on every screen. It always lands in the box at
+    // the top - never in a filter belonging to whatever is on the page, which
+    // would make where the caret goes depend on where you happened to be.
+    openSearchCommands({ fresh: true });
   } else if (e.key === ">" && !e.ctrlKey && !e.altKey && !typingSomewhereElse(e.target)) {
     // ">" is the second way in, the way it is in an editor: it lands in the
     // box as the command prefix and the list opens under it.
     e.preventDefault();
-    openSearchCommands();
+    openSearchCommands({ fresh: true });
     el["search-input"].value = "> ";
     state.search = "";
     markDirty("grid", "filters");
     renderSearchCommands();
   }
 });
+
+window.devhqWork = { beginWork, updateWork, endWork };
+
+function wireToolPopoutEvents() {
+  listen("tool:closed", (event) => {
+    const id = event.payload?.id;
+    if (!id) return;
+    rememberToolPopout(id, false);
+  });
+  listen("tool:docked", async (event) => {
+    const id = event.payload?.id;
+    if (!id) return;
+    await dockToolPopout(id);
+  });
+  listen("tool:open", (event) => {
+    const id = event.payload?.id;
+    if (id) openTool(id);
+  });
+  listen("tool:pins-changed", () => {
+    try {
+      const prefs = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
+      if (Array.isArray(prefs.toolPins)) {
+        state.toolPins = prefs.toolPins.filter((id) => TOOLS.some((tool) => tool.id === id));
+        markDirty("pins");
+      }
+    } catch { /* ignore */ }
+  });
+}
+
+/** The pieces of the shell a tool living in its own file needs: the same
+ *  escaping, the same icons and the same render batch, so a tool can never
+ *  paint outside the frame or invent a second way to draw an icon. */
+window.devhqShell = {
+  icon,
+  esc,
+  markDirty,
+  /** The header of a tool carries the same pin and the same way out as the
+   *  dock does, and both have to mean exactly what they mean everywhere else. */
+  toggleToolPin,
+  isToolPinned,
+  openTool,
+  popOutTool,
+  isToolPopped,
+  /** The scanned projects, for a tool that wants to open on something real.
+   *  A copy, because nothing outside the shell may edit the list. */
+  projects: () => state.projects.map((p) => ({ name: p.name, path: p.path })),
+};
 
 /* ------------------------------------------------------------------ start */
 
@@ -3551,6 +5192,9 @@ document.addEventListener("keydown", (e) => {
   loadAppVersion();
   window.devhqI18n?.init(state.language);
   markDirty("toolbar", "filters", "summary", "grid");
+  wireToolPopoutEvents();
+  // Popped-out tools reopen with the shell; they do not wait on the first scan.
+  restoreToolPopouts();
 
   // On the first run, scanning waits behind the language dialog. The shell is
   // already painted, but no disk work or stream can distract from the choice.
@@ -3566,18 +5210,19 @@ document.addEventListener("keydown", (e) => {
       // behind it to look at anyway, so the scan waits for the answer.
       await firstRunUsageData();
     }
-    if (state.roots.length) rescan();
+    if (state.roots.length) {
+      // A scan that finished in the last few minutes is still good enough to
+      // show; F5 / Rescan always hits the disk again.
+      const cache = loadScanCache();
+      if (cache) restoreScanCache(cache);
+      else rescan();
+    }
     // An install that already has folders keeps its projects loading while it
     // answers - the question is not worth a wait.
     if (!newInstall) firstRunUsageData();
   });
 })();
 
-window.devhqWork = { beginWork, updateWork, endWork };
 /** The folder a terminal opened from nowhere in particular should start in. */
 window.devhqPrimaryRoot = () => state.roots[0] || "";
 
-window.addEventListener("beforeunload", () => {
-  // This is DOM/localStorage-only and never delays native window destruction.
-  if (!resetting) window.persistDockedTerminalState?.();
-});

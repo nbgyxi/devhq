@@ -22,107 +22,49 @@
   // without raising a close request nobody needs to hear.
   let handedOver = false;
   let closed = false;
-  let shuttingDown = false;
-  let shutdownTimer = 0;
-  let shutdownEscalationTimer = 0;
   const handOver = async () => {
     if (handedOver || closed) return;
     handedOver = true;
     await emit("term:docked", { id });
   };
 
-  // Closing is not docking. The cross ends the shell, the way the cross on a
-  // tab in the panel does; only the dock button and a drag onto the panel hand
-  // the session back. DevHQ is told so it can forget the terminal instead of
-  // reopening it on the next launch.
-  const gracefulCloseEnabled = () => {
-    try {
-      const prefs = JSON.parse(localStorage.getItem("devhq.terminals.v1") || "{}");
-      return prefs.gracefulClose !== false;
-    } catch {
-      return true;
-    }
-  };
-
-  const neverWaitFor = (commandName) => {
-    if (!commandName) return false;
-    try {
-      const prefs = JSON.parse(localStorage.getItem("devhq.terminals.v1") || "{}");
-      return Array.isArray(prefs.neverWaitFor) && prefs.neverWaitFor.includes(commandName);
-    } catch {
-      return false;
-    }
-  };
-
+  // Closing is not docking. The cross ends the shell immediately, the way the
+  // cross on a tab in the panel does — no Ctrl+C wait dialog. Only the dock
+  // button and a drag onto the panel hand the session back. DevHQ is told so
+  // it can forget the terminal instead of reopening it on the next launch.
   const finishClose = async () => {
     if (handedOver || closed) return;
     closed = true;
-    clearTimeout(shutdownTimer);
-    clearTimeout(shutdownEscalationTimer);
     await emit("term:close-watch", { id }).catch(() => {});
     await emit("term:closed", { id }).catch(() => {});
     await win.destroy().catch(() => {});
-  };
-
-  const waitForInterrupt = () => {
-    if (!shuttingDown || closed) return;
-    if (view.isAtPrompt()) return finishClose();
-    shutdownTimer = setTimeout(waitForInterrupt, 100);
-  };
-
-  const closeSession = async (force = false) => {
-    if (handedOver || closed || shuttingDown) return;
-    const commandName = view.runningCommandName();
-    if (commandName && neverWaitFor(commandName)) return finishClose();
-    if (force || !gracefulCloseEnabled() || info?.alive === false) return finishClose();
-    shuttingDown = true;
-    const dialog = document.getElementById("pop-shutdown");
-    dialog.querySelector("strong").textContent = "Closing…";
-    dialog.querySelector("p").textContent = "Giving the terminal a moment to finish safely.";
-    dialog.querySelector("#pop-interrupt-again").hidden = true;
-    dialog.querySelector("#pop-close-now").hidden = true;
-    const neverWait = document.getElementById("pop-never-wait");
-    neverWait.hidden = !commandName;
-    document.getElementById("pop-never-wait-name").textContent = commandName;
-    const neverWaitInput = document.getElementById("pop-never-wait-input");
-    neverWaitInput.dataset.commandName = commandName;
-    neverWaitInput.checked = neverWaitFor(commandName);
-    dialog.hidden = false;
-    shutdownEscalationTimer = setTimeout(() => {
-      if (!shuttingDown || closed) return;
-      dialog.querySelector("strong").textContent = "Shutting down";
-      dialog.querySelector("p").textContent = "The terminal is taking longer than expected to finish…";
-      dialog.querySelector("#pop-interrupt-again").hidden = false;
-      dialog.querySelector("#pop-close-now").hidden = false;
-    }, 3000);
-    await invoke("term_write", { id, data: "\u0003" })
-      .then(() => new Promise((resolve) => setTimeout(resolve, 75)))
-      .then(() => shuttingDown && !closed ? invoke("term_write", { id, data: "\u0003" }) : undefined)
-      .catch(() => finishClose());
-    if (shuttingDown && !closed) waitForInterrupt();
-  };
-
-  const cancelShutdown = () => {
-    if (!shuttingDown || closed) return;
-    clearTimeout(shutdownTimer);
-    clearTimeout(shutdownEscalationTimer);
-    shuttingDown = false;
-    document.getElementById("pop-shutdown").hidden = true;
-    view?.focus();
   };
 
   document.querySelectorAll("[data-win]").forEach((btn) => {
     btn.onclick = async () => {
       const act = btn.dataset.win;
       if (act === "min") win.minimize();
-      else if (act === "max") win.toggleMaximize();
-      else {
-        // The window stays up while Ctrl+C is being handled; finishClose uses
+      else if (act === "max") {
+        await win.toggleMaximize().catch(() => {});
+        syncMaximizeButton();
+      } else {
         // destroy so this click cannot race the native close request.
-        await closeSession();
+        await finishClose();
       }
     };
   });
+
+  const maxButton = document.querySelector('[data-win="max"]');
+  async function syncMaximizeButton() {
+    if (!maxButton) return;
+    const maxed = await win.isMaximized().catch(() => false);
+    const glyph = maxButton.querySelector(".ms");
+    if (glyph) glyph.textContent = maxed ? "filter_none" : "crop_square";
+    maxButton.title = maxed ? "Restore" : "Maximize";
+    maxButton.setAttribute("aria-label", maxed ? "Restore" : "Maximize");
+  }
+  syncMaximizeButton();
+  win.onResized(() => syncMaximizeButton());
 
   if (!id) {
     host.textContent = "No terminal id.";
@@ -135,7 +77,6 @@
   };
   view.onExit = () => {
     document.getElementById("pop-title").textContent = "exited";
-    if (shuttingDown) finishClose();
   };
 
   let info;
@@ -191,32 +132,6 @@
   document.getElementById("pop-dock").onclick = async () => {
     await handOver();
     win.destroy();
-  };
-  document.getElementById("pop-close-now").onclick = () => {
-    if (shuttingDown) {
-      shuttingDown = false;
-      finishClose();
-    }
-  };
-  document.getElementById("pop-shutdown-cancel").onclick = cancelShutdown;
-  document.getElementById("pop-interrupt-again").onclick = () => {
-    if (shuttingDown && !closed) invoke("term_write", { id, data: "\u0003" }).catch(() => {});
-  };
-  document.getElementById("pop-never-wait-input").onchange = (event) => {
-    const commandName = event.target.dataset.commandName;
-    if (!commandName) return;
-    try {
-      const prefs = JSON.parse(localStorage.getItem("devhq.terminals.v1") || "{}");
-      const names = new Set(Array.isArray(prefs.neverWaitFor) ? prefs.neverWaitFor : []);
-      if (event.target.checked) names.add(commandName);
-      else names.delete(commandName);
-      prefs.neverWaitFor = [...names];
-      localStorage.setItem("devhq.terminals.v1", JSON.stringify(prefs));
-      emit("term:never-wait", { name: commandName, enabled: event.target.checked }).catch(() => {});
-    } catch {}
-  };
-  document.getElementById("pop-shutdown").onclick = (event) => {
-    if (event.target.id === "pop-shutdown") cancelShutdown();
   };
 
   // Staying on top is remembered per session, not per window: a terminal that
@@ -296,6 +211,6 @@
   // as the cross: the shell ends here.
   win.onCloseRequested(async (event) => {
     if (!closed && !handedOver) event.preventDefault();
-    await closeSession();
+    await finishClose();
   });
 })();

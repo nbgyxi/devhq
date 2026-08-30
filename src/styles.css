@@ -13,9 +13,10 @@
   --red:#f2545b;
   --green:#3fca7f;
   --purple:#b48bff;
-  --titlebar:38px;
+  --titlebar:40px;
   --status-h:36px;
   --dock-h:0px;
+  --pins-h:0px;
   --term-bg:#0a0b0f;
   --term-fg:#d7dbe6;
 }
@@ -89,11 +90,27 @@ svg.ms,svg.ms rect,svg.ms path{fill:none;stroke:currentColor}
 
 /* ---------- title bar ---------- */
 .titlebar{
+  position:relative;
   height:var(--titlebar);flex:0 0 auto;display:flex;align-items:center;gap:10px;
   padding-left:12px;background:var(--bg1);border-bottom:1px solid var(--line);
 }
-.titlebar .drag{flex:1;height:100%;display:flex;align-items:center;gap:9px;-webkit-app-region:drag}
-.brand{display:flex;align-items:center;gap:8px;font-weight:700;letter-spacing:.2px}
+.titlebar .drag{flex:1 1 0;min-width:0;height:100%;display:flex;align-items:center;gap:9px;-webkit-app-region:drag}
+/* Search lives in the title bar, so the row that used to hold it is gone. The
+   two drag halves either side keep the window grabbable and leave the field
+   sitting near the middle of the bar. */
+.titlebar .field.search{
+  flex:0 1 520px;height:28px;border-radius:8px;-webkit-app-region:no-drag;
+}
+.titlebar .field.search .ms{font-size:16px}
+.titlebar .field.search input{font-size:12px}
+/* Under this width the brand wordmark would be squeezing the field: the icon
+   alone still says which window this is. */
+@media(max-width:720px){
+  .titlebar .brand span:not(.sub){display:none}
+  .titlebar .brand .sub{display:none}
+}
+.brand{display:flex;align-items:center;gap:8px;min-width:0;font-weight:700;letter-spacing:.2px}
+.brand>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .brand img{width:18px;height:18px;border-radius:5px}
 .brand span{font-size:13px}
 .brand .sub{font-weight:500;color:var(--dim2);font-size:12px}
@@ -114,17 +131,7 @@ svg.ms,svg.ms rect,svg.ms path{fill:none;stroke:currentColor}
 :root[data-theme="light"] #toggle-theme .theme-moon{width:18px;height:18px}
 :root[data-theme="light"] #toggle-theme:hover{background:rgba(23,25,35,.07);color:#111827}
 
-/* ---------- toolbar ---------- */
-.toolbar{
-  flex:0 0 auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
-  padding:12px 16px;border-bottom:1px solid var(--line);background:var(--bg1);
-}
-.top-nav{height:34px;display:inline-flex;overflow:hidden;flex:0 0 auto;border:1px solid var(--line);border-radius:9px;background:var(--bg2)}
-.top-nav button{display:flex;align-items:center;gap:6px;padding:0 11px;border-left:1px solid var(--line);color:var(--dim);font-size:12.5px;font-weight:550}
-.top-nav button:first-child{border-left:0}
-.top-nav button:hover{color:var(--text);background:var(--bg3)}
-.top-nav button.on{color:var(--text);background:rgba(109,139,255,.18)}
-.top-nav .ms{font-size:16px}
+/* ---------- fields ---------- */
 .field{
   display:flex;align-items:center;gap:8px;background:var(--bg2);border:1px solid var(--line);
   border-radius:9px;padding:0 10px;height:34px;transition:border-color .15s;
@@ -134,16 +141,35 @@ svg.ms,svg.ms rect,svg.ms path{fill:none;stroke:currentColor}
 .field input{width:100%;background:none}
 .field input::placeholder{color:var(--dim2)}
 .field.search{flex:1 1 140px;min-width:120px;position:relative}
+/* Centred on the field rather than hung off its left edge: the field is no
+   longer full width, so an anchored menu would run off the right of the window. */
 .search-menu{
-  position:absolute;z-index:60;top:calc(100% + 7px);left:0;width:min(650px,calc(100vw - 32px));
+  position:absolute;z-index:60;top:calc(100% + 6px);left:50%;transform:translateX(-50%);
+  width:min(650px,calc(100vw - 32px));
   max-height:min(520px,70vh);overflow:auto;padding:6px;background:var(--bg1);
   border:1px solid var(--line);border-radius:10px;box-shadow:0 18px 48px rgba(0,0,0,.55);
 }
+/* A row is the tool and the pin for it side by side: finding a tool and
+   keeping it are the same gesture, one button apart. */
+.search-row{display:flex;align-items:center;gap:2px}
 .search-command{
-  width:100%;height:36px;display:grid;grid-template-columns:24px minmax(130px,1fr) minmax(80px,1fr);
+  flex:1 1 auto;min-width:0;height:36px;display:grid;grid-template-columns:24px minmax(130px,1fr) minmax(80px,1fr);
   align-items:center;gap:10px;padding:0 10px;border-radius:7px;text-align:left;color:var(--text);
 }
 .search-command:hover,.search-command.on{background:var(--bg3)}
+/* Pinnable or not, every row ends in the same 28px slot, so the detail column
+   down the right-hand side never steps in and out. */
+.search-pin-slot{flex:0 0 auto;width:28px;height:28px}
+.search-pin{
+  flex:0 0 auto;width:28px;height:28px;display:grid;place-items:center;border-radius:7px;
+  color:var(--dim2);opacity:0;transition:color .12s,background .12s,opacity .12s;
+}
+.search-pin .ms{font-size:16px}
+.search-row:hover .search-pin,.search-pin:focus-visible,.search-pin.on{opacity:1}
+.search-pin:hover{color:var(--amber);background:var(--bg3)}
+.search-pin.on{color:var(--amber);background:rgba(242,181,68,.12)}
+.command-kind.kind-tool{color:var(--accent)}
+.command-kind.kind-goto{color:var(--teal)}
 /* Every row is led by the icon for its kind, so the list can be read by shape
    before it is read by word. The colour carries the kind, the icon the verb -
    drawn straight on the row, with no plate behind it to fight the theme. */
@@ -179,7 +205,8 @@ svg.ms,svg.ms rect,svg.ms path{fill:none;stroke:currentColor}
 .rootchip.empty .ms:last-child{opacity:1}
 
 .rootpop{
-  position:absolute;top:calc(100% + 8px);left:0;z-index:40;width:420px;max-width:78vw;
+  position:absolute;top:calc(100% + 8px);left:0;z-index:80;width:420px;
+  max-width:min(420px,calc(100vw - 24px));
   background:var(--bg2);border:1px solid var(--line);border-radius:11px;padding:12px;
   box-shadow:0 18px 44px rgba(0,0,0,.5);
 }
@@ -350,61 +377,312 @@ html[dir="rtl"] .tech-menu{left:auto;right:0}
 .summary-roots .rootchip{max-width:260px}
 .summary-rescan{height:29px;padding:0 10px;font-size:12px}
 
-/* ---------- port manager ---------- */
-.ports-page{flex:1;min-height:0;overflow:auto;padding:16px;background:var(--bg)}
-.ports-page[hidden],.summary[hidden],.filters[hidden],.scroll[hidden],[id="banner-host"][hidden]{display:none}
-.ports-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px}
-.ports-head h2{font-size:19px;line-height:1.2}
-.ports-head p{margin-top:4px;color:var(--dim2);font-size:12px}
-.ports-filter-row{display:flex;align-items:center;gap:8px;margin-bottom:12px}
-.ports-filter{width:min(720px,100%);background:var(--bg1)}
-.port-local-only{height:34px;color:var(--dim)}
-.port-local-only.on{color:var(--text);border-color:var(--green);background:color-mix(in srgb,var(--green) 11%,var(--bg2))}
-.local-filter-dot,.local-process-label i{width:7px;height:7px;display:inline-block;flex:0 0 auto;border-radius:50%;background:var(--green)}
-.ports-table-wrap{overflow:auto;border:1px solid var(--line);border-radius:11px;background:var(--bg1)}
-.ports-table{width:100%;min-width:900px;border-collapse:collapse;table-layout:fixed;font-size:12.5px}
-.ports-table th{padding:10px 12px;border-bottom:1px solid var(--line);background:var(--bg2);color:var(--dim2);font-size:10.5px;font-weight:650;letter-spacing:.06em;text-align:left;text-transform:uppercase}
-.ports-table-sort{width:100%;display:flex;align-items:center;justify-content:space-between;gap:7px;color:inherit;text-align:left;text-transform:inherit;letter-spacing:inherit;font:inherit}
-.ports-table-sort:hover,.ports-table-sort.on{color:var(--text)}
-.ports-table-sort span{min-width:9px;color:var(--accent);font-size:8px}
-.ports-table th:nth-child(1){width:220px}.ports-table th:nth-child(2){width:170px}.ports-table th:nth-child(3){width:90px}.ports-table th:nth-child(5){width:154px}
-.ports-table td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
-.ports-table tbody tr:last-child td{border-bottom:0}
-.ports-table tbody tr:hover{background:var(--bg2)}
-.ports-table tbody tr.local-process-row{background:color-mix(in srgb,var(--green) 4%,var(--bg1))}
-.ports-table tbody tr.local-process-row:hover{background:color-mix(in srgb,var(--green) 8%,var(--bg2))}
-.port-number strong,.ports-table td>strong{color:var(--text);font-weight:600}
-.port-binding{display:inline-flex;align-items:center;gap:4px;margin:2px 5px 2px 0;padding:2px 6px;border-radius:5px;background:var(--bg3);white-space:nowrap}
-.port-binding small{color:var(--dim2);font-size:9px;text-transform:uppercase}
-.port-none{color:var(--dim2)}
-.local-process-label{display:flex;align-items:center;gap:5px;margin-top:4px;overflow:hidden;color:var(--green);font-size:10.5px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}
-.port-pid{color:var(--dim);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace}
-.port-path{overflow:hidden;color:var(--dim);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-size:11.5px;text-overflow:ellipsis;white-space:nowrap}
-.port-path-content{display:flex;align-items:center;gap:5px;min-width:0}
-.port-path-text,.port-project-link{min-width:0;max-width:100%;flex:0 1 auto;height:23px;margin:0;padding:0;display:flex;align-items:center;overflow:hidden;font:inherit;line-height:23px;text-align:left;white-space:nowrap}
-.port-path-content:has(.port-path-actions)>.port-path-text,.port-path-content:has(.port-path-actions)>.port-project-link{max-width:calc(100% - 51px)}
-.port-path-text>span,.port-project-link>span{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.port-project-link{color:var(--accent);appearance:none}.port-project-link:hover span{text-decoration:underline}
-.port-path-actions{display:flex;flex:0 0 auto;gap:2px}.port-path-actions button{width:23px;height:23px;display:grid;place-items:center;border-radius:5px;color:var(--dim2)}
-.port-path-actions button:hover{color:var(--text);background:var(--bg3)}.port-path-actions .ms{font-size:14px}
-.port-path-actions button.copied{color:var(--green)}
-.port-actions{display:flex;justify-content:flex-end;align-items:center;gap:3px}
-.port-actions button{width:29px;height:28px;display:grid;place-items:center;border-radius:6px;color:var(--dim)}
-.port-actions button:hover{color:var(--text);background:var(--bg3)}
-.port-actions button:disabled{opacity:.28;pointer-events:none}
-.port-actions button.port-kill:hover{color:var(--red)}
-.port-actions .ms{font-size:16px}
-.ports-empty{height:110px;color:var(--dim2);text-align:center}
+/* ---------- port and process explorer ----------
+
+   Two panes that never scroll the page: the list of ports on the left, what
+   holds the selected one on the right. Only those two scroll, so the shelf of
+   pinned ports and the "free a port" box are always in reach. */
+.ports-page{
+  flex:1;min-height:0;display:flex;flex-direction:column;gap:12px;
+  padding:14px 16px 12px;background:var(--bg);overflow:hidden;
+}
+.ports-page[hidden],.tools-page[hidden],.dns-page[hidden],.summary[hidden],.filters[hidden],.scroll[hidden],[id="banner-host"][hidden]{display:none}
+.ports-page .dot{width:7px;height:7px;flex:0 0 auto;border-radius:50%;display:inline-block}
+.ports-page .dot.green{background:var(--green)}
+.ports-page .dot.teal{background:var(--teal)}
+.ports-page .dot.amber{background:var(--amber)}
+.ports-page .dot.grey{background:var(--dim2)}
+.ports-page .eyebrow,.port-pins-head,.port-group-head,.port-chart-head span,.port-tree header span{
+  color:var(--dim2);font-size:10.5px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;
+}
+
+/* ---------- the shelf along the top ---------- */
+.port-pins-wrap{flex:0 0 auto;min-width:0;display:flex;flex-direction:column;gap:6px}
+.port-pins-head{display:flex;align-items:center;gap:8px}
+.port-pins-head .ms{font-size:14px}
+.port-pins-head i{color:var(--line);font-style:normal}
+.port-pins-head small{font-weight:500;letter-spacing:0;text-transform:none;font-size:11px}
+.port-pins{flex:1;display:flex;gap:8px;overflow:hidden}
+.port-pins-empty{
+  flex:1;display:flex;align-items:center;padding:0 14px;border:1px dashed var(--line);
+  border-radius:11px;color:var(--dim2);font-size:12px;
+}
+.port-pin-tile{
+  flex:1 1 0;min-width:0;max-width:250px;display:flex;flex-direction:column;justify-content:center;gap:4px;
+  padding:9px 11px;border:1px solid var(--line);border-radius:11px;background:var(--bg1);text-align:left;
+  transition:border-color .14s,background .14s;
+}
+.port-pin-tile:hover{background:var(--bg2)}
+.port-pin-tile.on{border-color:color-mix(in srgb,var(--accent) 45%,var(--line));background:color-mix(in srgb,var(--accent) 10%,var(--bg1))}
+.port-pin-tile.free{opacity:.62}
+.port-pin-top{display:flex;align-items:center;gap:7px;min-width:0}
+.port-pin-top b{
+  color:var(--text);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;
+  font-size:16px;font-weight:700;letter-spacing:-.02em;
+}
+.port-pin-top .port-spark{margin-left:auto;width:52px;height:16px;flex:0 0 auto;opacity:.85}
+.port-pin-sub{display:flex;align-items:baseline;gap:6px;min-width:0}
+.port-pin-sub span{overflow:hidden;color:var(--text);font-size:11.5px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
+.port-pin-sub small{overflow:hidden;color:var(--dim2);font-size:10.5px;text-overflow:ellipsis;white-space:nowrap}
+
+/* ---------- the two panes ---------- */
+.ports-body{flex:1;min-height:0;display:flex;gap:12px}
+.ports-list-pane{
+  flex:0 0 452px;min-width:0;min-height:0;display:flex;flex-direction:column;
+  border:1px solid var(--line);border-radius:11px;background:var(--bg1);overflow:hidden;
+}
+.ports-list-head{
+  flex:0 0 auto;display:flex;flex-direction:column;gap:9px;padding:11px 12px;
+  border-bottom:1px solid var(--line);background:var(--bg2);
+}
+.ports-filter{height:32px;background:var(--bg)}
+.ports-filter input{font-size:12.5px}
+.ports-list-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ports-list-tools .seg{display:inline-flex;height:28px;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--bg)}
+.ports-list-tools .seg button{
+  padding:0 11px;border-left:1px solid var(--line);color:var(--dim2);font-size:11.5px;font-weight:600;
+}
+.ports-list-tools .seg button:first-child{border-left:0}
+.ports-list-tools .seg button:hover{color:var(--text)}
+.ports-list-tools .seg button.on{background:rgba(109,139,255,.18);color:var(--text)}
+:root[data-theme="light"] .ports-list-tools .seg button.on{background:#e1e4ea;color:#222733}
+.ports-list-tools .seg button span{margin-left:6px;font-size:10px;opacity:.65;font-variant-numeric:tabular-nums}
+/* The arrow holds its width whether or not this is the sorted column, so
+   picking a different one never shuffles the buttons sideways. */
+.ports-list-tools .seg-sort button{padding:0 9px}
+.seg-sort button span{min-width:7px;margin-left:5px;display:inline-block;color:var(--accent);font-size:8px;opacity:1}
+.port-live{
+  margin-left:auto;display:inline-flex;align-items:center;gap:5px;color:var(--green);
+  font-size:11px;font-weight:600;
+}
+.port-live::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;animation:livepulse 2s infinite}
+.port-live.off{color:var(--dim2)}
+.port-live.off::before{animation:none}
+@keyframes livepulse{0%,100%{opacity:1}50%{opacity:.3}}
+.ports-refresh{width:28px;height:28px;padding:0;justify-content:center;border-radius:8px}
+.ports-refresh .ms{font-size:16px}
+.ports-list{flex:1;min-height:0;overflow:auto}
+
+/* ---------- one port ---------- */
+.port-group-head{
+  position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:8px;padding:7px 12px;
+  background:var(--bg2);border-bottom:1px solid var(--line);font-size:10px;letter-spacing:.07em;
+}
+.port-group-head .dot{border-radius:2px}
+.port-group-head span{margin-left:auto;font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-weight:500;letter-spacing:0}
+.port-row{
+  display:flex;align-items:center;gap:10px;padding:9px 12px 9px 8px;
+  border-bottom:1px solid color-mix(in srgb,var(--line) 60%,transparent);cursor:pointer;
+}
+.port-row:hover{background:var(--bg2)}
+.port-row.on{background:rgba(109,139,255,.12)}
+:root[data-theme="light"] .port-row.on{background:#e6e9f0}
+.port-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.port-rail{width:4px;align-self:stretch;border-radius:3px;opacity:.45}
+.port-rail.green{background:var(--green)}.port-rail.teal{background:var(--teal)}
+.port-rail.amber{background:var(--amber)}.port-rail.grey{background:transparent}
+.port-row.on .port-rail{background:var(--accent);opacity:1}
+.port-num{width:66px;flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-start;gap:1px}
+.port-num b{
+  color:var(--text);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;
+  font-size:17px;font-weight:700;letter-spacing:-.03em;
+}
+.port-num.sys b,.port-num.off b,.port-num b.none{color:var(--dim)}
+.port-num small{
+  color:var(--dim2);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;
+  font-size:9px;letter-spacing:.04em;text-transform:uppercase;
+}
+.port-what{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.port-what-top{display:flex;align-items:center;gap:6px;min-width:0}
+.port-what strong{overflow:hidden;color:var(--text);font-size:12.5px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
+.port-what small{
+  overflow:hidden;color:var(--dim2);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;
+  font-size:10.5px;text-overflow:ellipsis;white-space:nowrap;
+}
+.port-badge{
+  flex:0 0 auto;padding:1px 5px;border-radius:4px;background:var(--bg3);color:var(--dim);
+  font-size:9.5px;font-weight:700;white-space:nowrap;
+}
+.port-badge.ok{background:color-mix(in srgb,var(--green) 14%,transparent);color:var(--green)}
+.port-badge.warn{background:color-mix(in srgb,var(--amber) 16%,transparent);color:var(--amber)}
+.port-badge.bad{background:color-mix(in srgb,var(--red) 16%,transparent);color:var(--red)}
+.port-spark{width:56px;height:22px;flex:0 0 auto}
+.port-spark polyline{fill:none;stroke:var(--dim2);stroke-width:1.4;stroke-linejoin:round}
+.port-row .port-spark polyline{stroke:var(--dim2)}
+.port-row:has(.port-rail.green) .port-spark polyline{stroke:var(--green)}
+.port-row:has(.port-rail.teal) .port-spark polyline{stroke:var(--teal)}
+.port-row:has(.port-rail.amber) .port-spark polyline{stroke:var(--amber)}
+.port-pin-tile:has(.dot.green) .port-spark polyline{stroke:var(--green)}
+.port-pin-tile:has(.dot.teal) .port-spark polyline{stroke:var(--teal)}
+.port-pin-tile:has(.dot.amber) .port-spark polyline{stroke:var(--amber)}
+.port-cpu{
+  width:42px;flex:0 0 auto;text-align:right;color:var(--dim2);
+  font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-size:10.5px;font-variant-numeric:tabular-nums;
+}
+.port-row .port-pin{width:26px;height:26px;flex:0 0 auto;display:grid;place-items:center;border-radius:6px;color:var(--bg3)}
+.port-row:hover .port-pin{color:var(--dim2)}
+.port-row .port-pin.on,.port-row:hover .port-pin.on{color:var(--amber)}
+.port-row .port-pin .ms{font-size:15px}
+.ports-empty{padding:44px 20px;color:var(--dim2);font-size:12.5px;text-align:center}
+
+/* ---------- what holds it ---------- */
+/* min-height:0 twice over: without it the pane takes its content's height, and
+   the body inside it never gets a height small enough to scroll against — the
+   detail simply runs off the bottom of the window instead. */
+.ports-detail{
+  flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;
+  border:1px solid var(--line);border-radius:11px;background:var(--bg1);overflow:hidden;
+}
+.port-detail-head{
+  flex:0 0 auto;display:flex;align-items:flex-start;gap:14px;padding:15px 16px 14px;
+  border-bottom:1px solid var(--line);background:var(--bg2);
+}
+.port-plate{
+  flex:0 0 auto;width:62px;height:62px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:1px;border-radius:12px;background:var(--bg3);border:1px solid var(--line);
+}
+.port-plate.green{background:color-mix(in srgb,var(--green) 12%,transparent);border-color:color-mix(in srgb,var(--green) 33%,transparent)}
+.port-plate.teal{background:color-mix(in srgb,var(--teal) 12%,transparent);border-color:color-mix(in srgb,var(--teal) 33%,transparent)}
+.port-plate.amber{background:color-mix(in srgb,var(--amber) 12%,transparent);border-color:color-mix(in srgb,var(--amber) 33%,transparent)}
+.port-plate b{
+  color:var(--text);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;
+  font-size:19px;font-weight:700;letter-spacing:-.04em;
+}
+.port-plate small{color:var(--dim2);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-size:8.5px;letter-spacing:.06em}
+.port-detail-title{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px}
+.port-detail-name{display:flex;align-items:center;gap:8px;min-width:0}
+.port-detail-name h2{overflow:hidden;font-size:18px;font-weight:650;letter-spacing:-.01em;text-overflow:ellipsis;white-space:nowrap}
+.port-detail-name .port-badge{padding:2px 7px;border-radius:5px;font-size:10px}
+.port-detail-meta{
+  display:flex;align-items:center;gap:9px;flex-wrap:wrap;color:var(--dim2);
+  font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-size:11px;
+}
+.port-detail-meta i{color:var(--line);font-style:normal}
+.port-detail-project{display:flex;align-items:center;gap:6px;font-size:11.5px}
+.port-detail-project .ms{font-size:14px;color:var(--purple)}
+.port-detail-project button{color:var(--purple);font-size:11.5px;font-weight:600}
+.port-detail-project button:hover{text-decoration:underline}
+.port-detail-project small{color:var(--dim2);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-size:10.5px}
+.port-pin-btn{height:30px;padding:0 11px;font-size:12.5px;color:var(--dim)}
+.port-pin-btn.on{border-color:color-mix(in srgb,var(--amber) 45%,transparent);background:color-mix(in srgb,var(--amber) 12%,transparent);color:var(--amber)}
+.port-detail-actions{
+  flex:0 0 auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+  padding:10px 16px;border-bottom:1px solid var(--line);
+}
+.port-detail-actions .btn{height:30px;padding:0 11px;font-size:12.5px}
+.port-detail-actions .btn.go{background:var(--accent);border-color:var(--accent);color:#0b0d14;font-weight:650}
+.port-detail-actions .btn.go:hover{filter:brightness(1.08)}
+:root[data-theme="light"] .port-detail-actions .btn.go{color:#fff}
+.port-detail-actions .btn.busy{border-color:color-mix(in srgb,var(--teal) 45%,transparent);background:color-mix(in srgb,var(--teal) 12%,transparent);color:var(--teal)}
+.port-detail-actions .btn.busy .ms{animation:spin 1s linear infinite}
+.port-detail-actions .spacer{flex:1}
+.port-detail-body{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:14px;padding:14px 16px 18px}
+/* The tree and the facts clip their own overflow, which lets a flex column
+   squash them instead of overflowing — and a body that never overflows never
+   scrolls. Each block keeps its full height and the body scrolls past them. */
+.port-detail-body>*{flex:0 0 auto}
+
+.port-charts{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.port-chart{padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
+.port-chart-head{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
+.port-chart-head b{
+  font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-size:18px;font-weight:700;
+  letter-spacing:-.02em;font-variant-numeric:tabular-nums;
+}
+.port-chart.cpu .port-chart-head b{color:var(--teal)}
+.port-chart.mem .port-chart-head b{color:var(--purple)}
+.port-chart-head i{
+  margin-left:auto;color:var(--dim2);font-style:normal;
+  font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-size:10px;
+}
+.port-chart svg{width:100%;height:44px;display:block}
+.port-chart .line{fill:none;stroke-width:1.6;stroke-linejoin:round}
+.port-chart .area{stroke:none}
+.port-chart.cpu .line{stroke:var(--teal)}
+.port-chart.cpu .area{fill:color-mix(in srgb,var(--teal) 13%,transparent)}
+.port-chart.mem .line{stroke:var(--purple)}
+.port-chart.mem .area{fill:color-mix(in srgb,var(--purple) 13%,transparent)}
+
+.port-tree{border:1px solid var(--line);border-radius:10px;background:var(--bg);overflow:hidden}
+.port-tree header{
+  display:flex;align-items:center;gap:8px;padding:9px 12px;
+  border-bottom:1px solid var(--line);background:var(--bg2);
+}
+.port-tree header .ms{font-size:15px;color:var(--dim2)}
+.port-tree header span{color:var(--dim)}
+.port-tree header small{margin-left:auto;color:var(--dim2);font-size:10.5px}
+.port-tree-node{
+  display:flex;align-items:center;gap:8px;padding:7px 12px;
+  border-bottom:1px solid color-mix(in srgb,var(--line) 60%,transparent);
+}
+.port-tree-node:last-child{border-bottom:0}
+.port-tree-node.holder{background:color-mix(in srgb,var(--green) 5%,transparent)}
+.port-tree-node>i{flex:0 0 auto}
+.port-tree-node .ms{font-size:14px;color:var(--dim2)}
+.port-tree-node.holder .ms{color:var(--green)}
+.port-tree-node b{
+  color:var(--dim);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;
+  font-size:11.5px;font-weight:600;white-space:nowrap;
+}
+.port-tree-node.holder b{color:var(--text)}
+.port-tree-node span{color:var(--dim2);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-size:10.5px}
+.port-tree-node small{
+  flex:1;min-width:0;overflow:hidden;color:var(--dim2);
+  font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-size:10.5px;
+  text-overflow:ellipsis;white-space:nowrap;
+}
+.port-tree-node em{
+  flex:0 0 auto;padding:1px 6px;border-radius:4px;background:color-mix(in srgb,var(--green) 15%,transparent);
+  color:var(--green);font-size:9.5px;font-style:normal;font-weight:700;
+}
+
+.port-facts{border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.port-fact{display:grid;grid-template-columns:132px minmax(0,1fr);border-bottom:1px solid var(--line)}
+.port-fact:last-child{border-bottom:0}
+.port-fact dt{padding:8px 11px;background:var(--bg2);color:var(--dim2);font-size:11px;font-weight:600}
+.port-fact dd{
+  padding:8px 11px;overflow-wrap:anywhere;color:var(--text);
+  font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-size:11.5px;
+}
+.port-fact dd a{color:var(--accent)}
+.port-fact dd a:hover{text-decoration:underline}
+
+/* ---------- the kill confirmation ---------- */
 .port-overlay{position:fixed;inset:0;z-index:120;display:grid;place-items:center;padding:20px;background:rgba(0,0,0,.58)}
-.port-dialog{width:min(620px,100%);max-height:min(680px,85vh);overflow:auto;padding:18px;border:1px solid var(--line);border-radius:12px;background:var(--bg1);box-shadow:0 20px 60px rgba(0,0,0,.6)}
-.port-dialog header{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:16px}
-.port-dialog header h3{font-size:16px}.port-dialog header button{width:30px;height:30px;display:grid;place-items:center;border-radius:6px;color:var(--dim)}
+.port-dialog{
+  width:min(520px,100%);max-height:min(680px,85vh);overflow:auto;padding:20px;
+  border:1px solid var(--line);border-radius:12px;background:var(--bg1);box-shadow:0 20px 60px rgba(0,0,0,.6);
+}
+.port-dialog header{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.port-dialog header>.ms{font-size:22px;color:var(--red)}
+.port-dialog header h3{flex:1;font-size:16px;font-weight:650}
+.port-dialog header button{width:30px;height:30px;display:grid;place-items:center;border-radius:6px;color:var(--dim)}
 .port-dialog header button:hover{background:var(--bg3);color:var(--text)}
-.port-dialog dl{display:grid;grid-template-columns:120px minmax(0,1fr);border:1px solid var(--line);border-radius:9px;overflow:hidden}
-.port-dialog dt,.port-dialog dd{padding:9px 11px;border-bottom:1px solid var(--line)}
-.port-dialog dt{background:var(--bg2);color:var(--dim2);font-size:11px;font-weight:600}.port-dialog dd{overflow-wrap:anywhere;color:var(--text);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;font-size:11.5px}
-.port-dialog dt:nth-last-of-type(1),.port-dialog dd:last-child{border-bottom:0}
-.port-confirm{width:min(470px,100%)}.port-confirm p{color:var(--dim);line-height:1.55}.port-confirm footer{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.port-confirm p{margin:0 0 14px;color:var(--dim);font-size:12.5px;line-height:1.55}
+.port-kill-tree{
+  width:100%;display:flex;align-items:flex-start;gap:10px;padding:11px;
+  border:1px solid var(--line);border-radius:9px;background:var(--bg);text-align:left;
+}
+.port-kill-tree.on{border-color:color-mix(in srgb,var(--red) 40%,transparent);background:color-mix(in srgb,var(--red) 7%,transparent)}
+.port-kill-tree .ms{margin-top:1px;font-size:18px;color:var(--dim2)}
+.port-kill-tree.on .ms{color:var(--red)}
+.port-kill-tree span{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.port-kill-tree strong{color:var(--text);font-size:12.5px;font-weight:600}
+.port-kill-tree small{
+  overflow:hidden;color:var(--dim2);font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace;
+  font-size:10.5px;text-overflow:ellipsis;white-space:nowrap;
+}
+.port-confirm footer{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+.port-confirm footer .btn{height:32px;padding:0 14px;font-size:12.5px}
+
+/* Under about 1180px the two panes stop fitting side by side, so the list
+   takes the width and the detail pane goes under it. */
+@media (max-width:1180px){
+  .ports-body{flex-direction:column}
+  .ports-list-pane{flex:1 1 0;min-height:200px}
+  .ports-detail{flex:1 1 0;min-height:260px}
+  .port-charts{grid-template-columns:1fr}
+}
 
 /* ---------- grid ---------- */
 .scroll{flex:1;overflow-y:auto;overflow-x:hidden}
@@ -588,14 +866,14 @@ html[dir="rtl"] .tech-menu{left:auto;right:0}
 /* ---------- the full-screen project view ---------- */
 .detail{
   position:fixed;top:var(--titlebar);right:0;left:0;z-index:41;
-  bottom:calc(var(--dock-h) + var(--status-h));
+  bottom:calc(var(--dock-h) + var(--status-h) + var(--pins-h));
   background:var(--bg);display:flex;flex-direction:column;
   animation:fadein .14s ease both;
 }
 .detail.steady{animation:none}
 .settings-page{
   position:fixed;top:var(--titlebar);right:0;left:0;z-index:41;
-  bottom:calc(var(--dock-h) + var(--status-h));background:var(--bg);
+  bottom:calc(var(--dock-h) + var(--status-h) + var(--pins-h));background:var(--bg);
   display:flex;flex-direction:column;animation:fadein .14s ease both;
 }
 .settings-body{
@@ -691,7 +969,7 @@ html[dir="rtl"] .tech-menu{left:auto;right:0}
 html[dir="rtl"] #root{direction:rtl}
 html[dir="rtl"] .titlebar{direction:ltr}
 html[dir="rtl"] .titlebar .brand{direction:rtl}
-html[dir="rtl"] .toolbar,
+html[dir="rtl"] .titlebar .field.search{direction:rtl}
 html[dir="rtl"] .filters,
 html[dir="rtl"] .summary,
 html[dir="rtl"] .grid,
@@ -799,7 +1077,7 @@ html[dir="rtl"] .dcol-patch{grid-column:3}
 }
 @media (min-width:1451px){
   .dcol-patch .diff{
-    max-height:calc(100vh - var(--titlebar) - var(--status-h) - var(--dock-h) - 190px);
+    max-height:calc(100vh - var(--titlebar) - var(--status-h) - var(--dock-h) - var(--pins-h) - 190px);
   }
 }
 .dl{white-space:pre;padding:0 10px;min-height:1.55em}
@@ -884,7 +1162,7 @@ html[dir="rtl"] .srclines{direction:ltr;text-align:left}
 
 .filelist{
   border:1px solid var(--line);border-radius:9px;overflow-x:hidden;overflow-y:auto;
-  max-height:calc(100vh - var(--titlebar) - var(--status-h) - var(--dock-h) - 190px);background:var(--bg2);
+  max-height:calc(100vh - var(--titlebar) - var(--status-h) - var(--dock-h) - var(--pins-h) - 190px);background:var(--bg2);
 }
 .filerow{
   display:flex;align-items:center;gap:9px;padding:5px 10px;font-size:12px;
@@ -939,7 +1217,7 @@ html[dir="rtl"] .srclines{direction:ltr;text-align:left}
 }
 
 .loading{
-  position:absolute;left:0;right:0;top:0;height:2px;overflow:hidden;background:transparent;
+  position:absolute;left:0;right:0;bottom:0;height:2px;overflow:hidden;background:transparent;
 }
 .loading i{
   display:block;height:100%;width:38%;background:var(--accent);border-radius:2px;
@@ -1079,6 +1357,27 @@ body.popout .brand .shell-mark{margin-left:2px}
 .term-shutdown-card button.danger{background:var(--red);color:#fff}
 .term-shutdown-spinner{width:24px;height:24px;margin:4px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
 
+/* The shelf the pins move onto: a full-width row of its own above the status
+   bar, so the chips can wrap instead of being rationed to the four that fit
+   beside the activity line. It grows with what is on it, up to four rows, and
+   scrolls beyond that rather than eating the window. */
+/* No heading and no icon on it: a shelf of chips says what it is, and a pin
+   drawn next to them only invites a click that does nothing. Every pixel of
+   the row goes to the pins. */
+.pins-panel{
+  flex:0 0 auto;display:flex;align-items:flex-start;
+  padding:6px 11px;background:var(--bg1);border-top:1px solid var(--line);
+}
+.pins-panel[hidden]{display:none}
+/* On the shelf the dock stops being a status-bar cell: no divider, no clipping,
+   and it wraps. */
+.status-pins-wrap.in-panel{flex:1 1 auto;border-left:0;min-width:0}
+.status-pins-wrap.in-panel .status-pins{
+  flex-wrap:wrap;align-items:flex-start;gap:6px;padding:0;
+  max-height:calc(22px * 4 + 6px * 3);overflow-y:auto;overscroll-behavior:contain;
+}
+.status-pins-wrap.in-panel .pin-chip,
+.status-pins-wrap.in-panel .pin-add{flex:0 0 auto;max-width:220px}
 /* The status bar: always there, always saying what the app is doing, with the
    way into a terminal on the end of it. */
 .statusbar{
@@ -1183,6 +1482,10 @@ html[dir="rtl"] .changelog-pop{right:auto;left:0;direction:rtl;text-align:right}
 .term{
   background:var(--term-bg);color:var(--term-fg);outline:none;
   font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,monospace;font-size:12.5px;
+  /* Every cell has to be the same width. A ligature is two characters drawn
+     as one glyph in one advance, which is a column short — and Cascadia Code,
+     next in the stack, has them on by default. */
+  font-variant-ligatures:none;font-feature-settings:'liga' 0,'calt' 0;
   /* A whole number of pixels per row. 1.35 of 12.5px is 16.875, and rows
      stacked on fractional pixels leave a seam of background between every one
      of them wherever a run is painted on top of a colour. */
@@ -1190,12 +1493,20 @@ html[dir="rtl"] .changelog-pop{right:auto;left:0;direction:rtl;text-align:right}
   user-select:text;cursor:text;height:100%;
 }
 .term-scroll{position:relative;height:100%;overflow-y:auto;overflow-x:hidden;padding:6px 8px}
-.term-history div,.term-screen div{white-space:pre;min-height:17px}
-/* A span's background covers the font's content box, which is shorter than the
-   line - so a coloured run has to be told to fill the row it sits in. */
-.term-history div span,.term-screen div span{display:inline-block;vertical-align:top;height:17px}
+/* Rows are the grid runs are positioned against. Restored plain-text
+   history has no runs and simply flows inside one. */
+.term-history div,.term-screen div{position:relative;white-space:pre;min-height:17px}
+/* A run sits at the column it was given rather than after the run before it,
+   so a glyph of the wrong width can never shift the rest of the line. Its own
+   left and width come from the row's markup; the rest is the same for all of
+   them - and the height is spelled out because a span's background otherwise
+   covers only the font's content box, which is shorter than the line. */
+.term-history div span,.term-screen div span{position:absolute;top:0;height:17px}
 .term.alt .term-history{display:none}
-.term-probe{position:absolute;visibility:hidden;white-space:pre}
+/* Taken out of the flow so it measures its own text and not the width of the
+   row it is borrowing the rules of - which needs to outrank the rule above,
+   or the probe measures the whole screen. */
+.term-screen .term-probe{position:absolute;visibility:hidden;white-space:pre}
 /* Selection has to read as a selection on top of whatever colours the
    program painted, keyboard-driven or dragged. */
 .term ::selection{background:#2f5c8f;color:#fff}
@@ -1345,3 +1656,1170 @@ body.popout .term-host{flex:1;min-height:0;background:var(--term-bg)}
 .settings-group[hidden]{display:none}
 html[dir="rtl"] .settings-nav{border-right:0;border-left:1px solid var(--line)}
 html[dir="rtl"] .settings-nav-item{text-align:right}
+
+/* ---------- the tool header: what this is, keep it, and the way out ---------- */
+.tool-head{
+  flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:11px 16px;
+  border-bottom:1px solid var(--line);background:var(--bg1);
+}
+.tool-plate{
+  flex:0 0 auto;width:34px;height:34px;display:grid;place-items:center;border-radius:10px;
+  border:1px solid rgba(109,139,255,.3);background:rgba(109,139,255,.12);color:var(--accent);
+}
+.tool-plate .ms{font-size:19px}
+.tool-title{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.tool-title strong{font-size:14.5px;font-weight:650;letter-spacing:-.01em}
+.tool-title small{overflow:hidden;color:var(--dim);font-size:11.5px;text-overflow:ellipsis;white-space:nowrap}
+.tool-popout,.tool-pin{
+  flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;height:29px;padding:0 11px;
+  border:1px dashed var(--line);border-radius:8px;background:var(--bg2);color:var(--dim);
+  font-size:11.5px;font-weight:600;transition:color .12s,border-color .12s,background .12s;
+}
+.tool-popout .ms,.tool-pin .ms{font-size:16px}
+.tool-popout:hover{color:var(--accent);border-color:rgba(109,139,255,.5)}
+.tool-popout.on{
+  border-style:solid;border-color:rgba(109,139,255,.45);background:rgba(109,139,255,.12);color:var(--accent);
+}
+.tool-pin:hover{color:var(--amber);border-color:rgba(242,181,68,.5)}
+.tool-pin.on{
+  border-style:solid;border-color:rgba(242,181,68,.4);background:rgba(242,181,68,.1);color:var(--amber);
+}
+/* The way back to the overview, in the corner a project's details keep it. */
+.tool-back{flex:0 0 auto}
+.tool-close{
+  flex:0 0 auto;width:29px;height:29px;display:grid;place-items:center;border-radius:8px;
+  border:1px solid var(--line);background:var(--bg2);color:var(--dim2);
+}
+.tool-close .ms{font-size:16px}
+.tool-close:hover{color:var(--text);background:var(--bg3)}
+
+body.tool-popout-chrome .tool-popout,
+body.tool-popout-chrome .tool-pin,
+body.tool-popout-chrome .tool-back,
+body.tool-popout-chrome .tool-close,
+body.tool-popout-chrome [data-close-win]{display:none}
+
+/* A popped-out tool is already named by its own window title bar, so the page
+   does not say it a second time: the plate, the name and the description come
+   out of the header, and the Alpha/Beta mark moves up beside the window name.
+   A header left holding nothing but those goes with them — but one that still
+   carries a control (Refresh, the related tools) stays, stripped to it. */
+body.tool-popout-chrome .tool-head>.tool-plate,
+body.tool-popout-chrome .tool-head>.tool-title,
+body.tool-popout-chrome .tool-head>.tool-maturity,
+body.tool-popout-chrome .tool-head>#tools-maturity{display:none}
+body.tool-popout-chrome .tool-head:not(:has(> :not(.tool-plate):not(.tool-title):not(.tool-maturity):not(#tools-maturity):not(.tool-back):not(.tool-popout):not(.tool-pin):not(.tool-close):not([data-close-win]):not(:empty))){
+  display:none;
+}
+
+/* Tool pop-out shell: same full-bleed idea as #root, so the title bar and
+   content always span the window. Without this, wide tool grids inflate
+   intrinsic width and the chrome shrinks/centers with gaps either side. */
+html:has(body.tool-popout),
+body.tool-popout{
+  width:100%;
+  height:100%;
+  margin:0;
+  overflow:hidden;
+}
+body.popout.tool-popout{
+  display:block;
+  background:var(--bg);
+}
+#tool-shell{
+  position:fixed;
+  inset:0;
+  display:flex;
+  flex-direction:column;
+  width:100%;
+  height:100%;
+  min-width:0;
+  min-height:0;
+  overflow:hidden;
+  background:var(--bg);
+}
+body.tool-popout .titlebar{
+  flex:0 0 auto;
+  width:100%;
+  min-width:0;
+  position:relative;
+  z-index:20;
+}
+body.tool-popout .titlebar .drag{
+  flex:1 1 auto;
+  min-width:0;
+  /* JS startDragging only — a CSS/native drag region on this strip eats
+     clicks on the neighbouring window buttons in WebView2. */
+  -webkit-app-region:no-drag;
+  app-region:no-drag;
+  cursor:default;
+}
+body.tool-popout .brand{
+  min-width:0;
+  overflow:hidden;
+}
+body.tool-popout .brand > span{
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+/* The stage mark rides in the title bar beside the tool name. The strip is
+   dragged from JS, so the badge only has to survive the ellipsis rules. */
+body.tool-popout .brand .tool-maturity{
+  flex:0 0 auto;
+  height:18px;
+  overflow:visible;
+  text-overflow:clip;
+}
+body.tool-popout .win-btns{
+  position:relative;
+  z-index:21;
+  flex:0 0 auto;
+  -webkit-app-region:no-drag;
+  app-region:no-drag;
+}
+body.tool-popout .win-btn{
+  -webkit-app-region:no-drag;
+  app-region:no-drag;
+  pointer-events:auto;
+}
+.titlebar .win-btns,
+.titlebar .win-btn{
+  -webkit-app-region:no-drag;
+  app-region:no-drag;
+}
+body.tool-popout .tool-pop-host{
+  flex:1 1 auto;
+  width:100%;
+  min-width:0;
+  min-height:0;
+  overflow:auto;
+  display:flex;
+  flex-direction:column;
+  background:var(--bg);
+}
+body.tool-popout .tool-boot{
+  position:absolute;
+  inset:var(--titlebar) 0 0 0;
+  z-index:15;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:14px;
+  background:var(--bg);
+  color:var(--dim);
+  font-size:13px;
+  font-weight:600;
+}
+body.tool-popout .tool-boot[hidden]{display:none}
+body.tool-popout .tool-boot-spinner{
+  width:28px;height:28px;
+  border:3px solid var(--line);
+  border-top-color:var(--accent);
+  border-radius:50%;
+  animation:spin .8s linear infinite;
+}
+body.tool-popout .tool-pop-host.tools-page,
+body.tool-popout .tool-pop-host.dns-page,
+body.tool-popout .tool-pop-host.hosts-page,
+body.tool-popout .tool-pop-host.windows-tools-page,
+body.tool-popout .tool-pop-host.ports-page,
+body.tool-popout .tool-pop-ports{
+  flex:1 1 auto;
+  width:100%;
+  min-width:0;
+  min-height:0;
+  height:auto;
+  overflow:hidden;
+}
+body.tool-popout .tool-pop-host.windows-tools-page{
+  overflow:auto;
+}
+body.tool-popout .help-page{
+  max-width:none;
+  margin:0;
+  padding:16px;
+}
+.pin-chip.popped{border-color:rgba(109,139,255,.45)}
+.pin-chip.popped .pin-chip-go .ms:last-child{font-size:12px;color:var(--accent);opacity:.9}
+.pin-drag-ghost .pin-chip-off,.pin-drag-ghost .pin-off{display:none}
+.ports-pop-toolbar{
+  display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--bg1);
+}
+.ports-pop-toolbar .ports-filter{flex:1;min-width:0}
+.ports-pop-list{flex:1;min-height:0;overflow:auto;padding:8px 12px 16px}
+.ports-pop-row{
+  display:grid;grid-template-columns:72px minmax(120px,1fr) 90px minmax(0,2fr) auto;
+  gap:10px;align-items:center;padding:9px 10px;border:1px solid var(--line);border-radius:9px;
+  background:var(--bg1);margin-bottom:6px;
+}
+.ports-pop-row strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ports-pop-row small{overflow:hidden;color:var(--dim2);font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.ports-pop-port{color:var(--accent);font-weight:650}
+/* ---------- the pin dock: the only permanent seat a tool can earn ----------
+
+   It sits in the status bar because that is the one strip visible from every
+   view, and because keeping it there leaves search unchallenged as the way to
+   navigate. The bar holds the first few pins; "more" opens the rest upward. */
+.status-pins-wrap{position:relative;display:flex;flex:0 1 auto;min-width:0;border-left:1px solid var(--line)}
+/* With nothing pinned there is no dock at all - not even the divider, which
+   would otherwise read as an empty compartment nobody can fill. */
+.status-pins-wrap[hidden]{display:none}
+.status-pins{display:flex;align-items:center;gap:6px;min-width:0;padding:0 11px;overflow:hidden}
+.pin-chip,.pin-more,.pin-add{
+  flex:0 0 auto;display:inline-flex;align-items:center;height:22px;
+  border:1px solid var(--line);border-radius:6px;background:var(--bg2);color:var(--dim);
+  font-size:11.5px;font-weight:600;transition:color .12s,border-color .12s,background .12s;
+}
+.pin-more,.pin-add{gap:5px;padding:0 8px}
+/* Two hits in one chip: the name opens the tool, the cross gives the seat back.
+   The cross is dimmed until the pointer is on the chip, so a row of pins reads
+   as names rather than as a row of crosses. */
+.pin-chip{min-width:0;overflow:hidden}
+.pin-chip[data-drag-pin],.pin-row[data-drag-pin]{cursor:grab;user-select:none;touch-action:none}
+.pin-chip.dragging,.pin-row.dragging{opacity:.38;cursor:grabbing}
+.pin-chip.drop-before{box-shadow:inset 3px 0 0 var(--accent)}
+.pin-chip.drop-after{box-shadow:inset -3px 0 0 var(--accent)}
+.pin-row.drop-before{box-shadow:inset 0 2px 0 var(--accent)}
+.pin-row.drop-after{box-shadow:inset 0 -2px 0 var(--accent)}
+.pin-chip-go{
+  display:inline-flex;align-items:center;gap:5px;min-width:0;height:100%;
+  padding:0 3px 0 8px;color:inherit;font:inherit;
+}
+.pin-chip-go span:not(.ms){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pin-chip-off{
+  flex:0 0 auto;display:grid;place-items:center;width:19px;height:100%;
+  color:var(--dim2);opacity:.55;transition:color .12s,opacity .12s,background .12s;
+}
+.pin-chip:hover .pin-chip-off{opacity:1}
+.pin-chip-off:hover{color:var(--red);opacity:1;background:rgba(242,84,91,.16)}
+.pin-chip .ms,.pin-more .ms,.pin-add .ms{font-size:14px}
+.pin-chip-off .ms{font-size:13px}
+.pin-chip:hover,.pin-more:hover{color:var(--text);border-color:var(--dim2)}
+.pin-chip.on{border-color:rgba(109,139,255,.5);background:rgba(109,139,255,.16);color:var(--text)}
+.pin-more.on{border-color:var(--dim2);background:var(--bg3);color:var(--text)}
+.pin-add{border-style:dashed;color:var(--dim2)}
+.pin-add:hover{color:var(--amber);border-color:rgba(242,181,68,.5)}
+
+/* Every pin, with the shortcut it answers to and the way to take it back. */
+.pins-pop{
+  position:absolute;z-index:115;right:6px;bottom:calc(100% + 7px);width:320px;
+  max-width:calc(100vw - 24px);display:flex;flex-direction:column;overflow:hidden;
+  border:1px solid var(--line);border-radius:11px;background:var(--bg1);
+  box-shadow:0 -18px 48px rgba(0,0,0,.55);
+}
+.pins-pop[hidden]{display:none}
+html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
+.pins-pop header{
+  display:flex;align-items:center;gap:8px;padding:9px 11px;border-bottom:1px solid var(--line);
+  color:var(--dim2);font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+}
+.pins-pop header .ms{font-size:14px}
+.pins-pop header strong{font-size:10px}
+.pins-pop header span{margin-left:auto;font-weight:500;letter-spacing:0;text-transform:none;font-size:11px}
+.pins-pop header button{width:18px;height:18px;display:grid;place-items:center;border-radius:5px;color:var(--dim2)}
+.pins-pop header button .ms{font-size:13px}
+.pins-pop header button:hover{color:var(--text);background:var(--bg3)}
+.pins-list{max-height:292px;overflow:auto;padding:5px}
+.pin-row{display:flex;align-items:center;border-radius:8px}
+.pin-row:hover{background:var(--bg2)}
+.pin-row.on{background:rgba(109,139,255,.12)}
+.pin-go{flex:1;min-width:0;display:flex;align-items:center;gap:9px;padding:7px 6px;text-align:left;color:var(--text)}
+.pin-go>.ms{flex:0 0 auto;font-size:17px;color:var(--dim2)}
+.pin-row.in-bar .pin-go>.ms{color:var(--amber)}
+.pin-row.on .pin-go>.ms{color:var(--accent)}
+.pin-go span{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.pin-go strong{font-size:12.5px;font-weight:600}
+.pin-go small{overflow:hidden;color:var(--dim);font-size:10.5px;text-overflow:ellipsis;white-space:nowrap}
+.pin-go i{
+  flex:0 0 auto;padding:1px 5px;border-radius:4px;background:var(--bg3);color:var(--dim2);
+  font:normal 9.5px 'Cascadia Mono','Cascadia Code',Consolas,monospace;
+}
+.pin-off{flex:0 0 auto;width:24px;height:24px;display:grid;place-items:center;margin-right:4px;border-radius:6px;color:var(--dim2)}
+.pin-off .ms{font-size:14px}
+.pin-off:hover{color:var(--red);background:rgba(242,84,91,.12)}
+.pins-pop footer{
+  display:flex;align-items:center;gap:8px;padding:8px 11px;border-top:1px solid var(--line);
+  background:var(--bg2);color:var(--dim2);font-size:10.5px;
+}
+.pins-pop footer .ms{font-size:13px}
+
+/* ---------- DNS ----------
+
+   Three columns, none of which scroll the page: the names worth looking up on
+   the left, the answers in the middle, and the one file on this machine that
+   can overrule all of them on the right. Only the panel bodies scroll, so the
+   field, the verdict and the Apply button are always in reach. */
+.dns-page{
+  flex:1;min-height:0;display:flex;flex-direction:column;background:var(--bg);overflow:hidden;
+}
+.dns-page[hidden]{display:none}
+.dns-page .dot{width:7px;height:7px;flex:0 0 auto;border-radius:50%;display:inline-block}
+.dns-page .dot.green{background:var(--green)}
+.dns-page .dot.amber{background:var(--amber)}
+.dns-page .dot.red{background:var(--red)}
+.dns-page .dot.blue{background:var(--accent)}
+.dns-page .dot.grey{background:var(--dim2)}
+
+.dns-bar{
+  flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:12px 16px;
+  border-bottom:1px solid var(--line);background:var(--bg1);
+}
+.dns-field{flex:1;min-width:160px}
+.dns-field input{font-size:13px}
+.dns-field kbd{
+  flex:0 0 auto;color:var(--dim2);font-family:'Cascadia Mono',Consolas,ui-monospace,monospace;font-size:10.5px;
+}
+
+/* A panel is a head, a scrolling body and its own chrome underneath. Below the
+   height where that chrome would start being cut off the panels stop shrinking
+   and the page scrolls instead — the add row is never the part that vanishes. */
+.dns-body{
+  flex:1;min-height:0;display:flex;gap:12px;padding:13px 16px 14px;overflow-y:auto;
+}
+
+/* ---------- one panel: a head that never moves, a body that scrolls ---------- */
+.dns-panel{
+  display:flex;flex-direction:column;min-height:0;border:1px solid var(--line);
+  border-radius:11px;background:var(--bg1);overflow:hidden;
+}
+.dns-panel-head{
+  flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:9px 12px;
+  border-bottom:1px solid var(--line);background:var(--bg2);
+}
+.dns-panel-head>i{flex:1}
+.dns-label{
+  color:var(--dim);font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+}
+.dns-panel-head .ms{font-size:15px;color:var(--dim2)}
+.dns-panel-body{flex:1;min-height:0;overflow:auto}
+.dns-panel-foot{
+  flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:9px 12px;
+  border-top:1px solid var(--line);background:var(--bg2);color:var(--dim2);font-size:10.5px;line-height:1.4;
+}
+.dns-panel-foot .ms{font-size:14px}
+.dns-mini{
+  width:22px;height:22px;display:grid;place-items:center;border-radius:6px;color:var(--dim2);margin-left:auto;
+}
+.dns-mini:hover{background:var(--bg3);color:var(--text)}
+.dns-mini .ms{font-size:15px}
+.dns-mini-btn{
+  height:23px;padding:0 9px;border-radius:6px;border:1px solid var(--line);
+  color:var(--dim);font-size:10.5px;font-weight:600;white-space:nowrap;
+}
+.dns-mini-btn:hover{color:var(--text);background:var(--bg3)}
+
+.dns-empty{padding:16px 14px;color:var(--dim2);font-size:11.5px;line-height:1.5}
+.dns-empty-big{
+  display:flex;flex-direction:column;align-items:center;gap:8px;padding:38px 24px;text-align:center;
+}
+.dns-empty-big .ms{font-size:28px;color:var(--dim2)}
+.dns-empty-big strong{color:var(--text);font-size:14px;font-weight:650}
+.dns-empty-big span{color:var(--dim2);font-size:11.5px;max-width:44ch}
+.dns-empty-big.bad .ms{color:var(--red)}
+.dns-sk-row,.dns-sk-record,.dns-sk-resolver,.dns-sk-host{
+  display:flex;align-items:center;padding:11px 12px;border-bottom:1px solid var(--bg2);
+}
+.dns-sk-row .sk{width:70%}
+.dns-sk-record .sk{width:85%}
+.dns-sk-resolver .sk,.dns-sk-host .sk{width:78%}
+
+/* ---------- the names worth looking up ---------- */
+.dns-domains{flex:0 0 224px;min-height:250px}
+.dns-domain{
+  width:100%;display:flex;align-items:center;gap:8px;padding:7px 5px 7px 11px;text-align:left;
+  border-bottom:1px solid var(--bg2);
+}
+.dns-domain:hover{background:var(--bg2)}
+.dns-domain.on{background:rgba(109,139,255,.14)}
+.dns-domain-remove{
+  width:25px;height:25px;flex:0 0 auto;display:grid;place-items:center;
+  border-radius:6px;color:var(--dim2);opacity:0;
+}
+.dns-domain:hover .dns-domain-remove,.dns-domain-remove:focus-visible{opacity:1}
+.dns-domain-remove:hover{background:rgba(242,84,91,.12);color:var(--red)}
+.dns-domain-remove .ms{font-size:14px}
+.dns-domain>span{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.dns-domain strong{
+  font-size:11.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.dns-domain small{
+  color:var(--dim2);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.dns-interest-add{flex:0 0 auto;display:flex;gap:6px;padding:8px;border-top:1px solid var(--line)}
+.dns-interest-add input{
+  flex:1;min-width:0;height:27px;padding:0 7px;border:1px solid var(--line);border-radius:7px;
+  background:var(--bg);font-size:10.5px;
+}
+.dns-interest-add input:focus{border-color:var(--accent)}
+.dns-interest-add .btn{height:27px;padding:0 9px;font-size:11px}
+
+/* ---------- the answers ---------- */
+.dns-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:11px;min-height:320px}
+.dns-records{flex:1;min-height:0}
+.dns-resolvers{flex:0 0 178px}
+.dns-records .seg{
+  display:inline-flex;height:24px;border:1px solid var(--line);border-radius:7px;
+  overflow:hidden;background:var(--bg);
+}
+.dns-records .seg button{
+  padding:0 8px;border-left:1px solid var(--line);color:var(--dim2);font-size:10.5px;font-weight:600;
+}
+.dns-records .seg button:first-child{border-left:0}
+.dns-records .seg button.empty{opacity:.42}
+.dns-records .seg button:hover{color:var(--text)}
+.dns-records .seg button.on{background:rgba(109,139,255,.18);color:var(--text);opacity:1}
+:root[data-theme="light"] .dns-records .seg button.on{background:#e1e4ea;color:#222733}
+.dns-records .seg button span{margin-left:5px;font-size:9.5px;opacity:.7;font-variant-numeric:tabular-nums}
+.dns-answer-note{color:var(--dim2);font-size:10.5px;white-space:nowrap}
+
+.dns-record{
+  display:flex;align-items:flex-start;gap:11px;padding:9px 12px;border-bottom:1px solid var(--bg2);
+}
+.dns-record:hover{background:var(--bg2)}
+.dns-rtype{
+  flex:0 0 54px;padding:2px 6px;border-radius:5px;text-align:center;font-size:10.5px;font-weight:700;
+  background:var(--bg3);color:var(--dim);
+}
+.dns-rtype.t-a,.dns-rtype.t-aaaa{background:rgba(63,202,127,.14);color:var(--green)}
+.dns-rtype.t-cname{background:rgba(109,139,255,.16);color:var(--accent)}
+.dns-rtype.t-mx{background:rgba(180,139,255,.16);color:var(--purple)}
+.dns-rtype.t-txt{background:rgba(242,181,68,.14);color:var(--amber)}
+.dns-rtype.t-ptr{background:rgba(58,214,200,.14);color:var(--teal)}
+.dns-rvalue{flex:1;min-width:0;font-size:12px;line-height:1.5;overflow-wrap:anywhere;display:flex;flex-direction:column;gap:1px}
+.dns-rname{font-size:10.5px;color:var(--dim2);line-height:1.4}
+.dns-rname.off{color:var(--amber)}
+.dns-rdata{line-height:1.5}
+.dns-rmeta{
+  flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-end;gap:2px;
+  color:var(--dim2);font-size:10.5px;
+}
+.dns-rmeta small{color:var(--dim2);font-size:9.5px;opacity:.8}
+.dns-row-btn{
+  width:23px;height:23px;flex:0 0 auto;display:grid;place-items:center;border-radius:6px;color:var(--dim2);
+}
+.dns-row-btn:hover{background:var(--bg3);color:var(--text)}
+.dns-row-btn .ms{font-size:15px}
+.dns-row-btn-slot{width:23px;flex:0 0 auto}
+.dns-query-foot{justify-content:space-between}
+.dns-query-foot i{flex:1}
+.dns-query-foot .dns-mini-btn{display:inline-flex;align-items:center;gap:4px}
+.dns-query-foot .dns-mini-btn .ms{font-size:13px}
+.dns-query-foot .good{color:var(--green)}
+.dns-query-foot .bad,.dns-record .bad{color:var(--red)}
+.dns-query-foot .dim{color:var(--dim2)}
+
+/* The one thing DNS can do that no amount of reading records explains: this
+   machine has been told the answer already, and is not going to ask. */
+.dns-override{
+  display:flex;align-items:center;gap:11px;padding:8px 12px;
+  border:1px solid rgba(180,139,255,.4);border-radius:10px;background:rgba(180,139,255,.09);
+  font-size:12px;line-height:1.45;
+}
+.dns-override .ms{font-size:18px;color:var(--purple);flex:0 0 auto}
+.dns-override i{flex:1}
+.dns-override b{font-weight:650}
+.dns-override .dns-mini-btn{border-color:rgba(180,139,255,.45);color:var(--purple)}
+
+.dns-verdict{font-size:10.5px;font-weight:650;color:var(--dim2);white-space:nowrap}
+.dns-verdict.good{color:var(--green)}
+.dns-verdict.warn{color:var(--amber)}
+.dns-verdict.bad{color:var(--red)}
+.dns-resolver{
+  display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--bg2);
+}
+.dns-resolver.odd{background:rgba(242,181,68,.07)}
+.dns-resolver-name{flex:0 0 92px;display:flex;flex-direction:column;gap:1px}
+.dns-resolver-name strong{font-size:11.5px;font-weight:600}
+.dns-resolver-name small{color:var(--dim2);font-size:9.5px}
+.dns-resolver-answer{
+  flex:1;min-width:0;font-size:11px;color:var(--dim);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.dns-resolver-answer.bad{color:var(--red)}
+.dns-resolver-ms{flex:0 0 auto;color:var(--dim2);font-size:10px;font-variant-numeric:tabular-nums}
+
+/* ---------- the hosts file, its own page ---------- */
+.hosts-page{
+  flex:1;min-height:0;display:flex;flex-direction:column;background:var(--bg);overflow:hidden;
+}
+.hosts-page[hidden]{display:none}
+.hosts-bar .dns-hosts-path{flex:0 1 auto;font-size:11px}
+.hosts-bar-gap{flex:1}
+.hosts-body{flex:1;min-height:0;display:flex;padding:13px 16px 0;overflow-y:auto}
+.hosts-panel{flex:1;min-width:0;min-height:240px}
+/* What the file means, and what is staged, sit under the list as one card so
+   Apply is always on screen however short the window is. */
+.hosts-foot{
+  flex:0 0 auto;display:flex;flex-direction:column;margin:13px 16px 14px;
+  border:1px solid var(--line);border-radius:11px;background:var(--bg1);overflow:hidden;
+}
+.hosts-foot .dns-safety{border-top:0}
+
+/* A row is a button: clicking the address or the names opens the two fields
+   in place, so editing a line is the same gesture as reading it. */
+.dns-host-open{
+  flex:1;min-width:0;display:flex;align-items:center;gap:9px;height:24px;padding:0 6px;
+  margin:0 -6px;border-radius:7px;text-align:left;color:inherit;background:none;border:0;
+}
+.dns-host-open:hover{background:var(--bg3)}
+.dns-host-open:focus-visible{outline:1px solid var(--accent);outline-offset:0}
+.dns-host-row.editing{background:var(--bg2);box-shadow:inset 2px 0 0 var(--accent)}
+.dns-host-edit{display:flex;align-items:center;gap:8px}
+.dns-host-edit .ms{font-size:16px;color:var(--accent);flex:0 0 auto}
+.dns-host-edit input{
+  height:26px;padding:0 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);
+  font-size:11px;color:var(--text);
+}
+.dns-host-edit input:focus{border-color:var(--accent)}
+.dns-host-edit input[data-edit-field="ip"]{flex:0 0 118px}
+.dns-host-edit input[data-edit-field="names"]{flex:1;min-width:0}
+.dns-host-edit .btn{height:26px;padding:0 10px;font-size:11.5px}
+.dns-host-warn.edit{background:var(--bg3);color:var(--dim2);font-weight:500}
+.dns-host-warn.edit .ms{color:var(--dim2)}
+.dns-what{
+  height:23px;display:inline-flex;align-items:center;gap:5px;padding:0 8px;
+  border:1px solid var(--line);border-radius:6px;color:var(--dim);font-size:10.5px;font-weight:600;
+}
+.dns-what:hover{color:var(--text);background:var(--bg3)}
+.dns-what .ms{font-size:14px;color:var(--dim2)}
+.dns-backups{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto}
+.dns-backup-count{
+  display:inline-flex;align-items:center;gap:4px;height:21px;padding:0 7px;border-radius:6px;
+  background:rgba(63,202,127,.12);color:var(--green);font-size:10px;font-weight:600;
+}
+.dns-backup-count.dim{background:var(--bg3);color:var(--dim2)}
+.dns-backup-count .ms{font-size:13px;color:inherit}
+.dns-hosts-path{
+  flex:1;min-width:0;color:var(--dim2);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+
+.dns-host-row{
+  display:flex;flex-direction:column;gap:4px;padding:7px 12px;border-bottom:1px solid var(--bg2);
+}
+.dns-host-row.off .dns-host-ip,.dns-host-row.off .dns-host-name{color:var(--dim2)}
+.dns-host-row.gone{opacity:.45}
+.dns-host-row.gone .dns-host-name{text-decoration:line-through}
+/* An edit that has not been written yet has to be visible as an edit, or
+   "Apply" is a button nobody can check before pressing. */
+.dns-host-row.changed,.dns-host-row.added{
+  background:rgba(109,139,255,.08);box-shadow:inset 2px 0 0 var(--accent);
+}
+.dns-host-row.added{background:rgba(63,202,127,.08);box-shadow:inset 2px 0 0 var(--green)}
+.dns-host-row.flash{animation:dnsflash 1.8s ease}
+@keyframes dnsflash{
+  0%,60%{background:rgba(180,139,255,.28)}
+  100%{background:transparent}
+}
+.dns-host-main{display:flex;align-items:center;gap:9px}
+.dns-host-ip{flex:0 0 92px;font-size:11px;color:var(--dim)}
+.dns-host-name{
+  flex:1;min-width:0;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.dns-switch{
+  flex:0 0 auto;width:28px;height:16px;border-radius:99px;background:var(--bg3);
+  border:1px solid var(--line);padding:0 2px;display:flex;align-items:center;transition:background .14s;
+}
+.dns-switch i{
+  width:10px;height:10px;border-radius:50%;background:var(--dim2);display:block;
+  transition:transform .14s,background .14s;
+}
+.dns-switch.on{background:rgba(63,202,127,.28);border-color:rgba(63,202,127,.5)}
+.dns-switch.on i{transform:translateX(12px);background:var(--green)}
+.dns-switch.static{cursor:default}
+.dns-host-warn{
+  align-self:flex-start;margin-left:37px;display:inline-flex;align-items:center;gap:5px;
+  padding:1px 7px;border-radius:5px;background:rgba(242,181,68,.13);color:var(--amber);
+  font-size:10px;font-weight:600;
+}
+.dns-host-warn.new{background:rgba(63,202,127,.13);color:var(--green)}
+.dns-host-warn .ms{font-size:13px}
+
+.dns-add{
+  flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:9px 12px;border-top:1px solid var(--line);
+}
+.dns-add .ms{font-size:16px;color:var(--dim2)}
+.dns-add input{
+  height:26px;padding:0 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);font-size:11px;
+}
+.dns-add input:focus{border-color:var(--accent)}
+.dns-add #hosts-new-ip{flex:0 0 78px}
+.dns-add #hosts-new-name{flex:1;min-width:0}
+.dns-add .btn{height:26px;padding:0 10px;font-size:11.5px}
+
+.dns-safety{
+  flex:0 0 auto;display:flex;align-items:flex-start;gap:8px;padding:8px 12px;
+  border-top:1px solid var(--line);background:var(--bg);
+}
+.dns-safety .ms{font-size:15px;color:var(--green);margin-top:1px}
+.dns-safety.warn .ms{color:var(--amber)}
+.dns-safety-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.dns-safety strong{font-size:11.5px;font-weight:600}
+.dns-safety small{color:var(--dim2);font-size:10px;line-height:1.45}
+
+.dns-message{
+  flex:0 0 auto;padding:7px 12px;border-top:1px solid var(--line);
+  color:var(--dim);font-size:11px;line-height:1.45;
+}
+.dns-message.good{color:var(--green)}
+.dns-message.warn{color:var(--amber)}
+.dns-message.bad{color:var(--red)}
+.dns-message[hidden]{display:none}
+/* On the DNS page it is a line of its own above the answers, not the last
+   strip of a panel, so it carries its own edge instead of a top border. */
+.dns-main>.dns-message{
+  border:1px solid var(--line);border-radius:9px;background:var(--bg1);padding:8px 12px;
+}
+
+.dns-staged{
+  flex:0 0 auto;display:flex;align-items:center;gap:9px;padding:9px 12px;
+  border-top:1px solid var(--line);background:var(--bg2);
+}
+.dns-staged .ms{font-size:16px;color:var(--dim2)}
+.dns-staged.on .ms{color:var(--accent)}
+.dns-staged-text{flex:1;min-width:0;font-size:11px;line-height:1.4;color:var(--dim)}
+.dns-staged.on .dns-staged-text{color:var(--text)}
+.dns-staged .btn{height:27px;padding:0 10px;font-size:11.5px}
+.dns-staged .btn .ms{font-size:15px;color:inherit}
+
+/* ---------- hosts-file explainer ---------- */
+.dns-overlay{
+  position:fixed;inset:0;z-index:120;display:grid;place-items:center;padding:20px;
+  background:rgba(0,0,0,.58);
+}
+.dns-dialog{
+  width:min(520px,100%);max-height:min(680px,85vh);overflow:auto;padding:20px;
+  border:1px solid var(--line);border-radius:12px;background:var(--bg1);box-shadow:0 20px 60px rgba(0,0,0,.6);
+}
+.dns-dialog header{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.dns-dialog header>.ms{font-size:22px;color:var(--purple)}
+.dns-dialog header h3{flex:1;font-size:16px;font-weight:650}
+.dns-dialog header button{width:30px;height:30px;display:grid;place-items:center;border-radius:6px;color:var(--dim)}
+.dns-dialog header button:hover{background:var(--bg3);color:var(--text)}
+.dns-dialog p{margin:0 0 13px;color:var(--dim);font-size:12.5px;line-height:1.6}
+.dns-dialog p b,.dns-dialog li b{color:var(--text);font-weight:650}
+.dns-dialog code,.dns-dialog pre{font-family:'Cascadia Mono','Cascadia Code',Consolas,monospace}
+.dns-dialog pre{
+  margin:2px 0 14px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;
+  background:var(--bg);color:var(--green);font-size:12px;overflow:auto;
+}
+.dns-dialog ul{display:flex;flex-direction:column;gap:9px;margin:15px 0 0;padding:0;list-style:none}
+.dns-dialog li{display:flex;align-items:flex-start;gap:9px;color:var(--dim);font-size:11.5px;line-height:1.5}
+.dns-dialog li>.ms{flex:0 0 auto;margin-top:1px;color:var(--purple);font-size:16px}
+.dns-dialog footer{display:flex;justify-content:flex-end;margin-top:18px}
+.dns-dialog footer .btn{height:32px;padding:0 14px;font-size:12.5px}
+
+@media (max-width:1240px){
+  .dns-domains{flex:0 0 200px}
+}
+/* Under about 900px the names list stops being a column and becomes a band
+   above the answers, rather than one too narrow to read a name in. */
+@media (max-width:900px){
+  .dns-body{flex-direction:column}
+  .dns-domains{flex:0 0 auto;min-height:190px;max-height:34vh}
+  .dns-main{flex:1 1 auto;min-height:340px}
+}
+
+/* ---------- shared util tools (encode / hash / JWT / formats) ---------- */
+.tools-page{
+  flex:1;min-height:0;display:flex;flex-direction:column;background:var(--bg);overflow:hidden;
+}
+.tools-page[hidden]{display:none}
+.tools-tag{
+  flex:0 0 auto;padding:2px 7px;border-radius:5px;background:var(--bg3);color:var(--dim2);
+  font-size:10px;
+}
+.tools-toolbar{
+  flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:10px 16px;flex-wrap:wrap;
+  border-bottom:1px solid var(--line);background:var(--bg1);
+}
+.tools-toolbar > i,.tools-panel-head > i,.tools-hint-bar > i{flex:1}
+.tools-modes{
+  display:inline-flex;height:28px;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--bg);
+}
+.tools-modes button{
+  padding:0 11px;border-left:1px solid var(--line);color:var(--dim2);font-size:11.5px;font-weight:600;
+}
+.tools-modes button:first-child{border-left:0}
+.tools-modes button:hover{color:var(--text)}
+.tools-modes button.on{background:rgba(109,139,255,.18);color:var(--text)}
+:root[data-theme="light"] .tools-modes button.on{background:#e1e4ea;color:#222733}
+.tools-flags{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+.tools-flag{
+  display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:8px;
+  border:1px solid var(--line);background:var(--bg2);color:var(--dim);font-size:11.5px;
+}
+.tools-flag .ms{font-size:14px}
+.tools-flag.on{border-color:rgba(58,214,200,.4);background:rgba(58,214,200,.1);color:#3ad6c8}
+.tools-action{height:28px;padding:0 12px;font-size:12px}
+.tools-action[hidden],.tools-modes[hidden],.tools-key[hidden]{display:none}
+.tools-key{
+  display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 10px;border:1px solid var(--line);
+  border-radius:8px;background:var(--bg);color:var(--dim2);
+}
+.tools-key .ms{font-size:14px}
+.tools-key input{width:190px;font-size:11.5px;background:none;border:0;outline:0;color:var(--text)}
+.tools-body{
+  flex:1;min-height:0;display:flex;flex-direction:column;gap:10px;padding:12px 16px 14px;overflow:auto;
+}
+.tools-panel{
+  display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow:hidden;
+}
+.tools-input-panel{flex:0 0 auto}
+.tools-output-panel{flex:1;min-height:180px}
+.tools-output-panel.is-error{border-color:rgba(242,84,91,.35)}
+.tools-panel-head{
+  display:flex;align-items:center;gap:8px;padding:7px 11px;border-bottom:1px solid var(--line);background:var(--bg2);
+}
+.tools-label{
+  color:var(--dim);font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+}
+.tools-stats{color:var(--dim2);font-size:10.5px}
+.tools-mini{
+  display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:6px;
+  color:var(--dim);font-size:11px;
+}
+.tools-mini .ms{font-size:14px}
+.tools-mini:hover{color:var(--text);background:var(--bg3)}
+#tools-input{
+  display:block;width:100%;height:132px;padding:11px;border:0;outline:0;resize:vertical;
+  background:var(--bg);color:var(--text);font-size:12px;line-height:1.6;
+}
+.tools-hint-bar{
+  display:flex;align-items:center;gap:10px;padding:8px 11px;border-radius:9px;
+  border:1px dashed var(--line);background:var(--bg1);color:var(--dim);
+}
+.tools-hint-bar[hidden]{display:none}
+.tools-hint-bar .ms{font-size:16px;color:var(--dim2)}
+.tools-hint-bar.hit{border-style:solid;border-color:rgba(63,202,127,.28);background:rgba(63,202,127,.06)}
+.tools-hint-bar.hit .ms,.tools-hint-bar.hit .tools-hint-label{color:var(--green)}
+.tools-hint-bar.suggest{border-style:solid;border-color:rgba(180,139,255,.35);background:rgba(180,139,255,.08)}
+.tools-hint-bar.suggest .ms,.tools-hint-bar.suggest .tools-hint-label{color:#b48bff}
+.tools-hint-label{font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase}
+.tools-hint-text{font-size:12px;color:var(--dim)}
+.tools-hint-go{
+  display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 10px;border-radius:6px;
+  border:1px solid rgba(180,139,255,.45);background:rgba(180,139,255,.12);color:#b48bff;
+  font-size:11.5px;font-weight:600;
+}
+.tools-hint-go .ms{font-size:14px;color:inherit}
+.tools-output{flex:1;min-height:0;overflow:auto;user-select:text;cursor:text}
+.tools-text,.tools-block-body{
+  margin:0;padding:11px;font-size:12px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--text);
+  user-select:text;cursor:text;
+}
+.tools-empty{padding:28px 14px;text-align:center;color:var(--dim2);font-size:12.5px;user-select:none;cursor:default}
+.tools-heavy{
+  display:flex;flex-direction:column;align-items:flex-start;gap:12px;margin:18px 16px;
+  max-width:420px;color:var(--dim);user-select:none;cursor:default;
+}
+.tools-heavy > .ms{font-size:28px;color:var(--dim2)}
+.tools-heavy-copy{display:flex;flex-direction:column;gap:4px}
+.tools-heavy-copy strong{color:var(--text);font-size:13.5px;font-weight:650}
+.tools-heavy-copy span{font-size:12.5px;line-height:1.45}
+.tools-heavy .btn{height:32px;padding:0 14px;font-size:12.5px}
+.tools-error{
+  display:flex;align-items:flex-start;gap:9px;margin:11px;padding:10px 11px;
+  border:1px solid rgba(242,84,91,.4);border-radius:9px;background:rgba(242,84,91,.09);color:#f2a3a7;
+  user-select:text;cursor:text;
+}
+.tools-error .ms{font-size:17px;color:var(--red)}
+.tools-row{
+  display:grid;grid-template-columns:156px minmax(0,1fr);border-bottom:1px solid var(--line);
+}
+.tools-row-k{padding:8px 11px;background:var(--bg2);color:var(--dim2);font-size:11px;font-weight:600;user-select:text}
+.tools-row-v{display:flex;align-items:center;gap:8px;padding:8px 11px;min-width:0;color:var(--text)}
+.tools-row-text{flex:1;min-width:0;font-size:11.5px;overflow-wrap:anywhere;user-select:text;cursor:text}
+.tools-cell-copy{
+  flex:0 0 auto;width:26px;height:26px;display:grid;place-items:center;border-radius:6px;
+  color:var(--dim2);user-select:none;cursor:pointer;
+}
+.tools-cell-copy .ms{font-size:15px}
+.tools-cell-copy:hover{color:var(--text);background:var(--bg3)}
+.tools-block{border-bottom:1px solid var(--line)}
+.tools-block-head{
+  display:flex;align-items:center;gap:8px;padding:7px 11px;font-size:11px;font-weight:650;
+}
+.tools-block-head .mono{margin-left:auto;font-weight:500;opacity:.85}
+.tools-block-head .tools-cell-copy{margin-left:4px}
+.windows-tools-page{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--bg);color:var(--text);overflow:hidden}
+.windows-tools-page[hidden]{display:none}.windows-tools-page .win-refresh{height:29px;padding:0 10px;font-size:11.5px}
+.win-tool-body{flex:1;min-height:0;overflow:auto;padding:14px 16px 18px}
+/* Event Log: fill the pane with flex so the list scrolls inside — a fixed
+   calc(100% - Npx) was always a few pixels short and left a phantom scrollbar. */
+.win-tool-body:has(.event-workspace){display:flex;flex-direction:column;overflow:hidden;padding-bottom:14px}.win-controls{display:flex;align-items:flex-end;gap:10px;padding:0 0 12px}.win-controls label{display:flex;flex-direction:column;gap:6px;color:var(--dim);font-size:11px;font-weight:600}.win-controls label span{display:inline-flex;align-items:center;gap:4px;margin-right:8px;color:var(--text);font-weight:400}.win-controls label.grow{flex:1;min-width:150px}.win-controls input:not([type=checkbox]){width:100%;height:34px;padding:0 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg1);color:var(--text)}.win-controls input:focus{border-color:var(--accent)}.win-controls input::placeholder{color:var(--dim2)}
+.win-status{min-height:32px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg1);font-size:11.5px;color:var(--dim)}.win-status[data-tone=ok]{color:var(--green)}.win-status[data-tone=warn]{color:var(--amber)}.win-status[data-tone=bad]{color:var(--red)}
+.win-empty{padding:48px;text-align:center;color:var(--dim2)}.event-results{display:grid;margin-top:12px;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--bg1)}.event-row{display:grid;grid-template-columns:160px 70px minmax(150px,1fr) 60px 90px;gap:10px;text-align:left;background:var(--bg1);color:var(--text);border:0;border-bottom:1px solid var(--line);padding:9px 12px}.event-row:last-child{border-bottom:0}.event-row:hover{background:var(--bg2)}.event-row time,.event-row small,.event-row code{font-size:11px;color:var(--dim2)}.event-row p{grid-column:1/-1;white-space:pre-wrap;margin:0;font:12px/1.45 'Cascadia Mono',Consolas,monospace;color:var(--text);user-select:text}.event-level{font-size:10px;text-transform:uppercase;font-weight:700}.event-level.error,.event-level.critical{color:var(--red)}.event-level.warning{color:var(--amber)}
+.win-table{width:100%;border-collapse:separate;border-spacing:0;margin:12px 0 24px;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow:hidden;font-size:12px}.win-table th{text-align:left;color:var(--dim);background:var(--bg2);font-weight:600;padding:8px;border-bottom:1px solid var(--line)}.win-table td{padding:8px;border-bottom:1px solid var(--line);vertical-align:top;max-width:620px;overflow-wrap:anywhere}.win-table tr:last-child td{border-bottom:0}.win-table .mono{font-family:'Cascadia Mono',Consolas,monospace;user-select:text}.linklike{border:0;background:none;color:var(--text);display:flex;gap:6px;cursor:pointer}.linklike .ms{font-size:16px;color:var(--accent)}.state-pill{padding:2px 7px;border-radius:10px;background:rgba(63,202,127,.12);color:var(--green)}.path-missing .state-pill{color:var(--red);background:rgba(242,84,91,.12)}.path-duplicate .state-pill,.path-unresolved .state-pill{color:var(--amber);background:rgba(242,181,68,.12)}
+.repair-grid{display:grid;gap:12px;margin-top:12px}.repair-grid.single{grid-template-columns:minmax(280px,680px)}.repair-card{display:flex;flex-direction:column;min-height:190px;border:1px solid var(--line);border-radius:11px;background:var(--bg1);padding:18px}.repair-card>div{display:flex;align-items:center;gap:10px}.repair-card>div>.ms{font-size:22px;color:var(--accent)}.repair-card h3{margin:0;font-size:15px}.repair-card p{max-width:62ch;flex:1;margin:12px 0;color:var(--dim);font-size:12.5px;line-height:1.55}.repair-card .btn{align-self:flex-start}.btn.danger,.iconbtn.danger{color:#fff;background:var(--red);border-color:var(--red)}
+.log-tail-output{height:calc(100% - 92px);min-height:280px;overflow:auto;margin:0;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--bg1);color:var(--text);font:12px/1.5 'Cascadia Mono',Consolas,monospace;white-space:pre-wrap;user-select:text}
+.audio-groups{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:12px;margin-top:12px}.audio-group{border:1px solid var(--line);border-radius:11px;background:var(--bg1);overflow:hidden}.audio-group>header{display:grid;grid-template-columns:22px 1fr;align-items:center;gap:3px 8px;padding:11px 12px;border-bottom:1px solid var(--line);background:var(--bg2)}.audio-group>header>.ms{grid-row:1/3;color:var(--accent);font-size:19px}.audio-group>header strong{font-size:13px}.audio-group>header small{color:var(--dim2);font-size:10.5px}.audio-device{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border-bottom:1px solid var(--line);text-align:left;color:var(--text)}.audio-device:last-child{border-bottom:0}.audio-device:hover{background:var(--bg2)}.audio-device.on{background:rgba(109,139,255,.1)}.audio-device>span{display:flex;align-items:center;gap:9px;min-width:0}.audio-device .ms{font-size:17px;color:var(--dim2)}.audio-device.on .ms{color:var(--green)}.audio-device strong{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.audio-device small{flex:0 0 auto;color:var(--dim2);font-size:10.5px}
+.target-list{margin-top:12px;border:1px solid var(--line);border-radius:11px;background:var(--bg1);overflow:hidden}.target-row{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;border-bottom:1px solid var(--line);color:var(--text);text-align:left}.target-row:last-child{border-bottom:0}.target-row:hover{background:var(--bg2)}.target-row.armed{background:rgba(242,181,68,.1)}.target-row>span{display:grid;grid-template-columns:22px 1fr;gap:2px 8px;min-width:0}.target-row .ms{grid-row:1/3;color:var(--dim2);font-size:17px}.target-row.armed .ms{color:var(--amber)}.target-row strong{font-size:12.5px}.target-row small{color:var(--dim2);font-size:10.5px}.target-row em{color:var(--dim);font-size:10.5px;font-style:normal}
+.registry-tabs{display:flex;gap:2px;margin:-14px -16px 0;padding:8px 16px 0;border-bottom:1px solid var(--line);background:var(--bg1)}.registry-tabs button{display:flex;align-items:center;gap:6px;padding:8px 12px;border-radius:8px 8px 0 0;color:var(--dim);font-size:12px}.registry-tabs button.on{background:var(--bg);color:var(--text);border:1px solid var(--line);border-bottom-color:var(--bg);margin-bottom:-1px}.registry-tabs .ms{font-size:16px}.registry-workspace{height:calc(100% - 40px);min-height:430px;display:grid;grid-template-columns:220px minmax(380px,1fr) 300px;margin:0 -16px -18px}.registry-nav,.registry-detail{min-height:0;overflow:auto;background:var(--bg1)}.registry-nav{padding:10px 8px;border-right:1px solid var(--line)}.registry-nav h3{padding:9px 8px 5px;color:var(--dim2);font-size:10px;text-transform:uppercase;letter-spacing:.07em}.registry-nav button{width:100%;display:grid;grid-template-columns:20px 1fr;align-items:center;gap:7px;padding:7px 8px;border-radius:7px;text-align:left}.registry-nav button:hover{background:var(--bg2)}.registry-nav button>.ms{color:var(--accent);font-size:16px}.registry-nav button span{min-width:0;display:flex;flex-direction:column;gap:1px}.registry-nav strong{font-size:11.5px}.registry-nav small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim2);font-size:9.5px}.registry-main{min-width:0;min-height:0;overflow:auto;padding:12px}.registry-path{display:flex;gap:7px;margin-bottom:9px}.registry-path>button:first-child{width:34px;display:grid;place-items:center;border:1px solid var(--line);border-radius:8px;background:var(--bg1);color:var(--dim)}.registry-path input{flex:1;min-width:0;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg1);font:11.5px 'Cascadia Mono',Consolas,monospace}.registry-key-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px;margin-top:10px}.registry-key-grid button{display:grid;grid-template-columns:20px 1fr 18px;align-items:center;gap:5px;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg1);text-align:left}.registry-key-grid button:hover{background:var(--bg2)}.registry-key-grid .ms{font-size:16px;color:var(--accent)}.registry-key-grid .ms:last-child{color:var(--dim2)}.registry-values tr{cursor:pointer}.registry-values tr.on td{background:rgba(109,139,255,.12)}.registry-values td>.ms{font-size:15px;color:var(--dim2);vertical-align:-2px}.registry-detail{border-left:1px solid var(--line);padding:12px}.registry-detail>header{display:flex;align-items:center;gap:9px;padding-bottom:12px;border-bottom:1px solid var(--line)}.registry-detail>header>.ms{font-size:20px;color:var(--accent)}.registry-detail>header div{min-width:0;display:flex;flex-direction:column}.registry-detail>header strong{font-size:13px}.registry-detail>header small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim2);font-size:9.5px}.registry-detail label{display:flex;flex-direction:column;gap:5px;margin-top:12px;color:var(--dim);font-size:10.5px;font-weight:600}.registry-detail select,.registry-detail textarea{border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);padding:8px}.registry-detail select{height:34px}.registry-detail textarea{height:150px;resize:vertical;font-size:11px;user-select:text}.registry-detail-actions{display:flex;gap:7px;margin-top:10px}.registry-detail>p{margin-top:12px;color:var(--dim2);font-size:10.5px;line-height:1.5}.registry-watch-head{display:flex;align-items:center;justify-content:space-between;padding:2px 0 10px}.registry-watch-head>div{display:flex;flex-direction:column;gap:2px}.registry-watch-head strong{font-size:13px}.registry-watch-head small{color:var(--dim2);font-size:10.5px}.registry-feed{margin-top:10px;border:1px solid var(--line);border-radius:9px;background:var(--bg1);overflow:hidden}.registry-feed-row{display:grid;grid-template-columns:90px 20px 60px minmax(120px,1fr) minmax(100px,1fr);gap:7px;padding:8px 10px;border-bottom:1px solid var(--line);font-size:10.5px}.registry-feed-row time,.registry-feed-row small{color:var(--dim2)}.registry-feed-row .ms{font-size:15px;color:var(--amber)}
+.event-toolbar{flex:0 0 auto;display:flex;align-items:flex-end;gap:12px;margin:-14px -16px 0;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--bg1)}.event-checks{display:flex;flex-wrap:wrap;gap:4px 8px;max-width:250px}.event-checks strong{flex:0 0 100%;color:var(--dim2);font-size:9.5px;text-transform:uppercase}.event-checks label{display:flex;align-items:center;gap:3px;font-size:10.5px}.event-filter{height:34px;flex:1;min-width:170px;display:flex;align-items:center;gap:7px;padding:0 9px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}.event-filter:focus-within{border-color:var(--accent)}.event-filter .ms{font-size:16px;color:var(--dim2)}.event-filter input{width:100%;font:11px 'Cascadia Mono',Consolas,monospace}.event-presets{flex:0 0 auto;display:flex;align-items:center;gap:5px;margin:0 -16px;padding:7px 16px;border-bottom:1px solid var(--line);background:var(--bg1)}.event-presets>span{color:var(--dim2);font-size:9.5px;text-transform:uppercase}.event-presets button{display:flex;align-items:center;gap:4px;padding:4px 7px;border:1px solid var(--line);border-radius:6px;color:var(--dim);font-size:10px}.event-presets button:hover{background:var(--bg2);color:var(--text)}.event-presets button:last-child{margin-left:auto}.event-presets .ms{font-size:14px}.event-status{flex:0 0 auto;margin-top:10px}.event-workspace{flex:1;min-height:0;display:grid;grid-template-columns:minmax(480px,1fr) minmax(300px,38%);gap:10px;margin-top:10px}.event-list,.event-detail{min-height:0;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow:hidden}.event-list{display:flex;flex-direction:column}.event-list>header{display:grid;grid-template-columns:78px 62px minmax(130px,1fr) 48px 75px;gap:8px;padding:7px 10px;border-bottom:1px solid var(--line);background:var(--bg2);color:var(--dim2);font-size:9.5px;text-transform:uppercase}.event-list>[data-event-results]{flex:1;min-height:0;overflow:auto}.event-row{grid-template-columns:78px 62px minmax(130px,1fr) 48px 75px;padding:8px 10px}.event-row.on{background:rgba(109,139,255,.12)}.event-row p{grid-column:3/-1;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}.event-detail{display:flex;flex-direction:column}.event-detail>header{display:flex;align-items:center;gap:10px;padding:11px 12px;border-bottom:1px solid var(--line);background:var(--bg2)}.event-detail>header>div{min-width:0;display:flex;flex-direction:column;gap:2px}.event-detail>header strong{font-size:12.5px}.event-detail>header small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim2);font-size:9.5px}.event-detail-tabs{display:flex;padding:7px 10px 0;border-bottom:1px solid var(--line)}.event-detail-tabs button{padding:6px 10px;color:var(--dim);font-size:10.5px}.event-detail-tabs button.on{margin-bottom:-1px;border-bottom:2px solid var(--accent);color:var(--text)}.event-detail pre{flex:1;min-height:0;overflow:auto;padding:12px;color:var(--text);font:10.5px/1.55 'Cascadia Mono',Consolas,monospace;white-space:pre-wrap;user-select:text}
+@media(max-width:1050px){.event-workspace{grid-template-columns:1fr}.event-detail{min-height:280px}.event-toolbar{flex-wrap:wrap}.event-filter{order:3;flex-basis:70%}.registry-workspace{grid-template-columns:180px minmax(360px,1fr)}.registry-detail{display:none}}@media(max-width:800px){.win-controls{align-items:stretch;flex-direction:column}.event-presets{overflow:auto}.win-tool-body:has(.event-workspace){overflow:auto}.event-workspace{flex:1 1 auto;min-height:360px}.event-list{min-height:360px}.event-row,.event-list>header{grid-template-columns:70px 55px minmax(110px,1fr) 42px}.event-row small,.event-list>header span:nth-child(5){display:none}.event-row p{grid-column:3/-1}.win-tool-body{padding:12px}.win-refresh{font-size:0}.win-refresh .ms{font-size:17px}.audio-groups{grid-template-columns:1fr}.audio-device{align-items:flex-start;flex-direction:column}.registry-workspace{grid-template-columns:1fr;margin-left:-12px;margin-right:-12px}.registry-nav{display:none}.registry-tabs{margin-left:-12px;margin-right:-12px}}
+.event-list{--event-cols:82px 68px minmax(130px,1fr) 54px 82px}.event-list>header{grid-template-columns:var(--event-cols);padding-right:20px}.event-list>[data-event-results]{overflow-y:auto;scrollbar-gutter:stable}.event-list .event-row{width:100%;grid-template-columns:var(--event-cols);gap:8px}
+.system-tabs{display:flex;gap:2px;margin:-14px -16px 12px;padding:8px 16px;border-bottom:1px solid var(--line);background:var(--bg1)}.system-tabs button{display:flex;align-items:center;gap:6px;height:30px;padding:0 10px;border-radius:7px;color:var(--dim);font-size:11.5px}.system-tabs button:hover{background:var(--bg2)}.system-tabs button.on{background:var(--bg3);color:var(--text)}.system-tabs .ms{font-size:16px}.system-env{height:calc(100% - 50px);min-height:440px;display:grid;grid-template-columns:250px minmax(400px,1fr) 300px;gap:12px}.system-vars,.system-path-panel,.system-findings>section{min-height:0;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow:hidden}.system-vars{display:flex;flex-direction:column;overflow:auto}.system-scopes{display:flex;gap:5px;padding:8px;border-bottom:1px solid var(--line);background:var(--bg2)}.system-scopes button{flex:1;display:flex;justify-content:center;align-items:center;gap:5px;height:27px;border-radius:6px;color:var(--dim);font-size:10.5px}.system-scopes button.on{background:var(--bg3);color:var(--text)}.system-scopes .ms{font-size:14px}.system-var{display:grid;grid-template-columns:20px 1fr;gap:7px;padding:8px 10px;border-bottom:1px solid var(--bg2);text-align:left}.system-var:hover,.system-var.on{background:var(--bg2)}.system-var>.ms{font-size:15px;color:var(--dim2)}.system-var>span{min-width:0;display:flex;flex-direction:column;gap:2px}.system-var strong{font:600 11px 'Cascadia Mono',Consolas,monospace}.system-var small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim2);font:9.5px 'Cascadia Mono',Consolas,monospace}.system-vars footer{margin-top:auto;padding:9px 10px;border-top:1px solid var(--line);background:var(--bg2);color:var(--dim2);font-size:10px}.system-path-panel{display:flex;flex-direction:column}.system-path-panel>header{display:flex;align-items:center;gap:7px;padding:9px 11px;border-bottom:1px solid var(--line);background:var(--bg2)}.system-path-panel>header>.ms{font-size:17px;color:var(--accent)}.system-path-panel>header strong{font-size:12px}.system-path-panel>header span,.system-path-panel>header em{padding:2px 5px;border-radius:5px;background:var(--bg3);color:var(--dim2);font-size:9px;font-style:normal}.system-path-panel>header i{flex:1}.system-path-rows{min-height:0;overflow:auto}.system-path-row{display:grid;grid-template-columns:25px 20px 1fr 70px;align-items:center;gap:7px;padding:8px 10px;border-bottom:1px solid var(--bg2)}.system-path-row>code{color:var(--dim2);font-size:9.5px;text-align:right}.system-path-row>.ms{font-size:16px;color:var(--green)}.system-path-row.path-missing>.ms{color:var(--red)}.system-path-row.path-duplicate>.ms,.system-path-row.path-unresolved>.ms{color:var(--amber)}.system-path-row>span{min-width:0;display:flex;flex-direction:column;gap:2px}.system-path-row strong{overflow-wrap:anywhere;font-size:10.5px}.system-path-row small{display:flex;align-items:center;gap:4px;color:var(--dim2);font-size:9.5px}.system-path-row small .ms{font-size:12px}.system-path-row>em{text-align:right;color:var(--dim2);font-size:9px;font-style:normal}.system-findings{min-height:0;display:flex;flex-direction:column;gap:12px}.system-findings>section>header{display:flex;align-items:center;gap:7px;padding:9px 10px;border-bottom:1px solid var(--line);background:var(--bg2)}.system-findings>section>header .ms{font-size:15px;color:var(--accent)}.system-findings>section>header strong{flex:1;font:600 11px 'Cascadia Mono',Consolas,monospace}.system-findings>section>header small{color:var(--dim2);font-size:9px}.system-findings>section>p{padding:10px;overflow-wrap:anywhere;color:var(--text);font-size:10px;line-height:1.6;user-select:text}.system-findings .findings{flex:1;overflow:auto}.findings>div{display:flex;gap:7px;padding:9px 10px;border-bottom:1px solid var(--bg2)}.findings>div>.ms{font-size:16px;color:var(--amber)}.findings>div>span{display:flex;flex-direction:column;gap:2px}.findings>div strong{font-size:10.5px;text-transform:capitalize}.findings>div small{color:var(--dim2);font-size:9px;overflow-wrap:anywhere}.system-clean{align-items:center;color:var(--green);font-size:10.5px}.system-subtool{height:calc(100% - 50px);min-height:400px}.system-subtool .log-tail-output{height:calc(100% - 86px)}
+@media(max-width:1100px){.system-env{grid-template-columns:210px 1fr}.system-findings{display:none}}@media(max-width:760px){.system-env{grid-template-columns:1fr}.system-vars{max-height:210px}.system-path-panel{min-height:380px}}
+.repair-intro{display:flex;align-items:center;gap:12px;padding:2px 0 12px}.repair-intro>span{width:40px;height:40px;display:grid;place-items:center;border:1px solid rgba(109,139,255,.3);border-radius:10px;background:rgba(109,139,255,.12);color:var(--accent)}.repair-intro>span .ms{font-size:22px}.repair-intro>div{flex:1}.repair-intro p{max-width:80ch;color:var(--dim);font-size:11.5px}.repair-intro>code{padding:5px 8px;border-radius:6px;background:var(--bg2);color:var(--dim2);font-size:9.5px}.repair-designed{margin-top:10px;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow:hidden}.repair-state-row{display:grid;grid-template-columns:24px 22px 1fr auto;align-items:center;gap:8px;padding:11px 12px;border-bottom:1px solid var(--line)}.repair-state-row:last-child{border-bottom:0}.repair-state-row>code{text-align:center;color:var(--dim2);font-size:10px}.repair-state-row>.ms{font-size:18px;color:var(--accent)}.repair-state-row>span{display:flex;flex-direction:column;gap:2px}.repair-state-row strong{font-size:12px}.repair-state-row small{color:var(--dim2);font-size:10px}.repair-action-bar{display:flex;align-items:center;gap:12px;margin-top:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg1)}.repair-action-bar>span{flex:1;color:var(--dim);font-size:10.5px}.repair-action-bar .btn{flex:0 0 auto}
+.help-page{max-width:1180px;margin:0 auto;padding-bottom:20px}.help-lead{display:flex;align-items:center;gap:16px;padding:18px;border:1px solid rgba(109,139,255,.35);border-radius:12px;background:rgba(109,139,255,.09)}.help-lead>span{width:46px;height:46px;display:grid;place-items:center;border-radius:12px;background:rgba(109,139,255,.15);color:var(--accent)}.help-lead>span .ms{font-size:26px}.help-lead h2{font-size:18px}.help-lead p{margin-top:5px;color:var(--dim);font-size:12.5px;line-height:1.55}.help-page kbd{display:inline-grid;min-width:21px;height:20px;place-items:center;padding:0 5px;border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;background:var(--bg2);color:var(--text);font:10px 'Cascadia Mono',Consolas,monospace}.help-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px}.help-panel,.help-tools{border:1px solid var(--line);border-radius:11px;background:var(--bg1);overflow:hidden}.help-panel>header,.help-tools>header{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--bg2)}.help-panel>header .ms,.help-tools>header .ms{font-size:18px;color:var(--accent)}.help-panel>header strong,.help-tools>header strong{font-size:12.5px}.help-panel ul{display:flex;flex-direction:column;gap:9px;padding:14px 16px 14px 31px;color:var(--dim);font-size:11.5px;line-height:1.5}.help-command{display:flex;flex-direction:column;gap:2px;padding:8px 12px;border-bottom:1px solid var(--bg2)}.help-command:last-child{border-bottom:0}.help-command code{color:var(--text);font-size:11px}.help-command span{color:var(--dim2);font-size:10px}.help-tools{margin-top:12px}.help-tools>header>div{display:flex;align-items:center;gap:8px}.help-tools>header>small{margin-left:auto;color:var(--dim2);font-size:10px}.help-tools>h3{padding:11px 12px 7px;color:var(--dim2);font-size:9.5px;text-transform:uppercase;letter-spacing:.07em}.help-tool-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1px;background:var(--line);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.help-tool{display:grid;grid-template-columns:22px 1fr;align-items:center;gap:8px;padding:9px 11px;background:var(--bg1)}.help-tool>.ms{font-size:17px;color:var(--accent)}.help-tool>span{min-width:0;display:flex;flex-direction:column;gap:2px}.help-tool strong{font-size:11.5px}.help-tool small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim2);font-size:9.5px}
+@media(max-width:760px){.help-columns{grid-template-columns:1fr}.help-lead{align-items:flex-start}.help-tool-grid{grid-template-columns:1fr}}
+
+/* Help catalog entries are navigation controls, not passive summaries. */
+.help-tool{grid-template-columns:22px minmax(0,1fr) 18px;width:100%;border:0;border-radius:0;color:var(--text);text-align:left;cursor:pointer}
+.help-tool:hover,.help-tool:focus-visible{position:relative;z-index:1;background:var(--hover);outline:1px solid var(--accent)}
+.help-tool>.ms:last-child{color:var(--dim2);font-size:15px;transition:transform .12s ease}
+.help-tool:hover>.ms:last-child{transform:translateX(2px);color:var(--accent)}
+
+/* ---------- Network ----------
+
+   Three columns again, and for the same reason the DNS tool has three: what
+   is being captured on the left, what arrived in the middle, and what one
+   frame of it actually contains on the right. Only the panel bodies scroll,
+   so the filter field, the Start button and the frame table's header never
+   leave the screen while thousands of rows go past underneath. */
+.net-page{
+  flex:1;min-height:0;display:flex;flex-direction:column;background:var(--bg);overflow:hidden;
+}
+.net-page[hidden]{display:none}
+.net-page .dot{width:7px;height:7px;flex:0 0 auto;border-radius:50%;display:inline-block}
+.net-page .dot.green{background:var(--green)}
+.net-page .dot.grey{background:var(--dim2);opacity:.6}
+.net-page .dimmed{color:var(--dim2)}
+
+.net-bar{
+  flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:12px 16px;
+  border-bottom:1px solid var(--line);background:var(--bg1);
+}
+.net-field{flex:1;min-width:180px}
+.net-field input{font-size:13px}
+.net-field kbd{
+  flex:0 0 auto;color:var(--dim2);font-family:'Cascadia Mono',Consolas,ui-monospace,monospace;
+  font-size:10.5px;white-space:nowrap;
+}
+/* Export turns green once it has written something, so the button itself is
+   the receipt rather than a line of text somewhere else. */
+.btn.good{border-color:rgba(63,202,127,.4);background:rgba(63,202,127,.1);color:var(--green)}
+.btn.good:hover{background:rgba(63,202,127,.16)}
+
+.net-body{flex:1;min-height:0;display:flex;gap:12px;padding:13px 16px 14px}
+.net-side{flex:0 0 250px;min-width:0;display:flex;flex-direction:column;gap:11px}
+.net-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:11px}
+.net-detail-side{flex:0 0 372px;min-width:0;display:flex;flex-direction:column;gap:11px}
+
+/* ---------- one panel, the same shape everywhere ---------- */
+.net-panel{
+  display:flex;flex-direction:column;min-height:0;border:1px solid var(--line);
+  border-radius:11px;background:var(--bg1);overflow:hidden;
+}
+.net-panel-head{
+  flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:9px 12px;
+  border-bottom:1px solid var(--line);background:var(--bg2);
+}
+.net-panel-head>i{flex:1}
+.net-panel-head .ms{font-size:15px;color:var(--dim2)}
+.net-label{
+  color:var(--dim);font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  white-space:nowrap;
+}
+.net-panel-body{flex:1;min-height:0;overflow:auto}
+.net-panel-foot{
+  flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:9px 12px;
+  border-top:1px solid var(--line);background:var(--bg2);color:var(--dim2);
+  font-size:10.5px;line-height:1.45;
+}
+.net-panel-foot .ms{font-size:14px}
+.net-count{color:var(--dim2);font-size:10px;margin-left:auto}
+.net-empty{padding:16px 13px;color:var(--dim2);font-size:11.5px;line-height:1.5}
+.net-mini{width:22px;height:22px;display:grid;place-items:center;border-radius:6px;color:var(--dim2);margin-left:auto}
+.net-mini:hover{background:var(--bg3);color:var(--text)}
+.net-mini .ms{font-size:15px}
+.net-mini.wide{
+  width:auto;height:24px;padding:0 9px;gap:5px;display:inline-flex;align-items:center;
+  border:1px solid var(--line);font-size:11px;font-weight:600;margin-left:0;
+}
+.net-mini:disabled{opacity:.45;cursor:default}
+.net-mini:disabled:hover{background:none;color:var(--dim2)}
+
+/* A chip is a filter you can add, a packet size you can pick, or a filter
+   already in force — same shape, so the row reads as one control. */
+.net-chip{
+  display:inline-flex;align-items:center;gap:3px;height:23px;padding:0 8px;
+  border-radius:6px;border:1px solid var(--line);background:var(--bg);
+  font-family:'Cascadia Mono',Consolas,ui-monospace,monospace;font-size:10.5px;color:var(--dim);
+}
+.net-chip .ms{font-size:13px}
+.net-chip:hover{color:var(--text);border-color:var(--accent)}
+.net-chip.on{background:rgba(109,139,255,.18);border-color:var(--accent);color:var(--text)}
+.net-chip:disabled{opacity:.45;cursor:default}
+.net-chip:disabled:hover{color:var(--dim);border-color:var(--line)}
+
+/* ---------- what is being captured ---------- */
+.net-filters{flex:0 0 auto;max-height:min(46%,300px)}
+.net-filters.empty{border-color:rgba(242,181,68,.35)}
+.net-filter-row{
+  display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--bg2);
+}
+.net-filter-row .ms{font-size:15px;color:var(--accent)}
+.net-filter-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.net-filter-label{font-size:11.5px;font-weight:600;color:var(--text)}
+.net-filter-main small{font-size:10px;color:var(--dim2)}
+.net-row-btn{
+  width:22px;height:22px;flex:0 0 auto;display:grid;place-items:center;border-radius:6px;color:var(--dim2);
+}
+.net-row-btn:hover{background:var(--bg3);color:var(--red)}
+.net-row-btn .ms{font-size:15px}
+.net-suggest{
+  flex:0 0 auto;display:flex;flex-wrap:wrap;gap:6px;padding:9px 12px;
+  border-top:1px solid var(--line);background:var(--bg2);
+}
+
+.net-comps{flex:1;min-height:0}
+.net-comp{
+  width:100%;display:flex;align-items:center;gap:9px;padding:8px 11px;
+  border-bottom:1px solid var(--bg2);text-align:left;opacity:.55;
+}
+.net-comp.on{opacity:1}
+.net-comp:hover{background:var(--bg2)}
+.net-comp .ms{font-size:15px;color:var(--dim2)}
+.net-comp-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.net-comp-name{
+  font-size:11.5px;font-weight:600;color:var(--text);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.net-comp-main small{
+  font-size:10px;color:var(--dim2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+
+/* ---------- the one thing standing in the way, said up front ---------- */
+.net-notice{
+  flex:0 0 auto;display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:10px;
+  border:1px solid rgba(242,181,68,.4);background:rgba(242,181,68,.09);
+}
+.net-notice .ms{font-size:18px;color:var(--amber)}
+.net-notice.bad{border-color:rgba(242,84,91,.4);background:rgba(242,84,91,.08)}
+.net-notice.bad .ms{color:var(--red)}
+.net-notice-text{flex:1;min-width:0;font-size:12.5px;color:var(--text);line-height:1.45}
+.net-notice .btn{flex:0 0 auto;height:28px}
+
+/* ---------- throughput ---------- */
+.net-throughput{flex:0 0 96px}
+.net-in{color:var(--accent);font-size:10.5px}
+.net-out{color:var(--teal);font-size:10.5px}
+.net-drop{color:var(--dim2);font-size:10.5px;white-space:nowrap}
+.net-spark{flex:1;min-height:0;display:flex;align-items:flex-end;gap:2px;padding:8px 12px}
+.net-spark i{flex:1;border-radius:2px;background:rgba(109,139,255,.34);min-height:2px}
+.net-spark i.live{background:var(--accent)}
+
+/* ---------- the frames ---------- */
+.net-frames{flex:1;min-height:0}
+.net-frames .seg{
+  display:inline-flex;height:26px;border:1px solid var(--line);border-radius:7px;
+  overflow:hidden;background:var(--bg);
+}
+.net-frames .seg button{
+  padding:0 9px;font-size:11px;font-weight:600;color:var(--dim2);border-left:1px solid var(--line);
+}
+.net-frames .seg button:first-child{border-left:0}
+.net-frames .seg button:hover{color:var(--text)}
+.net-frames .seg button.on{background:rgba(109,139,255,.2);color:var(--text)}
+.net-note{color:var(--dim2);font-size:10.5px;white-space:nowrap}
+.net-follow{
+  display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 9px;border-radius:6px;
+  border:1px solid var(--line);color:var(--dim2);font-size:11px;font-weight:600;white-space:nowrap;
+}
+.net-follow .ms{font-size:14px}
+.net-follow.on{border-color:rgba(63,202,127,.35);color:var(--green)}
+
+/* The header row and every frame row share one column template, so the two
+   can never drift out of alignment as the table scrolls. */
+.net-cols,.net-row{
+  display:flex;align-items:center;gap:10px;
+}
+.net-cols{
+  flex:0 0 auto;padding:6px 13px;border-bottom:1px solid var(--line);background:var(--bg);
+  font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--dim2);
+}
+.net-c-time{flex:0 0 78px}
+.net-c-dir{flex:0 0 22px;display:flex;align-items:center;justify-content:center}
+.net-c-proto{flex:0 0 52px;text-align:center}
+.net-c-pair{flex:1;min-width:0}
+.net-c-proc{flex:0 0 140px;min-width:0;display:flex;align-items:center;gap:6px}
+.net-c-len{flex:0 0 52px;text-align:right}
+
+.net-rows{font-variant-numeric:tabular-nums}
+.net-row{
+  width:100%;padding:6px 13px;border-bottom:1px solid var(--bg2);text-align:left;
+}
+.net-row:hover{background:var(--bg2)}
+.net-row.on{background:rgba(109,139,255,.13);box-shadow:inset 3px 0 0 var(--accent)}
+.net-row .net-c-time{font-size:11px;color:var(--dim2)}
+.net-row .net-c-dir .ms{font-size:15px}
+.net-row .net-c-dir.out .ms{color:var(--teal)}
+.net-row .net-c-dir.in .ms{color:var(--accent)}
+.net-row .net-c-proto{
+  padding:1px 6px;border-radius:5px;font-size:10px;font-weight:700;
+}
+.net-row .net-c-pair{
+  font-size:11.5px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.net-row .net-c-pair.bad{color:var(--red)}
+.net-row .net-c-pair small{color:var(--dim2);font-size:10.5px}
+.net-row .net-c-proc .ms{font-size:13px;color:var(--dim2)}
+.net-row .net-c-proc span{
+  flex:1;min-width:0;font-size:11px;color:var(--dim);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.net-row .net-c-len{font-size:11px;color:var(--dim2)}
+
+.tone-accent{background:rgba(109,139,255,.16);color:var(--accent)}
+.tone-teal{background:rgba(58,214,200,.14);color:var(--teal)}
+.tone-green{background:rgba(63,202,127,.14);color:var(--green)}
+.tone-amber{background:rgba(242,181,68,.14);color:var(--amber)}
+.tone-purple{background:rgba(180,139,255,.16);color:var(--purple)}
+.tone-red{background:rgba(242,84,91,.14);color:var(--red)}
+.tone-dim{background:var(--bg3);color:var(--dim2)}
+
+.net-blank{
+  display:flex;flex-direction:column;align-items:center;gap:8px;padding:44px 24px;text-align:center;
+}
+.net-blank .ms{font-size:30px;color:var(--dim2)}
+.net-blank strong{color:var(--text);font-size:14px;font-weight:650}
+.net-blank span{color:var(--dim2);font-size:11.5px;max-width:46ch}
+
+.net-cmd{gap:12px}
+.net-cmd>span{
+  min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim2);
+}
+.net-cmd>i{flex:1}
+
+/* ---------- one frame, taken apart ---------- */
+.net-detail{flex:1;min-height:0}
+.net-detail.bad{border-color:rgba(242,84,91,.35)}
+.net-layer{border-bottom:1px solid var(--bg2)}
+.net-layer>button{
+  width:100%;display:flex;align-items:center;gap:8px;padding:8px 12px;text-align:left;
+}
+.net-layer>button:hover{background:var(--bg2)}
+.net-layer>button .ms{font-size:15px;color:var(--dim2)}
+.net-layer-name{flex:1;min-width:0;font-size:11.5px;font-weight:600;color:var(--text)}
+.net-layer-sum{
+  font-size:10px;color:var(--dim2);max-width:46%;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.net-fields{display:flex;flex-direction:column;padding:0 12px 9px 35px}
+.net-field-row{display:flex;align-items:baseline;gap:10px;padding:2px 0}
+.net-k{flex:0 0 108px;font-size:10.5px;color:var(--dim2)}
+.net-v{flex:1;min-width:0;font-size:11px;color:var(--text);overflow-wrap:anywhere}
+
+.net-hex{display:flex;flex-direction:column;gap:5px;padding:10px 12px}
+.net-hex-row{display:flex;gap:12px}
+.net-hex-off{flex:0 0 34px;font-size:10.5px;color:var(--dim2);opacity:.7}
+.net-hex-b{flex:1;min-width:0;font-size:10.5px;color:var(--dim);letter-spacing:.04em}
+.net-hex-a{flex:0 0 76px;font-size:10.5px;color:var(--dim2)}
+.net-hex-none{
+  display:flex;align-items:center;gap:8px;padding:12px;color:var(--dim2);font-size:11px;line-height:1.45;
+}
+.net-hex-none .ms{font-size:15px}
+.net-detail-acts{
+  flex:0 0 auto;display:flex;gap:8px;padding:10px 12px;border-top:1px solid var(--line);background:var(--bg2);
+}
+.net-detail-acts .btn{flex:1;height:28px;font-size:11.5px;justify-content:center}
+
+/* ---------- the session ---------- */
+.net-session{flex:0 0 auto}
+.net-session-state{font-size:10.5px;font-weight:600;color:var(--dim2)}
+.net-session-state.go{color:var(--green)}
+.net-session-state.done{color:var(--accent)}
+.net-session-state.idle{color:var(--amber)}
+.net-session-body{display:flex;flex-direction:column;gap:8px;padding:11px 12px}
+.net-session-row{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--dim)}
+.net-session-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.net-meter{height:5px;border-radius:3px;background:var(--bg3);overflow:hidden}
+.net-meter i{display:block;height:100%;background:var(--accent)}
+.net-meter i.warn{background:var(--amber)}
+.net-session-note{display:flex;align-items:center;gap:8px;font-size:10.5px;color:var(--dim2);line-height:1.4}
+.net-session-note .ms{font-size:13px;flex:0 0 auto}
+.net-session-sizes{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.net-exported{
+  display:flex;align-items:flex-start;gap:9px;padding:9px 10px;border-radius:8px;
+  background:rgba(63,202,127,.07);border:1px solid rgba(63,202,127,.25);
+}
+.net-exported .ms{font-size:16px;color:var(--green);flex:0 0 auto}
+.net-exported>span{flex:1;min-width:0;font-size:11px;color:var(--text);line-height:1.45}
+.net-exported small{display:block;margin-top:3px;color:var(--dim2);font-size:10px;overflow-wrap:anywhere}
+
+/* ---------- who is on the other end ---------- */
+.net-talkers{flex:0 0 auto;max-height:210px}
+.net-talker{
+  width:100%;display:flex;align-items:center;gap:9px;padding:8px 12px;
+  border-bottom:1px solid var(--bg2);text-align:left;
+}
+.net-talker:hover{background:var(--bg2)}
+.net-talker-host{
+  flex:1;min-width:0;font-size:11px;color:var(--text);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.net-talker .net-meter{flex:0 0 84px}
+.net-talker-bytes{flex:0 0 58px;font-size:10.5px;color:var(--dim2);text-align:right}
+
+/* ---------- the outcome of the last click ---------- */
+.net-message{
+  flex:0 0 auto;padding:8px 16px;border-top:1px solid var(--line);background:var(--bg1);
+  color:var(--dim);font-size:11.5px;line-height:1.45;
+}
+.net-message.go{color:var(--green)}
+.net-message.warn{color:var(--amber)}
+.net-message.bad{color:var(--red)}
+
+/* A narrow window drops the detail column under the table rather than
+   squeezing three columns into something none of them can be read in. */
+@media (max-width:1240px){
+  .net-body{flex-wrap:wrap}
+  .net-detail-side{flex:1 1 100%;flex-direction:row;max-height:320px}
+  .net-detail-side>.net-panel{flex:1;min-width:0}
+}
+
+/* ---------- how finished a tool is ----------
+
+   A badge in every tool's header, and one popover explaining what the stages
+   mean. The badge is a button because the explanation is worth a click and
+   not worth a paragraph in every header. */
+.tool-maturity{
+  flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;
+  border-radius:5px;border:1px solid transparent;
+  font-size:9.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+}
+.tool-maturity .ms{font-size:12px;opacity:.55}
+.tool-maturity:hover .ms{opacity:1}
+.tool-maturity.alpha{
+  border-color:rgba(242,181,68,.42);background:rgba(242,181,68,.12);color:var(--amber);
+}
+.tool-maturity.beta{
+  border-color:rgba(109,139,255,.42);background:rgba(109,139,255,.12);color:var(--accent);
+}
+.tool-maturity.alpha:hover{background:rgba(242,181,68,.2)}
+.tool-maturity.beta:hover{background:rgba(109,139,255,.2)}
+/* Inside the popover the badge is a label, not a control. */
+.tool-maturity.static{cursor:default;align-self:flex-start}
+
+.maturity-pop{
+  position:fixed;z-index:90;width:min(420px,calc(100vw - 16px));
+  display:flex;flex-direction:column;gap:10px;padding:12px;
+  background:var(--bg1);border:1px solid var(--line);border-radius:10px;
+  box-shadow:0 18px 48px rgba(0,0,0,.55);
+}
+:root[data-theme="light"] .maturity-pop{box-shadow:0 18px 48px rgba(15,20,40,.18)}
+.maturity-pop-head{
+  color:var(--dim);font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+}
+.maturity-pop-row{
+  display:flex;align-items:flex-start;gap:10px;padding:8px;border-radius:8px;
+  color:var(--dim);font-size:11.5px;line-height:1.5;
+}
+.maturity-pop-row.on{background:var(--bg2);color:var(--text)}
+.maturity-pop-row>span:last-child{flex:1;min-width:0}
+.maturity-pop-foot{
+  padding-top:9px;border-top:1px solid var(--line);color:var(--dim2);font-size:10.5px;line-height:1.45;
+}
