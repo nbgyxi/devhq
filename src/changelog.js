@@ -18,7 +18,7 @@ window.devhqChangelog = (() => {
       version: "0.34.3",
       date: "2026-08-30",
       title: "Store builds name their checksum",
-      buildChecksum: "8bbb9f9a871eb2b7b3d6461e9e70cf73b6f5a05a90a34f24a35d5798d2fe7c8e",
+      buildChecksum: "5263398ecda1c20ff3f8cfea6b9bc01a9dc8c0e1590415e2b7ed2ac82d966543",
       changes: [
         ["new", "What's new names the SHA-256 of the exe you are running, on the current version. A Store package records that same number in the source after the build, so the list on GitHub can be checked against the binary in the Store."],
       ],
