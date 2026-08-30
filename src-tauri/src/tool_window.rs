@@ -4,12 +4,34 @@
 //! window mounts its own copy of the tool. These commands only create, focus
 //! and destroy the webview that hosts it.
 
+use std::path::{Path, PathBuf};
+
+use tauri::image::Image;
 use tauri::{AppHandle, LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::off_thread;
 
 fn label_for(id: &str) -> String {
     format!("tool-{id}")
+}
+
+fn icons_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icons")
+}
+
+fn load_png_icon(path: &Path) -> Option<Image<'static>> {
+    if !path.is_file() {
+        return None;
+    }
+    Image::from_path(path).ok().map(|img| img.to_owned())
+}
+
+/// Taskbar icon — always the dark-scheme glyph (teal on transparent).
+/// Windows taskbars are usually dark even when the app window is in light mode.
+fn taskbar_icon_for_tool(id: &str) -> Option<Image<'static>> {
+    let tools = icons_dir().join("tools").join("dark");
+    load_png_icon(&tools.join(format!("{id}.png")))
+        .or_else(|| load_png_icon(&tools.join("_default.png")))
 }
 
 /// Opens a tool in its own undecorated window. Re-focuses an existing one.
@@ -68,6 +90,9 @@ pub async fn tool_popout(
             .initialization_script(&init_theme);
         if let (Some(x), Some(y)) = (x, y) {
             builder = builder.position(x, y);
+        }
+        if let Some(icon) = taskbar_icon_for_tool(&id) {
+            builder = builder.icon(icon).map_err(|e| format!("Could not set the window icon: {e}"))?;
         }
         builder
             .build()

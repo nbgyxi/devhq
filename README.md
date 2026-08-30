@@ -5,6 +5,22 @@ project in a folder: what's dirty, what's running, what it's built with.
 
 **Tauri 2 + Rust backend + vanilla JS/CSS frontend**, no bundler and no framework.
 
+## License
+
+DevHQ is **source-available**: the code is public so you can read it, run it
+locally, and contribute back — but Gyxi keeps control of the project. There is
+one official DevHQ; you may not publish your own version of it.
+
+| Allowed | Not allowed |
+| --- | --- |
+| Browse and study the source | Publish, sell, or redistribute DevHQ |
+| Build and run it for yourself | Release your own version or fork as a product |
+| Fork on GitHub to send a pull request | Use this code in another project or product |
+| Open branches and pull requests here | Host a competing public copy |
+
+See [LICENSE](LICENSE) for the full terms. Contributions via pull request are
+welcome; by submitting one you agree those terms apply to your contribution.
+
 ## Running it
 
 ```bash
@@ -126,7 +142,6 @@ on `git`, so a few hundred folders scan in a few seconds.
 | `src-tauri/src/todo.rs` | The TODO / FIXME sweep behind the detail view. |
 | `src-tauri/examples/scan_cli.rs` | Headless scan, prints JSON. |
 | `src-tauri/examples/todo_cli.rs` | Headless TODO sweep. |
-| `packaging/msix/`, `scripts/package-msix.ps1` | MSIX packaging for the Store. |
 | `scripts/make-icon.js` | Regenerates the source app icon. |
 
 ## Headless scan
@@ -138,72 +153,6 @@ cd src-tauri
 cargo run --example scan_cli -- "C:\code"
 cargo run --example todo_cli -- "C:\code\devhq"
 ```
-
-## Build MSIX for Microsoft Store
-
-Install the Windows 10/11 SDK first; the MSIX script needs `makeappx.exe`, and
-local sideload signing also needs `signtool.exe`.
-
-DevHQ's reserved Partner Center identity is already the default in the script,
-so a Store build is just:
-
-```powershell
-npm run msix -- -BumpVersion
-```
-
-Submit the unsigned `.msix` this creates. The identity it stamps in is:
-
-| Field | Value | Scope |
-| --- | --- | --- |
-| Package/Identity/Name | `53653Gyxi.DevHQ` | **Per app** — reserved separately for each app |
-| Package/Identity/Publisher | `CN=E33FD025-8793-475B-BE54-EF895462FBA0` | Per account — same for every app |
-| PublisherDisplayName | `Gyxi` | Per account |
-
-Both come from **Product management > Product identity**. Only the *Name* differs
-between apps under the same publisher — reusing another app's (e.g. 4i Player's
-`53653Gyxi.4i`) is rejected at upload with *"Invalid package identity name"*.
-Pass `-IdentityName` / `-Publisher` / `-PublisherDisplayName` to override.
-
-The version being built comes from the top of `src/changelog.js` — the same
-list the app shows when you click the version in its status bar. So a release
-starts by writing it down:
-
-1. Add the release to the top of `src/changelog.js`, dated, with a line per
-   change.
-2. `npm run msix -- -BumpVersion`, which brings `src-tauri/tauri.conf.json` up
-   to that version and packages it.
-3. Commit the bumped `tauri.conf.json` with the changelog entry.
-
-`-BumpVersion` no longer invents a number: it adopts the one the changelog
-already names, and refuses to move the version backwards. Without the flag, a
-build whose `tauri.conf.json` and changelog disagree stops rather than shipping
-under a number the app cannot explain. Partner Center requires every submitted
-package to have a unique, increasing version — re-uploading the same full name
-(`...0.1.0.0_X64`) with different contents is rejected — so a new submission
-means a new entry in the list, which is what you wanted written down anyway.
-
-The output is written to `target/msix/DevHQ_<version>.msix`. Partner Center
-re-signs this package with the Microsoft Store certificate, so do not self-sign
-the Store submission package.
-
-`-SkipBuild` reuses the release exe already in `src-tauri/target/release/` and
-only repacks, which is what you want while iterating on the manifest itself.
-
-For local sideload testing, generate a self-signed package instead:
-
-```powershell
-npm run msix:local
-```
-
-Then trust the generated certificate as prompted by the script and install with:
-
-```powershell
-Add-AppxPackage .\target\msix\DevHQ_0.1.0.0.msix
-```
-
-DevHQ is packaged as a full-trust desktop app (`runFullTrust`): it reads the
-folders you point it at, shells out to `git`, walks the process table and starts
-real pseudoconsoles, none of which a sandboxed package can do.
 
 ## Regenerating the icon
 

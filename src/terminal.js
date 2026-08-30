@@ -269,6 +269,69 @@ function colX(col, cellW) {
   return Math.round(col * cellW);
 }
 
+// ------------------------------------------------------------------- links
+//
+// Terminal output is not markup: a link is whatever looks like one. The rule
+// is deliberately narrow - a scheme worth handing to a browser, up to the
+// first space - because everything found here is something Ctrl+click will
+// open, and a shell prints all sorts of things.
+
+const TERM_LINK = /(?:https?:\/\/|www\.)[^\s"'<>`]+/gu;
+
+/** Where a link sits in `text`, if the column is inside one. */
+function linkAt(text, col) {
+  TERM_LINK.lastIndex = 0;
+  let match;
+  while ((match = TERM_LINK.exec(text))) {
+    const start = match.index;
+    const end = linkEnd(text, start, start + match[0].length);
+    if (col >= start && col < end) {
+      const href = text.slice(start, end);
+      return { start, end, url: /^www\./i.test(href) ? `https://${href}` : href };
+    }
+  }
+  return null;
+}
+
+/** Where a link really ends. Output puts links in sentences, so the full stop
+ *  after one belongs to the sentence - but a bracket only does when it was
+ *  never opened inside the link, which is what keeps a URL that contains
+ *  brackets of its own whole. */
+function linkEnd(text, start, end) {
+  const closers = { ")": "(", "]": "[", "}": "{" };
+  while (end > start) {
+    const ch = text[end - 1];
+    if (".,;:!?".includes(ch)) {
+      end--;
+      continue;
+    }
+    const open = closers[ch];
+    if (open) {
+      const slice = text.slice(start, end);
+      const opened = slice.split(open).length - 1;
+      const closed = slice.split(ch).length - 1;
+      if (closed > opened) {
+        end--;
+        continue;
+      }
+    }
+    break;
+  }
+  return end;
+}
+
+/** Hands a link to the browser, through the same opener the rest of DevHQ
+ *  uses. Only http and https ever get here: a scheme a program invented is not
+ *  something to pass to Windows on the strength of it appearing in output. */
+function openTerminalLink(url) {
+  if (!/^https?:\/\//i.test(url)) return;
+  const key = `term-link:${Date.now()}`;
+  window.devhqWork?.beginWork(key, "Opening your browser");
+  term_invoke("plugin:opener|open_url", { url })
+    .catch(() => {})
+    .finally(() => window.devhqWork?.endWork(key));
+}
+
 /** The column a word step lands on, going `dir` from `col` in `text`.
  *
  *  Spaces first, then the run of characters of one kind - letters and digits,
@@ -437,11 +500,20 @@ class TermView {
     host.classList.add("term");
     host.innerHTML =
       '<div class="term-scroll"><div class="term-history"></div>' +
-      '<div class="term-screen"></div><div class="term-cursor"></div></div>';
+      '<div class="term-screen"></div><div class="term-cursor"></div>' +
+      '<div class="term-link"></div></div>';
     this.scroll = host.querySelector(".term-scroll");
     this.history = host.querySelector(".term-history");
     this.screen = host.querySelector(".term-screen");
     this.cursorEl = host.querySelector(".term-cursor");
+    /** Drawn over the link under the pointer while Ctrl is held. Positioned by
+     *  column like everything else on a row, so it lines up with the text
+     *  whatever the font did. */
+    this.linkEl = host.querySelector(".term-link");
+    this.link = null;
+    /** The last place the pointer was, so pressing Ctrl without moving still
+     *  lights up what is under it. */
+    this.pointer = null;
     this.rowEls = [];
     /** The runs behind the history rows, and the cell they were drawn against.
      *
@@ -518,6 +590,7 @@ class TermView {
   bind() {
     this.host.tabIndex = 0;
     this.host.addEventListener("keydown", (e) => {
+      if (e.key === "Control") this.setLink(this.pointer ? this.linkUnder(this.pointer) : null);
       if (this.exited) return;
       // Pasting is left to the browser: returning here lets the keystroke
       // through to the native paste event, which is far more dependable than
@@ -586,7 +659,28 @@ class TermView {
       const text = (e.clipboardData || window.clipboardData).getData("text");
       if (text) this.send(text.replace(/\r?\n/g, "\r"));
     });
-    this.host.addEventListener("mousedown", () => this.host.focus());
+    this.host.addEventListener("mousedown", (e) => {
+      this.host.focus();
+      // Ctrl on a link is a click, not the beginning of a selection drag.
+      if (e.ctrlKey && e.button === 0 && this.linkUnder(e)) e.preventDefault();
+    });
+    this.host.addEventListener("mousemove", (e) => {
+      this.pointer = { target: e.target, clientX: e.clientX };
+      this.setLink(e.ctrlKey ? this.linkUnder(this.pointer) : null);
+    });
+    this.host.addEventListener("mouseleave", () => this.setLink(null));
+    this.host.addEventListener("keyup", (e) => {
+      if (e.key === "Control") this.setLink(null);
+    });
+    this.host.addEventListener("click", (e) => {
+      if (!e.ctrlKey || e.button !== 0) return;
+      const link = this.linkUnder(e);
+      if (!link) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.setLink(null);
+      openTerminalLink(link.url);
+    });
     this.scroll.addEventListener("scroll", () => {
       this.stickToBottom = this.maxScroll() - this.scroll.scrollTop < 4;
     });
@@ -720,6 +814,37 @@ class TermView {
   // reads the DOM as prose, and a terminal row is spans of colour: its word
   // steps stop at a change of colour rather than at a word. What a step means
   // is decided from the row's text, in columns, which is what the row is.
+
+  /** The link under a pointer position, or null. A row's text is its columns,
+   *  so the column under the pointer is a division by the cell. */
+  linkUnder(at) {
+    const row = at.target?.closest?.(".term-history > div, .term-screen > div");
+    if (!row || !this.host.contains(row)) return null;
+    const box = row.getBoundingClientRect();
+    const col = Math.floor((at.clientX - box.left) / this.cellW);
+    if (col < 0) return null;
+    const found = linkAt(row.textContent || "", col);
+    return found && { ...found, row };
+  }
+
+  /** Underlines the link a click would open, or takes the underline away. */
+  setLink(link) {
+    if (link && this.link && link.row === this.link.row && link.start === this.link.start) return;
+    if (!link && !this.link) return;
+    this.link = link;
+    this.host.classList.toggle("linking", Boolean(link));
+    if (!link) {
+      this.linkEl.style.display = "none";
+      return;
+    }
+    const left = colX(link.start, this.cellW);
+    this.linkEl.style.display = "block";
+    this.linkEl.style.left = `${link.row.offsetLeft + left}px`;
+    this.linkEl.style.width = `${colX(link.end, this.cellW) - left}px`;
+    this.linkEl.style.top = `${link.row.offsetTop}px`;
+    this.linkEl.style.height = `${link.row.offsetHeight}px`;
+    this.linkEl.title = link.url;
+  }
 
   /** Every drawn row, history first, in the order they appear. */
   rowList() {
@@ -1190,6 +1315,7 @@ class TermView {
 
   /** Detaches the view. The session keeps running — that is the whole point. */
   dispose() {
+    this.setLink(null);
     clearTimeout(this.quietTimer);
     if (views.get(this.id) === this) views.delete(this.id);
   }

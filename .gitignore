@@ -1,4 +1,5 @@
 node_modules/
+scripts/.cache/
 target/
 dist/
 src-tauri/target/

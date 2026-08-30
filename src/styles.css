@@ -1442,6 +1442,14 @@ html[dir="rtl"] .changelog-pop{right:auto;left:0;direction:rtl;text-align:right}
 }
 .release-title{flex:1;min-width:0;color:var(--text);font-size:12.5px;font-weight:600}
 .release-date{color:var(--dim2);font-size:11px;white-space:nowrap}
+.release-build{
+  margin:0 0 8px;font-size:11.5px;line-height:1.45;color:var(--dim2);
+}
+.release-build code{
+  font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,monospace;
+  font-size:11px;color:var(--text);background:var(--bg3);border-radius:4px;padding:1px 4px;
+  word-break:break-all;
+}
 .release-changes{display:flex;flex-direction:column;gap:6px;list-style:none;margin:0;padding:0}
 .chg{display:flex;align-items:baseline;gap:8px;font-size:12.5px;line-height:1.5;color:var(--dim)}
 .chg-kind{
@@ -1493,8 +1501,7 @@ html[dir="rtl"] .changelog-pop{right:auto;left:0;direction:rtl;text-align:right}
   user-select:text;cursor:text;height:100%;
 }
 .term-scroll{position:relative;height:100%;overflow-y:auto;overflow-x:hidden;padding:6px 8px}
-/* Rows are the grid runs are positioned against. Restored plain-text
-   history has no runs and simply flows inside one. */
+/* Rows are the grid runs are positioned against. */
 .term-history div,.term-screen div{position:relative;white-space:pre;min-height:17px}
 /* A run sits at the column it was given rather than after the run before it,
    so a glyph of the wrong width can never shift the rest of the line. Its own
@@ -1517,6 +1524,15 @@ html[dir="rtl"] .changelog-pop{right:auto;left:0;direction:rtl;text-align:right}
   pointer-events:none;border-radius:1px;
 }
 .term:not(:focus-within) .term-cursor{opacity:.3}
+
+/* Ctrl over a link: the terminal underlines exactly what a click would open,
+   drawn over the columns the link occupies rather than around its spans, which
+   a run of colour would have cut in half. */
+.term-link{
+  position:absolute;left:0;top:0;display:none;pointer-events:none;
+  border-bottom:1px solid var(--accent);
+}
+.term.linking,.term.linking .term-scroll{cursor:pointer}
 
 /* Working, rather than waiting. While output is streaming the cursor stops
    chasing every frame across the line and spins in place instead; the ordinary
@@ -1754,7 +1770,7 @@ body.tool-popout .titlebar .drag{
   app-region:no-drag;
   cursor:default;
 }
-body.tool-popout .brand{
+body.tool-popout .brand img{border-radius:0;object-fit:contain}
   min-width:0;
   overflow:hidden;
 }

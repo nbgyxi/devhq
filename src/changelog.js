@@ -6,8 +6,86 @@
 //
 // `kind` is one of "new", "better" or "fix"; it only picks the colour and the
 // word in front of the line.
+//
+// `buildChecksum` is optional. `package-msix.ps1` writes the SHA-256 of the
+// release exe when a Store package is built, so anyone reading the source can
+// see which binary that version shipped as.
 window.devhqChangelog = (() => {
   const releases = [
+    {
+      version: "0.34.3",
+      date: "2026-08-30",
+      title: "Store builds name their checksum",
+      changes: [
+        ["new", "A Store build now records the SHA-256 of its exe in the release list. Open What's new and any version that was packaged for the Store shows a line like \"Version 0.34.3 was built with checksum …\" so you can check the binary against the source."],
+      ],
+    },
+    {
+      version: "0.34.2",
+      date: "2026-08-30",
+      title: "Terminal history on or off",
+      changes: [
+        ["new", "Settings › Terminal has a switch for saving scrollback across restarts. Turn it off and every terminal starts fresh; what it showed is cleared when you close it."],
+      ],
+    },
+    {
+      version: "0.34.1",
+      date: "2026-08-30",
+      title: "The app icon, transparent and one mark",
+      changes: [
+        ["better", "The app icon is the new transparent artwork everywhere — taskbar, installer, browser tab and the brand mark in the window. There is no separate light-mode app icon anymore."],
+      ],
+    },
+    {
+      version: "0.34.0",
+      date: "2026-08-30",
+      title: "Ctrl+click a link in a terminal",
+      changes: [
+        ["new", "Hold Ctrl over a link in a terminal and it underlines; click it and it opens in your browser. The address a dev server prints when it starts is now one keystroke away from being open, instead of something to select and copy by hand."],
+        ["better", "What counts as a link is deliberately narrow: http, https, and a bare www. address. A file path is not a link, and a scheme a program invented is never handed to Windows on the strength of appearing in output."],
+        ["better", "The full stop after a link in a sentence is the sentence's, not the link's - but brackets that were opened inside the address are kept, so a Wikipedia URL still works."],
+      ],
+    },
+    {
+      version: "0.33.6",
+      date: "2026-08-30",
+      title: "Tool icons that match where they sit",
+      changes: [
+        ["better", "Pop-out tool icons are just the tool glyph — large, transparent, no box — in teal for dark surfaces and charcoal for light ones. The title bar follows the window theme; the taskbar always uses the dark-surface variant so a light window still reads clearly on a dark taskbar."],
+      ],
+    },
+    {
+      version: "0.33.5",
+      date: "2026-08-30",
+      title: "Tool icons for the new mark, light and dark",
+      changes: [
+        ["better", "Tool pop-out icons use the new app artwork as their base, draw the tool glyph as large as the terminal screen allows, and ship separate light and dark versions for the title bar and taskbar. Re-run npm run tool-icons after changing app-icon.png."],
+      ],
+    },
+    {
+      version: "0.33.4",
+      date: "2026-08-30",
+      title: "Tool pop-out icons you can read at a glance",
+      changes: [
+        ["better", "Composite tool icons draw the tool glyph almost as large as the terminal panel allows, instead of a small badge in the corner. Re-run npm run tool-icons to refresh them."],
+      ],
+    },
+    {
+      version: "0.33.3",
+      date: "2026-08-30",
+      title: "A tool pop-out carries its own icon",
+      changes: [
+        ["better", "Popped-out tools can show a composite icon — the app mark with the tool's glyph on a mint badge over the terminal. Run npm run tool-icons after adding tools or changing app-icon.png; if a tool has no generated file, the main icon is used instead."],
+      ],
+    },
+    {
+      version: "0.33.2",
+      date: "2026-08-30",
+      title: "A new face for DevHQ",
+      changes: [
+        ["better", "The app icon is new — a code editor over a terminal prompt, in mint and charcoal. Everywhere the icon appears — the window, the taskbar, the Store tile, the brand mark in the UI — picks it up from the same source."],
+      ],
+    },
     {
       version: "0.33.1",
       date: "2026-08-30",

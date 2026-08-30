@@ -158,6 +158,43 @@ $exeSource = Join-Path $tauriRoot "target/release/devhq.exe"
 if (-not (Test-Path $exeSource)) {
     throw "Release exe not found at $exeSource. Run without -SkipBuild first."
 }
+$exeChecksum = (Get-FileHash -Path $exeSource -Algorithm SHA256).Hash.ToLowerInvariant()
+
+function Set-ChangelogBuildChecksum([string]$version, [string]$checksum) {
+    $raw = [System.IO.File]::ReadAllText($changelogPath)
+    $verEsc = [regex]::Escape($version)
+    $block = [regex]::Match(
+        $raw,
+        "(?ms)^\s*\{\s*\r?\n\s*version:\s*`"$verEsc`",.*?^\s*\},",
+        [System.Text.RegularExpressions.RegexOptions]::None,
+        [TimeSpan]::FromSeconds(5))
+    if (-not $block.Success) {
+        throw "Release $version not found in $changelogPath."
+    }
+    $entry = $block.Value
+    if ($entry -match '(?m)^\s*buildChecksum:\s*"[^"]*",\s*\r?\n') {
+        $entry = [regex]::Replace(
+            $entry,
+            '(?m)^\s*buildChecksum:\s*"[^"]*",\s*\r?\n',
+            "      buildChecksum: `"$checksum`",`r`n",
+            [System.Text.RegularExpressions.RegexOptions]::None,
+            [TimeSpan]::FromSeconds(5))
+    } elseif ($entry -match '(?m)^(\s*title:\s*"[^"]*",\s*\r?\n)') {
+        $entry = [regex]::Replace(
+            $entry,
+            '(?m)^(\s*title:\s*"[^"]*",\s*\r?\n)',
+            "`${1}      buildChecksum: `"$checksum`",`r`n",
+            [System.Text.RegularExpressions.RegexOptions]::None,
+            [TimeSpan]::FromSeconds(5))
+    } else {
+        throw "Could not place buildChecksum in release $version (no title line)."
+    }
+    $raw = $raw.Remove($block.Index, $block.Length).Insert($block.Index, $entry)
+    [System.IO.File]::WriteAllText($changelogPath, $raw, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+Set-ChangelogBuildChecksum $listVersion $exeChecksum
+Write-Host "==> Recorded exe SHA-256 in src/changelog.js for $listVersion : $exeChecksum" -ForegroundColor Cyan
 
 # --- 3. Stage layout ------------------------------------------------------
 $stage = Join-Path $OutDir "layout"

@@ -172,6 +172,22 @@
   window.devhqTrackPageView?.(`/tool-popout/${id}`);
   document.title = meta.name;
   document.getElementById("pop-name").textContent = meta.name;
+  const applyBrandIcon = () => {
+    const brandImg = document.querySelector(".brand img");
+    if (!brandImg) return;
+    const themeKey = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+    brandImg.src = `tool-icons/${themeKey}/${encodeURIComponent(id)}.png`;
+    brandImg.onerror = () => {
+      brandImg.onerror = null;
+      brandImg.src = `tool-icons/${themeKey}/_default.png`;
+    };
+  };
+  applyBrandIcon();
+  window.addEventListener("storage", (event) => {
+    if (event.key !== PREFS_KEY) return;
+    applyTheme();
+    applyBrandIcon();
+  });
   // The title bar is the only place this window says what it is: the name, and
   // beside it the Alpha/Beta mark that used to sit in the page header. The hint
   // sentence stays out — it crowds the bar and reads as centered noise.

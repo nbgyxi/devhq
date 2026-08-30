@@ -2186,12 +2186,16 @@ function releaseHtml(release) {
         <span class="chg-text">${changelogText(text)}</span>
       </li>`)
     .join("");
+  const build = release.buildChecksum
+    ? `<p class="release-build">Version ${esc(release.version)} was built with checksum <code>${esc(release.buildChecksum)}</code></p>`
+    : "";
   return `<section class="release">
     <div class="release-head">
       <span class="release-ver">${esc(release.version)}</span>
       <span class="release-title">${esc(release.title)}</span>
       <time class="release-date" datetime="${esc(release.date)}">${esc(changelogDate(release.date))}</time>
     </div>
+    ${build}
     <ul class="release-changes">${changes}</ul>
   </section>`;
 }
@@ -4259,6 +4263,10 @@ function renderSettings() {
               <button class="btn" type="button" id="setting-shell-scan">${icon("refresh")}Scan</button>
             </div>
           </div>
+          <label class="settings-row" for="setting-terminal-history">
+            <span><strong>Save terminal history</strong><small>Keep each terminal's scrollback across restarts. When off, a terminal starts fresh and closing it clears what it showed.</small></span>
+            <input class="setting-check" id="setting-terminal-history" type="checkbox" />
+          </label>
           <div class="settings-row terminal-type-colors-row">
             <span><strong>Terminal type colors</strong><small>Choose the identifying tab color for each shell.</small></span>
             <div class="terminal-type-colors" id="setting-shell-colors"></div>
@@ -4308,6 +4316,7 @@ function renderSettings() {
     .map((profile) => `<option value="${profile.value}"${profile.available === false ? " disabled" : ""}>${profile.label}${profile.available === false ? " · unavailable" : ""}</option>`)
     .join("");
   shellSelect.value = shellSetting.getDefault();
+  host.querySelector("#setting-terminal-history").checked = shellSetting.getSaveHistory();
   for (const button of host.querySelectorAll("[data-terminal-marker]")) {
     const active = button.dataset.terminalMarker === shellSetting.getShellMarkerStyle();
     button.classList.toggle("on", active);
@@ -5053,6 +5062,8 @@ function wireShell() {
       window.devhqTrackPageView?.(currentPath());
     } else if (e.target.id === "setting-terminal-shell") {
       window.devhqTerminalSettings.setDefault(e.target.value);
+    } else if (e.target.id === "setting-terminal-history") {
+      window.devhqTerminalSettings.setSaveHistory(e.target.checked);
     } else if (e.target.id === "setting-term-theme") {
       if (e.target.value === "custom") return syncTermThemeControls();
       window.devhqTermTheme.usePreset(e.target.value);

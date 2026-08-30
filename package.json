@@ -2,9 +2,11 @@
   "name": "devhq",
   "version": "0.1.0",
   "description": "DevHQ - developer overview of every project in a folder (Tauri + Rust)",
+  "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "scripts": {
-    "icons": "node scripts/tauri-with-cargo-path.js icon app-icon.png",
+    "icons": "node scripts/normalize-app-icon.js && node scripts/tauri-with-cargo-path.js icon app-icon.png",
+    "tool-icons": "node scripts/make-tool-icons.js",
     "dev": "node scripts/tauri-with-cargo-path.js dev",
     "prebuild": "node scripts/check-version.js",
     "build": "node scripts/tauri-with-cargo-path.js build",
@@ -14,6 +16,8 @@
     "tauri": "node scripts/tauri-with-cargo-path.js"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@napi-rs/canvas": "^0.1.67",
+    "@tauri-apps/cli": "^2",
+    "wawoff2": "^2.0.1"
   }
 }

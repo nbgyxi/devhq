@@ -1,0 +1,34 @@
+DevHQ Source License
+
+Copyright (c) 2026 Gyxi. All rights reserved.
+
+This repository is open for inspection and contribution, but Gyxi retains
+exclusive control over DevHQ. There is one official project; you may not
+publish your own version of it.
+
+You may:
+
+  - Read, study, and learn from the source code.
+  - Build and run DevHQ locally for your own personal use.
+  - Fork this repository on GitHub in order to open a pull request.
+  - Create branches and submit pull requests to this repository.
+
+You may not, without prior written permission from Gyxi:
+
+  - Publish, distribute, sublicense, or sell DevHQ, its source code, or
+    any modified or derived version of it.
+  - Offer your own product, app, or service that is based on this code.
+  - Host a public copy of this project as a standalone product or
+    competing repository.
+  - Use any part of this code in another project or product.
+  - Remove or alter this license or any copyright notice.
+
+A GitHub fork is only a way to send a pull request back here. It is not
+permission to maintain, brand, or release your own edition of DevHQ.
+
+Contributions submitted as pull requests to this repository are welcome.
+By submitting a pull request, you grant Gyxi a perpetual, worldwide,
+non-exclusive, royalty-free license to use, modify, and distribute your
+contribution as part of DevHQ.
+
+This software is provided "as is", without warranty of any kind.

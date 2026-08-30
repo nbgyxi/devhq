@@ -58,10 +58,17 @@ const terms = {
   shellAvailability: new Map(),
   shellColors: { ...DEFAULT_SHELL_COLORS },
   shellMarkerStyle: "code",
+  /** When false, terminals start fresh and nothing is replayed on restore. */
+  saveHistory: true,
   orphanWarnings: new Map(),
   restoring: false,
   el: null,
 };
+
+function historyKeyForOpen(existing = "") {
+  if (!terms.saveHistory) return null;
+  return existing || newHistoryKey();
+}
 
 /** Writes the panel down: which shells are open, where, in what order, and the
  *  key that names each one's kept stream. No output passes through here - it
@@ -81,12 +88,13 @@ function termsSavePrefs() {
         popped: spec.popped,
         shell: spec.shell,
         pane: spec.pane,
-        key: spec.key,
+        ...(terms.saveHistory && spec.key ? { key: spec.key } : {}),
       })),
       defaultShell: terms.defaultShell,
       splitRatio: terms.splitRatio,
       shellColors: terms.shellColors,
       shellMarkerStyle: terms.shellMarkerStyle,
+      saveHistory: terms.saveHistory,
     }));
   } catch { /* nothing here is worth failing a render over */ }
 }
@@ -102,6 +110,7 @@ function termsLoadPrefs() {
       }
     }
     if (["none", "dot", "code"].includes(saved.shellMarkerStyle)) terms.shellMarkerStyle = saved.shellMarkerStyle;
+    if (typeof saved.saveHistory === "boolean") terms.saveHistory = saved.saveHistory;
     if (TERM_SHELLS.some((profile) => profile.value === saved.defaultShell)) {
       terms.defaultShell = saved.defaultShell;
       terms.nextShell = saved.defaultShell;
@@ -726,11 +735,16 @@ async function switchTerminalShell(id, shell) {
   window.devhqWork?.beginWork(key, `Restarting ${label} with ${TERM_SHELLS.find((profile) => profile.value === shell)?.label || shell}`);
   let replacement = null;
   try {
-    const historyKey = newHistoryKey();
+    const historyKey = historyKeyForOpen();
     replacement = await term_dock_invoke("term_open", {
-      args: { projectPath: old.info.projectPath, projectName: label, shell, historyKey },
+      args: {
+        projectPath: old.info.projectPath,
+        projectName: label,
+        shell,
+        ...(historyKey ? { historyKey } : {}),
+      },
     });
-    await mountSession(replacement.id, historyKey, pane);
+    await mountSession(replacement.id, historyKey || "", pane);
 
     old.view.dispose();
     old.host.remove();
@@ -824,17 +838,17 @@ async function openTerminal(project, opts = {}) {
     opts.run ? `Starting ${opts.run} in ${project.name}` : `Starting a shell in ${project.name}`
   );
   try {
-    const historyKey = newHistoryKey();
+    const historyKey = historyKeyForOpen();
     const info = await term_dock_invoke("term_open", {
       args: {
         projectPath: project.path,
         projectName: label,
         shell: opts.shell || terms.defaultShell,
-        historyKey,
+        ...(historyKey ? { historyKey } : {}),
       },
     });
     terms.pending.delete(key);
-    await mountSession(info.id, historyKey, pane);
+    await mountSession(info.id, historyKey || "", pane);
     if (opts.run) sendWhenReady(info.id, opts.run);
   } catch (e) {
     terms.pending.delete(key);
@@ -889,7 +903,7 @@ async function mountSession(id, historyKey = "", restoredPane = 0) {
     popped: false,
     // The stream this terminal is kept as. A terminal coming back from its own
     // window keeps the one it already had.
-    key: historyKey || remembered?.key || "",
+    key: terms.saveHistory ? (historyKey || remembered?.key || "") : "",
     shell: shellProfileFromCommand(info.command),
     pane: remembered?.pane === 1 || restoredPane === 1 ? 1 : 0,
   });
@@ -1048,8 +1062,9 @@ async function restoreTerminals() {
   // Streams nobody is going to open again - a terminal closed while DevHQ was
   // not running, or one lost with a crash - are dropped before anything else
   // touches them.
-  term_dock_invoke("term_prune_history", { keys: specs.map((spec) => spec.key).filter(Boolean) })
-    .catch(() => {});
+  term_dock_invoke("term_prune_history", {
+    keys: terms.saveHistory ? specs.map((spec) => spec.key).filter(Boolean) : [],
+  }).catch(() => {});
   if (!specs.length) return;
   terms.restoring = true;
   setDockOpen(true);
@@ -1064,17 +1079,17 @@ async function restoreTerminals() {
       // The shell is new; the scrollback is not. `term_open` replays this
       // terminal's kept stream into the parser before the shell starts, so
       // what comes back is the session's own history rather than a copy.
-      const historyKey = spec.key || newHistoryKey();
+      const historyKey = historyKeyForOpen(spec.key);
       const info = await term_dock_invoke("term_open", {
         args: {
           projectPath: spec.projectPath,
           projectName: spec.projectName || "shell",
           shell: spec.shell || terms.defaultShell,
-          historyKey,
+          ...(historyKey ? { historyKey } : {}),
         },
       });
       terms.pending.delete(key);
-      await mountSession(info.id, historyKey, spec.pane);
+      await mountSession(info.id, historyKey || "", spec.pane);
       restored.push(info.id);
       if (spec.popped) await popOutTerminal(info.id);
     } catch {
@@ -1164,6 +1179,17 @@ window.devhqTerminalSettings = {
     terms.nextShell = shell;
     termsSavePrefs();
     renderTabs();
+  },
+  getSaveHistory: () => terms.saveHistory,
+  setSaveHistory: (enabled) => {
+    const next = Boolean(enabled);
+    if (terms.saveHistory === next) return;
+    terms.saveHistory = next;
+    if (!next) {
+      for (const spec of terms.known.values()) spec.key = "";
+      term_dock_invoke("term_prune_history", { keys: [] }).catch(() => {});
+    }
+    termsSavePrefs();
   },
 };
 
