@@ -145,6 +145,13 @@ $version = "{0}.{1}.{2}.0" -f $parts[0], $parts[1], $parts[2]
 Write-Host "==> Package version: $version (release '$listVersion' in src/changelog.js)" -ForegroundColor Cyan
 
 # --- 2. Build -------------------------------------------------------------
+# The release notes and version number are the content of this build and
+# must already be in src/changelog.js. The checksum cannot go in first: it
+# is a hash of the finished exe, and putting it in the frontend would change
+# the binary. So: notes first, then this build, then hash that exact file.
+# The hash is written into changelog.js afterwards for the repo and for later
+# versions. Do not rebuild after that write - a second build would be a
+# different binary.
 if (-not $SkipBuild) {
     Write-Host "==> Building release exe (tauri build)..." -ForegroundColor Cyan
     Push-Location $repoRoot

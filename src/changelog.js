@@ -7,17 +7,20 @@
 // `kind` is one of "new", "better" or "fix"; it only picks the colour and the
 // word in front of the line.
 //
-// `buildChecksum` is optional. `package-msix.ps1` writes the SHA-256 of the
-// release exe when a Store package is built, so anyone reading the source can
-// see which binary that version shipped as.
+// `buildChecksum` is the SHA-256 of that version's Store exe. It is written
+// after the package is built, never before: putting the hash into this file
+// first would change the binary, so the number would no longer match. What's
+// new hashes the running exe for the current version; older versions show the
+// recorded number from when they shipped.
 window.devhqChangelog = (() => {
   const releases = [
     {
       version: "0.34.3",
       date: "2026-08-30",
       title: "Store builds name their checksum",
+      buildChecksum: "8bbb9f9a871eb2b7b3d6461e9e70cf73b6f5a05a90a34f24a35d5798d2fe7c8e",
       changes: [
-        ["new", "A Store build now records the SHA-256 of its exe in the release list. Open What's new and any version that was packaged for the Store shows a line like \"Version 0.34.3 was built with checksum …\" so you can check the binary against the source."],
+        ["new", "What's new names the SHA-256 of the exe you are running, on the current version. A Store package records that same number in the source after the build, so the list on GitHub can be checked against the binary in the Store."],
       ],
     },
     {

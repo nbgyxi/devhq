@@ -224,6 +224,36 @@ fn app_version(app: AppHandle) -> String {
     app.package_info().version.to_string()
 }
 
+/// SHA-256 of the running exe. The checksum cannot be baked into the frontend
+/// before the build: putting it in `changelog.js` would change the binary, so
+/// the hash would no longer describe the file. What's new hashes this process
+/// instead, and `package-msix.ps1` records the same number in the source after
+/// the package exists, for anyone reading the repo.
+fn hash_running_exe() -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[tauri::command]
+async fn app_build_checksum() -> Result<String, String> {
+    off_thread(hash_running_exe)
+        .await
+        .unwrap_or_else(|| Err("The checksum did not finish.".into()))
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageView {
@@ -1285,6 +1315,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan,
             app_version,
+            app_build_checksum,
             analytics_page_view,
             scan_cancel,
             default_root,
@@ -1367,6 +1398,7 @@ pub fn run() {
     let builder = builder.invoke_handler(tauri::generate_handler![
         scan,
         app_version,
+        app_build_checksum,
         analytics_page_view,
         scan_cancel,
         default_root,

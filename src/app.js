@@ -123,6 +123,9 @@ const state = {
   /** What the backend says it was built as. Empty until it answers, which is
    *  why the button is only drawn once it has. */
   appVersion: "",
+  /** SHA-256 of this running exe. Empty until it answers; What's new then
+   *  prints it on the current version. */
+  appBuildChecksum: "",
 };
 
 /* ------------------------------------------------------------- work log */
@@ -2186,8 +2189,11 @@ function releaseHtml(release) {
         <span class="chg-text">${changelogText(text)}</span>
       </li>`)
     .join("");
-  const build = release.buildChecksum
-    ? `<p class="release-build">Version ${esc(release.version)} was built with checksum <code>${esc(release.buildChecksum)}</code></p>`
+  const checksum = release.version === state.appVersion && state.appBuildChecksum
+    ? state.appBuildChecksum
+    : (release.buildChecksum || "");
+  const build = checksum
+    ? `<p class="release-build">Version ${esc(release.version)} was built with checksum <code>${esc(checksum)}</code></p>`
     : "";
   return `<section class="release">
     <div class="release-head">
@@ -2204,7 +2210,7 @@ function releaseHtml(release) {
  *  shown and hidden - opening it never costs a frame. */
 function buildChangelog() {
   const log = window.devhqChangelog;
-  const built = `${log?.current}/${state.appVersion}`;
+  const built = `${log?.current}/${state.appVersion}/${state.appBuildChecksum}`;
   if (!log || el["changelog-pop"].dataset.built === built) return;
   el["changelog-pop"].innerHTML = `
     <div class="changelog-head">
@@ -2224,7 +2230,9 @@ function renderVersionButton() {
 }
 
 /** Asks the backend what it was built as. Nothing else waits on it: until it
- *  answers, the status bar simply has no version on it. */
+ *  answers, the status bar simply has no version on it. The checksum of this
+ *  exe is a second trip - hashing the file is disk work - and fills in the
+ *  current release's line once it lands. */
 function loadAppVersion() {
   invoke("app_version")
     .then((version) => {
@@ -2232,6 +2240,14 @@ function loadAppVersion() {
       renderVersionButton();
     })
     .catch(() => {});
+  beginWork("build-checksum", "Reading this build's checksum");
+  invoke("app_build_checksum")
+    .then((hash) => {
+      state.appBuildChecksum = String(hash);
+      if (changelogOpen()) buildChangelog();
+    })
+    .catch(() => {})
+    .finally(() => endWork("build-checksum"));
 }
 
 function changelogOpen() {
