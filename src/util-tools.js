@@ -775,9 +775,9 @@ function wire() {
     if (act) return action(act.dataset.tools, act);
 
     const copyRow = event.target.closest("[data-tools-copy-row]");
-    if (copyRow) return copyPiece(util.result?.rows?.[Number(copyRow.dataset.toolsCopyRow)]?.v);
+    if (copyRow) return copyPiece(util.result?.rows?.[Number(copyRow.dataset.toolsCopyRow)]?.v, copyRow);
     const copyBlock = event.target.closest("[data-tools-copy-block]");
-    if (copyBlock) return copyPiece(util.result?.blocks?.[Number(copyBlock.dataset.toolsCopyBlock)]?.text);
+    if (copyBlock) return copyPiece(util.result?.blocks?.[Number(copyBlock.dataset.toolsCopyBlock)]?.text, copyBlock);
 
     const mode = event.target.closest("[data-tools-mode]");
     if (mode) {
@@ -803,10 +803,10 @@ function wire() {
   };
 }
 
-async function copyPiece(text) {
+async function copyPiece(text, button) {
   if (text === undefined || text === null || text === "") return;
   try {
-    await navigator.clipboard.writeText(String(text));
+    await window.devhqCopy.copy(String(text), button);
   } catch {
     window.devhqWork?.beginWork("tools-copy", "Could not copy");
     setTimeout(() => window.devhqWork?.endWork("tools-copy"), 1600);
@@ -865,9 +865,10 @@ async function action(name) {
 
 /* ------------------------------------------------------------ open / render */
 
-function open(id) {
+function open(id, input) {
   const tool = utilById(id);
   if (!tool) return;
+  if (typeof input === "string" && input) util.inputs[id] = input;
   util.toolId = id;
   const area = util.host?.querySelector("#tools-input");
   if (area) {
@@ -1067,6 +1068,9 @@ window.devhqUtilTools = {
   open,
   catalog,
   byId: utilById,
+  setInput(id, input) { if (utilById(id) && typeof input === "string") { util.inputs[id] = input; if (util.toolId === id) open(id); } },
+  exportState() { return { toolId:util.toolId, inputs:util.inputs, modes:util.modes, flags:util.flags, keys:util.keys, seed:util.seed, result:util.result, chromeDirty:util.chromeDirty }; },
+  importState(state) { if(!state)return;Object.assign(util,state,{host:util.host,built:util.built,token:util.token+1});if(util.host)render(); },
 };
 
 

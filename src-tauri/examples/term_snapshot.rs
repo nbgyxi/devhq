@@ -17,8 +17,13 @@ fn main() {
 
     let dir = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
     let (cols, rows) = (100usize, 20usize);
-    let pty = ConPty::spawn("powershell.exe -NoLogo", std::path::Path::new(&dir), cols as u16, rows as u16)
-        .expect("spawn failed");
+    let pty = ConPty::spawn(
+        "powershell.exe -NoLogo",
+        std::path::Path::new(&dir),
+        cols as u16,
+        rows as u16,
+    )
+    .expect("spawn failed");
 
     let grid = Arc::new(Mutex::new(Grid::new(cols, rows)));
     let reader_grid = grid.clone();
@@ -52,7 +57,10 @@ fn main() {
     let mut lines: Vec<String> = grid.scrollback.iter().map(|row| pack_text(row)).collect();
     let history = lines.len();
     lines.extend((0..grid.rows).map(|y| pack_text(grid.row(y))));
-    println!("cursor {},{}  history {}  screen {}", grid.cx, grid.cy, history, grid.rows);
+    println!(
+        "cursor {},{}  history {}  screen {}",
+        grid.cx, grid.cy, history, grid.rows
+    );
     for (i, line) in lines.iter().enumerate() {
         let tag = if i < history { "hist" } else { "scrn" };
         println!("{i:>3} {tag} {line:?}");

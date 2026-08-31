@@ -29,15 +29,22 @@ const SHELLS: &[&str] = &["pwsh.exe -NoLogo", "powershell.exe -NoLogo"];
 
 fn shell_command(profile: &str) -> Result<String, String> {
     match profile {
-        "pwsh" => pwsh_path(false).map(|path| format!(r#""{}" -NoLogo"#, path.display())).ok_or_else(|| "PowerShell 7 was not found.".into()),
-        "pwsh-preview" => pwsh_path(true).map(|path| format!(r#""{}" -NoLogo"#, path.display())).ok_or_else(|| "PowerShell Preview was not found.".into()),
+        "pwsh" => pwsh_path(false)
+            .map(|path| format!(r#""{}" -NoLogo"#, path.display()))
+            .ok_or_else(|| "PowerShell 7 was not found.".into()),
+        "pwsh-preview" => pwsh_path(true)
+            .map(|path| format!(r#""{}" -NoLogo"#, path.display()))
+            .ok_or_else(|| "PowerShell Preview was not found.".into()),
         "powershell" => Ok("powershell.exe -NoLogo".into()),
         "cmd" => Ok("cmd.exe".into()),
         "nu" => Ok("nu.exe".into()),
         "wsl" => Ok("wsl.exe --exec bash --login".into()),
         "git-bash" => {
             let Some(bash) = git_bash_path() else {
-                return Err("Git Bash was not found. Install Git for Windows or choose another shell.".into());
+                return Err(
+                    "Git Bash was not found. Install Git for Windows or choose another shell."
+                        .into(),
+                );
             };
             Ok(format!(r#""{}" --login -i"#, bash.display()))
         }
@@ -46,8 +53,11 @@ fn shell_command(profile: &str) -> Result<String, String> {
 }
 
 fn find_command(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")
-        .and_then(|path| std::env::split_paths(&path).map(|dir| dir.join(name)).find(|path| path.is_file()))
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join(name))
+            .find(|path| path.is_file())
+    })
 }
 
 fn pwsh_path(preview: bool) -> Option<PathBuf> {
@@ -71,7 +81,13 @@ fn git_bash_path() -> Option<PathBuf> {
         }
     }
     if let Some(root) = std::env::var_os("LOCALAPPDATA") {
-        candidates.push(PathBuf::from(root).join("Programs").join("Git").join("bin").join("bash.exe"));
+        candidates.push(
+            PathBuf::from(root)
+                .join("Programs")
+                .join("Git")
+                .join("bin")
+                .join("bash.exe"),
+        );
     }
     candidates.into_iter().find(|path| path.is_file())
 }
@@ -192,6 +208,8 @@ struct Update {
     id: String,
     rows: Vec<RowUpdate>,
     scrolled: Vec<Vec<Run>>,
+    /// CSI 3 J wiped the session scrollback; the view must drop its history.
+    clear_history: bool,
     cx: usize,
     cy: usize,
     cursor_visible: bool,
@@ -326,11 +344,21 @@ mod history_tests {
     }
 
     fn line(grid: &Grid, y: usize) -> String {
-        grid.row(y).iter().map(|c| c.ch).collect::<String>().trim_end().to_string()
+        grid.row(y)
+            .iter()
+            .map(|c| c.ch)
+            .collect::<String>()
+            .trim_end()
+            .to_string()
     }
 
     fn back(grid: &Grid, i: usize) -> String {
-        grid.scrollback[i].iter().map(|c| c.ch).collect::<String>().trim_end().to_string()
+        grid.scrollback[i]
+            .iter()
+            .map(|c| c.ch)
+            .collect::<String>()
+            .trim_end()
+            .to_string()
     }
 
     /// The whole point: what a restored terminal shows is not rebuilt from a
@@ -360,9 +388,16 @@ mod history_tests {
         // the very same cells the live grid is holding.
         assert_eq!(back(&replayed, 0), line(&live, 0));
         assert_eq!(back(&replayed, 1), line(&live, 1));
-        assert_eq!(replayed.scrollback.len(), 2, "the standing prompt is not output");
         assert_eq!(
-            replayed.scrollback[1].iter().map(|c| c.fg).collect::<Vec<_>>(),
+            replayed.scrollback.len(),
+            2,
+            "the standing prompt is not output"
+        );
+        assert_eq!(
+            replayed.scrollback[1]
+                .iter()
+                .map(|c| c.fg)
+                .collect::<Vec<_>>(),
             live.row(1).iter().map(|c| c.fg).collect::<Vec<_>>(),
             "the colours are not copied over, they are parsed again",
         );
@@ -393,12 +428,18 @@ mod history_tests {
 
         let (bin, _) = history_paths("session-b").unwrap();
         let len = std::fs::metadata(&bin).unwrap().len();
-        assert!(len <= HISTORY_COMPACT_AT, "{len} bytes kept, trimmed at {HISTORY_COMPACT_AT}");
+        assert!(
+            len <= HISTORY_COMPACT_AT,
+            "{len} bytes kept, trimmed at {HISTORY_COMPACT_AT}"
+        );
         assert!(len > 0);
         assert_eq!(len, kept, "the log knows how long it is after a trim");
         // Cut at a mark, so the first byte is still the start of a line.
         let replayed = replay_history("session-b", 40, 6);
-        assert!(replayed.scrollback.iter().all(|row| row.iter().all(|c| c.ch == 'x' || c.ch == ' ')));
+        assert!(replayed
+            .scrollback
+            .iter()
+            .all(|row| row.iter().all(|c| c.ch == 'x' || c.ch == ' ')));
 
         std::env::remove_var("DEVHQ_TERM_LOG");
     }
@@ -521,18 +562,50 @@ impl Session {
 pub async fn term_shell_availability() -> Vec<ShellAvailability> {
     tauri::async_runtime::spawn_blocking(|| {
         let candidates = [
-            ("pwsh", pwsh_path(false), "PowerShell 7 is not installed or is not on PATH."),
-            ("pwsh-preview", pwsh_path(true), "PowerShell Preview is not installed."),
-            ("powershell", find_command("powershell.exe"), "Windows PowerShell is not available."),
-            ("cmd", find_command("cmd.exe"), "Command Prompt is not available."),
+            (
+                "pwsh",
+                pwsh_path(false),
+                "PowerShell 7 is not installed or is not on PATH.",
+            ),
+            (
+                "pwsh-preview",
+                pwsh_path(true),
+                "PowerShell Preview is not installed.",
+            ),
+            (
+                "powershell",
+                find_command("powershell.exe"),
+                "Windows PowerShell is not available.",
+            ),
+            (
+                "cmd",
+                find_command("cmd.exe"),
+                "Command Prompt is not available.",
+            ),
             ("git-bash", git_bash_path(), "Git Bash is not installed."),
-            ("wsl", find_command("wsl.exe"), "Windows Subsystem for Linux is not installed."),
-            ("nu", find_command("nu.exe"), "NuShell is not installed or is not on PATH."),
+            (
+                "wsl",
+                find_command("wsl.exe"),
+                "Windows Subsystem for Linux is not installed.",
+            ),
+            (
+                "nu",
+                find_command("nu.exe"),
+                "NuShell is not installed or is not on PATH.",
+            ),
         ];
-        let mut found = vec![ShellAvailability { profile: "auto", available: true, reason: None }];
+        let mut found = vec![ShellAvailability {
+            profile: "auto",
+            available: true,
+            reason: None,
+        }];
         found.extend(candidates.into_iter().map(|(profile, path, reason)| {
             let available = path.is_some();
-            ShellAvailability { profile, available, reason: if available { None } else { Some(reason) } }
+            ShellAvailability {
+                profile,
+                available,
+                reason: if available { None } else { Some(reason) },
+            }
         }));
         found
     })
@@ -568,26 +641,36 @@ fn term_open_sync(app: AppHandle, args: OpenArgs) -> Result<TermInfo, String> {
     };
 
     let (pty, command) = match &args.command {
-        Some(cmd) => (ConPty::spawn(cmd, &dir, cols as u16, rows as u16)?, cmd.clone()),
+        Some(cmd) => (
+            ConPty::spawn(cmd, &dir, cols as u16, rows as u16)?,
+            cmd.clone(),
+        ),
         None => match args.shell.as_deref().unwrap_or("auto") {
             "auto" => spawn_shell(&dir, cols as u16, rows as u16)?,
             profile => {
                 let shell = shell_command(profile)?;
-                (ConPty::spawn(&shell, &dir, cols as u16, rows as u16)?, shell)
+                (
+                    ConPty::spawn(&shell, &dir, cols as u16, rows as u16)?,
+                    shell,
+                )
             }
         },
     };
 
     let id = next_id();
     let (jobs, inbox) = channel::<Job>();
-    let log = history_key.as_deref().and_then(|key| HistoryLog::open(key, cols, rows));
+    let log = history_key
+        .as_deref()
+        .and_then(|key| HistoryLog::open(key, cols, rows));
     let session = Arc::new(Session {
         id: id.clone(),
         jobs,
         project_path: args.project_path.clone(),
-        project_name: args
-            .project_name
-            .unwrap_or_else(|| dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()),
+        project_name: args.project_name.unwrap_or_else(|| {
+            dir.file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        }),
         pid: pty.pid(),
         pty: Mutex::new(pty),
         grid: Mutex::new(grid),
@@ -596,7 +679,10 @@ fn term_open_sync(app: AppHandle, args: OpenArgs) -> Result<TermInfo, String> {
         log: Mutex::new(log),
         history_key,
     });
-    registry().lock().unwrap().insert(id.clone(), session.clone());
+    registry()
+        .lock()
+        .unwrap()
+        .insert(id.clone(), session.clone());
 
     spawn_writer(Arc::downgrade(&session), inbox);
     spawn_reader(app, session.clone());
@@ -643,7 +729,9 @@ const HISTORY_MARK_EVERY: u64 = 64 * 1024;
 fn history_dir() -> Option<PathBuf> {
     let dir = match std::env::var_os("DEVHQ_TERM_LOG") {
         Some(dir) => PathBuf::from(dir),
-        None => PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("DevHQ").join("sessions"),
+        None => PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
+            .join("DevHQ")
+            .join("sessions"),
     };
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
@@ -654,12 +742,17 @@ fn history_dir() -> Option<PathBuf> {
 fn history_paths(key: &str) -> Option<(PathBuf, PathBuf)> {
     if key.is_empty()
         || key.len() > 64
-        || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return None;
     }
     let dir = history_dir()?;
-    Some((dir.join(format!("{key}.bin")), dir.join(format!("{key}.meta"))))
+    Some((
+        dir.join(format!("{key}.bin")),
+        dir.join(format!("{key}.meta")),
+    ))
 }
 
 /// The sidecar beside a stream: the size it starts at, then one line per
@@ -673,8 +766,15 @@ struct Meta {
 }
 
 fn read_meta(path: &Path) -> Meta {
-    let mut meta = Meta { cols: 80, rows: 24, resizes: Vec::new(), marks: Vec::new() };
-    let Ok(text) = std::fs::read_to_string(path) else { return meta };
+    let mut meta = Meta {
+        cols: 80,
+        rows: 24,
+        resizes: Vec::new(),
+        marks: Vec::new(),
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return meta;
+    };
     for (i, line) in text.lines().enumerate() {
         let mut parts = line.split_whitespace();
         match parts.next() {
@@ -745,12 +845,24 @@ impl HistoryLog {
             written: std::fs::metadata(&bin).map(|m| m.len()).unwrap_or(0),
             marks: std::mem::take(&mut meta.marks),
             since_mark: 0,
-            file: std::fs::OpenOptions::new().create(true).append(true).open(&bin).ok()?,
+            file: std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&bin)
+                .ok()?,
             bin,
             meta_path,
         };
         if log.written == 0 {
-            write_meta(&log.meta_path, &Meta { cols, rows, resizes: Vec::new(), marks: Vec::new() });
+            write_meta(
+                &log.meta_path,
+                &Meta {
+                    cols,
+                    rows,
+                    resizes: Vec::new(),
+                    marks: Vec::new(),
+                },
+            );
         } else {
             // The stream continues at whatever size this window is now, and a
             // resize never appears in the bytes themselves.
@@ -775,7 +887,10 @@ impl HistoryLog {
         if settled && self.since_mark >= HISTORY_MARK_EVERY {
             self.marks.push(self.written);
             self.since_mark = 0;
-            if let Ok(mut meta) = std::fs::OpenOptions::new().append(true).open(&self.meta_path) {
+            if let Ok(mut meta) = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&self.meta_path)
+            {
                 let _ = writeln!(meta, "mark {}", self.written);
             }
         }
@@ -786,7 +901,10 @@ impl HistoryLog {
 
     fn note_resize(&mut self, cols: usize, rows: usize) {
         use std::io::Write;
-        if let Ok(mut meta) = std::fs::OpenOptions::new().append(true).open(&self.meta_path) {
+        if let Ok(mut meta) = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&self.meta_path)
+        {
             let _ = writeln!(meta, "resize {} {cols} {rows}", self.written);
         }
     }
@@ -795,13 +913,19 @@ impl HistoryLog {
     /// so what is left still parses from its first byte.
     fn compact(&mut self) {
         let mut meta = read_meta(&self.meta_path);
-        let Some(&cut) = self.marks.iter().find(|&&at| self.written - at <= HISTORY_KEEP_BYTES) else {
+        let Some(&cut) = self
+            .marks
+            .iter()
+            .find(|&&at| self.written - at <= HISTORY_KEEP_BYTES)
+        else {
             return;
         };
         if cut == 0 {
             return;
         }
-        let Ok(bytes) = std::fs::read(&self.bin) else { return };
+        let Ok(bytes) = std::fs::read(&self.bin) else {
+            return;
+        };
         let cut = cut.min(bytes.len() as u64);
         if std::fs::write(&self.bin, &bytes[cut as usize..]).is_err() {
             return;
@@ -831,8 +955,12 @@ impl HistoryLog {
 /// is retired into the scrollback so the replacement shell starts underneath it
 /// rather than over it.
 fn replay_history(key: &str, cols: usize, rows: usize) -> Grid {
-    let Some((bin, meta_path)) = history_paths(key) else { return Grid::new(cols, rows) };
-    let Ok(bytes) = std::fs::read(&bin) else { return Grid::new(cols, rows) };
+    let Some((bin, meta_path)) = history_paths(key) else {
+        return Grid::new(cols, rows);
+    };
+    let Ok(bytes) = std::fs::read(&bin) else {
+        return Grid::new(cols, rows);
+    };
     if bytes.is_empty() {
         return Grid::new(cols, rows);
     }
@@ -875,19 +1003,42 @@ fn forget_history(key: &str) {
 /// this thread ends - holding it strongly would keep both alive forever.
 fn spawn_writer(session: Weak<Session>, inbox: Receiver<Job>) {
     std::thread::spawn(move || {
-        for job in inbox {
-            let Some(session) = session.upgrade() else { break };
+        while let Ok(job) = inbox.recv() {
+            let Some(session) = session.upgrade() else {
+                break;
+            };
             match job {
                 Job::Write(bytes) => {
                     let _ = session.pty.lock().unwrap().write(&bytes);
                 }
                 Job::Resize(cols, rows, ack) => {
+                    // Window drags can enqueue several ResizePseudoConsole
+                    // calls, each of which may block on ConPTY's pump. Do not
+                    // make keyboard input wait behind obsolete sizes: drain
+                    // the queue, write any pending input immediately, and
+                    // apply only the newest requested dimensions.
+                    let mut latest = (cols, rows);
+                    let mut acks = vec![ack];
+                    while let Ok(next) = inbox.try_recv() {
+                        match next {
+                            Job::Write(bytes) => {
+                                let _ = session.pty.lock().unwrap().write(&bytes);
+                            }
+                            Job::Resize(cols, rows, ack) => {
+                                latest = (cols, rows);
+                                acks.push(ack);
+                            }
+                        }
+                    }
+                    let (cols, rows) = latest;
                     if let Some(log) = session.log.lock().unwrap().as_mut() {
                         log.note_resize(cols, rows);
                     }
                     session.grid.lock().unwrap().resize(cols, rows);
                     let _ = session.pty.lock().unwrap().resize(cols as u16, rows as u16);
-                    let _ = ack.send(());
+                    for ack in acks {
+                        let _ = ack.send(());
+                    }
                 }
             }
         }
@@ -902,25 +1053,33 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
     std::thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
         loop {
-            let Some(n) = conpty::read_chunk(handle, &mut buf) else { break };
+            let Some(n) = conpty::read_chunk(handle, &mut buf) else {
+                break;
+            };
             // Where the parser stands after this chunk is what says whether the
             // stream may later be cut here, so the bytes are kept alongside the
             // feed rather than before it.
-            let (update, settled) = {
+            let (update, settled, reply) = {
                 let mut grid = session.grid.lock().unwrap();
                 grid.feed(&buf[..n]);
                 let settled = grid.at_ground() && grid.cx == 0 && !grid.alt;
+                let reply = grid.take_reply();
+                let clear_history = grid.take_clear_history();
                 let scrolled = grid.take_scrolled().iter().map(|l| pack(l)).collect();
                 let rows = grid
                     .take_dirty()
                     .into_iter()
-                    .map(|y| RowUpdate { y, runs: pack(grid.row(y)) })
+                    .map(|y| RowUpdate {
+                        y,
+                        runs: pack(grid.row(y)),
+                    })
                     .collect();
                 (
                     Update {
                         id: session.id.clone(),
                         rows,
                         scrolled,
+                        clear_history,
                         cx: grid.cx,
                         cy: grid.cy,
                         cursor_visible: grid.cursor_visible,
@@ -930,8 +1089,12 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
                         title: grid.title.clone(),
                     },
                     settled,
+                    reply,
                 )
             };
+            if !reply.is_empty() {
+                let _ = session.jobs.send(Job::Write(reply));
+            }
             if let Some(log) = session.log.lock().unwrap().as_mut() {
                 log.append(&buf[..n], settled);
             }
@@ -962,7 +1125,12 @@ fn term_attach_sync(id: String) -> Result<Snapshot, String> {
         .skip(grid.scrollback.len().saturating_sub(ATTACH_HISTORY))
         .map(|l| pack(l))
         .collect();
-    let screen = (0..grid.rows).map(|y| RowUpdate { y, runs: pack(grid.row(y)) }).collect();
+    let screen = (0..grid.rows)
+        .map(|y| RowUpdate {
+            y,
+            runs: pack(grid.row(y)),
+        })
+        .collect();
     Ok(Snapshot {
         info,
         cols: grid.cols,
@@ -986,12 +1154,11 @@ fn term_attach_sync(id: String) -> Result<Snapshot, String> {
 /// here is post to a queue - no lock the pseudoconsole holds, no write that can
 /// block on a full pipe.
 #[tauri::command]
-pub fn term_write(app: AppHandle, id: String, data: String) -> Result<(), String> {
+pub fn term_write(id: String, data: String) -> Result<(), String> {
     let session = lookup(&id)?;
     if !session.alive.load(Ordering::Relaxed) {
         return Ok(());
     }
-    let _ = app.emit("term:input", id.clone());
     session
         .jobs
         .send(Job::Write(data.into_bytes()))
@@ -1046,14 +1213,21 @@ pub fn term_close_now(id: String) -> Result<(), String> {
 pub async fn term_prune_history(keys: Vec<String>) {
     off_thread(move || {
         let Some(dir) = history_dir() else { return };
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             let keep = path
                 .file_stem()
                 .and_then(|stem| stem.to_str())
                 .is_some_and(|stem| keys.iter().any(|key| key == stem));
-            if !keep && matches!(path.extension().and_then(|e| e.to_str()), Some("bin") | Some("meta")) {
+            if !keep
+                && matches!(
+                    path.extension().and_then(|e| e.to_str()),
+                    Some("bin") | Some("meta")
+                )
+            {
                 let _ = std::fs::remove_file(path);
             }
         }
@@ -1066,7 +1240,9 @@ pub async fn term_prune_history(keys: Vec<String>) {
 /// so the list waits on those locks - off the window thread it goes.
 #[tauri::command]
 pub async fn term_list(project_path: Option<String>) -> Vec<TermInfo> {
-    off_thread(move || term_list_now(project_path)).await.unwrap_or_default()
+    off_thread(move || term_list_now(project_path))
+        .await
+        .unwrap_or_default()
 }
 
 fn term_list_now(project_path: Option<String>) -> Vec<TermInfo> {
@@ -1121,12 +1297,13 @@ pub async fn term_popout(
         if let (Some(x), Some(y)) = (x, y) {
             builder = builder.position(x, y);
         }
-        builder.build()
-        .and_then(|window| {
-            window.set_focus()?;
-            Ok(())
-        })
-        .map_err(|e| format!("Could not open the window: {e}"))
+        builder
+            .build()
+            .and_then(|window| {
+                window.set_focus()?;
+                Ok(())
+            })
+            .map_err(|e| format!("Could not open the window: {e}"))
     })
     .await
     .unwrap_or_else(|| Err("Could not open the window.".to_string()))
@@ -1185,6 +1362,11 @@ pub async fn term_dock(app: AppHandle, id: String) -> Result<(), String> {
         if let Some(win) = app.get_webview_window(&format!("term-{id}")) {
             let _ = win.destroy();
         }
+        if let Some(main) = app.get_webview_window("main") {
+            let _ = main.unminimize();
+            let _ = main.show();
+            let _ = main.set_focus();
+        }
     })
     .await;
     Ok(())
@@ -1193,7 +1375,12 @@ pub async fn term_dock(app: AppHandle, id: String) -> Result<(), String> {
 /// Kills every session. Called as the app exits so no orphaned shell outlives
 /// the window that owned it.
 pub fn shutdown() {
-    let sessions: Vec<_> = registry().lock().unwrap().drain().map(|(_, session)| session).collect();
+    let sessions: Vec<_> = registry()
+        .lock()
+        .unwrap()
+        .drain()
+        .map(|(_, session)| session)
+        .collect();
     for session in &sessions {
         session.alive.store(false, Ordering::Relaxed);
         session.pty.lock().unwrap().terminate_child();

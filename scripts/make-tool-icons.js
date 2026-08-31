@@ -43,6 +43,7 @@ const CORE_TOOLS = [
   { id: "dns", icon: "dns" },
   { id: "hosts", icon: "edit_note" },
   { id: "network", icon: "network_check" },
+  { id: "github", icon: "merge" },
 ];
 
 function parseCatalogArray(src, marker) {
@@ -172,6 +173,27 @@ function writeIcon(themeName, fileName, png) {
   for (const root of [OUT_TAURI, OUT_UI]) {
     fs.writeFileSync(path.join(root, themeName, fileName), png);
   }
+  // Jump List links use IShellLinkW, whose icon location expects an ICO (or a
+  // resource inside an EXE/DLL). Modern ICO files may contain PNG payloads, so
+  // keep the exact same rendered artwork without another raster conversion.
+  if (themeName === "dark") {
+    const header = Buffer.alloc(22);
+    header.writeUInt16LE(0, 0);       // reserved
+    header.writeUInt16LE(1, 2);       // icon
+    header.writeUInt16LE(1, 4);       // one image
+    header.writeUInt8(0, 6);          // 256 px
+    header.writeUInt8(0, 7);          // 256 px
+    header.writeUInt8(0, 8);          // no palette
+    header.writeUInt8(0, 9);
+    header.writeUInt16LE(1, 10);      // color planes
+    header.writeUInt16LE(32, 12);     // bits per pixel
+    header.writeUInt32LE(png.length, 14);
+    header.writeUInt32LE(22, 18);
+    fs.writeFileSync(
+      path.join(OUT_TAURI, themeName, fileName.replace(/\.png$/, ".ico")),
+      Buffer.concat([header, png])
+    );
+  }
 }
 
 function copyDefault(id, themeName) {
@@ -179,6 +201,12 @@ function copyDefault(id, themeName) {
     fs.copyFileSync(
       path.join(root, themeName, "_default.png"),
       path.join(root, themeName, `${id}.png`)
+    );
+  }
+  if (themeName === "dark") {
+    fs.copyFileSync(
+      path.join(OUT_TAURI, themeName, "_default.ico"),
+      path.join(OUT_TAURI, themeName, `${id}.ico`)
     );
   }
 }
@@ -190,7 +218,7 @@ function pruneStaleIcons(validIds) {
       const dir = path.join(root, themeName);
       if (!fs.existsSync(dir)) continue;
       for (const name of fs.readdirSync(dir)) {
-        if (!name.endsWith(".png")) continue;
+        if (!name.endsWith(".png") && !name.endsWith(".ico")) continue;
         const id = name.slice(0, -4);
         if (id === "_default") continue;
         if (!validIds.has(id)) fs.unlinkSync(path.join(dir, name));

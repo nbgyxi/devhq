@@ -438,20 +438,54 @@ function keySequence(e) {
   return null;
 }
 
-/** One shared listener pair, fanned out to whichever views are mounted. */
-// ---------------------------------------------------------------- busy state
-//
-// A stream of output is what makes the cursor look like it is blinking wildly:
-// every frame lands it somewhere else on the line. So while output is flowing
-// the cursor is parked and a spinner takes its place, and the cursor - the
-// symbol that says the shell is waiting for you - comes back the moment the
-// output stops.
+const TERM_PREFS_KEY = "devhq.terminals.v1";
 
-/** Quiet for this long and the terminal is waiting, not working. */
-const TERM_QUIET_MS = 50;
-/** Output has to have been flowing this long before the spinner appears, so a
- *  single keystroke's echo never flashes one. */
-const TERM_BUSY_MS = 120;
+// 0.35.3 stopped maintaining a DevHQ-owned command log. Remove the old index
+// rather than leaving commands behind after the feature that wrote it is gone.
+try { localStorage.removeItem("devhq.command-history.v1"); } catch {}
+
+function enhancedHistoryEnabled() {
+  try {
+    const prefs = JSON.parse(localStorage.getItem(TERM_PREFS_KEY) || "{}");
+    return prefs.enhancedHistorySearch !== false;
+  } catch { return true; }
+}
+
+let nativeCommandHistory = [];
+let nativeCommandHistoryLoad = null;
+let nativeCommandHistoryLoaded = false;
+
+function allCommandHistory() {
+  const unique = new Map();
+  for (const row of nativeCommandHistory) {
+    const old = unique.get(row.command);
+    if (old) old.runs = (old.runs || 1) + (row.runs || 1);
+    else unique.set(row.command, { ...row });
+  }
+  return [...unique.values()];
+}
+
+function loadNativeCommandHistory(refresh = false) {
+  if (refresh) {
+    nativeCommandHistoryLoad = null;
+    nativeCommandHistoryLoaded = false;
+  }
+  if (nativeCommandHistoryLoad) return nativeCommandHistoryLoad;
+  nativeCommandHistoryLoad = term_invoke("term_command_history").then((rows) => {
+    nativeCommandHistory = (Array.isArray(rows) ? rows : []).map((row, index) => ({
+      command: row.command,
+      shell: row.shell || "shell",
+      source: row.shell === "pwsh" ? "PSReadLine" : row.shell === "bash" ? "Bash history" : row.shell === "nu" ? "NuShell history" : "Shell history",
+      cwd: "",
+      used: null,
+      historyOrder: index,
+      runs: 1,
+    }));
+    nativeCommandHistoryLoaded = true;
+    return nativeCommandHistory;
+  }).catch(() => { nativeCommandHistoryLoaded = true; return []; });
+  return nativeCommandHistoryLoad;
+}
 
 const views = new Map();
 let wired = false;
@@ -483,25 +517,29 @@ class TermView {
      *  shell is known to be up and reading. */
     this.onFirstOutput = null;
     this.lastCommandName = "";
+    this.shellCommand = "";
+    this.sessionHistory = [];
+    this.historyArrowIndex = -1;
+    this.historyArrowDraft = "";
     this.stickToBottom = true;
+    /** While a resize is in flight, ConPTY repaints cannot move the viewport. */
+    this.scrollHeld = false;
+    this.heldScrollTop = 0;
+    this.resizeToken = 0;
+    this.debugStarted = performance.now();
+    this.debugEvents = [];
     this.cx = 0;
     this.cy = 0;
     this.cursorVisible = true;
     // 0 is "nothing asked for", which is drawn as a thin bar.
     this.cursorStyle = 0;
     this.cursorChar = " ";
-    /** True while output is streaming: the cursor is parked and a spinner is
-     *  drawn in its cell. */
-    this.busy = false;
-    /** When the current run of output started, or 0 if the terminal is quiet. */
-    this.outputSince = 0;
-    this.quietTimer = 0;
-
     host.classList.add("term");
     host.innerHTML =
       '<div class="term-scroll"><div class="term-history"></div>' +
       '<div class="term-screen"></div><div class="term-cursor"></div>' +
-      '<div class="term-link"></div></div>';
+      '<div class="term-link"></div></div>' +
+      '<div class="term-history-search" hidden><div class="term-history-query"><kbd>^R</kbd><span class="ms">search</span><input type="text" spellcheck="false" aria-label="Search command history"><small></small><button type="button" data-history-close aria-label="Close">&#215;</button></div><div class="term-history-filters"><button class="on" data-history-sort="recent">Recent</button><button data-history-sort="used">Most used</button><button data-history-sort="match">Best match</button></div><div class="term-history-results" role="listbox"></div><div class="term-history-foot"><span></span><div><button data-history-run>Run <kbd>Enter</kbd></button><button data-history-edit>Edit <kbd>Tab</kbd></button><small><kbd>^R</kbd> older &middot; <kbd>^S</kbd> newer &middot; <kbd>^G</kbd> cancel</small></div></div></div>';
     this.scroll = host.querySelector(".term-scroll");
     this.history = host.querySelector(".term-history");
     this.screen = host.querySelector(".term-screen");
@@ -511,6 +549,12 @@ class TermView {
      *  whatever the font did. */
     this.linkEl = host.querySelector(".term-link");
     this.link = null;
+    this.commandDraft = "";
+    this.historySearch = host.querySelector(".term-history-search");
+    this.historySearchInput = host.querySelector(".term-history-query input");
+    this.historySearchResults = host.querySelector(".term-history-results");
+    this.historySearchSort = "recent";
+    this.historySearchIndex = 0;
     /** The last place the pointer was, so pressing Ctrl without moving still
      *  lights up what is under it. */
     this.pointer = null;
@@ -592,6 +636,12 @@ class TermView {
     this.host.addEventListener("keydown", (e) => {
       if (e.key === "Control") this.setLink(this.pointer ? this.linkUnder(this.pointer) : null);
       if (this.exited) return;
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === "r" || e.key === "R") && enhancedHistoryEnabled()) {
+        e.preventDefault(); e.stopPropagation(); this.openHistorySearch(); return;
+      }
+      if (!e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown") && this.useArrowHistory(e.key === "ArrowUp" ? 1 : -1)) {
+        e.preventDefault(); e.stopPropagation(); return;
+      }
       // Pasting is left to the browser: returning here lets the keystroke
       // through to the native paste event, which is far more dependable than
       // reading the clipboard ourselves. Ctrl+V, Ctrl+Shift+V and the old
@@ -638,6 +688,7 @@ class TermView {
       }
       const seq = keySequence(e);
       if (seq === null) return;
+      if (e.key.startsWith("Arrow")) this.debugRecord("key", { key: e.key, seq: JSON.stringify(seq) });
       e.preventDefault();
       e.stopPropagation();
       // Notepad's rule: what is selected is what gets replaced. Backspace and
@@ -654,10 +705,28 @@ class TermView {
       this.clearSelection();
       this.send(erase + seq);
     });
+    this.historySearchInput.addEventListener("input", () => { this.historySearchIndex = 0; this.renderHistorySearch(); });
+    this.historySearch.addEventListener("keydown", (e) => this.historySearchKey(e));
+    this.historySearch.addEventListener("click", (e) => {
+      const sort = e.target.closest("[data-history-sort]");
+      const row = e.target.closest("[data-history-index]");
+      if (sort) { this.historySearchSort = sort.dataset.historySort; this.historySearchIndex = 0; this.renderHistorySearch(); }
+      else if (row) {
+        this.historySearchIndex = Number(row.dataset.historyIndex);
+        if (e.detail > 1) this.useHistoryResult(true);
+        else this.renderHistorySearch();
+      }
+      else if (e.target.closest("[data-history-run]")) this.useHistoryResult(true);
+      else if (e.target.closest("[data-history-edit]")) this.useHistoryResult(false);
+      else if (e.target.closest("[data-history-close]")) this.closeHistorySearch();
+    });
     this.host.addEventListener("paste", (e) => {
       e.preventDefault();
       const text = (e.clipboardData || window.clipboardData).getData("text");
-      if (text) this.send(text.replace(/\r?\n/g, "\r"));
+      if (!text) return;
+      const erase = this.eraseSelectionSeq();
+      this.clearSelection();
+      this.send(erase + text.replace(/\r?\n/g, "\r"));
     });
     this.host.addEventListener("mousedown", (e) => {
       this.host.focus();
@@ -682,7 +751,10 @@ class TermView {
       openTerminalLink(link.url);
     });
     this.scroll.addEventListener("scroll", () => {
-      this.stickToBottom = this.maxScroll() - this.scroll.scrollTop < 4;
+      // A resize pins scrollTop on purpose; that must not look like the user
+      // scrolled away from the live end.
+      if (this.scrollHeld) return;
+      this.stickToBottom = this.followTop() - this.scroll.scrollTop < 4;
     });
   }
 
@@ -712,7 +784,8 @@ class TermView {
     if (e.ctrlKey && !e.shiftKey && (e.key === "Home" || e.key === "End")) {
       this.clearSelection();
       this.stickToBottom = e.key === "End";
-      this.scroll.scrollTop = e.key === "Home" ? 0 : this.maxScroll();
+      this.releaseScroll();
+      this.scroll.scrollTop = e.key === "Home" ? 0 : this.followTop();
       return true;
     }
 
@@ -794,6 +867,57 @@ class TermView {
 
   runningCommandName() {
     return this.lastCommandName;
+  }
+
+  powerShellHistory() {
+    if (!/\b(?:pwsh|powershell)(?:\.exe)?\b/i.test(this.shellCommand)) return [];
+    const commands = [...this.sessionHistory, ...nativeCommandHistory
+      .filter((row) => row.shell === "pwsh")
+      .map((row) => row.command)];
+    return commands.filter((command, index) => command && commands.indexOf(command) === index);
+  }
+
+  useArrowHistory(direction) {
+    if (this.host.classList.contains("alt") || !nativeCommandHistoryLoaded) return false;
+    const commands = this.powerShellHistory();
+    if (!commands.length) return false;
+    const row = this.rowEls[this.cy];
+    const rowText = row?.textContent || "";
+    const cursor = Math.min(this.cx, rowText.length);
+    const start = this.commandStart(rowText, cursor);
+    if (start === null) return false;
+    const current = rowText.slice(start).trimEnd();
+    if (this.historyArrowIndex < 0) this.historyArrowDraft = current;
+    const next = Math.max(-1, Math.min(commands.length - 1, this.historyArrowIndex + direction));
+    if (next === this.historyArrowIndex) return true;
+    this.historyArrowIndex = next;
+    const command = next < 0 ? this.historyArrowDraft : commands[next];
+    this.commandDraft = command;
+    const erase = "\x1b[H" + "\x1b[3~".repeat(current.length);
+    const data = erase + command;
+    this.debugRecord("history", { index: next, length: command.length });
+    term_invoke("term_write", { id: this.id, data })
+      .then(() => this.debugRecord("history-queued"))
+      .catch((error) => this.debugRecord("history-error", { error: String(error) }));
+    return true;
+  }
+
+  debugRecord(type, detail = {}) {
+    this.debugEvents.push({ ms: Math.round(performance.now() - this.debugStarted), type, ...detail });
+    if (this.debugEvents.length > 120) this.debugEvents.splice(0, this.debugEvents.length - 120);
+  }
+
+  debugReport() {
+    return JSON.stringify({
+      generated: new Date().toISOString(),
+      id: this.id,
+      viewport: {
+        cols: this.cols, rows: this.rows, cx: this.cx, cy: this.cy,
+        scrollTop: Math.round(this.scroll.scrollTop), followTop: Math.round(this.followTop()),
+        stickToBottom: this.stickToBottom, scrollHeld: this.scrollHeld,
+      },
+      events: this.debugEvents,
+    }, null, 2);
   }
 
   // ------------------------------------------------------- moving a selection
@@ -1040,10 +1164,115 @@ class TermView {
     return true;
   }
 
+  openHistorySearch() {
+    if (!this.historySearch.hidden) return;
+    this.historySearch.hidden = false;
+    this.historySearchInput.value = this.commandDraft;
+    this.historySearchIndex = 0;
+    this.renderHistorySearch();
+    this.historySearchInput.focus();
+    this.historySearchInput.select();
+    loadNativeCommandHistory(true).then(() => {
+      if (!this.historySearch.hidden) this.renderHistorySearch();
+    });
+  }
+
+  closeHistorySearch() {
+    this.historySearch.hidden = true;
+    this.host.focus();
+  }
+
+  historyMatches() {
+    const query = this.historySearchInput.value.trim().toLowerCase();
+    const terms = query.split(/\s+/).filter(Boolean);
+    const rows = allCommandHistory().filter((row) => terms.every((term) => row.command.toLowerCase().includes(term)));
+    const recent = (a, b) => {
+      if (a.used && b.used) return b.used - a.used;
+      if (a.used) return -1;
+      if (b.used) return 1;
+      return (a.historyOrder ?? Number.MAX_SAFE_INTEGER) - (b.historyOrder ?? Number.MAX_SAFE_INTEGER);
+    };
+    if (this.historySearchSort === "used") rows.sort((a, b) => (b.runs || 0) - (a.runs || 0) || recent(a, b));
+    else if (this.historySearchSort === "match") rows.sort((a, b) => {
+      const score = (row) => !query ? 0 : row.command.toLowerCase().startsWith(query) ? 3 : row.command.toLowerCase().includes(query) ? 2 : 1;
+      return score(b) - score(a) || recent(a, b);
+    });
+    else rows.sort(recent);
+    return rows.slice(0, 100);
+  }
+
+  renderHistorySearch() {
+    const rows = this.historyMatches();
+    this.historySearchRows = rows;
+    this.historySearchIndex = Math.max(0, Math.min(this.historySearchIndex, rows.length - 1));
+    for (const button of this.historySearch.querySelectorAll("[data-history-sort]")) {
+      button.classList.toggle("on", button.dataset.historySort === this.historySearchSort);
+    }
+    const query = this.historySearchInput.value.trim();
+    this.historySearch.querySelector(".term-history-query small").textContent = `${rows.length} match${rows.length === 1 ? "" : "es"}`;
+    this.historySearchResults.innerHTML = rows.length ? rows.map((row, index) =>
+      `<button type="button" role="option" aria-selected="${index === this.historySearchIndex}" class="${index === this.historySearchIndex ? "on" : ""}" data-history-index="${index}"><code>${termEsc(row.shell)}</code><strong>${termEsc(row.command)}</strong><span>${row.runs || 1}&times;</span><em>${termEsc(row.source || "Shell history")}</em></button>`
+    ).join("") : `<div class="term-history-empty">${query ? "No commands match this search" : "No native shell history entries found"}</div>`;
+    this.historySearchResults.querySelector(".on")?.scrollIntoView({ block: "nearest" });
+    const total = allCommandHistory().length;
+    const loading = nativeCommandHistoryLoad && !nativeCommandHistoryLoaded;
+    this.historySearch.querySelector(".term-history-foot>span").textContent = `${loading ? "Loading shell history · " : "Searching "}${total} history entr${total === 1 ? "y" : "ies"}`;
+  }
+
+  historySearchKey(e) {
+    e.stopPropagation();
+    if (e.key === "Escape" || (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === "g" || e.key === "G"))) {
+      e.preventDefault(); this.closeHistorySearch();
+    }
+    else if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === "r" || e.key === "R")) {
+      e.preventDefault();
+      const count = this.historySearchRows?.length || 0;
+      if (count) this.historySearchIndex = (this.historySearchIndex + 1) % count;
+      this.renderHistorySearch();
+    }
+    else if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === "s" || e.key === "S")) {
+      e.preventDefault();
+      const count = this.historySearchRows?.length || 0;
+      if (count) this.historySearchIndex = (this.historySearchIndex - 1 + count) % count;
+      this.renderHistorySearch();
+    }
+    else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const delta = e.key === "ArrowDown" ? 1 : -1;
+      this.historySearchIndex = Math.max(0, Math.min((this.historySearchRows?.length || 1) - 1, this.historySearchIndex + delta));
+      this.renderHistorySearch();
+    } else if (e.key === "Enter") { e.preventDefault(); this.useHistoryResult(true); }
+    else if (e.key === "Tab") { e.preventDefault(); this.useHistoryResult(false); }
+  }
+
+  useHistoryResult(run) {
+    const command = this.historySearchRows?.[this.historySearchIndex]?.command;
+    if (!command) return;
+    const row = this.rowEls[this.cy];
+    const rowText = row?.textContent || "";
+    const cursor = Math.min(this.cx, rowText.length);
+    const start = this.commandStart(rowText, cursor);
+    const visibleInput = start === null ? this.commandDraft : rowText.slice(start).trimEnd();
+    this.closeHistorySearch();
+    // Home and Delete are terminal editing keys rather than control characters,
+    // so shells without a Ctrl+K binding cannot print a literal ^K. Send the
+    // whole replacement as one write so a half-edited command never flashes.
+    const erase = "\x1b[H" + "\x1b[3~".repeat(visibleInput.length);
+    this.commandDraft = run ? "" : command;
+    if (run) {
+      const name = this.commandName(command);
+      if (name) this.lastCommandName = name;
+    }
+    term_invoke("term_write", { id: this.id, data: `${erase}${command}${run ? "\r" : ""}` })
+      .catch(() => {});
+  }
+
   send(text) {
+    this.debugRecord("write", { bytes: JSON.stringify(text), length: text.length });
     if (text.includes("\r")) {
       const inline = text.slice(0, text.indexOf("\r"));
-      let commandLine = inline.trim();
+      let commandLine = inline.replace(/[\x00-\x1f\x7f]/g, "").trim();
+      if (!commandLine) commandLine = this.commandDraft.trim();
       if (!commandLine && !this.host.classList.contains("alt")) {
         const row = this.rowEls[this.cy];
         const rowText = row?.textContent || "";
@@ -1053,9 +1282,19 @@ class TermView {
       }
       const name = this.commandName(commandLine);
       if (name) this.lastCommandName = name;
+      if (commandLine && this.sessionHistory[0] !== commandLine) this.sessionHistory.unshift(commandLine);
+      this.historyArrowIndex = -1;
+      this.historyArrowDraft = "";
+      this.commandDraft = "";
+    } else if (!text.includes("\x1b") && !text.includes("\x03")) {
+      for (const char of text) {
+        if (char === "\x7f") this.commandDraft = this.commandDraft.slice(0, -1);
+        else if (char >= " ") this.commandDraft += char;
+      }
     }
-    this.stickToBottom = true;
-    term_invoke("term_write", { id: this.id, data: text }).catch(() => {});
+    term_invoke("term_write", { id: this.id, data: text })
+      .then(() => this.debugRecord("write-queued"))
+      .catch((error) => this.debugRecord("write-error", { error: String(error) }));
   }
 
   /** Pulls the current screen and starts following updates. */
@@ -1067,6 +1306,8 @@ class TermView {
     await this.fontsSettled();
     views.set(this.id, this);
     const snap = await term_invoke("term_attach", { id: this.id });
+    this.shellCommand = snap.info.command || "";
+    loadNativeCommandHistory();
     this.cols = snap.cols;
     this.rows = snap.rows;
     this.exited = !snap.info.alive;
@@ -1091,6 +1332,18 @@ class TermView {
   }
 
   apply(payload) {
+    this.debugRecord("update", {
+      rows: payload.rows.length, scrolled: payload.scrolled.length,
+      cx: payload.cx, cy: payload.cy, alt: payload.alt,
+    });
+    const contentAdvanced = payload.clearHistory || payload.scrolled.length || payload.cy !== this.cy;
+    if (payload.clearHistory) {
+      // CSI 3 J - `clear` / Clear-Host. Drop the painted history so Restore
+      // cannot settle back onto lines the shell already wiped.
+      this.history.innerHTML = "";
+      this.historyRuns = [];
+      this.releaseScroll();
+    }
     if (payload.scrolled.length) {
       // Lines that fell off the top of the screen become history.
       const frag = document.createDocumentFragment();
@@ -1107,19 +1360,15 @@ class TermView {
       if (excess > 0) this.historyRuns.splice(0, excess);
     }
     for (const row of payload.rows) this.paintRow(row.y, row.runs);
-    // A full-screen program owns the viewport and redraws it constantly, so it
-    // would never look anything but busy - leave its cursor alone.
-    this.noteOutput(!payload.alt);
     this.moveCursor(payload.cx, payload.cy, payload.cursorVisible, payload.cursorStyle, payload.cursorChar);
+    this.host.classList.toggle("alt", payload.alt);
     if (this.onFirstOutput) {
       const fire = this.onFirstOutput;
       this.onFirstOutput = null;
       fire();
     }
-    // A full-screen program owns the viewport, so history is hidden while it runs.
-    this.host.classList.toggle("alt", payload.alt);
     if (payload.title && this.onTitle) this.onTitle(payload.title);
-    if (this.stickToBottom) this.settle();
+    if (this.stickToBottom && contentAdvanced) this.settle();
   }
 
   /** Puts the cursor on a column of the grid.
@@ -1137,47 +1386,11 @@ class TermView {
     this.paintCursor();
   }
 
-  /** One frame of output arrived. `live` is false for the screens that draw
-   *  themselves - those are left as they are. */
-  noteOutput(live) {
-    clearTimeout(this.quietTimer);
-    if (!live || this.exited) {
-      this.outputSince = 0;
-      this.setBusy(false);
-      return;
-    }
-    const now = performance.now();
-    if (!this.outputSince) this.outputSince = now;
-    if (now - this.outputSince >= TERM_BUSY_MS) this.setBusy(true);
-    this.quietTimer = setTimeout(() => {
-      this.outputSince = 0;
-      this.setBusy(false);
-    }, TERM_QUIET_MS);
-  }
-
-  /** Swaps the cursor for the spinner and back.
-   *
-   *  The spinner takes over the cell the cursor was in when the output began -
-   *  the cell, not the pixel, so it holds that spot on screen while lines
-   *  scroll underneath it instead of being left behind by the growing history. */
-  setBusy(on) {
-    if (on === this.busy) return;
-    this.busy = on;
-    if (on) {
-      this.busyCx = this.cx;
-      this.busyCy = this.cy;
-    }
-    this.cursorEl.classList.toggle("busy", on);
-    this.paintCursor();
-  }
-
-  /** Draws the cursor - or the spinner standing in for it - from the state
-   *  `moveCursor` last recorded. */
+  /** Draws the cursor from the state `moveCursor` last recorded. */
   paintCursor() {
-    const busy = this.busy;
-    const cx = busy ? this.busyCx : this.cx;
-    const cy = busy ? this.busyCy : this.cy;
-    const visible = busy || this.cursorVisible;
+    const cx = this.cx;
+    const cy = this.cy;
+    const visible = this.cursorVisible;
     this.cursorEl.style.display = visible && !this.exited ? "block" : "none";
     const row = this.rowEls[cy];
     // The cursor is a separate overlay, so it mirrors the backend's exact
@@ -1186,11 +1399,11 @@ class TermView {
     // A thin bar is the resting shape: 0 is the shape nothing has asked to
     // change. A block means overwrite - insert mode, or a full-screen program
     // that asked for one outright.
-    const bar = !busy && (this.cursorStyle === 0 || this.cursorStyle === 5 || this.cursorStyle === 6);
-    const underline = !busy && (this.cursorStyle === 3 || this.cursorStyle === 4);
+    const bar = this.cursorStyle === 0 || this.cursorStyle === 5 || this.cursorStyle === 6;
+    const underline = this.cursorStyle === 3 || this.cursorStyle === 4;
     this.cursorEl.classList.toggle("bar", bar);
     this.cursorEl.classList.toggle("underline", underline);
-    this.cursorEl.textContent = busy || bar || underline ? "" : this.cursorChar;
+    this.cursorEl.textContent = bar || underline ? "" : this.cursorChar;
     const cellLeft = colX(cx, this.cellW);
     this.cursorEl.style.width = `${bar ? 2 : colX(cx + 1, this.cellW) - cellLeft}px`;
     const rowHeight = row?.offsetHeight || this.cellH;
@@ -1200,17 +1413,43 @@ class TermView {
     this.cursorEl.style.transform = `translate(${x}px, ${y + (underline ? rowHeight - 2 : 0)}px)`;
   }
 
-  /** How far the scroller may go before it runs off the end of what has been
-   *  written. The screen grid is always a full window tall, so scrolling to
-   *  scrollHeight would park the blank rows under the cursor in the window and
-   *  push the last real line up to the top edge - which is what a terminal
-   *  losing height used to do to itself. */
+  /** How far the followed live end sits. Two empty rows remain visible below
+   *  the last used row, making it visually clear that this really is the end,
+   *  without exposing the terminal's entire blank screen grid. */
   maxScroll() {
-    return Math.max(0, this.usedHeight() - this.scroll.clientHeight);
+    return Math.max(0, this.usedHeight() + this.cellH * 2 - this.scroll.clientHeight);
+  }
+
+  /** Where following the live end actually puts the scroller.
+   *
+   *  `maxScroll` alone stops at the last written row. After `clear`, that row
+   *  is the top of a blank screen under a short scrollback, so the value is 0
+   *  and Restore / settle leave the history filling the window - clear looks
+   *  like it did nothing. Prefer the live screen whenever it sits below the
+   *  history, clamped to what the browser will actually scroll. */
+  followTop() {
+    const limit = Math.max(0, this.scroll.scrollHeight - this.scroll.clientHeight);
+    const bottom = Math.min(this.maxScroll(), limit);
+    const screenTop = this.screen.offsetTop;
+    if (screenTop <= 0) return bottom;
+    return Math.min(limit, Math.max(bottom, screenTop));
   }
 
   toBottom() {
-    this.scroll.scrollTop = this.maxScroll();
+    this.releaseScroll();
+    this.scroll.scrollTop = this.followTop();
+  }
+
+  /** Pin the scroller until the newest in-flight resize has fully repainted. */
+  holdScroll() {
+    if (!this.scrollHeld) this.heldScrollTop = this.scroll.scrollTop;
+    this.scrollHeld = true;
+  }
+
+  releaseScroll() {
+    this.scrollHeld = false;
+    // Any older resize completion must not restore a hold the user released.
+    this.resizeToken++;
   }
 
   /** How far down the last row with anything in it reaches.
@@ -1234,7 +1473,8 @@ class TermView {
   }
 
   /** Where the scroller belongs: the top for as long as everything written
-   *  fits, the bottom once it does not.
+   *  fits, the bottom once it does not — and after a clear, the live screen,
+   *  not the scrollback still sitting above it.
    *
    *  Anchoring to the top while there is room is the whole point - a session
    *  that has printed five lines into a tall window reads from its first line,
@@ -1242,17 +1482,29 @@ class TermView {
    *  The moment the output outgrows the window the live end is what matters,
    *  and the bottom of it sits on the bottom of the window. */
   settle() {
-    this.scroll.scrollTop = this.maxScroll();
+    if (this.scrollHeld) {
+      this.scroll.scrollTop = this.heldScrollTop;
+      return;
+    }
+    this.scroll.scrollTop = this.followTop();
   }
 
-  /** Where a terminal rests when it is first shown. Following the output is
-   *  the resting state; only scrolling up by hand turns it off. */
+  /** Where a terminal rests when it is first shown or restored. Following the
+   *  output is the resting state; only scrolling up by hand turns it off.
+   *  A resize must not call this - that is what `holdScroll` is for. */
   settleScroll() {
+    this.releaseScroll();
     this.stickToBottom = true;
     this.settle();
   }
 
-  /** Recomputes the grid size from the element and tells the session. */
+  /** Recomputes the grid size from the element and tells the session.
+   *
+   *  The scroller stays where it was. Growing or shrinking the window used to
+   *  run the same settle path a restored terminal uses, which yanked the view
+   *  to the live end on every drag. The grid and the pseudoconsole still
+   *  resize; only the scroll position is left alone until the next restore or
+   *  until live output is being followed again after the freeze lifts. */
   fit() {
     const box = this.host.getBoundingClientRect();
     if (box.width < 20 || box.height < 20) return;
@@ -1267,10 +1519,20 @@ class TermView {
     if (cols === this.cols && rows === this.rows) return;
     this.cols = cols;
     this.rows = rows;
+    this.debugRecord("resize", { cols, rows });
+    this.holdScroll();
+    const resizeToken = ++this.resizeToken;
     this.buildScreen();
     term_invoke("term_resize", { id: this.id, cols, rows })
       .then(() => this.attachRepaint())
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        if (resizeToken !== this.resizeToken || !this.scrollHeld) return;
+        this.scroll.scrollTop = this.heldScrollTop;
+        requestAnimationFrame(() => {
+          if (resizeToken === this.resizeToken) this.scrollHeld = false;
+        });
+      });
   }
 
   /** Redraws the history against the cell as it is now.
@@ -1289,21 +1551,30 @@ class TermView {
   }
 
   /** After a resize the session repaints; pull the new screen immediately so
-   *  the grid is never briefly blank. */
+   *  the grid is never briefly blank. Does not move the scroller - that is
+   *  `attach`'s job on restore, not a size change's. History is refreshed from
+   *  the session so a `clear` that wiped scrollback is not painted back. */
   async attachRepaint() {
     this.repaintHistory();
     try {
       const snap = await term_invoke("term_attach", { id: this.id });
+      if (snap.history.length !== this.historyRuns.length) {
+        this.history.innerHTML = snap.history
+          .map((runs) => `<div>${rowHtml(runs, this.cellW)}</div>`)
+          .join("");
+        this.historyRuns = snap.history.slice();
+        this.historyCellW = this.cellW;
+      }
       for (const row of snap.screen) this.paintRow(row.y, row.runs);
       this.moveCursor(snap.cx, snap.cy, snap.cursorVisible, snap.cursorStyle, snap.cursorChar);
-      if (this.stickToBottom) this.settle();
+      if (this.scrollHeld) {
+        this.scroll.scrollTop = this.heldScrollTop;
+      }
     } catch {}
   }
 
   markExited() {
     this.exited = true;
-    clearTimeout(this.quietTimer);
-    this.setBusy(false);
     this.cursorEl.style.display = "none";
     this.host.classList.add("exited");
     if (this.onExit) this.onExit();
@@ -1316,7 +1587,6 @@ class TermView {
   /** Detaches the view. The session keeps running — that is the whole point. */
   dispose() {
     this.setLink(null);
-    clearTimeout(this.quietTimer);
     if (views.get(this.id) === this) views.delete(this.id);
   }
 }

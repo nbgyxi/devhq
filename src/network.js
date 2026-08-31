@@ -370,7 +370,7 @@ function wire() {
     if (go) return window.devhqShell?.openTool(go.dataset.openTool);
 
     const act = event.target.closest("[data-net]");
-    if (act) return action(act.dataset.net, act.dataset);
+    if (act) return action(act.dataset.net, act.dataset, act);
 
     const row = event.target.closest("[data-net-frame]");
     if (row) {
@@ -385,12 +385,12 @@ function wire() {
   };
 }
 
-function action(name, data) {
+function action(name, data, button) {
   if (name === "capture") return net.capturing ? stopCapture() : startCapture();
   if (name === "clear") return clearFrames();
   if (name === "export") return exportPcap();
   if (name === "follow") return toggleFollow();
-  if (name === "copy-cmd") return copyCommand();
+  if (name === "copy-cmd") return copyCommand(button);
   if (name === "comps-reload") return loadComponents(true);
   if (name === "comp-toggle") return toggleComponent(Number(data.comp));
   if (name === "filter-add") return addFilter(data.label);
@@ -667,11 +667,10 @@ function openCaptures() {
   );
 }
 
-async function copyCommand() {
+async function copyCommand(button) {
   if (!net.command) return;
   try {
-    await navigator.clipboard.writeText(net.command);
-    netSay("Command line copied.", "");
+    await window.devhqCopy.copy(net.command, button);
   } catch (_) {
     netSay("The clipboard refused the copy.", "bad");
   }
@@ -1140,6 +1139,8 @@ function renderBar() {
   copy.disabled = !net.command;
 }
 
-window.devhqNetwork = { mount, render, opened };
+function exportState() { const {host,built,wired,autoScrolling,...state}=net; return {...state,offComps:[...net.offComps]}; }
+function importState(state) { if(!state)return;Object.assign(net,state,{offComps:new Set(state.offComps||[]),host:net.host,built:net.built,wired:net.wired,autoScrolling:false});if(net.host)render(); }
+window.devhqNetwork = { mount, render, opened, exportState, importState };
 
 })();

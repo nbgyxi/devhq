@@ -1,5 +1,5 @@
 use crate::util::{run, run_lossy};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 #[derive(Serialize, Default, Clone)]
@@ -53,7 +53,12 @@ pub fn read(path: &Path) -> Option<GitInfo> {
     // single invocation — cheaper than one git call per fact.
     let status = run(
         "git",
-        &["status", "--porcelain=v2", "--branch", "--untracked-files=normal"],
+        &[
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--untracked-files=normal",
+        ],
         Some(path),
     )
     .unwrap_or_default();
@@ -125,7 +130,12 @@ pub fn read(path: &Path) -> Option<GitInfo> {
         &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
         Some(path),
     )
-    .map(|s| s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+    .map(|s| {
+        s.lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect()
+    })
     .unwrap_or_default();
 
     info.commits_30d = run_lossy(
@@ -167,4 +177,291 @@ fn parse_status_entry(line: &str) -> Option<ChangedFile> {
         }),
         _ => None,
     }
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Remote {
+    pub name: String,
+    pub url: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEntry {
+    pub hash: String,
+    pub author: String,
+    pub subject: String,
+    pub timestamp: i64,
+    pub refs: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictFile {
+    pub path: String,
+    pub mine: String,
+    pub theirs: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Workspace {
+    pub info: GitInfo,
+    pub remotes: Vec<Remote>,
+    pub history: Vec<HistoryEntry>,
+    pub incoming: Vec<HistoryEntry>,
+    pub conflicts: Vec<ConflictFile>,
+    pub diff: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionRequest {
+    pub path: String,
+    pub action: String,
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub amend: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionResult {
+    pub ok: bool,
+    pub output: String,
+}
+
+fn repo(path: &str) -> Result<std::path::PathBuf, String> {
+    let dir = std::path::PathBuf::from(path);
+    if !dir.join(".git").exists() {
+        return Err("Not a Git repository.".into());
+    }
+    Ok(dir)
+}
+
+#[tauri::command]
+pub async fn git_workspace(path: String) -> Result<Workspace, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = repo(&path)?;
+        let info = read(&dir).ok_or_else(|| "Could not read repository.".to_string())?;
+        let remotes = run_lossy("git", &["remote", "-v"], Some(&dir))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                let mut p = line.split_whitespace();
+                Some(Remote {
+                    name: p.next()?.into(),
+                    url: p.next()?.into(),
+                })
+            })
+            .fold(Vec::<Remote>::new(), |mut out, remote| {
+                if !out
+                    .iter()
+                    .any(|r| r.name == remote.name && r.url == remote.url)
+                {
+                    out.push(remote)
+                }
+                out
+            });
+        let history = run_lossy(
+            "git",
+            &[
+                "log",
+                "-50",
+                "--date-order",
+                "--format=%h%x1f%an%x1f%ct%x1f%s%x1f%D",
+            ],
+            Some(&dir),
+        )
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let p: Vec<_> = line.split('\u{1f}').collect();
+            (p.len() == 5).then(|| HistoryEntry {
+                hash: p[0].into(),
+                author: p[1].into(),
+                timestamp: p[2].parse().unwrap_or(0),
+                subject: p[3].into(),
+                refs: p[4].into(),
+            })
+        })
+        .collect();
+        let rebasing =
+            dir.join(".git/rebase-merge").exists() || dir.join(".git/rebase-apply").exists();
+        let conflicts = info
+            .changed
+            .iter()
+            .filter(|f| f.status == "conflict")
+            .take(30)
+            .map(|f| {
+                let ours = run_lossy("git", &["show", &format!(":2:{}", f.path)], Some(&dir))
+                    .unwrap_or_default();
+                let theirs = run_lossy("git", &["show", &format!(":3:{}", f.path)], Some(&dir))
+                    .unwrap_or_default();
+                ConflictFile {
+                    path: f.path.clone(),
+                    mine: if rebasing {
+                        theirs.clone()
+                    } else {
+                        ours.clone()
+                    },
+                    theirs: if rebasing { ours } else { theirs },
+                }
+            })
+            .collect();
+        let incoming = run_lossy(
+            "git",
+            &[
+                "log",
+                "-12",
+                "--format=%h%x1f%an%x1f%ct%x1f%s%x1f%D",
+                "HEAD..@{upstream}",
+            ],
+            Some(&dir),
+        )
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let p: Vec<_> = line.split('\u{1f}').collect();
+            (p.len() == 5).then(|| HistoryEntry {
+                hash: p[0].into(),
+                author: p[1].into(),
+                timestamp: p[2].parse().unwrap_or(0),
+                subject: p[3].into(),
+                refs: p[4].into(),
+            })
+        })
+        .collect();
+        let mut diff =
+            run_lossy("git", &["diff", "--cached", "--no-color"], Some(&dir)).unwrap_or_default();
+        diff.push_str(&run_lossy("git", &["diff", "--no-color"], Some(&dir)).unwrap_or_default());
+        if diff.len() > 600_000 {
+            let mut end = 600_000;
+            while !diff.is_char_boundary(end) {
+                end -= 1;
+            }
+            diff.truncate(end);
+        }
+        Ok(Workspace {
+            info,
+            remotes,
+            history,
+            incoming,
+            conflicts,
+            diff,
+        })
+    })
+    .await
+    .map_err(|_| "Could not read Git repository.".to_string())?
+}
+
+#[tauri::command]
+pub async fn git_action(request: ActionRequest) -> Result<ActionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = repo(&request.path)?;
+        if request.action == "keep_mine" || request.action == "keep_theirs" {
+            if request.value.is_empty() {
+                return Err("A conflicted file is required.".into());
+            }
+            let rebasing =
+                dir.join(".git/rebase-merge").exists() || dir.join(".git/rebase-apply").exists();
+            let mine = request.action == "keep_mine";
+            let flag = if mine ^ rebasing {
+                "--ours"
+            } else {
+                "--theirs"
+            };
+            let chosen = git_command(&dir, &["checkout", flag, "--", &request.value])?;
+            if !chosen.ok {
+                return Ok(chosen);
+            }
+            return git_command(&dir, &["add", "--", &request.value]);
+        }
+        if request.action == "create_branch_from" {
+            let (name, source) = request
+                .value
+                .split_once('\n')
+                .ok_or_else(|| "A folder name and source are required.".to_string())?;
+            if name.trim().is_empty() {
+                return Err("A folder name is required.".into());
+            }
+            return if source.trim().is_empty() {
+                git_command(&dir, &["switch", "--orphan", name])
+            } else {
+                git_command(&dir, &["switch", "-c", name, source])
+            };
+        }
+        let mut args: Vec<&str> = match request.action.as_str() {
+            "fetch" => vec!["fetch", "--all", "--prune"],
+            "pull" => vec!["pull"],
+            "push" => vec!["push"],
+            "stage_all" => vec!["add", "-A"],
+            "stage" => vec!["add", "--", &request.value],
+            "unstage" => vec!["reset", "HEAD", "--", &request.value],
+            "discard" => vec!["restore", "--worktree", "--", &request.value],
+            "discard_all" => vec!["restore", "--worktree", "."],
+            "checkout" => vec!["checkout", &request.value],
+            "create_branch" => vec!["checkout", "-b", &request.value],
+            "delete_branch" => vec!["branch", "-D", &request.value],
+            "show_commit" => vec![
+                "show",
+                "--format=fuller",
+                "--stat",
+                "--patch",
+                &request.value,
+            ],
+            "restore" => vec!["reset", "--hard", &request.value],
+            "stash" => vec!["stash", "push", "-u", "-m", "DevHQ stash"],
+            "commit" if !request.value.trim().is_empty() => {
+                if request.amend {
+                    vec!["commit", "--amend", "-m", &request.value]
+                } else {
+                    vec!["commit", "-m", &request.value]
+                }
+            }
+            _ => return Err("Unsupported Git action.".into()),
+        };
+        git_command(&dir, &args.drain(..).collect::<Vec<_>>())
+    })
+    .await
+    .map_err(|_| "Git action stopped unexpectedly.".to_string())?
+}
+
+fn git_command(dir: &Path, args: &[&str]) -> Result<ActionResult, String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(args)
+        .current_dir(&dir)
+        .env("GIT_EDITOR", "true")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let out = cmd
+        .output()
+        .map_err(|_| "Could not start Git.".to_string())?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let output = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    Ok(ActionResult {
+        ok: out.status.success(),
+        output: if output.is_empty() {
+            if out.status.success() {
+                "Done"
+            } else {
+                "Git failed"
+            }
+            .into()
+        } else {
+            output.into()
+        },
+    })
 }

@@ -46,7 +46,11 @@ pub async fn tool_popout(
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<(), String> {
-    if id.is_empty() || id.chars().any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/' | ':'))) {
+    if id.is_empty()
+        || id
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/' | ':')))
+    {
         return Err("That tool cannot be opened in its own window.".into());
     }
     let label = label_for(&id);
@@ -92,7 +96,9 @@ pub async fn tool_popout(
             builder = builder.position(x, y);
         }
         if let Some(icon) = taskbar_icon_for_tool(&id) {
-            builder = builder.icon(icon).map_err(|e| format!("Could not set the window icon: {e}"))?;
+            builder = builder
+                .icon(icon)
+                .map_err(|e| format!("Could not set the window icon: {e}"))?;
         }
         builder
             .build()
@@ -166,6 +172,11 @@ pub async fn tool_dock(app: AppHandle, id: String) -> Result<(), String> {
     off_thread(move || {
         if let Some(win) = app.get_webview_window(&label) {
             let _ = win.destroy();
+        }
+        if let Some(main) = app.get_webview_window("main") {
+            let _ = main.unminimize();
+            let _ = main.show();
+            let _ = main.set_focus();
         }
     })
     .await;

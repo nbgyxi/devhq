@@ -154,6 +154,38 @@ cargo run --example scan_cli -- "C:\code"
 cargo run --example todo_cli -- "C:\code\devhq"
 ```
 
+## Command-line interface
+
+In DevHQ, open **Settings → General → DevHQ command-line interface** and choose
+**Install CLI**. This is the normal installation path and can also remove the
+command later.
+
+For a source checkout, it can alternatively be built and installed directly:
+
+```powershell
+npm run cli:install
+```
+
+The installer puts `devhq.exe` in `%LOCALAPPDATA%\DevHQ\bin` and adds that
+directory to the current user's `PATH`. Open a new terminal and `devhq` can be
+run from any working directory, independently of the desktop app:
+
+```powershell
+devhq scan C:\code --pretty
+devhq git status C:\code\devhq --pretty
+devhq ports list
+devhq dns lookup example.com 1.1.1.1 A AAAA
+devhq help
+```
+
+CLI output is compact JSON by default for piping to other tools; `--pretty`
+makes it human-readable. Commands that can mutate system state (`ports kill`,
+`registry change`, `repair run`, and `dns hosts-write`) retain the same safety
+checks as the desktop app. The command overview documents the complete
+headless-capable surface; window, interactive-terminal, streaming-capture, and
+assistant operations remain desktop features because they require a running
+Tauri event loop.
+
 ## Regenerating the icon
 
 ```bash

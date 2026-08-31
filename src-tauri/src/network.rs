@@ -858,7 +858,9 @@ fn finish_block(
     session.held += (frame.bytes.len() / 2) as u64;
     if session.ring.len() >= RING {
         let dropped = session.ring.remove(0);
-        session.held = session.held.saturating_sub((dropped.bytes.len() / 2) as u64);
+        session.held = session
+            .held
+            .saturating_sub((dropped.bytes.len() / 2) as u64);
     }
     session.ring.push(frame.clone());
     batch.push(frame);

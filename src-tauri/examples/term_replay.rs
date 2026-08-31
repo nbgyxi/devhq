@@ -95,7 +95,11 @@ fn main() {
             if it.next()? != "resize" {
                 return None;
             }
-            Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+            Some((
+                it.next()?.parse().ok()?,
+                it.next()?.parse().ok()?,
+                it.next()?.parse().ok()?,
+            ))
         })
         .collect();
     resizes.reverse();
@@ -110,7 +114,11 @@ fn main() {
     // current offset are applied *before* the next byte is fed — a resize at
     // byte 0 (the usual case, since the view fits itself the moment it mounts)
     // otherwise lands after the whole stream has been parsed at the wrong size.
-    let step = if chunk == 0 { bytes.len().max(1) } else { chunk };
+    let step = if chunk == 0 {
+        bytes.len().max(1)
+    } else {
+        chunk
+    };
     let mut at = 0usize;
     loop {
         while let Some(&(off, c, r)) = resizes.last() {
@@ -148,7 +156,12 @@ fn main() {
     }
     let (cols, rows) = (grid.cols, grid.rows);
 
-    println!("{} bytes, {cols}x{rows}, cursor at row {} col {}", bytes.len(), grid.cy, grid.cx);
+    println!(
+        "{} bytes, {cols}x{rows}, cursor at row {} col {}",
+        bytes.len(),
+        grid.cy,
+        grid.cx
+    );
     println!("--- screen (parser) ---");
     for y in 0..rows {
         let mark = if y == grid.cy { '>' } else { ' ' };

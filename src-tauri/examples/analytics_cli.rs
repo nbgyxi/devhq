@@ -4,7 +4,9 @@
 //!
 //! The id is a throwaway, not the one the app keeps for the user.
 fn main() {
-    let path = std::env::args().nth(1).unwrap_or_else(|| "/overview".into());
+    let path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "/overview".into());
     let visitor = "devhq-cli-check";
     match devhq_lib::analytics::page_view(visitor, &path) {
         Ok(()) => println!("sent {path} as {visitor}"),

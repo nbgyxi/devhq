@@ -1,13 +1,21 @@
+mod ai;
 pub mod analytics;
+mod assistant;
+mod cli_registration;
 #[cfg(windows)]
 pub mod conpty;
 mod cwd;
+pub mod disk_space;
 pub mod dns;
-mod git;
-mod network;
+pub mod git;
+pub mod github;
+#[cfg(windows)]
+mod jump_list;
+pub mod network;
+mod path_ping;
 #[cfg(windows)]
 mod picker;
-mod procs;
+pub mod procs;
 mod tech;
 #[cfg(windows)]
 mod term;
@@ -16,7 +24,7 @@ mod tool_window;
 mod util;
 #[cfg(windows)]
 pub mod vt;
-mod windows_tools;
+pub mod windows_tools;
 
 use procs::{ProcessSnapshot, RunningProc};
 use serde::Serialize;
@@ -24,8 +32,102 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(tray) = app.tray_by_id("devhq-tray") {
+        let _ = tray.set_visible(false);
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+#[tauri::command]
+fn minimize_to_tray(app: AppHandle) {
+    if let Some(tray) = app.tray_by_id("devhq-tray") {
+        let _ = tray.set_visible(true);
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+}
+
+#[derive(Default)]
+struct PendingTool(Mutex<Option<String>>);
+
+fn tool_arg(args: &[String]) -> Option<String> {
+    args.iter()
+        .find_map(|arg| arg.strip_prefix("--open-tool=").map(str::to_owned))
+}
+
+fn deliver_tool_arg(app: &AppHandle, args: &[String]) {
+    let Some(id) = tool_arg(args) else { return };
+    if let Ok(mut pending) = app.state::<PendingTool>().0.lock() {
+        *pending = Some(id.clone());
+    }
+    show_main_window(app);
+    let _ = app.emit("tray:open-tool", id);
+}
+
+#[tauri::command]
+fn take_startup_tool(state: tauri::State<'_, PendingTool>) -> Option<String> {
+    state.0.lock().ok()?.take()
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TrayTool {
+    id: String,
+    name: String,
+}
+
+#[tauri::command]
+fn tray_set_recent_tools(app: AppHandle, tools: Vec<TrayTool>) -> Result<(), String> {
+    use tauri::menu::MenuBuilder;
+
+    #[cfg(windows)]
+    {
+        let packaged_icons = app.path().resource_dir().ok().map(|path| path.join("tool-icons"));
+        jump_list::set_recent_tools(&tools, packaged_icons)?;
+    }
+
+    let mut menu = MenuBuilder::new(&app).text("tray-open", "Open DevHQ");
+    for tool in tools.into_iter().take(6) {
+        menu = menu.text(format!("tray-tool:{}", tool.id), tool.name);
+    }
+    menu = menu.separator().text("tray-quit", "Quit");
+    let menu = menu.build().map_err(|error| error.to_string())?;
+    let tray = app
+        .tray_by_id("devhq-tray")
+        .ok_or_else(|| "DevHQ tray icon is unavailable".to_string())?;
+    tray.set_menu(Some(menu)).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn cli_status() -> Result<cli_registration::CliStatus, String> {
+    off_thread(cli_registration::status)
+        .await
+        .unwrap_or_else(|| Err("Could not inspect the CLI registration.".into()))
+}
+
+#[tauri::command]
+async fn cli_install(app: AppHandle) -> Result<cli_registration::CliStatus, String> {
+    off_thread(move || cli_registration::install(app))
+        .await
+        .unwrap_or_else(|| Err("Could not install the CLI.".into()))
+}
+
+#[tauri::command]
+async fn cli_uninstall() -> Result<cli_registration::CliStatus, String> {
+    off_thread(cli_registration::uninstall)
+        .await
+        .unwrap_or_else(|| Err("Could not remove the CLI.".into()))
+}
 
 /// Directories that are never projects themselves and are never worth
 /// descending into when looking for one.
@@ -109,6 +211,100 @@ where
     T: Send + 'static,
 {
     tauri::async_runtime::spawn_blocking(work).await.ok()
+}
+
+#[tauri::command]
+async fn assistant_status(app: AppHandle) -> assistant::Status {
+    let Ok(root) = app.path().app_data_dir() else {
+        return assistant::Status::default();
+    };
+    off_thread(move || ai::status(root))
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn assistant_cloud_status() -> ai::cloud::CloudStatus {
+    off_thread(ai::cloud::status).await.unwrap_or_default()
+}
+
+#[tauri::command]
+async fn assistant_cloud_configure(
+    provider: String,
+    key: String,
+) -> Result<ai::cloud::CloudStatus, String> {
+    off_thread(move || ai::cloud::configure(&provider, key))
+        .await
+        .unwrap_or_else(|| Err("The API key could not be saved.".into()))
+}
+
+#[tauri::command]
+async fn assistant_cloud_remove(provider: String) -> Result<ai::cloud::CloudStatus, String> {
+    off_thread(move || ai::cloud::remove(&provider))
+        .await
+        .unwrap_or_else(|| Err("The API key could not be removed.".into()))
+}
+
+#[tauri::command]
+fn assistant_pull(app: AppHandle, model: String) -> Result<(), String> {
+    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    ai::pull(app, root, model)
+}
+
+#[tauri::command]
+fn assistant_pull_cancel() {
+    ai::cancel_pull();
+}
+
+#[tauri::command]
+async fn assistant_model_delete(app: AppHandle, model: String) -> Result<(), String> {
+    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    off_thread(move || ai::delete_model(root, model))
+        .await
+        .unwrap_or_else(|| Err("The model deletion did not finish.".into()))
+}
+
+#[tauri::command]
+fn assistant_chat(
+    app: AppHandle,
+    request_id: String,
+    model: String,
+    question: String,
+    prompt: String,
+    project_context: String,
+    roots: Vec<String>,
+    areas: Vec<ai::RouteOption>,
+    think: bool,
+    tool_call_cap: usize,
+) -> Result<(), String> {
+    if model.starts_with("claude:")
+        || model.starts_with("codex:")
+        || model.starts_with("gpt:")
+        || model.starts_with("cursor:")
+    {
+        let cloud_prompt = format!("{}\n\nDevHQ project context:\n{}", prompt, project_context);
+        return ai::cloud::chat(app, request_id, model, cloud_prompt, roots, tool_call_cap);
+    }
+    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    ai::chat(
+        app,
+        root,
+        request_id,
+        model,
+        question,
+        prompt,
+        project_context,
+        roots,
+        areas,
+        think,
+        tool_call_cap,
+    )
+}
+
+#[tauri::command]
+fn assistant_chat_cancel() {
+    ai::cancel_chat();
+    ai::cloud::cancel();
 }
 
 #[derive(Serialize, Clone)]
@@ -224,11 +420,24 @@ fn app_version(app: AppHandle) -> String {
     app.package_info().version.to_string()
 }
 
-/// SHA-256 of the running exe. The checksum cannot be baked into the frontend
-/// before the build: putting it in `changelog.js` would change the binary, so
-/// the hash would no longer describe the file. What's new hashes this process
-/// instead, and `package-msix.ps1` records the same number in the source after
-/// the package exists, for anyone reading the repo.
+/// True only for binaries built by `package-msix.ps1`, which sets
+/// `DEVHQ_OFFICIAL_BUILD` for that compile. A `npm run dev` or plain release
+/// build leaves it unset, so What's new never treats a local exe as a Store
+/// package.
+fn is_official_build() -> bool {
+    option_env!("DEVHQ_OFFICIAL_BUILD").is_some()
+}
+
+#[tauri::command]
+fn app_is_official_build() -> bool {
+    is_official_build()
+}
+
+/// SHA-256 of the running exe. Only meaningful for an official Store package:
+/// the checksum cannot be baked into the frontend before the build (putting it
+/// in `changelog.js` would change the binary), so What's new hashes this
+/// process instead. `package-msix.ps1` records the same number in the source
+/// after the package exists, for anyone reading the repo. Dev builds skip this.
 fn hash_running_exe() -> Result<String, String> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
@@ -249,6 +458,9 @@ fn hash_running_exe() -> Result<String, String> {
 
 #[tauri::command]
 async fn app_build_checksum() -> Result<String, String> {
+    if !is_official_build() {
+        return Ok(String::new());
+    }
     off_thread(hash_running_exe)
         .await
         .unwrap_or_else(|| Err("The checksum did not finish.".into()))
@@ -767,7 +979,7 @@ async fn default_root() -> String {
         .unwrap_or_else(|| "C:\\".to_string())
 }
 
-fn default_root_sync() -> String {
+pub fn default_root_sync() -> String {
     for candidate in ["C:\\code", "C:\\dev", "C:\\src", "C:\\projects"] {
         if Path::new(candidate).is_dir() {
             return candidate.to_string();
@@ -836,12 +1048,13 @@ async fn open_in(path: String, target: String) -> Result<(), String> {
         .unwrap_or_else(|| Err("Could not start that program.".into()))
 }
 
-fn open_in_sync(path: String, target: String) -> Result<(), String> {
-    if !Path::new(&path).is_dir() {
-        return Err("Folder no longer exists.".into());
+pub fn open_in_sync(path: String, target: String) -> Result<(), String> {
+    if !Path::new(&path).exists() {
+        return Err("That item no longer exists.".into());
     }
     let ok = match target.as_str() {
         "explorer" => util::run_lossy("explorer", &[&path], None).is_some(),
+        "reveal" => util::run_lossy("explorer", &["/select,", &path], None).is_some(),
         "vscode" => util::run_lossy("cmd", &["/c", "code", &path], None).is_some(),
         "terminal" => util::run_lossy(
             "cmd",
@@ -856,6 +1069,83 @@ fn open_in_sync(path: String, target: String) -> Result<(), String> {
     } else {
         Err(format!("Could not open with {target}."))
     }
+}
+
+#[tauri::command]
+async fn disk_space_drives() -> Result<Vec<disk_space::Drive>, String> {
+    off_thread(disk_space::drives)
+        .await
+        .unwrap_or_else(|| Err("Could not read the available drives.".into()))
+}
+
+#[tauri::command]
+async fn disk_space_scan(path: String) -> Result<disk_space::SpaceScan, String> {
+    off_thread(move || disk_space::scan(path))
+        .await
+        .unwrap_or_else(|| Err("The disk scan did not finish.".into()))
+}
+
+static DISK_SCAN_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DiskSpaceItemEvent {
+    scan_id: u64,
+    token: String,
+    item: disk_space::SpaceItem,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DiskSpaceDoneEvent {
+    scan_id: u64,
+    token: String,
+    result: Option<disk_space::SpaceScan>,
+    error: Option<String>,
+}
+
+#[tauri::command]
+fn disk_space_scan_start(app: AppHandle, path: String, token: String) -> u64 {
+    let scan_id = DISK_SCAN_ID.fetch_add(1, Ordering::Relaxed);
+    std::thread::spawn(move || {
+        let item_app = app.clone();
+        let item_token = token.clone();
+        let result = disk_space::scan_stream(
+            path,
+            |item| {
+                let _ = item_app.emit(
+                    "disk-space:item",
+                    DiskSpaceItemEvent {
+                        scan_id,
+                        token: item_token.clone(),
+                        item,
+                    },
+                );
+            },
+            move || DISK_SCAN_ID.load(Ordering::Relaxed) == scan_id + 1,
+        );
+        let payload = match result {
+            Ok(result) => DiskSpaceDoneEvent {
+                scan_id,
+                token: token.clone(),
+                result: Some(result),
+                error: None,
+            },
+            Err(error) => DiskSpaceDoneEvent {
+                scan_id,
+                token: token.clone(),
+                result: None,
+                error: Some(error),
+            },
+        };
+        let _ = app.emit("disk-space:done", payload);
+    });
+    scan_id
+}
+
+#[tauri::command]
+fn disk_space_scan_cancel() {
+    DISK_SCAN_ID.fetch_add(1, Ordering::Relaxed);
 }
 
 /// A patch big enough to be worth reading and small enough to hand a webview
@@ -880,7 +1170,7 @@ async fn git_diff(path: String) -> Result<Diff, String> {
         .unwrap_or_else(|| Err("Could not read the diff.".into()))
 }
 
-fn git_diff_sync(path: String) -> Result<Diff, String> {
+pub fn git_diff_sync(path: String) -> Result<Diff, String> {
     let dir = PathBuf::from(&path);
     if !dir.join(".git").exists() {
         return Err("Not a git repository.".into());
@@ -937,7 +1227,7 @@ async fn git_pull(path: String, group: String) -> Result<PullResult, String> {
         .unwrap_or_else(|| Err("Could not run git pull.".into()))
 }
 
-fn git_pull_sync(path: String, group: String) -> Result<PullResult, String> {
+pub fn git_pull_sync(path: String, group: String) -> Result<PullResult, String> {
     let dir = PathBuf::from(&path);
     if !dir.join(".git").exists() {
         return Err("Not a git repository.".into());
@@ -1082,6 +1372,53 @@ async fn term_close_snapshot(id: String) -> Result<Vec<procs::ProcessIdentity>, 
     .unwrap_or_else(|| Err("Could not close the terminal.".into()))
 }
 
+#[cfg(windows)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShellHistoryEntry {
+    command: String,
+    shell: String,
+}
+
+/// Imports the histories the installed shells already own. This is read on a
+/// worker only when Ctrl+R is first opened; history files can be large and must
+/// never pause the window thread.
+#[cfg(windows)]
+#[tauri::command]
+async fn term_command_history() -> Vec<ShellHistoryEntry> {
+    off_thread(|| {
+        let profile = std::env::var_os("USERPROFILE").map(PathBuf::from);
+        let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
+        let mut sources = Vec::new();
+        if let Some(root) = appdata {
+            sources.push((
+                root.join("Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt"),
+                "pwsh",
+            ));
+            sources.push((root.join("nushell/history.txt"), "nu"));
+        }
+        if let Some(root) = profile {
+            sources.push((root.join(".bash_history"), "bash"));
+        }
+        let mut entries = Vec::new();
+        for (path, shell) in sources {
+            let Ok(text) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            entries.extend(text.lines().rev().take(10_000).filter_map(|line| {
+                let command = line.trim();
+                (!command.is_empty()).then(|| ShellHistoryEntry {
+                    command: command.to_string(),
+                    shell: shell.to_string(),
+                })
+            }));
+        }
+        entries
+    })
+    .await
+    .unwrap_or_default()
+}
+
 #[tauri::command]
 async fn process_survivors(expected: Vec<procs::ProcessIdentity>) -> Vec<procs::ProcessIdentity> {
     off_thread(move || procs::survivors(expected))
@@ -1222,27 +1559,54 @@ async fn lock_inspect(path: String) -> Result<Vec<windows_tools::LockProcess>, S
 
 #[tauri::command]
 async fn audio_devices() -> Result<Vec<windows_tools::AudioDevice>, String> {
-    off_thread(windows_tools::audio_devices).await
+    off_thread(windows_tools::audio_devices)
+        .await
         .unwrap_or_else(|| Err("The audio device scan did not finish.".into()))
 }
 
 #[tauri::command]
 async fn audio_set_default(id: String) -> windows_tools::ToolResult {
-    off_thread(move || windows_tools::audio_set_default(&id)).await.unwrap_or_default()
+    off_thread(move || windows_tools::audio_set_default(&id))
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-async fn repair_targets(id:String)->Result<Vec<windows_tools::RepairTarget>,String>{off_thread(move||windows_tools::repair_targets(&id)).await.unwrap_or_else(||Err("The device scan did not finish.".into()))}
+async fn repair_targets(id: String) -> Result<Vec<windows_tools::RepairTarget>, String> {
+    off_thread(move || windows_tools::repair_targets(&id))
+        .await
+        .unwrap_or_else(|| Err("The device scan did not finish.".into()))
+}
 
 #[tauri::command]
-async fn repair_target_run(id:String,target:String)->windows_tools::ToolResult{off_thread(move||windows_tools::repair_target_run(&id,&target)).await.unwrap_or_default()}
+async fn repair_target_run(id: String, target: String) -> windows_tools::ToolResult {
+    off_thread(move || windows_tools::repair_target_run(&id, &target))
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn active_window_snapshot() -> Result<windows_tools::ActiveWindow, String> {
+    off_thread(windows_tools::active_window)
+        .await
+        .unwrap_or_else(|| Err("The active-window check did not finish.".into()))
+}
+
+#[tauri::command]
+fn keep_awake_set(
+    system: bool,
+    display: bool,
+    away_mode: bool,
+) -> Result<windows_tools::KeepAwakeResult, String> {
+    windows_tools::keep_awake_set(system, display, away_mode)
+}
 
 /* ------------------------------------------------------------- the network
 
-   Every one of these drives `pktmon`, which means spawning a process and, for
-   the capture itself, reading a pipe for as long as it runs. That reading has
-   a thread of its own inside `network`; the commands here only ever start,
-   stop or ask, and none of them holds the window. */
+Every one of these drives `pktmon`, which means spawning a process and, for
+the capture itself, reading a pipe for as long as it runs. That reading has
+a thread of its own inside `network`; the commands here only ever start,
+stop or ask, and none of them holds the window. */
 
 /// Whether pktmon is here, and whether it will talk to us. Asked when the tool
 /// is opened, so the page can explain itself before offering a button that was
@@ -1306,16 +1670,105 @@ async fn net_export(path: String) -> Result<network::Exported, String> {
         .unwrap_or_else(|| Err("The export did not finish.".into()))
 }
 
+#[tauri::command]
+fn path_ping_start(app: AppHandle, options: path_ping::Options) -> Result<u64, String> {
+    path_ping::start(app, options)
+}
+
+#[tauri::command]
+fn path_ping_cancel() {
+    path_ping::cancel();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    let builder = tauri::Builder::default()
+        .manage(PendingTool::default())
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            deliver_tool_arg(app, &args);
+        }))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            use tauri::menu::{Menu, MenuItem};
+            use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+            let args: Vec<String> = std::env::args().collect();
+            if let Some(id) = tool_arg(&args) {
+                if let Ok(mut pending) = app.state::<PendingTool>().0.lock() {
+                    *pending = Some(id);
+                }
+            }
+
+            let open = MenuItem::with_id(app, "tray-open", "Open DevHQ", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open, &quit])?;
+            let mut tray = TrayIconBuilder::with_id("devhq-tray")
+                .tooltip("DevHQ")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| {
+                    let id = event.id().as_ref();
+                    if id == "tray-open" {
+                        show_main_window(app);
+                    } else if id == "tray-quit" {
+                        // Follow the normal close path so terminal and network
+                        // sessions are cleaned up before the process exits.
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.destroy();
+                        }
+                        app.exit(0);
+                    } else if let Some(tool_id) = id.strip_prefix("tray-tool:") {
+                        show_main_window(app);
+                        let _ = app.emit("tray:open-tool", tool_id);
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if matches!(
+                        event,
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        }
+                    ) {
+                        show_main_window(tray.app_handle());
+                    }
+                });
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+            let tray = tray.build(app)?;
+            tray.set_visible(false)?;
+            Ok(())
+        });
 
     #[cfg(windows)]
     let builder = builder
         .invoke_handler(tauri::generate_handler![
             scan,
+            minimize_to_tray,
+            tray_set_recent_tools,
+            take_startup_tool,
+            cli_status,
+            cli_install,
+            cli_uninstall,
+            assistant_status,
+            assistant_cloud_status,
+            assistant_cloud_configure,
+            assistant_cloud_remove,
+            assistant_pull,
+            assistant_pull_cancel,
+            assistant_model_delete,
+            assistant_chat,
+            assistant_chat_cancel,
             app_version,
+            app_is_official_build,
             app_build_checksum,
+            disk_space_drives,
+            disk_space_scan,
+            disk_space_scan_start,
+            disk_space_scan_cancel,
             analytics_page_view,
             scan_cancel,
             default_root,
@@ -1324,12 +1777,15 @@ pub fn run() {
             open_in,
             git_diff,
             git_pull,
+            git::git_workspace,
+            git::git_action,
             todos,
             todo_excerpt,
             port_list,
             port_kill,
             port_sample,
             term_close_snapshot,
+            term_command_history,
             term::term_prune_history,
             process_survivors,
             term::term_shell_availability,
@@ -1362,17 +1818,23 @@ pub fn run() {
             net_backlog,
             net_rate,
             net_export,
+            path_ping_start,
+            path_ping_cancel,
             event_log_query,
             registry_list,
             registry_change,
             system_report,
             repair_run,
             log_tail,
-            lock_inspect
-            ,audio_devices,
-            audio_set_default
-            ,repair_targets,
-            repair_target_run
+            lock_inspect,
+            audio_devices,
+            audio_set_default,
+            repair_targets,
+            repair_target_run,
+            active_window_snapshot,
+            keep_awake_set,
+            github::github_status,
+            github::github_api
         ])
         .on_window_event(|window, event| {
             // The main window going away means the app is going away, so every
@@ -1397,8 +1859,28 @@ pub fn run() {
     #[cfg(not(windows))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         scan,
+        minimize_to_tray,
+        tray_set_recent_tools,
+        take_startup_tool,
+        cli_status,
+        cli_install,
+        cli_uninstall,
+        assistant_status,
+        assistant_cloud_status,
+        assistant_cloud_configure,
+        assistant_cloud_remove,
+        assistant_pull,
+        assistant_pull_cancel,
+        assistant_model_delete,
+        assistant_chat,
+        assistant_chat_cancel,
         app_version,
+        app_is_official_build,
         app_build_checksum,
+        disk_space_drives,
+        disk_space_scan,
+        disk_space_scan_start,
+        disk_space_scan_cancel,
         analytics_page_view,
         scan_cancel,
         default_root,
@@ -1407,6 +1889,8 @@ pub fn run() {
         open_in,
         git_diff,
         git_pull,
+        git::git_workspace,
+        git::git_action,
         todos,
         todo_excerpt,
         dns_lookup,
@@ -1425,17 +1909,21 @@ pub fn run() {
         net_backlog,
         net_rate,
         net_export,
+        path_ping_start,
+        path_ping_cancel,
         event_log_query,
         registry_list,
         registry_change,
         system_report,
         repair_run,
         log_tail,
-            lock_inspect
-            ,audio_devices,
-            audio_set_default
-            ,repair_targets,
-            repair_target_run,
+        lock_inspect,
+        github::github_status,
+        github::github_api,
+        audio_devices,
+        audio_set_default,
+        repair_targets,
+        repair_target_run,
         tool_window::tool_popout,
         tool_window::tool_focus,
         tool_window::tool_drag_preview,

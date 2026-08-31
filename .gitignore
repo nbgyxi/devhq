@@ -4,3 +4,6 @@ target/
 dist/
 src-tauri/target/
 src-tauri/gen/schemas/
+assistant panel.zip
+.gitignore
+git client.zip

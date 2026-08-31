@@ -1,6 +1,69 @@
 use serde::{Deserialize, Serialize};
 use std::process::{Command, Output};
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeepAwakeResult {
+    pub active: bool,
+    pub flags: u32,
+}
+
+/// Ask Windows to suspend its normal idle policy for this process. Windows
+/// automatically releases the request when DevHQ exits.
+pub fn keep_awake_set(
+    system: bool,
+    display: bool,
+    away_mode: bool,
+) -> Result<KeepAwakeResult, String> {
+    use std::sync::{mpsc, OnceLock};
+    use windows::Win32::System::Power::{
+        SetThreadExecutionState, ES_AWAYMODE_REQUIRED, ES_CONTINUOUS, ES_DISPLAY_REQUIRED,
+        ES_SYSTEM_REQUIRED,
+    };
+
+    let mut state = ES_CONTINUOUS;
+    if system {
+        state |= ES_SYSTEM_REQUIRED;
+    }
+    if display {
+        state |= ES_DISPLAY_REQUIRED;
+    }
+    if away_mode {
+        state |= ES_AWAYMODE_REQUIRED;
+    }
+
+    type Request = (u32, mpsc::Sender<Result<(), String>>);
+    static WORKER: OnceLock<mpsc::Sender<Request>> = OnceLock::new();
+    let worker = WORKER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Request>();
+        std::thread::spawn(move || {
+            while let Ok((flags, reply)) = rx.recv() {
+                let result = unsafe {
+                    SetThreadExecutionState(windows::Win32::System::Power::EXECUTION_STATE(flags))
+                };
+                let answer = if result.0 == 0 {
+                    Err("Windows rejected the execution-state request.".into())
+                } else {
+                    Ok(())
+                };
+                let _ = reply.send(answer);
+            }
+        });
+        tx
+    });
+    let (reply_tx, reply_rx) = mpsc::channel();
+    worker
+        .send((state.0, reply_tx))
+        .map_err(|_| "The keep-awake worker stopped.".to_string())?;
+    reply_rx
+        .recv()
+        .map_err(|_| "The keep-awake worker did not respond.".to_string())??;
+    Ok(KeepAwakeResult {
+        active: system || display || away_mode,
+        flags: state.0,
+    })
+}
+
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolResult {
@@ -104,9 +167,95 @@ pub struct AudioDevice {
 
 #[derive(Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct RepairTarget { pub id: String, pub name: String, pub detail: String, pub status: String }
+pub struct RepairTarget {
+    pub id: String,
+    pub name: String,
+    pub detail: String,
+    pub status: String,
+}
 
-const WINDOW_BOUNDS_CS:&str=r#"Add-Type -TypeDefinition @'
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveWindow {
+    pub title: String,
+    pub process: String,
+    pub path: String,
+    pub pid: u32,
+    pub idle_ms: u64,
+}
+
+/// A cheap snapshot used by the local time tracker. No hook is installed: the
+/// front end samples this while DevHQ is alive, so tracking cannot outlive the
+/// app or leave a background helper behind.
+#[cfg(windows)]
+pub fn active_window() -> Result<ActiveWindow, String> {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    };
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return Err("Windows has no foreground window.".into());
+        }
+        let length = GetWindowTextLengthW(hwnd).max(0) as usize;
+        let mut title_buf = vec![0u16; length + 1];
+        let copied = GetWindowTextW(hwnd, &mut title_buf) as usize;
+        let title = String::from_utf16_lossy(&title_buf[..copied]);
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+
+        let mut path = String::new();
+        if let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            let mut buf = vec![0u16; 32768];
+            let mut size = buf.len() as u32;
+            if QueryFullProcessImageNameW(
+                handle,
+                PROCESS_NAME_FORMAT(0),
+                PWSTR(buf.as_mut_ptr()),
+                &mut size,
+            )
+            .is_ok()
+            {
+                path = String::from_utf16_lossy(&buf[..size as usize]);
+            }
+            let _ = CloseHandle(handle);
+        }
+        let process = std::path::Path::new(&path)
+            .file_name()
+            .and_then(|x| x.to_str())
+            .unwrap_or("")
+            .to_string();
+        let mut input = LASTINPUTINFO {
+            cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+            dwTime: 0,
+        };
+        let idle_ms = if GetLastInputInfo(&mut input).as_bool() {
+            u64::from(
+                windows::Win32::System::SystemInformation::GetTickCount()
+                    .wrapping_sub(input.dwTime),
+            )
+        } else {
+            0
+        };
+        Ok(ActiveWindow {
+            title,
+            process,
+            path,
+            pid,
+            idle_ms,
+        })
+    }
+}
+
+const WINDOW_BOUNDS_CS: &str = r#"Add-Type -TypeDefinition @'
 using System;using System.Collections.Generic;using System.Runtime.InteropServices;using System.Text;
 public static class DevHQWindows { public delegate bool CB(IntPtr h,IntPtr l); [StructLayout(LayoutKind.Sequential)]struct R{public int l,t,r,b;} [DllImport("user32.dll")]static extern bool EnumWindows(CB c,IntPtr l);[DllImport("user32.dll")]static extern bool IsWindowVisible(IntPtr h);[DllImport("user32.dll")]static extern bool IsIconic(IntPtr h);[DllImport("user32.dll")]static extern bool GetWindowRect(IntPtr h,out R r);[DllImport("user32.dll")]static extern int GetWindowText(IntPtr h,StringBuilder s,int n);[DllImport("user32.dll")]static extern IntPtr MonitorFromRect(ref R r,uint f);[DllImport("user32.dll")]static extern bool SetWindowPos(IntPtr h,IntPtr a,int x,int y,int w,int z,uint f);
 public static object[] List(){var o=new List<object>();EnumWindows((h,l)=>{R r;if(!IsWindowVisible(h)||IsIconic(h)||!GetWindowRect(h,out r))return true;var s=new StringBuilder(512);GetWindowText(h,s,512);if(s.Length==0)return true;bool off=MonitorFromRect(ref r,0)==IntPtr.Zero;if(off)o.Add(new{id=h.ToInt64().ToString(),name=s.ToString(),detail="("+r.l+", "+r.t+") "+(r.r-r.l)+"x"+(r.b-r.t),status="off-screen"});return true;},IntPtr.Zero);return o.ToArray();}
@@ -375,51 +524,155 @@ public static class DevHQLocks {
 }
 '@; [DevHQLocks]::Find($env:DEVHQ_LOCK_PATH) | ConvertTo-Json -Compress"#;
     let out = ps(script, &[("DEVHQ_LOCK_PATH", path)])?;
-    if !out.status.success() { return Err(String::from_utf8_lossy(&out.stderr).trim().into()); }
-    let text=String::from_utf8_lossy(&out.stdout);let text=text.trim();if text.is_empty(){return Ok(Vec::new());}
-    let value:serde_json::Value=serde_json::from_str(text).map_err(|e|format!("Could not read Restart Manager output: {e}"))?;
-    if value.is_array(){serde_json::from_value(value).map_err(|e|e.to_string())}else{serde_json::from_value(value).map(|v|vec![v]).map_err(|e|e.to_string())}
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().into());
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let value: serde_json::Value = serde_json::from_str(text)
+        .map_err(|e| format!("Could not read Restart Manager output: {e}"))?;
+    if value.is_array() {
+        serde_json::from_value(value).map_err(|e| e.to_string())
+    } else {
+        serde_json::from_value(value)
+            .map(|v| vec![v])
+            .map_err(|e| e.to_string())
+    }
 }
 
 pub fn audio_devices() -> Result<Vec<AudioDevice>, String> {
     let script = format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [DevHQAudio]::List() | ConvertTo-Json -Compress");
-    let out=ps(&script,&[])?; if !out.status.success(){return Err(String::from_utf8_lossy(&out.stderr).trim().into());}
-    let text=String::from_utf8_lossy(&out.stdout);let text=text.trim();if text.is_empty(){return Ok(Vec::new());}
-    let value:serde_json::Value=serde_json::from_str(text).map_err(|e|format!("Could not read audio devices: {e}"))?;
-    if value.is_array(){serde_json::from_value(value).map_err(|e|e.to_string())}else{serde_json::from_value(value).map(|v|vec![v]).map_err(|e|e.to_string())}
+    let out = ps(&script, &[])?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().into());
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("Could not read audio devices: {e}"))?;
+    if value.is_array() {
+        serde_json::from_value(value).map_err(|e| e.to_string())
+    } else {
+        serde_json::from_value(value)
+            .map(|v| vec![v])
+            .map_err(|e| e.to_string())
+    }
 }
 
 pub fn audio_set_default(id: &str) -> ToolResult {
-    if id.trim().is_empty(){return ToolResult{error:"Choose an audio device.".into(),..Default::default()};}
+    if id.trim().is_empty() {
+        return ToolResult {
+            error: "Choose an audio device.".into(),
+            ..Default::default()
+        };
+    }
     let script=format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [DevHQAudio]::Set($env:DEVHQ_AUDIO_ID); 'Default endpoint changed for all three roles'");
-    output_result(ps(&script,&[("DEVHQ_AUDIO_ID",id)]))
+    output_result(ps(&script, &[("DEVHQ_AUDIO_ID", id)]))
 }
 
-pub fn repair_targets(id:&str)->Result<Vec<RepairTarget>,String>{
-    let (script,env)=match id{
-        "radio"=>(r#"$a=Get-NetAdapter -Physical -ErrorAction SilentlyContinue|ForEach-Object{[pscustomobject]@{id='net:'+ $_.Name;name=$_.InterfaceDescription;detail=$_.Name+' · '+$_.LinkSpeed;status=$_.Status}};$b=Get-PnpDevice -Class Bluetooth -Status OK -ErrorAction SilentlyContinue|ForEach-Object{[pscustomobject]@{id='pnp:'+ $_.InstanceId;name=$_.FriendlyName;detail='Bluetooth device';status=$_.Status}};@($a)+@($b)|ConvertTo-Json -Compress"#,vec![]),
-        "usb"=>(r#"Get-PnpDevice -Class USB -PresentOnly -ErrorAction Stop|Where-Object FriendlyName|ForEach-Object{[pscustomobject]@{id=$_.InstanceId;name=$_.FriendlyName;detail=$_.Class;status=$_.Status}}|ConvertTo-Json -Compress"#,vec![]),
-        "bounds"=>("[DevHQWindows]::List()|ConvertTo-Json -Compress",vec![]),
-        "audio"=>(r#"Get-Service Audiosrv,AudioEndpointBuilder -ErrorAction Stop|ForEach-Object{[pscustomobject]@{id=$_.Name;name=$_.DisplayName;detail=($_.DependentServices.Count.ToString()+' dependent services');status=[string]$_.Status}}|ConvertTo-Json -Compress"#,vec![]),
-        "gpu"=>(r#"$g=Get-CimInstance Win32_VideoController|ForEach-Object{[pscustomobject]@{id=$_.PNPDeviceID;name=$_.Name;detail=('driver '+$_.DriverVersion+' · '+[math]::Round($_.AdapterRAM/1GB,1)+' GB');status=$_.Status}};$m=Get-PnpDevice -Class Monitor -PresentOnly -ErrorAction SilentlyContinue|ForEach-Object{[pscustomobject]@{id=$_.InstanceId;name=$_.FriendlyName;detail='display endpoint';status=$_.Status}};@($g)+@($m)|ConvertTo-Json -Compress"#,vec![]),
-        "net"=>(r#"@([pscustomobject]@{id='dns';name='Flush resolver cache';detail='ipconfig /flushdns';status='step 1'},[pscustomobject]@{id='winsock';name='Reset Winsock catalog';detail='netsh winsock reset';status='step 2'},[pscustomobject]@{id='arp';name='Clear ARP table';detail='arp -d *';status='step 3'},[pscustomobject]@{id='dhcp';name='Renew DHCP lease';detail='ipconfig /renew';status='step 4'})|ConvertTo-Json -Compress"#,vec![]),
-        "shell"=>(r#"$icon=Get-Item (Join-Path $env:LOCALAPPDATA 'IconCache.db') -ErrorAction SilentlyContinue;$thumb=@(Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Explorer\thumbcache_*.db') -ErrorAction SilentlyContinue);$exp=@(Get-Process explorer -ErrorAction SilentlyContinue);@([pscustomobject]@{id='explorer';name='Windows Explorer';detail=($exp.Count.ToString()+' process instances');status=if($exp){'running'}else{'stopped'}},[pscustomobject]@{id='icons';name='Icon cache';detail=if($icon){[math]::Round($icon.Length/1MB,1).ToString()+' MB'}else{'not present'};status='cache'},[pscustomobject]@{id='thumbs';name='Thumbnail databases';detail=([math]::Round(($thumb|Measure-Object Length -Sum).Sum/1MB,1).ToString()+' MB · '+$thumb.Count+' files');status='cache'})|ConvertTo-Json -Compress"#,vec![]),
-        "spooler"=>(r#"$s=Get-Service Spooler -ErrorAction Stop;$jobs=@(Get-Printer|ForEach-Object{Get-PrintJob -PrinterName $_.Name -ErrorAction SilentlyContinue});@([pscustomobject]@{id='service';name=$s.DisplayName;detail=($jobs.Count.ToString()+' queued jobs');status=[string]$s.Status})+@($jobs|ForEach-Object{[pscustomobject]@{id=[string]$_.ID;name=$_.DocumentName;detail=$_.PrinterName;status=[string]$_.JobStatus}})|ConvertTo-Json -Compress"#,vec![]),
-        _=>return Ok(Vec::new()),
+pub fn repair_targets(id: &str) -> Result<Vec<RepairTarget>, String> {
+    let (script, env) = match id {
+        "radio" => (
+            r#"$a=Get-NetAdapter -Physical -ErrorAction SilentlyContinue|ForEach-Object{[pscustomobject]@{id='net:'+ $_.Name;name=$_.InterfaceDescription;detail=$_.Name+' · '+$_.LinkSpeed;status=$_.Status}};$b=Get-PnpDevice -Class Bluetooth -Status OK -ErrorAction SilentlyContinue|ForEach-Object{[pscustomobject]@{id='pnp:'+ $_.InstanceId;name=$_.FriendlyName;detail='Bluetooth device';status=$_.Status}};@($a)+@($b)|ConvertTo-Json -Compress"#,
+            vec![],
+        ),
+        "usb" => (
+            r#"Get-PnpDevice -Class USB -PresentOnly -ErrorAction Stop|Where-Object FriendlyName|ForEach-Object{[pscustomobject]@{id=$_.InstanceId;name=$_.FriendlyName;detail=$_.Class;status=$_.Status}}|ConvertTo-Json -Compress"#,
+            vec![],
+        ),
+        "bounds" => ("[DevHQWindows]::List()|ConvertTo-Json -Compress", vec![]),
+        "audio" => (
+            r#"Get-Service Audiosrv,AudioEndpointBuilder -ErrorAction Stop|ForEach-Object{[pscustomobject]@{id=$_.Name;name=$_.DisplayName;detail=($_.DependentServices.Count.ToString()+' dependent services');status=[string]$_.Status}}|ConvertTo-Json -Compress"#,
+            vec![],
+        ),
+        "gpu" => (
+            r#"$g=Get-CimInstance Win32_VideoController|ForEach-Object{[pscustomobject]@{id=$_.PNPDeviceID;name=$_.Name;detail=('driver '+$_.DriverVersion+' · '+[math]::Round($_.AdapterRAM/1GB,1)+' GB');status=$_.Status}};$m=Get-PnpDevice -Class Monitor -PresentOnly -ErrorAction SilentlyContinue|ForEach-Object{[pscustomobject]@{id=$_.InstanceId;name=$_.FriendlyName;detail='display endpoint';status=$_.Status}};@($g)+@($m)|ConvertTo-Json -Compress"#,
+            vec![],
+        ),
+        "net" => (
+            r#"@([pscustomobject]@{id='dns';name='Flush resolver cache';detail='ipconfig /flushdns';status='step 1'},[pscustomobject]@{id='winsock';name='Reset Winsock catalog';detail='netsh winsock reset';status='step 2'},[pscustomobject]@{id='arp';name='Clear ARP table';detail='arp -d *';status='step 3'},[pscustomobject]@{id='dhcp';name='Renew DHCP lease';detail='ipconfig /renew';status='step 4'})|ConvertTo-Json -Compress"#,
+            vec![],
+        ),
+        "shell" => (
+            r#"$icon=Get-Item (Join-Path $env:LOCALAPPDATA 'IconCache.db') -ErrorAction SilentlyContinue;$thumb=@(Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Explorer\thumbcache_*.db') -ErrorAction SilentlyContinue);$exp=@(Get-Process explorer -ErrorAction SilentlyContinue);@([pscustomobject]@{id='explorer';name='Windows Explorer';detail=($exp.Count.ToString()+' process instances');status=if($exp){'running'}else{'stopped'}},[pscustomobject]@{id='icons';name='Icon cache';detail=if($icon){[math]::Round($icon.Length/1MB,1).ToString()+' MB'}else{'not present'};status='cache'},[pscustomobject]@{id='thumbs';name='Thumbnail databases';detail=([math]::Round(($thumb|Measure-Object Length -Sum).Sum/1MB,1).ToString()+' MB · '+$thumb.Count+' files');status='cache'})|ConvertTo-Json -Compress"#,
+            vec![],
+        ),
+        "spooler" => (
+            r#"$s=Get-Service Spooler -ErrorAction Stop;$jobs=@(Get-Printer|ForEach-Object{Get-PrintJob -PrinterName $_.Name -ErrorAction SilentlyContinue});@([pscustomobject]@{id='service';name=$s.DisplayName;detail=($jobs.Count.ToString()+' queued jobs');status=[string]$s.Status})+@($jobs|ForEach-Object{[pscustomobject]@{id=[string]$_.ID;name=$_.DocumentName;detail=$_.PrinterName;status=[string]$_.JobStatus}})|ConvertTo-Json -Compress"#,
+            vec![],
+        ),
+        _ => return Ok(Vec::new()),
     };
-    let full=if id=="bounds"{format!("$ErrorActionPreference='Stop';{WINDOW_BOUNDS_CS}{script}")}else{format!("$ErrorActionPreference='Stop';{script}")};
-    let out=ps(&full,&env)?;if !out.status.success(){return Err(String::from_utf8_lossy(&out.stderr).trim().into());}let text=String::from_utf8_lossy(&out.stdout);let text=text.trim();if text.is_empty(){return Ok(Vec::new());}let value:serde_json::Value=serde_json::from_str(text).map_err(|e|e.to_string())?;if value.is_array(){serde_json::from_value(value).map_err(|e|e.to_string())}else{serde_json::from_value(value).map(|v|vec![v]).map_err(|e|e.to_string())}
+    let full = if id == "bounds" {
+        format!("$ErrorActionPreference='Stop';{WINDOW_BOUNDS_CS}{script}")
+    } else {
+        format!("$ErrorActionPreference='Stop';{script}")
+    };
+    let out = ps(&full, &env)?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().into());
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    if value.is_array() {
+        serde_json::from_value(value).map_err(|e| e.to_string())
+    } else {
+        serde_json::from_value(value)
+            .map(|v| vec![v])
+            .map_err(|e| e.to_string())
+    }
 }
 
-pub fn repair_target_run(id:&str,target:&str)->ToolResult{
-    if target.trim().is_empty(){return ToolResult{error:"Choose an item first.".into(),..Default::default()};}
-    let (script,key,value)=match id{
-        "radio" if target.starts_with("net:")=>("Restart-NetAdapter -Name $env:DEVHQ_TARGET -Confirm:$false","DEVHQ_TARGET",&target[4..]),
-        "radio" if target.starts_with("pnp:")=>("pnputil /restart-device $env:DEVHQ_TARGET","DEVHQ_TARGET",&target[4..]),
-        "usb"=>("pnputil /restart-device $env:DEVHQ_TARGET","DEVHQ_TARGET",target),
-        "bounds"=>("[DevHQWindows]::Pull([long]$env:DEVHQ_TARGET)","DEVHQ_TARGET",target),
-        _=>return ToolResult{error:"Unsupported repair target.".into(),..Default::default()},
-    };let prefix=if id=="bounds"{WINDOW_BOUNDS_CS}else{""};output_result(ps(&format!("$ErrorActionPreference='Stop';{prefix}{script};'Completed'"),&[(key,value)]))
+pub fn repair_target_run(id: &str, target: &str) -> ToolResult {
+    if target.trim().is_empty() {
+        return ToolResult {
+            error: "Choose an item first.".into(),
+            ..Default::default()
+        };
+    }
+    let (script, key, value) = match id {
+        "radio" if target.starts_with("net:") => (
+            "Restart-NetAdapter -Name $env:DEVHQ_TARGET -Confirm:$false",
+            "DEVHQ_TARGET",
+            &target[4..],
+        ),
+        "radio" if target.starts_with("pnp:") => (
+            "pnputil /restart-device $env:DEVHQ_TARGET",
+            "DEVHQ_TARGET",
+            &target[4..],
+        ),
+        "usb" => (
+            "pnputil /restart-device $env:DEVHQ_TARGET",
+            "DEVHQ_TARGET",
+            target,
+        ),
+        "bounds" => (
+            "[DevHQWindows]::Pull([long]$env:DEVHQ_TARGET)",
+            "DEVHQ_TARGET",
+            target,
+        ),
+        _ => {
+            return ToolResult {
+                error: "Unsupported repair target.".into(),
+                ..Default::default()
+            }
+        }
+    };
+    let prefix = if id == "bounds" { WINDOW_BOUNDS_CS } else { "" };
+    output_result(ps(
+        &format!("$ErrorActionPreference='Stop';{prefix}{script};'Completed'"),
+        &[(key, value)],
+    ))
 }
 
 pub fn repair_run(id: &str) -> ToolResult {
@@ -469,14 +722,22 @@ mod tests {
 
     #[test]
     fn repair_target_enumeration_runs() {
-        for id in ["bounds", "radio", "usb", "audio", "gpu", "net", "shell", "spooler"] {
+        for id in [
+            "bounds", "radio", "usb", "audio", "gpu", "net", "shell", "spooler",
+        ] {
             repair_targets(id).unwrap_or_else(|error| panic!("{id} enumeration failed: {error}"));
         }
     }
 
     #[test]
     fn event_records_include_native_xml() {
-        let rows = event_query(EventQuery { channels: vec!["System".into()], levels: vec![], text: String::new(), limit: 2 }).expect("System Event Log should be readable");
+        let rows = event_query(EventQuery {
+            channels: vec!["System".into()],
+            levels: vec![],
+            text: String::new(),
+            limit: 2,
+        })
+        .expect("System Event Log should be readable");
         assert!(rows.iter().all(|row| row.xml.contains("<Event")));
     }
 }

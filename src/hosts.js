@@ -841,6 +841,8 @@ window.devhqHosts = {
   overridesFor,
   reveal,
   pinLocal,
+  exportState() { return { file:hosts.file, loading:hosts.loading, toggles:[...hosts.toggles], removed:[...hosts.removed], added:hosts.added, edits:[...hosts.edits], editing:hosts.editing, draft:hosts.draft, restoring:hosts.restoring, applying:hosts.applying, newIp:hosts.newIp, newName:hosts.newName, flashed:hosts.flashed, message:hosts.message, messageTone:hosts.messageTone, explaining:hosts.explaining }; },
+  importState(state) { if(!state)return;Object.assign(hosts,state,{toggles:new Map(state.toggles||[]),removed:new Set(state.removed||[]),edits:new Map(state.edits||[]),host:hosts.host,built:hosts.built,flashTimer:0});if(hosts.host)render(); },
 };
 
 })();

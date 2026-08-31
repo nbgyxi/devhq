@@ -97,6 +97,18 @@
     if (id === "network") {
       return { id: "network", name: "Network", icon: "network_check", hint: "watch the packets crossing the wire, live" };
     }
+    if (id === "path-ping") {
+      return { id: "path-ping", name: "Path Ping", icon: "route", hint: "latency and loss, hop by hop" };
+    }
+    if (id === "disk-space") {
+      return { id: "disk-space", name: "Disk Space Usage", icon: "hard_drive", hint: "see what fills a drive and drill into every folder" };
+    }
+    if (id === "github") {
+      return { id: "github", name: "GitHub", icon: "merge", hint: "inbox, pull requests, issues, Actions and repositories" };
+    }
+    if (id === "git") {
+      return { id: "git", name: "Git", icon: "bookmark_added", hint: "save, upload and restore versions of your work" };
+    }
     const util = window.devhqUtilTools?.catalog?.().find((tool) => tool.id === id);
     if (util) return { ...util, kind: "util" };
     const winTool = window.devhqWindowsTools?.catalog?.().find((tool) => tool.id === id);
@@ -113,6 +125,7 @@
 
   const handOver = async () => {
     if (handedOver || closed) return;
+    await window.devhqToolState?.send?.(id);
     handedOver = true;
     await emit("tool:docked", { id }).catch(() => {});
     await win.destroy().catch(() => {});
@@ -121,13 +134,15 @@
   document.querySelector(".win-btns").addEventListener("click", (event) => {
     const btn = event.target.closest(".win-btn");
     if (!btn) return;
+    // This listener runs in the capture phase. The pin owns its click below;
+    // do not stop the event before it reaches that handler.
+    if (btn.id === "pop-ontop") return;
     event.preventDefault();
     event.stopPropagation();
     if (btn.id === "pop-dock") {
       handOver();
       return;
     }
-    if (btn.id === "pop-ontop") return;
     const act = btn.dataset.win;
     if (act === "min") win.minimize().catch(() => {});
     else if (act === "max") {
@@ -221,6 +236,8 @@
     dns: () => window.devhqDns?.render(),
     hosts: () => window.devhqHosts?.render(),
     network: () => window.devhqNetwork?.render(),
+    "path-ping": () => window.devhqPathPing?.render(),
+    "disk-space": () => window.devhqDiskSpace?.render(),
     tools: () => window.devhqUtilTools?.render(),
   };
   const dirtyRegions = new Set();
@@ -262,10 +279,17 @@
     },
   };
 
+  let portHandoff = null;
+  window.devhqPortsState = {
+    exportState() { return { search:document.getElementById("pop-port-filter")?.value||"", ...portHandoff }; },
+    importState(state) { portHandoff=state||null; const input=document.getElementById("pop-port-filter");if(input)input.value=portHandoff?.search||""; },
+  };
+
   // Hide the in-page pin/close chrome — the title bar owns dock and close here.
   document.body.classList.add("tool-popout-chrome");
 
   try {
+    await window.devhqToolState?.receive?.(id);
     if (id === "ports") {
       host.className = "tool-pop-host ports-page tool-pop-ports";
       await mountPorts(host);
@@ -281,6 +305,22 @@
       host.className = "tool-pop-host net-page";
       window.devhqNetwork?.mount(host);
       window.devhqNetwork?.opened();
+    } else if (id === "path-ping") {
+      host.className = "tool-pop-host path-page";
+      window.devhqPathPing?.mount(host);
+      window.devhqPathPing?.opened();
+    } else if (id === "disk-space") {
+      host.className = "tool-pop-host disk-page";
+      window.devhqDiskSpace?.mount(host);
+      window.devhqDiskSpace?.opened();
+    } else if (id === "github") {
+      host.className = "tool-pop-host github-page";
+      window.devhqGithub?.mount(host);
+      window.devhqGithub?.opened();
+    } else if (id === "git") {
+      host.className = "tool-pop-host git-page";
+      window.devhqGit?.mount(host);
+      window.devhqGit?.opened();
     } else if (window.devhqUtilTools?.byId?.(id)) {
       host.className = "tool-pop-host tools-page";
       window.devhqUtilTools.mount(host);
@@ -364,6 +404,7 @@
     const list = root.querySelector("[data-ports-list]");
     const status = root.querySelector("[data-ports-status]");
     const filter = root.querySelector("#pop-port-filter");
+    filter.value = portHandoff?.search || "";
 
     const flatten = (processes) => {
       const out = [];

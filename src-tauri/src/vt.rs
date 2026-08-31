@@ -279,6 +279,17 @@ mod tests {
     }
 
     #[test]
+    fn csi_3j_clears_scrollback() {
+        let mut grid = Grid::new(20, 4);
+        grid.feed(b"one\n\rtwo\n\rthree\n\rfour\n\rfive");
+        assert!(!grid.scrollback.is_empty(), "lines have scrolled off");
+        grid.feed(b"\x1b[3J");
+        assert!(grid.scrollback.is_empty());
+        assert!(grid.take_clear_history());
+        assert!(!grid.take_clear_history(), "the flag is one-shot");
+    }
+
+    #[test]
     fn erasing_the_line_cancels_a_pending_wrap() {
         let mut grid = Grid::new(8, 6);
         grid.feed(b"abcdefgh\x1b[K\x1b[1;1Hz");
@@ -291,13 +302,23 @@ impl Cell {
     fn blank(pen: &Cell) -> Cell {
         // Erasing paints with the current background, which is why a program
         // that sets a background and clears the line gets a coloured bar.
-        Cell { ch: ' ', fg: DEFAULT_COLOR, bg: pen.bg, attr: 0 }
+        Cell {
+            ch: ' ',
+            fg: DEFAULT_COLOR,
+            bg: pen.bg,
+            attr: 0,
+        }
     }
 }
 
 impl Default for Cell {
     fn default() -> Self {
-        Cell { ch: ' ', fg: DEFAULT_COLOR, bg: DEFAULT_COLOR, attr: 0 }
+        Cell {
+            ch: ' ',
+            fg: DEFAULT_COLOR,
+            bg: DEFAULT_COLOR,
+            attr: 0,
+        }
     }
 }
 
@@ -338,6 +359,12 @@ pub struct Grid {
     /// to append to its history.
     pending_scroll: Vec<Vec<Cell>>,
     pub scrollback: VecDeque<Vec<Cell>>,
+    /// Set when CSI 3 J wipes the scrollback, so the front end can drop its
+    /// history DOM in the same update.
+    pending_clear_history: bool,
+    /// Replies requested by terminal queries (DSR/DA), drained by the ConPTY
+    /// reader and written back to the application as terminal input.
+    pending_reply: Vec<u8>,
 
     scroll_top: usize,
     scroll_bot: usize,
@@ -377,6 +404,8 @@ impl Grid {
             dirty: vec![true; rows],
             pending_scroll: Vec::new(),
             scrollback: VecDeque::new(),
+            pending_clear_history: false,
+            pending_reply: Vec::new(),
             scroll_top: 0,
             scroll_bot: rows - 1,
             pen: Cell::default(),
@@ -397,14 +426,24 @@ impl Grid {
 
     /// Rows touched since the last call, then cleared.
     pub fn take_dirty(&mut self) -> Vec<usize> {
-        let out: Vec<usize> =
-            (0..self.rows).filter(|&y| self.dirty.get(y).copied().unwrap_or(false)).collect();
+        let out: Vec<usize> = (0..self.rows)
+            .filter(|&y| self.dirty.get(y).copied().unwrap_or(false))
+            .collect();
         self.dirty.iter_mut().for_each(|d| *d = false);
         out
     }
 
     pub fn take_scrolled(&mut self) -> Vec<Vec<Cell>> {
         std::mem::take(&mut self.pending_scroll)
+    }
+
+    /// Whether CSI 3 J cleared the scrollback since the last drain.
+    pub fn take_clear_history(&mut self) -> bool {
+        std::mem::take(&mut self.pending_clear_history)
+    }
+
+    pub fn take_reply(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending_reply)
     }
 
     pub fn mark_all_dirty(&mut self) {
@@ -621,7 +660,20 @@ impl Grid {
         // redraw drifts a line away from the shell hosting it.
         if matches!(
             final_byte,
-            b'A'..=b'H' | b'J' | b'K' | b'L' | b'M' | b'P' | b'S' | b'T' | b'X' | b'@' | b'`' | b'd' | b'f' | b'r'
+            b'A'..=b'H'
+                | b'J'
+                | b'K'
+                | b'L'
+                | b'M'
+                | b'P'
+                | b'S'
+                | b'T'
+                | b'X'
+                | b'@'
+                | b'`'
+                | b'd'
+                | b'f'
+                | b'r'
         ) {
             self.wrap_pending = false;
         }
@@ -656,11 +708,28 @@ impl Grid {
             b'S' => self.scroll_up(p0),
             b'T' => self.scroll_down(p0),
             b'm' => self.sgr(),
+            b'n' if self.private == 0 => match self.param(0, 0) {
+                5 => self.pending_reply.extend_from_slice(b"\x1b[0n"),
+                6 => self
+                    .pending_reply
+                    .extend_from_slice(format!("\x1b[{};{}R", self.cy + 1, self.cx + 1).as_bytes()),
+                _ => {}
+            },
+            b'c' if self.private == 0 => {
+                self.pending_reply.extend_from_slice(b"\x1b[?1;2c");
+            }
+            b'c' if self.private == b'>' => {
+                self.pending_reply.extend_from_slice(b"\x1b[>0;10;1c");
+            }
             b'q' => self.cursor_style = self.param(0, 0).min(6) as u8,
             b'r' => {
                 let top = self.param(0, 1) as usize - 1;
-                let bot = self.params.get(1).copied().filter(|&v| v > 0).unwrap_or(self.rows as u32)
-                    as usize
+                let bot = self
+                    .params
+                    .get(1)
+                    .copied()
+                    .filter(|&v| v > 0)
+                    .unwrap_or(self.rows as u32) as usize
                     - 1;
                 if top < bot && bot < self.rows {
                     self.scroll_top = top;
@@ -857,10 +926,20 @@ impl Grid {
         }
         let i = self.idx(self.cx, self.cy);
         self.split_wide(i);
-        self.cells[i] = Cell { ch: c, fg: self.pen.fg, bg: self.pen.bg, attr: self.pen.attr };
+        self.cells[i] = Cell {
+            ch: c,
+            fg: self.pen.fg,
+            bg: self.pen.bg,
+            attr: self.pen.attr,
+        };
         if w == 2 {
             self.split_wide(i + 1);
-            self.cells[i + 1] = Cell { ch: CONT, fg: self.pen.fg, bg: self.pen.bg, attr: self.pen.attr };
+            self.cells[i + 1] = Cell {
+                ch: CONT,
+                fg: self.pen.fg,
+                bg: self.pen.bg,
+                attr: self.pen.attr,
+            };
         }
         let y = self.cy;
         self.touch(y);
@@ -940,6 +1019,14 @@ impl Grid {
                 for y in 0..=self.cy {
                     self.touch(y);
                 }
+            }
+            // xterm's CSI 3 J: drop the scrollback. `clear` / Clear-Host send
+            // this after CSI 2 J; without it the screen goes blank underneath
+            // a history the front end still paints.
+            3 => {
+                self.scrollback.clear();
+                self.pending_scroll.clear();
+                self.pending_clear_history = true;
             }
             _ => {
                 self.cells.fill(blank);
@@ -1062,7 +1149,12 @@ impl Grid {
         }
         // Blank rows at the end of the range are unused screen, not output.
         let mut end = through.min(self.rows);
-        while end > 0 && self.row(end - 1).iter().all(|c| c.ch == ' ' && c.bg == DEFAULT_COLOR && c.attr == 0) {
+        while end > 0
+            && self
+                .row(end - 1)
+                .iter()
+                .all(|c| c.ch == ' ' && c.bg == DEFAULT_COLOR && c.attr == 0)
+        {
             end -= 1;
         }
         for y in 0..end {
@@ -1078,6 +1170,7 @@ impl Grid {
         self.saved_cursor = (0, 0);
         self.wrap_pending = false;
         self.pending_scroll.clear();
+        self.pending_clear_history = false;
         self.dirty = vec![true; self.rows];
     }
 

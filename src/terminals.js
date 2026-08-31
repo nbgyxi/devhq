@@ -60,6 +60,8 @@ const terms = {
   shellMarkerStyle: "code",
   /** When false, terminals start fresh and nothing is replayed on restore. */
   saveHistory: true,
+  /** Replace the shell's small reverse search with DevHQ's searchable history. */
+  enhancedHistorySearch: true,
   orphanWarnings: new Map(),
   restoring: false,
   el: null,
@@ -95,6 +97,7 @@ function termsSavePrefs() {
       shellColors: terms.shellColors,
       shellMarkerStyle: terms.shellMarkerStyle,
       saveHistory: terms.saveHistory,
+      enhancedHistorySearch: terms.enhancedHistorySearch,
     }));
   } catch { /* nothing here is worth failing a render over */ }
 }
@@ -111,6 +114,7 @@ function termsLoadPrefs() {
     }
     if (["none", "dot", "code"].includes(saved.shellMarkerStyle)) terms.shellMarkerStyle = saved.shellMarkerStyle;
     if (typeof saved.saveHistory === "boolean") terms.saveHistory = saved.saveHistory;
+    if (typeof saved.enhancedHistorySearch === "boolean") terms.enhancedHistorySearch = saved.enhancedHistorySearch;
     if (TERM_SHELLS.some((profile) => profile.value === saved.defaultShell)) {
       terms.defaultShell = saved.defaultShell;
       terms.nextShell = saved.defaultShell;
@@ -163,6 +167,7 @@ function dockEl() {
       <button class="dock-new-menu-button" data-dock="shell-menu" title="Choose terminal type" aria-haspopup="menu" aria-expanded="false">${termIcon("tune")}</button>
       <div class="dock-shell-menu" role="menu" hidden></div>
     </div>
+    <button data-dock="debug" title="Copy terminal debug report">${termIcon("bug_report")}</button>
     <button data-dock="popout" title="Pop out this terminal">${termIcon("open_in_new")}</button>
     <button data-dock="close" title="Close this terminal">${termIcon("delete")}</button>
   </div>`;
@@ -214,6 +219,11 @@ function dockEl() {
       return setShellMenuOpen(terms.shellMenuPane === pane ? null : pane);
     }
     if (action.dataset.dock === "popout") return popOutTerminal(active);
+    if (action.dataset.dock === "debug") {
+      const report = terms.sessions.get(active)?.view.debugReport();
+      if (report) navigator.clipboard.writeText(report).catch(() => {});
+      return;
+    }
     if (action.dataset.dock === "close") return closeTerminal(active);
   };
 
@@ -383,14 +393,21 @@ function dockEl() {
     if (e.target.classList.contains("term-shell-error")) closeShellError();
   };
 
-  // Drag the top edge to resize.
+  // Drag the top edge to resize. Keep each visible terminal's scroll where it
+  // is for the whole drag - changing --dock-h alone would let the browser
+  // clamp scrollTop on every move, which reads as a scroll action.
   const grip = el.querySelector(".dock-grip");
   grip.addEventListener("pointerdown", (down) => {
     down.preventDefault();
     grip.setPointerCapture(down.pointerId);
     const move = (e) => {
+      const kept = terms.paneActive
+        .map((id) => terms.sessions.get(id)?.view)
+        .filter(Boolean)
+        .map((view) => ({ view, top: view.scroll.scrollTop }));
       terms.height = clampDockHeight(window.innerHeight - e.clientY);
       applyDockHeight();
+      for (const { view, top } of kept) view.scroll.scrollTop = top;
     };
     const up = () => {
       grip.removeEventListener("pointermove", move);
@@ -538,6 +555,7 @@ function clampDockHeight(height) {
 
 function applyDockHeight() {
   terms.height = clampDockHeight(terms.height);
+  document.documentElement.classList.toggle("terminal-dock-open", terms.open);
   document.documentElement.style.setProperty("--dock-h", terms.open ? `${terms.height}px` : "0px");
 }
 
@@ -556,6 +574,12 @@ function setDockOpen(open) {
 function fitVisible() {
   if (!terms.open) return;
   for (const id of terms.paneActive) terms.sessions.get(id)?.view.fit();
+}
+
+/** Kept as the window-state callback for compatibility. The preceding fit now
+ *  owns resize handling and preserves the terminal's exact viewport. */
+function settleVisible() {
+  // Intentionally empty: maximize and restore must not move the scroller.
 }
 
 function sessionPane(id) {
@@ -635,7 +659,7 @@ function renderTabs() {
   }
   for (const actions of dockEl().querySelectorAll("[data-pane-actions]")) {
     const pane = Number(actions.dataset.paneActions);
-    for (const button of actions.querySelectorAll('[data-dock="popout"],[data-dock="close"]')) {
+    for (const button of actions.querySelectorAll('[data-dock="debug"],[data-dock="popout"],[data-dock="close"]')) {
       button.disabled = !terms.paneActive[pane];
     }
     for (const button of actions.querySelectorAll('[data-dock="new"],[data-dock="shell-menu"]')) {
@@ -1181,6 +1205,11 @@ window.devhqTerminalSettings = {
     renderTabs();
   },
   getSaveHistory: () => terms.saveHistory,
+  getEnhancedHistorySearch: () => terms.enhancedHistorySearch,
+  setEnhancedHistorySearch: (enabled) => {
+    terms.enhancedHistorySearch = Boolean(enabled);
+    termsSavePrefs();
+  },
   setSaveHistory: (enabled) => {
     const next = Boolean(enabled);
     if (terms.saveHistory === next) return;
@@ -1191,6 +1220,8 @@ window.devhqTerminalSettings = {
     }
     termsSavePrefs();
   },
+  settleVisible,
+  fitVisible,
 };
 
 restoreTerminals();

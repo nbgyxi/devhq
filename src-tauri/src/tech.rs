@@ -146,10 +146,16 @@ pub fn inspect(path: &Path) -> TechReport {
 
     // ---- Rust ----------------------------------------------------------
     for cargo in [path.join("Cargo.toml"), path.join("src-tauri/Cargo.toml")] {
-        let Ok(text) = std::fs::read_to_string(&cargo) else { continue };
+        let Ok(text) = std::fs::read_to_string(&cargo) else {
+            continue;
+        };
         let edition = toml_value(&text, "package", "edition").unwrap_or_default();
         let rust_version = toml_value(&text, "package", "rust-version").unwrap_or_default();
-        let shown = if rust_version.is_empty() { edition } else { rust_version };
+        let shown = if rust_version.is_empty() {
+            edition
+        } else {
+            rust_version
+        };
         push(&mut r, "Rust", &shown, "lang");
         if r.version.is_empty() {
             r.version = toml_value(&text, "package", "version").unwrap_or_default();
@@ -277,11 +283,18 @@ fn read_json(path: &Path) -> Option<serde_json::Value> {
 }
 
 fn str_of(v: &serde_json::Value, key: &str) -> String {
-    v.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string()
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn engine_node(pkg: &serde_json::Value, path: &Path) -> String {
-    if let Some(v) = pkg.get("engines").and_then(|e| e.get("node")).and_then(|n| n.as_str()) {
+    if let Some(v) = pkg
+        .get("engines")
+        .and_then(|e| e.get("node"))
+        .and_then(|n| n.as_str())
+    {
         return v.to_string();
     }
     std::fs::read_to_string(path.join(".nvmrc"))
@@ -303,7 +316,9 @@ fn toml_value(text: &str, section: &str, key: &str) -> Option<String> {
         if !in_section {
             continue;
         }
-        let Some(rest) = line.strip_prefix(key) else { continue };
+        let Some(rest) = line.strip_prefix(key) else {
+            continue;
+        };
         let rest = rest.trim_start();
         if let Some(v) = rest.strip_prefix('=') {
             return Some(v.trim().trim_matches('"').to_string());
@@ -325,9 +340,13 @@ fn toml_dep_version(text: &str, dep: &str) -> Option<String> {
         if !in_deps {
             continue;
         }
-        let Some(rest) = line.strip_prefix(dep) else { continue };
+        let Some(rest) = line.strip_prefix(dep) else {
+            continue;
+        };
         let rest = rest.trim_start();
-        let Some(rest) = rest.strip_prefix('=') else { continue };
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
         let rest = rest.trim();
         if rest.starts_with('{') {
             return Some(between(rest, "version = \"", "\"").unwrap_or_default());
@@ -368,11 +387,15 @@ fn cloud_endpoint_hints(root: &Path) -> (bool, bool) {
     let mut dirs = vec![(root.to_path_buf(), 0usize)];
 
     while let Some((dir, depth)) = dirs.pop() {
-        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_lowercase();
-            let Ok(kind) = entry.file_type() else { continue };
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
             if kind.is_dir() {
                 if depth < 3 && !cloud_scan_ignored_dir(&name) {
                     dirs.push((path, depth + 1));
@@ -386,7 +409,9 @@ fn cloud_endpoint_hints(root: &Path) -> (bool, bool) {
             if meta.len() > MAX_BYTES {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(path) else { continue };
+            let Ok(text) = std::fs::read_to_string(path) else {
+                continue;
+            };
             read += 1;
             let hints = clouds_in_text(&text);
             found.0 |= hints.0;
@@ -402,8 +427,19 @@ fn cloud_endpoint_hints(root: &Path) -> (bool, bool) {
 fn cloud_scan_ignored_dir(name: &str) -> bool {
     matches!(
         name,
-        ".git" | "node_modules" | "target" | "dist" | "build" | "out" | "vendor"
-            | "coverage" | ".next" | ".nuxt" | ".cache" | "bin" | "obj"
+        ".git"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "build"
+            | "out"
+            | "vendor"
+            | "coverage"
+            | ".next"
+            | ".nuxt"
+            | ".cache"
+            | "bin"
+            | "obj"
     )
 }
 
@@ -415,24 +451,54 @@ fn cloud_scan_file(path: &Path, name: &str) -> bool {
         return true;
     }
     matches!(
-        path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase()).as_deref(),
-        Some("json" | "yaml" | "yml" | "toml" | "config" | "xml" | "properties" | "js" | "jsx"
-            | "ts" | "tsx" | "py" | "go" | "rs" | "cs" | "java" | "kt")
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref(),
+        Some(
+            "json"
+                | "yaml"
+                | "yml"
+                | "toml"
+                | "config"
+                | "xml"
+                | "properties"
+                | "js"
+                | "jsx"
+                | "ts"
+                | "tsx"
+                | "py"
+                | "go"
+                | "rs"
+                | "cs"
+                | "java"
+                | "kt"
+        )
     )
 }
 
 fn clouds_in_text(text: &str) -> (bool, bool) {
     let text = text.to_ascii_lowercase();
     let aws = [
-        ".amazonaws.com", ".amazonaws.com.cn", ".cloudfront.net", ".awsapprunner.com",
+        ".amazonaws.com",
+        ".amazonaws.com.cn",
+        ".cloudfront.net",
+        ".awsapprunner.com",
     ]
     .iter()
     .any(|pattern| text.contains(pattern));
     let azure = [
-        ".azurewebsites.net", ".blob.core.windows.net", ".dfs.core.windows.net",
-        ".database.windows.net", ".documents.azure.com", ".vault.azure.net",
-        ".servicebus.windows.net", ".azureedge.net", ".azurecontainerapps.io",
-        ".cognitiveservices.azure.com", ".openai.azure.com",
+        ".azurewebsites.net",
+        ".blob.core.windows.net",
+        ".dfs.core.windows.net",
+        ".database.windows.net",
+        ".documents.azure.com",
+        ".vault.azure.net",
+        ".servicebus.windows.net",
+        ".azureedge.net",
+        ".azurecontainerapps.io",
+        ".cognitiveservices.azure.com",
+        ".openai.azure.com",
     ]
     .iter()
     .any(|pattern| text.contains(pattern));
@@ -445,16 +511,27 @@ mod cloud_tests {
 
     #[test]
     fn recognizes_cloud_endpoint_hosts() {
-        assert_eq!(clouds_in_text("https://bucket.s3.eu-west-1.amazonaws.com/key"), (true, false));
-        assert_eq!(clouds_in_text("Server=tcp:demo.database.windows.net"), (false, true));
         assert_eq!(
-            clouds_in_text("https://x.execute-api.us-east-1.amazonaws.com https://demo.vault.azure.net"),
+            clouds_in_text("https://bucket.s3.eu-west-1.amazonaws.com/key"),
+            (true, false)
+        );
+        assert_eq!(
+            clouds_in_text("Server=tcp:demo.database.windows.net"),
+            (false, true)
+        );
+        assert_eq!(
+            clouds_in_text(
+                "https://x.execute-api.us-east-1.amazonaws.com https://demo.vault.azure.net"
+            ),
             (true, true)
         );
     }
 
     #[test]
     fn ignores_provider_names_without_endpoints() {
-        assert_eq!(clouds_in_text("Deploy this example to AWS or Azure."), (false, false));
+        assert_eq!(
+            clouds_in_text("Deploy this example to AWS or Azure."),
+            (false, false)
+        );
     }
 }

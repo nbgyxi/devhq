@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<style>
+@font-face{font-family:'Material Symbols Rounded';font-style:normal;font-weight:400 700;font-display:block;src:url('fonts/material-symbols-rounded.woff2') format('woff2')}
+body{margin:0;background:#08090c;color:#e8eaf0;font-family:'Segoe UI Variable','Segoe UI',system-ui,sans-serif;font-size:14px;-webkit-font-smoothing:antialiased}
+.ms{font-family:'Material Symbols Rounded';font-weight:400;font-style:normal;line-height:1;letter-spacing:normal;text-transform:none;white-space:nowrap;direction:ltr;font-feature-settings:'liga';-webkit-font-smoothing:antialiased;user-select:none}
+.mono{font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,monospace}
+a{color:#6d8bff;text-decoration:none}a:hover{color:#8ea5ff}
+button{background:none;border:none;color:inherit;font:inherit;cursor:pointer;text-align:left}
+input,textarea{background:none;border:none;outline:none;color:inherit;font:inherit}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:8px;border:2px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.26);background-clip:content-box}
+::-webkit-scrollbar-track{background:transparent}
+@keyframes livepulse{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes caretblink{0%,49%{opacity:1}50%,100%{opacity:0}}
+@keyframes popin{from{opacity:0;transform:translateY(-8px) scale(.985)}to{opacity:1;transform:none}}
+</style>
+</helmet>
+
+<div style="display:flex;flex-direction:column;gap:34px;padding:28px;align-items:flex-start">
+
+<div style="display:flex;flex-direction:column;gap:12px">
+  <div style="display:flex;align-items:center;gap:12px">
+    <span style="font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#6b7285">Hotkey insert flow — click through the four steps</span>
+    <div style="display:inline-flex;overflow:hidden;border:1px solid #272b38;border-radius:8px;background:#121319">
+      <sc-for list="{{ steps }}" as="st" hint-placeholder-count="4">
+        <button onClick="{{ st.onPick }}" style="{{ st.style }}"><span class="mono" style="opacity:.6">{{ st.num }}</span>{{ st.label }}</button>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="position:relative;width:1440px;height:900px;border:1px solid #272b38;border-radius:8px;overflow:hidden;box-shadow:0 30px 90px rgba(0,0,0,.6);background:radial-gradient(120% 90% at 18% 8%,#1d2233 0%,#0f1117 46%,#0a0b0f 100%)">
+
+    <div style="position:absolute;left:52px;top:44px;right:52px;bottom:96px;display:flex;flex-direction:column;border:1px solid #2b2f3d;border-radius:9px;background:#0f1116;box-shadow:0 24px 60px rgba(0,0,0,.55);overflow:hidden">
+      <div style="flex:0 0 auto;height:34px;display:flex;align-items:center;gap:9px;padding:0 12px;background:#171922;border-bottom:1px solid #272b38">
+        <span class="ms" style="font-size:15px;color:#3ad6c8">database</span>
+        <span style="font-size:12px;font-weight:600;color:#e8eaf0">atlas@db-local — Query Editor</span>
+        <span class="mono" style="font-size:11px;color:#6b7285">{{ targetNote }}</span>
+        <span style="flex:1"></span>
+        <span class="ms" style="font-size:15px;color:#6b7285">remove</span>
+        <span class="ms" style="font-size:15px;color:#6b7285">crop_square</span>
+        <span class="ms" style="font-size:15px;color:#6b7285">close</span>
+      </div>
+      <div style="flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #1b1e28;background:#121319">
+        <span class="ms" style="font-size:16px;color:#3fca7f">play_arrow</span>
+        <span class="ms" style="font-size:16px;color:#6b7285">stop</span>
+        <span class="ms" style="font-size:16px;color:#6b7285">save</span>
+        <span style="width:1px;height:16px;background:#272b38"></span>
+        <span class="mono" style="font-size:11px;color:#6b7285">public · session 4812 · idle</span>
+      </div>
+      <div style="flex:1;min-height:0;display:flex;overflow:hidden">
+        <div class="mono" style="flex:0 0 46px;padding:12px 0;display:flex;flex-direction:column;align-items:flex-end;gap:0;font-size:11px;color:#2f3446;background:#0d0e13;border-right:1px solid #1b1e28">
+          <sc-for list="{{ editorGutter }}" as="g" hint-placeholder-count="14"><span style="padding:0 10px;line-height:1.75">{{ g.n }}</span></sc-for>
+        </div>
+        <div style="flex:1;min-width:0;padding:12px 14px;overflow:auto">
+          <sc-for list="{{ editorLines }}" as="l" hint-placeholder-count="14">
+            <div class="mono" style="{{ l.style }}">{{ l.text }}<span style="{{ l.caret }}"></span></div>
+          </sc-for>
+        </div>
+      </div>
+      <div style="flex:0 0 auto;height:30px;display:flex;align-items:center;gap:12px;padding:0 12px;border-top:1px solid #1b1e28;background:#121319">
+        <span class="mono" style="font-size:10.5px;color:#6b7285">{{ targetCaret }}</span>
+        <span style="flex:1"></span>
+        <span class="mono" style="font-size:10.5px;color:#4d5468">utf-8 · lf · sql</span>
+      </div>
+    </div>
+
+    <sc-if value="{{ showHotkeyHint }}" hint-placeholder-val="{{ true }}">
+      <button onClick="{{ onFireHotkey }}" style="position:absolute;left:50%;top:104px;transform:translateX(-50%);display:flex;align-items:center;gap:12px;padding:12px 18px;border-radius:12px;border:1px solid #394060;background:rgba(12,13,17,.9);backdrop-filter:blur(18px);box-shadow:0 18px 50px rgba(0,0,0,.6)">
+        <span class="ms" style="font-size:19px;color:#6d8bff">keyboard_command_key</span>
+        <span style="display:flex;flex-direction:column;gap:3px">
+          <span style="font-size:12.5px;font-weight:650;color:#e8eaf0">Caret is in another app — press the global hotkey</span>
+          <span class="mono" style="font-size:11px;color:#6b7285">Ctrl + Shift + V   ·   RegisterHotKey, works over any focused window</span>
+        </span>
+        <span class="mono" style="padding:4px 9px;border-radius:7px;border:1px solid rgba(109,139,255,.4);background:rgba(109,139,255,.14);font-size:11px;font-weight:700;color:#8ea5ff">fire it</span>
+      </button>
+    </sc-if>
+
+    <sc-if value="{{ showPalette }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;inset:0;background:rgba(5,6,9,.52);backdrop-filter:blur(2px)"></div>
+      <div style="position:absolute;left:50%;top:132px;transform:translateX(-50%);width:720px;display:flex;flex-direction:column;border:1px solid #394060;border-radius:14px;background:rgba(15,17,22,.97);box-shadow:0 40px 110px rgba(0,0,0,.7);overflow:hidden;animation:popin .16s ease-out">
+        <div style="flex:0 0 auto;display:flex;align-items:center;gap:11px;padding:14px 16px;border-bottom:1px solid #272b38">
+          <span class="ms" style="font-size:20px;color:#6d8bff">bolt</span>
+          <input value="{{ paletteQuery }}" onChange="{{ onPaletteQuery }}" placeholder="type a snippet name, tag, or prefix" spellcheck="false" style="flex:1;min-width:0;font-size:15px" />
+          <span class="mono" style="font-size:10.5px;color:#4d5468">{{ paletteHint }}</span>
+        </div>
+        <div style="max-height:380px;overflow:auto">
+          <sc-for list="{{ paletteRows }}" as="p" hint-placeholder-count="5">
+            <button onClick="{{ p.onPick }}" style="{{ p.style }}">
+              <span class="ms" style="flex:0 0 auto;font-size:17px;margin-top:2px;{{ p.iconTone }}">{{ p.icon }}</span>
+              <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
+                <span style="display:flex;align-items:center;gap:8px">
+                  <span style="font-size:13px;font-weight:600;color:#e8eaf0">{{ p.title }}</span>
+                  <span class="mono" style="{{ p.paramStyle }}">{{ p.paramLabel }}</span>
+                </span>
+                <span class="mono" style="font-size:11px;color:#6b7285;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ p.preview }}</span>
+              </span>
+              <span style="flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+                <span class="mono" style="font-size:10.5px;color:#4d5468">{{ p.prefix }}</span>
+                <span class="mono" style="font-size:10px;color:#3a4055">{{ p.used }}</span>
+              </span>
+            </button>
+          </sc-for>
+        </div>
+        <div style="flex:0 0 auto;display:flex;align-items:center;gap:14px;padding:9px 14px;border-top:1px solid #272b38;background:#14161d">
+          <span class="mono" style="font-size:10.5px;color:#6b7285">↑↓ move   ·   Enter fill parameters   ·   Ctrl+Enter insert with last values   ·   Esc dismiss</span>
+          <span style="flex:1"></span>
+          <span class="mono" style="font-size:10.5px;color:#4d5468">offline · vault.db</span>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ showParams }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;inset:0;background:rgba(5,6,9,.6);backdrop-filter:blur(3px)"></div>
+      <div style="position:absolute;left:50%;top:78px;transform:translateX(-50%);width:860px;display:flex;flex-direction:column;border:1px solid #394060;border-radius:14px;background:rgba(15,17,22,.98);box-shadow:0 44px 120px rgba(0,0,0,.75);overflow:hidden;animation:popin .16s ease-out">
+
+        <div style="flex:0 0 auto;display:flex;align-items:center;gap:11px;padding:14px 16px;border-bottom:1px solid #272b38;background:#171922">
+          <span class="ms" style="font-size:19px;color:#3ad6c8">tune</span>
+          <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+            <span style="font-size:14px;font-weight:650;color:#e8eaf0">{{ snippetTitle }}</span>
+            <span class="mono" style="font-size:11px;color:#6b7285">{{ paramSubhead }}</span>
+          </span>
+          <span class="mono" style="{{ readyStyle }}">{{ readyLabel }}</span>
+          <span class="ms" style="font-size:17px;color:#6b7285">close</span>
+        </div>
+
+        <div style="flex:1;min-height:0;display:grid;grid-template-columns:392px 1fr">
+          <div style="display:flex;flex-direction:column;gap:0;border-right:1px solid #272b38;max-height:452px;overflow:auto">
+            <sc-for list="{{ params }}" as="p" hint-placeholder-count="4">
+              <div style="{{ p.wrapStyle }}">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span class="mono" style="flex:0 0 auto;width:16px;height:16px;display:grid;place-items:center;border-radius:4px;font-size:9.5px;font-weight:700;{{ p.tabStyle }}">{{ p.tab }}</span>
+                  <span class="mono" style="flex:1;min-width:0;font-size:11.5px;font-weight:600;color:#e8eaf0">{{ p.name }}</span>
+                  <span class="mono" style="{{ p.kindStyle }}">{{ p.kind }}</span>
+                </div>
+                <span style="font-size:11px;color:#6b7285;line-height:1.45">{{ p.hint }}</span>
+
+                <sc-if value="{{ p.isText }}" hint-placeholder-val="{{ true }}">
+                  <input value="{{ p.value }}" onChange="{{ p.onChange }}" placeholder="{{ p.placeholder }}" spellcheck="false" class="mono" style="{{ p.inputStyle }}" />
+                  <sc-if value="{{ p.hasRecents }}" hint-placeholder-val="{{ false }}">
+                    <span style="display:flex;flex-wrap:wrap;gap:6px">
+                      <sc-for list="{{ p.recents }}" as="r" hint-placeholder-count="3">
+                        <button onClick="{{ r.onPick }}" class="mono" style="{{ r.style }}">{{ r.label }}</button>
+                      </sc-for>
+                    </span>
+                  </sc-if>
+                </sc-if>
+
+                <sc-if value="{{ p.isChoice }}" hint-placeholder-val="{{ false }}">
+                  <span style="display:flex;flex-wrap:wrap;gap:6px">
+                    <sc-for list="{{ p.choices }}" as="c" hint-placeholder-count="3">
+                      <button onClick="{{ c.onPick }}" class="mono" style="{{ c.style }}">{{ c.label }}</button>
+                    </sc-for>
+                  </span>
+                </sc-if>
+
+                <sc-if value="{{ p.isMulti }}" hint-placeholder-val="{{ false }}">
+                  <textarea value="{{ p.value }}" onChange="{{ p.onChange }}" placeholder="{{ p.placeholder }}" spellcheck="false" class="mono" style="{{ p.areaStyle }}"></textarea>
+                </sc-if>
+
+                <sc-if value="{{ p.showError }}" hint-placeholder-val="{{ false }}">
+                  <span style="display:flex;align-items:center;gap:6px;font-size:10.5px;color:#f2545b">
+                    <span class="ms" style="font-size:14px">error</span>{{ p.error }}
+                  </span>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="display:flex;flex-direction:column;min-width:0;background:#0c0d11">
+            <div style="flex:0 0 auto;display:flex;align-items:center;gap:9px;padding:10px 13px;border-bottom:1px solid #1b1e28;background:#0f1116">
+              <span class="ms" style="font-size:15px;color:#6d8bff">visibility</span>
+              <span style="flex:1;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#9aa1b4">What gets typed</span>
+              <span class="mono" style="font-size:10px;color:#4d5468">{{ previewMeta }}</span>
+            </div>
+            <div style="flex:1;min-height:0;overflow:auto;padding:12px 13px">
+              <sc-for list="{{ previewLines }}" as="l" hint-placeholder-count="9">
+                <div class="mono" style="font-size:12px;line-height:1.72;white-space:pre-wrap;overflow-wrap:anywhere"><sc-for list="{{ l.segs }}" as="sg" hint-placeholder-count="3"><span style="{{ sg.style }}">{{ sg.text }}</span></sc-for></div>
+              </sc-for>
+            </div>
+            <div style="flex:0 0 auto;display:flex;flex-direction:column;gap:6px;padding:10px 13px;border-top:1px solid #1b1e28;background:#0f1116">
+              <span style="display:flex;align-items:center;gap:8px">
+                <span class="ms" style="font-size:15px;color:#f2b544">target</span>
+                <span class="mono" style="flex:1;min-width:0;font-size:10.5px;color:#9aa1b4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ targetLine }}</span>
+              </span>
+              <span style="display:flex;align-items:center;gap:8px">
+                <button onClick="{{ onToggleTransform }}" style="{{ transformStyle }}"><span class="ms" style="font-size:14px">{{ transformIcon }}</span>{{ transformLabel }}</button>
+                <button onClick="{{ onToggleRemember }}" style="{{ rememberStyle }}"><span class="ms" style="font-size:14px">{{ rememberIcon }}</span>Remember these values</button>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div style="flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:11px 14px;border-top:1px solid #272b38;background:#14161d">
+          <span class="mono" style="font-size:10.5px;color:#6b7285">Tab next field · Shift+Tab back · Enter insert · Esc cancel</span>
+          <span style="flex:1"></span>
+          <button onClick="{{ onCancel }}" style="height:32px;padding:0 14px;display:inline-flex;align-items:center;gap:6px;border-radius:8px;border:1px solid #272b38;background:#171922;font-size:12px;font-weight:600;color:#9aa1b4">Cancel</button>
+          <button onClick="{{ onCopyOnly }}" style="height:32px;padding:0 14px;display:inline-flex;align-items:center;gap:6px;border-radius:8px;border:1px solid #394060;background:#171922;font-size:12px;font-weight:600;color:#e8eaf0"><span class="ms" style="font-size:15px">content_copy</span>Clipboard only</button>
+          <button onClick="{{ onInsert }}" style="{{ insertStyle }}"><span class="ms" style="font-size:16px">keyboard_return</span>{{ insertLabel }}</button>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ showToast }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;right:64px;bottom:120px;display:flex;align-items:center;gap:11px;padding:12px 15px;border-radius:11px;border:1px solid rgba(63,202,127,.4);background:rgba(14,26,20,.96);box-shadow:0 20px 50px rgba(0,0,0,.6);animation:popin .16s ease-out">
+        <span class="ms" style="font-size:19px;color:#3fca7f">task_alt</span>
+        <span style="display:flex;flex-direction:column;gap:2px">
+          <span style="font-size:12.5px;font-weight:650;color:#e8eaf0">{{ toastTitle }}</span>
+          <span class="mono" style="font-size:10.5px;color:#8b9aa4">{{ toastNote }}</span>
+        </span>
+      </div>
+    </sc-if>
+
+    <div style="position:absolute;left:0;right:0;bottom:0;height:48px;display:flex;align-items:center;gap:14px;padding:0 18px;background:rgba(12,13,17,.86);backdrop-filter:blur(20px);border-top:1px solid #232733">
+      <span class="ms" style="font-size:20px;color:#9aa1b4">grid_view</span>
+      <span class="ms" style="font-size:20px;color:#9aa1b4">search</span>
+      <span style="width:1px;height:20px;background:#272b38"></span>
+      <div style="display:flex;align-items:center;gap:7px;padding:5px 11px;border-radius:8px;background:rgba(109,139,255,.14);border:1px solid rgba(109,139,255,.3)">
+        <span class="ms" style="font-size:16px;color:#3ad6c8">database</span>
+        <span style="font-size:11.5px;font-weight:600;color:#e8eaf0">Query Editor</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:7px;padding:5px 11px;border-radius:8px">
+        <span class="ms" style="font-size:16px;color:#9aa1b4">terminal</span>
+        <span style="font-size:11.5px;color:#9aa1b4">Terminal</span>
+      </div>
+      <span style="flex:1"></span>
+      <div style="display:flex;align-items:center;gap:8px;padding:5px 10px;border-radius:8px;{{ trayStyle }}">
+        <img src="devhq-icon.png" alt="" style="width:16px;height:16px;border-radius:4px" />
+        <span style="font-size:11.5px;font-weight:600;color:#e8eaf0">Snippets</span>
+        <span class="mono" style="font-size:10.5px;color:#6b7285">{{ trayNote }}</span>
+      </div>
+      <span class="mono" style="font-size:11px;color:#6b7285">14:22  ·  Fri 31 Aug</span>
+    </div>
+  </div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:12px">
+  <span style="font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#6b7285">The vault itself — where snippets and their parameters are authored</span>
+
+  <div style="position:relative;width:1440px;height:900px;display:flex;flex-direction:column;background:linear-gradient(150deg,#101219 0%,#0c0d11 42%,#0d0f16 100%);border:1px solid #272b38;border-radius:8px;overflow:hidden;box-shadow:0 30px 90px rgba(0,0,0,.6)">
+
+    <div style="height:38px;flex:0 0 auto;display:flex;align-items:center;gap:10px;padding-left:12px;background:rgba(18,19,25,.82);border-bottom:1px solid #272b38;user-select:none">
+      <div style="flex:1;height:100%;display:flex;align-items:center;gap:9px">
+        <div style="display:flex;align-items:center;gap:8px;font-weight:700;letter-spacing:.2px">
+          <img src="devhq-icon.png" alt="" style="width:18px;height:18px;border-radius:5px" />
+          <span style="font-size:13px">DevHQ</span>
+          <span style="font-weight:500;color:#6b7285;font-size:12px">Snippets · offline vault, one hotkey away</span>
+        </div>
+      </div>
+      <div style="display:flex;height:100%">
+        <div style="width:44px;height:100%;display:grid;place-items:center;color:#9aa1b4"><span class="ms" style="font-size:17px">light_mode</span></div>
+        <div style="width:44px;height:100%;display:grid;place-items:center;color:#9aa1b4"><span class="ms" style="font-size:17px">settings</span></div>
+        <div style="width:44px;height:100%;display:grid;place-items:center;color:#9aa1b4"><span class="ms" style="font-size:17px">remove</span></div>
+        <div style="width:44px;height:100%;display:grid;place-items:center;color:#9aa1b4"><span class="ms" style="font-size:17px">crop_square</span></div>
+        <div style="width:44px;height:100%;display:grid;place-items:center;color:#9aa1b4"><span class="ms" style="font-size:17px">close</span></div>
+      </div>
+    </div>
+
+    <div style="flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid #272b38;background:rgba(18,19,25,.72)">
+      <div style="height:34px;display:inline-flex;overflow:hidden;flex:0 0 auto;border:1px solid #272b38;border-radius:9px;background:#171922;user-select:none">
+        <div style="display:flex;align-items:center;gap:6px;padding:0 11px;color:#9aa1b4;font-size:12.5px;font-weight:550"><span class="ms" style="font-size:16px">dashboard</span>Overview</div>
+        <div style="display:flex;align-items:center;gap:6px;padding:0 11px;border-left:1px solid #272b38;color:#9aa1b4;font-size:12.5px;font-weight:550"><span class="ms" style="font-size:16px">handyman</span>Tools</div>
+        <div style="display:flex;align-items:center;gap:6px;padding:0 11px;border-left:1px solid #272b38;color:#9aa1b4;font-size:12.5px;font-weight:550"><span class="ms" style="font-size:16px">content_paste_search</span>Clipboard</div>
+        <div style="display:flex;align-items:center;gap:6px;padding:0 11px;border-left:1px solid #272b38;color:#e8eaf0;background:rgba(109,139,255,.18);font-size:12.5px;font-weight:550"><span class="ms" style="font-size:16px">bolt</span>Snippets</div>
+      </div>
+
+      <div style="flex:1;min-width:0;display:flex;align-items:center;gap:9px;height:34px;padding:0 11px;border:1px solid #394060;border-radius:9px;background:#0c0d11">
+        <span class="ms" style="font-size:17px;color:#6d8bff">search</span>
+        <input value="{{ vaultQuery }}" onChange="{{ onVaultQuery }}" placeholder="search bodies, tags, prefixes — same index the hotkey palette uses" spellcheck="false" style="flex:1;min-width:0;font-size:13px" />
+        <span class="mono" style="font-size:10.5px;color:#4d5468">{{ vaultHint }}</span>
+      </div>
+      <button onClick="{{ onFireHotkey }}" style="display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 12px;border-radius:9px;border:1px solid rgba(109,139,255,.45);background:rgba(109,139,255,.14);font-size:12px;font-weight:700;color:#8ea5ff"><span class="ms" style="font-size:16px">keyboard_command_key</span>Ctrl+Shift+V</button>
+      <button onClick="{{ onNewSnippet }}" style="display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 12px;border-radius:9px;background:#6d8bff;font-size:12px;font-weight:700;color:#0b0d14"><span class="ms" style="font-size:16px">add</span>New</button>
+    </div>
+
+    <div style="flex:1;min-height:0;display:flex;gap:12px;padding:13px 16px">
+
+      <div style="flex:0 0 232px;display:flex;flex-direction:column;gap:11px">
+        <div style="flex:0 0 auto;display:flex;flex-direction:column;border:1px solid #272b38;border-radius:11px;background:#121319;overflow:hidden">
+          <div style="flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #272b38;background:#171922">
+            <span class="ms" style="font-size:15px;color:#6d8bff">folder</span>
+            <span style="flex:1;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#9aa1b4">Collections</span>
+          </div>
+          <sc-for list="{{ collections }}" as="c" hint-placeholder-count="5">
+            <button onClick="{{ c.onPick }}" style="{{ c.style }}">
+              <span class="ms" style="flex:0 0 auto;font-size:16px;{{ c.iconTone }}">{{ c.icon }}</span>
+              <span style="flex:1;min-width:0;font-size:12px;font-weight:600;color:#e8eaf0">{{ c.label }}</span>
+              <span class="mono" style="flex:0 0 auto;font-size:10.5px;color:#6b7285">{{ c.count }}</span>
+            </button>
+          </sc-for>
+        </div>
+
+        <div style="flex:0 0 auto;display:flex;flex-direction:column;border:1px solid #272b38;border-radius:11px;background:#121319;overflow:hidden">
+          <div style="flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #272b38;background:#171922">
+            <span class="ms" style="font-size:15px;color:#3ad6c8">keyboard_command_key</span>
+            <span style="flex:1;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#9aa1b4">Activation</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:9px;padding:11px 12px">
+            <span style="display:flex;flex-direction:column;gap:4px">
+              <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#4d5468">Global hotkey</span>
+              <span class="mono" style="padding:6px 9px;border-radius:7px;border:1px solid #394060;background:#0c0d11;font-size:12px;color:#e8eaf0">Ctrl + Shift + V</span>
+            </span>
+            <span style="display:flex;flex-direction:column;gap:4px">
+              <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#4d5468">Inline trigger</span>
+              <span class="mono" style="padding:6px 9px;border-radius:7px;border:1px solid #272b38;background:#0c0d11;font-size:12px;color:#e8eaf0">;; + prefix</span>
+            </span>
+            <span class="mono" style="font-size:10px;line-height:1.5;color:#6b7285">RegisterHotKey(hwnd, 1, MOD_CONTROL | MOD_SHIFT, 'V') — captured before the focused app sees it</span>
+          </div>
+        </div>
+
+        <div style="flex:1;min-height:0;display:flex;flex-direction:column;border:1px solid #272b38;border-radius:11px;background:#121319;overflow:hidden">
+          <div style="flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #272b38;background:#171922">
+            <span class="ms" style="font-size:15px;color:#b48bff">sell</span>
+            <span style="flex:1;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#9aa1b4">Tags</span>
+          </div>
+          <div style="flex:1;min-height:0;overflow:auto;display:flex;flex-wrap:wrap;gap:6px;padding:11px">
+            <sc-for list="{{ tags }}" as="t" hint-placeholder-count="8">
+              <span class="mono" style="{{ t.style }}">{{ t.label }}</span>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+
+      <div style="flex:0 0 396px;display:flex;flex-direction:column;border:1px solid #272b38;border-radius:11px;background:#121319;overflow:hidden">
+        <div style="flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #272b38;background:#171922">
+          <span style="flex:1;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#9aa1b4">{{ listTitle }}</span>
+          <span class="mono" style="font-size:10.5px;color:#6b7285">{{ listNote }}</span>
+        </div>
+        <div style="flex:1;min-height:0;overflow:auto">
+          <sc-for list="{{ vaultRows }}" as="v" hint-placeholder-count="8">
+            <button onClick="{{ v.onPick }}" style="{{ v.rowStyle }}">
+              <span class="ms" style="flex:0 0 20px;font-size:16px;margin-top:2px;{{ v.iconTone }}">{{ v.icon }}</span>
+              <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
+                <span style="font-size:12.5px;font-weight:600;color:#e8eaf0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ v.title }}</span>
+                <span class="mono" style="font-size:11px;color:#6b7285;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ v.preview }}</span>
+                <span style="display:flex;align-items:center;gap:8px">
+                  <span class="mono" style="font-size:10px;color:#4d5468">{{ v.prefix }}</span>
+                  <span class="mono" style="{{ v.paramStyle }}">{{ v.paramLabel }}</span>
+                  <span class="mono" style="font-size:10px;color:#3a4055">{{ v.used }}</span>
+                </span>
+              </span>
+            </button>
+          </sc-for>
+        </div>
+        <div style="flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:9px 12px;border-top:1px solid #272b38;background:#14161d">
+          <span class="ms" style="font-size:14px;color:#6b7285">lock</span>
+          <span class="mono" style="flex:1;font-size:10.5px;color:#6b7285">%LOCALAPPDATA%\DevHQ\vault.db · no sync, no account</span>
+        </div>
+      </div>
+
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column;border:1px solid #272b38;border-radius:11px;background:#121319;overflow:hidden">
+        <div style="flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #272b38;background:#171922">
+          <span class="ms" style="font-size:16px;color:#3ad6c8">edit_note</span>
+          <span style="flex:1;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#9aa1b4">Snippet</span>
+          <span class="mono" style="font-size:10.5px;color:#4d5468">{{ editorMeta }}</span>
+        </div>
+
+        <div style="flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:12px;padding:13px">
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <span style="font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#4d5468">Body</span>
+            <div class="mono" style="padding:12px 13px;border-radius:9px;border:1px solid #1b1e28;background:#0c0d11;font-size:12px;line-height:1.72;white-space:pre-wrap">
+              <sc-for list="{{ bodyLines }}" as="l" hint-placeholder-count="9"><div><sc-for list="{{ l.segs }}" as="sg" hint-placeholder-count="3"><span style="{{ sg.style }}">{{ sg.text }}</span></sc-for></div></sc-for>
+            </div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <span style="font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#4d5468">Parameters detected in the body</span>
+            <sc-for list="{{ paramSpecs }}" as="p" hint-placeholder-count="4">
+              <div style="display:flex;align-items:center;gap:10px;padding:9px 11px;border-bottom:1px solid #16181f">
+                <span class="mono" style="flex:0 0 118px;font-size:11.5px;font-weight:600;color:#8ea5ff">{{ p.name }}</span>
+                <span class="mono" style="flex:0 0 78px;font-size:10.5px;color:#b48bff">{{ p.kind }}</span>
+                <span style="flex:1;min-width:0;font-size:11px;color:#9aa1b4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ p.hint }}</span>
+                <span class="mono" style="flex:0 0 auto;font-size:10px;color:#4d5468">{{ p.def }}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <span style="font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#4d5468">Insert behaviour</span>
+            <div style="display:flex;flex-wrap:wrap;gap:7px">
+              <sc-for list="{{ behaviours }}" as="b" hint-placeholder-count="4">
+                <span class="mono" style="{{ b.style }}">{{ b.label }}</span>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+
+        <div style="flex:0 0 auto;display:flex;gap:8px;padding:11px 13px;border-top:1px solid #272b38;background:#14161d">
+          <button onClick="{{ onFireHotkey }}" style="flex:1;height:32px;display:inline-flex;align-items:center;justify-content:center;gap:6px;border-radius:8px;background:#6d8bff;font-size:12px;font-weight:700;color:#0b0d14"><span class="ms" style="font-size:16px">play_arrow</span>Test insert</button>
+          <button onClick="{{ onNoop }}" style="flex:0 0 auto;height:32px;padding:0 12px;display:inline-flex;align-items:center;gap:6px;border-radius:8px;border:1px solid #272b38;background:#171922;font-size:12px;font-weight:600;color:#9aa1b4"><span class="ms" style="font-size:15px">ios_share</span>Export .json</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex:0 0 auto;height:36px;display:flex;align-items:stretch;background:rgba(18,19,25,.85);border-top:1px solid #272b38">
+      <div style="flex:1;min-width:0;display:flex;align-items:center;gap:10px;padding:0 16px;color:#9aa1b4;font-size:12.5px;white-space:nowrap">
+        <span style="width:6px;height:6px;border-radius:50%;{{ statusDot }}"></span>
+        <span style="color:#e8eaf0">{{ statusText }}</span>
+        <span class="mono" style="font-size:11.5px;color:#6b7285;overflow:hidden;text-overflow:ellipsis">{{ statusDetail }}</span>
+      </div>
+      <div style="display:inline-flex;align-items:center;gap:7px;padding:0 12px;border-left:1px solid #272b38;color:#9aa1b4;font-size:12px;font-weight:600"><span class="ms" style="font-size:16px">bolt</span>{{ footerCount }}</div>
+      <div class="mono" style="display:inline-flex;align-items:center;padding:0 12px;border-left:1px solid #272b38;color:#6b7285;font-size:11.5px">0.15.0</div>
+      <div style="display:inline-flex;align-items:center;gap:7px;padding:0 16px;border-left:1px solid #272b38;color:#9aa1b4;font-size:12.5px;font-weight:600"><span class="ms" style="font-size:17px">terminal</span>Terminal</div>
+    </div>
+  </div>
+</div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1500,&quot;height&quot;:1900},&quot;accent&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#3fca7f&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;options&quot;:[&quot;#3fca7f&quot;,&quot;#6d8bff&quot;,&quot;#3ad6c8&quot;,&quot;#f2b544&quot;],&quot;section&quot;:&quot;Look&quot;}}">
+const SNIPPETS = [
+  {
+    id: "locks", title: "pg · what is blocking this table", prefix: ";;locks", coll: "SQL", icon: "database", tone: "#3ad6c8",
+    used: "used 41×", tags: ["sql", "postgres", "oncall"],
+    body: "-- {{note}}\nselect l.pid, a.state, a.wait_event, left(a.query, 80) as query\n  from pg_locks l\n  join pg_stat_activity a using (pid)\n where l.relation = '{{schema}}.{{table}}'::regclass\n   and a.state_change < now() - interval '{{age}}'\n order by a.backend_start\n limit {{limit}};",
+    params: [
+      { name: "schema", kind: "choice", hint: "Search path the table lives in.", choices: ["public", "atlas", "audit"], def: "public" },
+      { name: "table", kind: "text", hint: "Unqualified table name — resolved with ::regclass, so a typo fails loudly.", def: "runs", required: true, placeholder: "runs", recents: ["runs", "listeners", "migrations"] },
+      { name: "age", kind: "text", hint: "Postgres interval literal. Anything younger is treated as noise.", def: "5 seconds", placeholder: "5 seconds" },
+      { name: "limit", kind: "text", hint: "Row cap.", def: "50", placeholder: "50" },
+      { name: "note", kind: "multi", hint: "Free text — becomes the leading comment so the next person knows why you ran it.", def: "checking the 14:20 migration stall — INC-2184", placeholder: "why are you running this?" },
+    ],
+  },
+  { id: "portkill", title: "kill whatever owns a port", prefix: ";;killport", coll: "Shell", icon: "terminal", tone: "#f2b544", used: "used 88×", tags: ["shell", "windows"],
+    body: "$p = (Get-NetTCPConnection -LocalPort {{port}}).OwningProcess\nStop-Process -Id $p -Force",
+    params: [{ name: "port", kind: "text", hint: "TCP port.", def: "7071" }] },
+  { id: "curl", title: "curl with trace header + timing", prefix: ";;curl", coll: "Shell", icon: "swap_horiz", tone: "#8ea5ff", used: "used 34×", tags: ["shell", "http"],
+    body: "curl -sS -w '\\n%{time_total}s\\n' -H 'x-trace: {{trace}}' {{url}}",
+    params: [{ name: "trace", kind: "text", hint: "Trace id.", def: "8f14e45f" }, { name: "url", kind: "text", hint: "Target.", def: "https://devhq.local/v1/runs" }] },
+  { id: "guard", title: "C# · argument guard clause", prefix: ";;guard", coll: "C#", icon: "code", tone: "#b48bff", used: "used 62×", tags: ["csharp"],
+    body: "ArgumentNullException.ThrowIfNull({{arg}});",
+    params: [{ name: "arg", kind: "text", hint: "Parameter name.", def: "ports" }] },
+  { id: "docker", title: "compose · tail one service", prefix: ";;dtail", coll: "Shell", icon: "layers", tone: "#3fca7f", used: "used 27×", tags: ["docker", "shell"],
+    body: "docker compose logs -f --tail {{tail}} {{service}}",
+    params: [{ name: "tail", kind: "text", hint: "Lines of backlog.", def: "200" }, { name: "service", kind: "text", hint: "Service name.", def: "atlas-api" }] },
+  { id: "mig", title: "SQL · migration lock holder", prefix: ";;miglock", coll: "SQL", icon: "database", tone: "#3ad6c8", used: "used 19×", tags: ["sql", "postgres"],
+    body: "select * from pg_advisory_locks where objid = {{lockid}};",
+    params: [{ name: "lockid", kind: "text", hint: "Advisory lock id.", def: "84021" }] },
+];
+
+const EXISTING = [
+  "-- session opened 14:02",
+  "select count(*) from atlas.runs where started_at > now() - interval '1 day';",
+  "",
+];
+
+class Component extends DCLogic {
+  state = {
+    step: 0, paletteQuery: "locks", chosen: "locks", values: null,
+    transform: false, remember: true, vaultQuery: "", vaultSel: "locks", coll: "All",
+    inserted: "", toast: false,
+    status: "Hotkey registered", statusDetail: "Ctrl+Shift+V · 6 snippets indexed · vault.db 84 KB", statusKind: "go",
+  };
+
+  say(t, d, k) { this.setState({ status: t, statusDetail: d || "", statusKind: k || "go" }); }
+
+  snip(id) { return SNIPPETS.find(s => s.id === id) || SNIPPETS[0]; }
+
+  vals(id) {
+    if (this.state.values) return this.state.values;
+    const v = {};
+    this.snip(id).params.forEach(p => { v[p.name] = p.def ?? ""; });
+    return v;
+  }
+
+  segment(body, values, accent) {
+    return body.split("\n").map(line => {
+      const segs = [];
+      const re = /\{\{(\w+)\}\}/g;
+      let last = 0, m;
+      while ((m = re.exec(line))) {
+        if (m.index > last) segs.push({ text: line.slice(last, m.index), style: "color:#c9cee0" });
+        const filled = values ? values[m[1]] : null;
+        if (values) {
+          const empty = !String(filled || "").trim();
+          segs.push({
+            text: empty ? "⟨" + m[1] + "⟩" : String(filled),
+            style: empty
+              ? "color:#f2545b;background:rgba(242,84,91,.14);border-radius:4px;padding:0 3px"
+              : `color:#0b0d14;background:${accent};border-radius:4px;padding:0 4px;font-weight:700`,
+          });
+        } else {
+          segs.push({ text: "{{" + m[1] + "}}", style: "color:#b48bff;background:rgba(180,139,255,.14);border-radius:4px;padding:0 3px" });
+        }
+        last = m.index + m[0].length;
+      }
+      if (last < line.length) segs.push({ text: line.slice(last), style: "color:#c9cee0" });
+      if (!segs.length) segs.push({ text: " ", style: "color:#c9cee0" });
+      return { segs };
+    });
+  }
+
+  resolve(id, values) {
+    let out = this.snip(id).body.replace(/\{\{(\w+)\}\}/g, (_, k) => String(values[k] ?? ""));
+    if (this.state.transform) out = out.split("\n").map(l => l.trim()).filter(Boolean).join(" ");
+    return out;
+  }
+
+  renderVals() {
+    const s = this.state;
+    const accent = this.props.accent ?? "#3fca7f";
+    const step = s.step;
+    const snip = this.snip(s.chosen);
+    const values = this.vals(s.chosen);
+    const missing = snip.params.filter(p => p.required && !String(values[p.name] || "").trim());
+    const ready = missing.length === 0;
+
+    const setVal = (name, v) => this.setState(st => ({ values: { ...this.vals(st.chosen), [name]: v } }));
+
+    const insertedLines = s.inserted ? s.inserted.split("\n") : [];
+    const editorBody = [...EXISTING, ...insertedLines];
+
+    const q = s.paletteQuery.trim().toLowerCase();
+    const palette = SNIPPETS.filter(x => !q || (x.title + " " + x.prefix + " " + x.tags.join(" ") + " " + x.body).toLowerCase().includes(q));
+
+    const vq = s.vaultQuery.trim().toLowerCase();
+    const vaultList = SNIPPETS.filter(x => (s.coll === "All" || x.coll === s.coll) && (!vq || (x.title + " " + x.prefix + " " + x.body + " " + x.tags.join(" ")).toLowerCase().includes(vq)));
+    const vsel = this.snip(s.vaultSel);
+
+    const chip = (on, col) => `padding:3px 8px;border-radius:6px;font-size:10.5px;font-weight:600;${on ? `border:1px solid ${col}66;background:${col}22;color:${col}` : "border:1px solid #272b38;background:#0c0d11;color:#6b7285"}`;
+
+    return {
+      steps: ["Caret elsewhere", "Palette", "Fill parameters", "Inserted"].map((label, i) => ({
+        label, num: String(i + 1),
+        style: `display:inline-flex;align-items:center;gap:6px;padding:7px 11px;font-size:11.5px;font-weight:600;${i ? "border-left:1px solid #272b38;" : ""}${step === i ? "background:rgba(109,139,255,.18);color:#e8eaf0" : "color:#6b7285"}`,
+        onPick: () => this.setState({ step: i, toast: i === 3, inserted: i === 3 ? this.resolve(s.chosen, values) : "" }),
+      })),
+
+      showHotkeyHint: step === 0,
+      showPalette: step === 1,
+      showParams: step === 2,
+      showToast: step === 3 && s.toast,
+
+      onFireHotkey: () => { this.setState({ step: 1 }); this.say("Palette raised over the focused app", "WM_HOTKEY → overlay window, caret position remembered", "go"); },
+
+      targetNote: step === 3 ? "unsaved changes" : "no unsaved changes",
+      targetCaret: step === 3 ? `Ln ${editorBody.length}, Col ${(insertedLines[insertedLines.length - 1] || "").length + 1} · ${insertedLines.length} lines inserted` : "Ln 4, Col 1 · caret waiting",
+      editorGutter: editorBody.concat([""]).map((_, i) => ({ n: String(i + 1) })),
+      editorLines: editorBody.concat([""]).map((text, i, arr) => {
+        const isNew = s.inserted && i >= EXISTING.length && i < EXISTING.length + insertedLines.length;
+        return {
+          text: text || " ",
+          style: `font-size:12.5px;line-height:1.75;white-space:pre-wrap;color:${isNew ? "#e8eaf0" : "#8b93a7"};${isNew ? `background:${accent}1f;box-shadow:inset 2px 0 0 ${accent}` : ""}`,
+          caret: i === arr.length - 1 && step !== 3 ? "display:inline-block;width:1.5px;height:14px;vertical-align:-2px;background:#e8eaf0;animation:caretblink 1s step-end infinite" : "display:none",
+        };
+      }),
+
+      paletteQuery: s.paletteQuery,
+      onPaletteQuery: e => this.setState({ paletteQuery: e.target.value }),
+      paletteHint: `${palette.length} of ${SNIPPETS.length}`,
+      paletteRows: palette.map((x, i) => ({
+        title: x.title, preview: x.body.split("\n")[0], prefix: x.prefix, used: x.used,
+        icon: x.icon, iconTone: `color:${x.tone}`,
+        paramLabel: `${x.params.length} param${x.params.length === 1 ? "" : "s"}`,
+        paramStyle: `padding:2px 6px;border-radius:5px;font-size:9.5px;font-weight:700;border:1px solid rgba(180,139,255,.35);background:rgba(180,139,255,.12);color:#b48bff`,
+        style: `width:100%;display:flex;align-items:flex-start;gap:11px;padding:11px 14px;border-bottom:1px solid #1b1e28;${i === 0 ? "background:rgba(109,139,255,.14);box-shadow:inset 3px 0 0 #6d8bff" : ""}`,
+        onPick: () => { this.setState({ chosen: x.id, values: null, step: 2 }); this.say("Filling parameters", `${x.params.length} placeholders found in ${x.prefix}`, "warn"); },
+      })),
+
+      snippetTitle: snip.title,
+      paramSubhead: `${snip.prefix} · ${snip.params.length} parameters · values go in, nothing is executed`,
+      readyLabel: ready ? "ready to insert" : `${missing.length} required field empty`,
+      readyStyle: `padding:3px 8px;border-radius:6px;font-size:10.5px;font-weight:700;${ready ? `border:1px solid ${accent}66;background:${accent}1f;color:${accent}` : "border:1px solid rgba(242,84,91,.4);background:rgba(242,84,91,.12);color:#f2545b"}`,
+
+      params: snip.params.map((p, i) => {
+        const val = String(values[p.name] ?? "");
+        const bad = p.required && !val.trim();
+        return {
+          name: p.name, tab: String(i + 1),
+          hint: p.hint,
+          kind: p.kind === "choice" ? "choice" : p.kind === "multi" ? "multi-line" : "text",
+          kindStyle: `padding:2px 6px;border-radius:5px;font-size:9.5px;font-weight:700;border:1px solid #272b38;background:#0c0d11;color:${p.required ? "#f2b544" : "#6b7285"}`,
+          tabStyle: `${i === 0 ? `border:1px solid ${accent}66;background:${accent}22;color:${accent}` : "border:1px solid #272b38;background:#0c0d11;color:#4d5468"}`,
+          wrapStyle: `display:flex;flex-direction:column;gap:7px;padding:13px 14px;border-bottom:1px solid #1b1e28;${i === 0 ? "background:rgba(109,139,255,.05)" : ""}`,
+          isText: p.kind === "text", isChoice: p.kind === "choice", isMulti: p.kind === "multi",
+          value: val, placeholder: p.placeholder || "",
+          inputStyle: `height:32px;padding:0 10px;border-radius:8px;font-size:12.5px;color:#e8eaf0;background:#0c0d11;border:1px solid ${bad ? "#f2545b" : i === 0 ? "#394060" : "#272b38"}`,
+          areaStyle: `min-height:54px;resize:vertical;padding:8px 10px;border-radius:8px;font-size:12px;line-height:1.55;color:#e8eaf0;background:#0c0d11;border:1px solid #272b38`,
+          onChange: e => setVal(p.name, e.target.value),
+          hasRecents: !!p.recents,
+          recents: (p.recents || []).map(r => ({ label: r, style: chip(val === r, "#6d8bff"), onPick: () => setVal(p.name, r) })),
+          choices: (p.choices || []).map(c => ({ label: c, style: chip(val === c, accent), onPick: () => setVal(p.name, c) })),
+          showError: bad, error: `${p.name} is required — the placeholder would go in literally`,
+        };
+      }),
+
+      previewLines: this.segment(snip.body, values, accent),
+      previewMeta: `${this.resolve(s.chosen, values).length} chars · ${this.resolve(s.chosen, values).split("\n").length} lines`,
+      targetLine: "goes to: atlas@db-local — Query Editor · caret Ln 4, Col 1",
+
+      transformLabel: s.transform ? "One line" : "Keep line breaks",
+      transformIcon: s.transform ? "compress" : "format_align_left",
+      transformStyle: chip(s.transform, "#f2b544") + ";display:inline-flex;align-items:center;gap:5px;height:24px",
+      onToggleTransform: () => this.setState({ transform: !s.transform }),
+      rememberIcon: s.remember ? "check_box" : "check_box_outline_blank",
+      rememberStyle: chip(s.remember, "#6d8bff") + ";display:inline-flex;align-items:center;gap:5px;height:24px",
+      onToggleRemember: () => this.setState({ remember: !s.remember }),
+
+      insertLabel: ready ? "Insert" : "Fill required fields",
+      insertStyle: `height:32px;padding:0 16px;display:inline-flex;align-items:center;gap:7px;border-radius:8px;font-size:12.5px;font-weight:700;${ready ? `background:${accent};color:#0b0d14` : "border:1px solid #272b38;background:#171922;color:#4d5468"}`,
+      onInsert: () => {
+        if (!ready) { this.say("Cannot insert", `${missing.map(m => m.name).join(", ")} still empty`, "bad"); return; }
+        const text = this.resolve(s.chosen, values);
+        this.setState({ step: 3, inserted: text, toast: true });
+        setTimeout(() => this.setState({ toast: false }), 3200);
+        this.say("Typed into the previously focused window", `SetForegroundWindow → SendInput · ${snip.params.length} values substituted`, "go");
+      },
+      onCopyOnly: () => { this.say("Resolved text on the clipboard", "focus untouched — paste it wherever you like", "go"); },
+      onCancel: () => { this.setState({ step: 0, inserted: "", toast: false }); this.say("Dismissed", "focus handed straight back, nothing typed", "idle"); },
+
+      toastTitle: "Inserted into atlas@db-local",
+      toastNote: `${snip.params.length} values · ${s.remember ? "values remembered for next time" : "values discarded"} · Ctrl+Z undoes it in one step`,
+      trayStyle: step === 0 ? "" : `border:1px solid ${accent}55;background:${accent}1a`,
+      trayNote: step === 0 ? "idle" : step === 3 ? "just inserted" : "listening",
+
+      vaultQuery: s.vaultQuery,
+      onVaultQuery: e => this.setState({ vaultQuery: e.target.value }),
+      vaultHint: vq ? `${vaultList.length} match` : `${SNIPPETS.length} snippets`,
+      collections: [["All", "inbox", "#6d8bff"], ["SQL", "database", "#3ad6c8"], ["Shell", "terminal", "#f2b544"], ["C#", "code", "#b48bff"], ["Snippets from clipboard", "content_paste", "#6b7285"]].map(([label, icon, tone]) => ({
+        label, icon, iconTone: `color:${s.coll === label ? tone : "#4d5468"}`,
+        count: String(label === "All" ? SNIPPETS.length : label === "Snippets from clipboard" ? 3 : SNIPPETS.filter(x => x.coll === label).length),
+        style: `width:100%;display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid #1b1e28;${s.coll === label ? "background:rgba(109,139,255,.13);box-shadow:inset 3px 0 0 #6d8bff" : ""}`,
+        onPick: () => this.setState({ coll: label }),
+      })),
+      tags: [...new Set(SNIPPETS.flatMap(x => x.tags))].map(t => ({ label: "#" + t, style: chip(vsel.tags.includes(t), "#b48bff") })),
+
+      listTitle: s.coll === "All" ? "All snippets" : s.coll,
+      listNote: `${vaultList.length} shown`,
+      vaultRows: vaultList.map(x => ({
+        title: x.title, preview: x.body.split("\n")[0], prefix: x.prefix, used: x.used,
+        icon: x.icon, iconTone: `color:${x.tone}`,
+        paramLabel: `${x.params.length} param${x.params.length === 1 ? "" : "s"}`,
+        paramStyle: "padding:1px 5px;border-radius:5px;font-size:9.5px;font-weight:700;border:1px solid rgba(180,139,255,.35);background:rgba(180,139,255,.12);color:#b48bff",
+        rowStyle: `width:100%;display:flex;align-items:flex-start;gap:11px;padding:11px 13px;border-bottom:1px solid #1b1e28;${s.vaultSel === x.id ? "background:rgba(109,139,255,.13);box-shadow:inset 3px 0 0 #6d8bff" : ""}`,
+        onPick: () => this.setState({ vaultSel: x.id, chosen: x.id, values: null }),
+      })),
+
+      editorMeta: `${vsel.prefix} · ${vsel.coll} · ${vsel.used}`,
+      bodyLines: this.segment(vsel.body, null, accent),
+      paramSpecs: vsel.params.map(p => ({
+        name: "{{" + p.name + "}}",
+        kind: p.kind === "choice" ? "choice" : p.kind === "multi" ? "multi-line" : "text",
+        hint: p.hint,
+        def: p.def ? "default " + String(p.def).slice(0, 24) : "no default",
+      })),
+      behaviours: [
+        { label: "type with SendInput", on: true, col: accent },
+        { label: "restore focus first", on: true, col: accent },
+        { label: "keep line breaks", on: !s.transform, col: "#f2b544" },
+        { label: "remember last values", on: s.remember, col: "#6d8bff" },
+        { label: "never execute", on: true, col: accent },
+      ].map(b => ({ label: b.label, style: chip(b.on, b.col) })),
+
+      onNewSnippet: () => this.say("New snippet", "body first — placeholders become parameters as you type them", "go"),
+      onNoop: () => this.say("Exported", "6 snippets → devhq-snippets.json · plain text, diffable", "go"),
+
+      statusText: s.status, statusDetail: s.statusDetail,
+      statusDot: `background:${s.statusKind === "bad" ? "#f2545b" : s.statusKind === "warn" ? "#f2b544" : s.statusKind === "go" ? accent : "#6b7285"};${s.statusKind === "go" ? "animation:livepulse 2.4s infinite" : ""}`,
+      footerCount: `${SNIPPETS.length} snippets · ${SNIPPETS.reduce((a, x) => a + x.params.length, 0)} parameters`,
+    };
+  }
+}
+</script>
+</body>
+</html>

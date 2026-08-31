@@ -6,5 +6,9 @@ fn main() {
     for item in &report.items {
         println!("{:6} {}:{}  {}", item.kind, item.file, item.line, item.text);
     }
-    println!("-- {} notes, truncated: {}", report.items.len(), report.truncated);
+    println!(
+        "-- {} notes, truncated: {}",
+        report.items.len(),
+        report.truncated
+    );
 }

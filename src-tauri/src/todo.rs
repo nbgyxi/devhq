@@ -15,16 +15,31 @@ const MARKERS: &[&str] = &["FIXME", "TODO", "HACK", "XXX"];
 /// generated, binary, or a lockfile nobody left a note in.
 const EXTS: &[&str] = &[
     "rs", "js", "jsx", "mjs", "cjs", "ts", "tsx", "py", "go", "java", "kt", "kts", "rb", "php",
-    "cs", "c", "h", "cpp", "hpp", "cc", "m", "swift", "css", "scss", "sass", "less", "html",
-    "vue", "svelte", "astro", "sql", "sh", "bash", "ps1", "psm1", "yml", "yaml", "toml", "md",
+    "cs", "c", "h", "cpp", "hpp", "cc", "m", "swift", "css", "scss", "sass", "less", "html", "vue",
+    "svelte", "astro", "sql", "sh", "bash", "ps1", "psm1", "yml", "yaml", "toml", "md",
 ];
 
 /// Folders never worth descending into. Deliberately its own list: the scanner
 /// skips `bin` and `obj` because they are never *projects*, which says nothing
 /// about whether a note could be left in one.
 const SKIP: &[&str] = &[
-    "node_modules", "target", "dist", "build", "out", "vendor", "venv", ".venv", "__pycache__",
-    "coverage", ".next", ".nuxt", ".cache", ".git", ".svelte-kit", "Pods", "DerivedData",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "out",
+    "vendor",
+    "venv",
+    ".venv",
+    "__pycache__",
+    "coverage",
+    ".next",
+    ".nuxt",
+    ".cache",
+    ".git",
+    ".svelte-kit",
+    "Pods",
+    "DerivedData",
 ];
 
 /// Ceilings, so one enormous checkout cannot turn the detail view into a
@@ -72,12 +87,18 @@ fn walk(root: &Path, dir: &Path, items: &mut Vec<Todo>, files: &mut usize, trunc
     if *truncated {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut dirs: Vec<PathBuf> = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
-        let Ok(kind) = entry.file_type() else { continue };
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
         if kind.is_dir() {
             if name.starts_with('.') || SKIP.iter().any(|s| s.eq_ignore_ascii_case(name)) {
                 continue;
@@ -104,22 +125,30 @@ fn walk(root: &Path, dir: &Path, items: &mut Vec<Todo>, files: &mut usize, trunc
 }
 
 fn wanted(path: &Path) -> bool {
-    let Some(ext) = path.extension().and_then(|e| e.to_str()) else { return false };
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
     if !EXTS.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
         return false;
     }
-    std::fs::metadata(path).map(|m| m.len() <= MAX_FILE_BYTES).unwrap_or(false)
+    std::fs::metadata(path)
+        .map(|m| m.len() <= MAX_FILE_BYTES)
+        .unwrap_or(false)
 }
 
 fn read_file(root: &Path, path: &Path, items: &mut Vec<Todo>, truncated: &mut bool) {
     // Anything that is not UTF-8 was never a source file worth reading.
-    let Ok(text) = std::fs::read_to_string(path) else { return };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
     let file = relative(root, path);
     for (index, line) in text.lines().enumerate() {
         if line.len() > MAX_LINE_LEN {
             continue;
         }
-        let Some((kind, note)) = find_marker(line) else { continue };
+        let Some((kind, note)) = find_marker(line) else {
+            continue;
+        };
         if items.len() >= MAX_HITS {
             *truncated = true;
             return;
@@ -205,7 +234,9 @@ pub fn excerpt(root: &Path, file: &str, line: u32) -> Result<Excerpt, String> {
 
     // The same ceiling the sweep itself uses. A file too big to have been
     // searched cannot have produced the note being asked about.
-    let size = std::fs::metadata(&target).map_err(|_| "File no longer exists.".to_string())?.len();
+    let size = std::fs::metadata(&target)
+        .map_err(|_| "File no longer exists.".to_string())?
+        .len();
     if size > MAX_FILE_BYTES {
         return Err("File is too large to show.".into());
     }
@@ -227,7 +258,12 @@ pub fn excerpt(root: &Path, file: &str, line: u32) -> Result<Excerpt, String> {
         .iter()
         .map(|l| clip_line(l))
         .collect();
-    Ok(Excerpt { file: file.to_string(), line, start, lines })
+    Ok(Excerpt {
+        file: file.to_string(),
+        line,
+        start,
+        lines,
+    })
 }
 
 /// Joins `file` onto `root` and refuses anything that leaves the project.
@@ -236,7 +272,11 @@ pub fn excerpt(root: &Path, file: &str, line: u32) -> Result<Excerpt, String> {
 /// turned away here rather than trusted because the notes list produced them.
 fn resolve(root: &Path, file: &str) -> Result<PathBuf, String> {
     let relative = Path::new(file);
-    if relative.is_absolute() || relative.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
         return Err("That file is outside the project.".into());
     }
     let joined = root.join(relative);

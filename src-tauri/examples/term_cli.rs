@@ -15,10 +15,17 @@ fn main() {
 
     let mut args = std::env::args().skip(1);
     let dir = args.next().unwrap_or_else(|| ".".to_string());
-    let typed = args.next().unwrap_or_else(|| "echo conpty-works".to_string());
+    let typed = args
+        .next()
+        .unwrap_or_else(|| "echo conpty-works".to_string());
 
     let (cols, rows) = (100usize, 30usize);
-    let pty = match ConPty::spawn("powershell.exe -NoLogo", std::path::Path::new(&dir), cols as u16, rows as u16) {
+    let pty = match ConPty::spawn(
+        "powershell.exe -NoLogo",
+        std::path::Path::new(&dir),
+        cols as u16,
+        rows as u16,
+    ) {
         Ok(pty) => pty,
         Err(e) => {
             eprintln!("spawn failed: {e}");
@@ -61,11 +68,15 @@ fn main() {
 
     // Let the prompt settle, type, then let the command finish.
     std::thread::sleep(std::time::Duration::from_millis(1200));
-    pty.write(format!("{typed}\r").as_bytes()).expect("write failed");
+    pty.write(format!("{typed}\r").as_bytes())
+        .expect("write failed");
     std::thread::sleep(std::time::Duration::from_millis(1800));
 
     let grid = grid.lock().unwrap();
-    println!("--- screen {}x{} cursor {},{} ---", grid.cols, grid.rows, grid.cx, grid.cy);
+    println!(
+        "--- screen {}x{} cursor {},{} ---",
+        grid.cols, grid.rows, grid.cx, grid.cy
+    );
     let mut coloured = 0;
     for y in 0..grid.rows {
         let line: String = grid.row(y).iter().map(|c| c.ch).collect();
@@ -75,7 +86,11 @@ fn main() {
             println!("{y:>2} | {line}");
         }
     }
-    println!("--- {} coloured cells, {} scrollback lines ---", coloured, grid.scrollback.len());
+    println!(
+        "--- {} coloured cells, {} scrollback lines ---",
+        coloured,
+        grid.scrollback.len()
+    );
 }
 
 #[cfg(not(windows))]

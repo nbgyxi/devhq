@@ -10,10 +10,240 @@
 // `buildChecksum` is the SHA-256 of that version's Store exe. It is written
 // after the package is built, never before: putting the hash into this file
 // first would change the binary, so the number would no longer match. What's
-// new hashes the running exe for the current version; older versions show the
-// recorded number from when they shipped.
+// new hashes the running exe for the current version only on an official
+// Store package (`package-msix.ps1`); older versions show the recorded number
+// from when they shipped. Dev builds never hash or show a live checksum line.
 window.devhqChangelog = (() => {
   const releases = [
+    {
+      version: "0.43.3",
+      date: "2026-08-31",
+      title: "Clear Cursor activity",
+      buildChecksum: "368bd148a22df99a0e2706af79b959307cea0dc949068f4e7c67c521baee1ad1",
+      changes: [
+        ["fix", "Cursor activity names the tool being used instead of exposing internal timing fields; unknown activity appears neutrally as Thinking."],
+      ],
+    },
+    {
+      version: "0.43.2",
+      date: "2026-08-31",
+      title: "Cursor Agent discovery",
+      changes: [
+        ["fix", "Cursor Agent now starts through the installed `agent` runtime on Windows even when its PowerShell and command shims are invisible to desktop apps."],
+      ],
+    },
+    {
+      version: "0.43.1",
+      date: "2026-08-31",
+      title: "Home in the title bar",
+      changes: [
+        ["better", "A small Home button beside the title-bar search returns directly to the project overview."],
+      ],
+    },
+    {
+      version: "0.43.0",
+      date: "2026-08-30",
+      title: "Cloud assistant providers",
+      changes: [
+        ["new", "Claude, Codex, and GPT can now be configured with your own API key and selected beside local models."],
+        ["new", "GPT offers the Luna, Terra, and Sol variants, with Luna selected by default for a newly configured OpenAI provider."],
+        ["better", "Cloud API keys persist in Windows Credential Manager instead of browser storage, with an explicit warning about the limits of local credential protection."],
+        ["better", "Cloud requests run away from the window thread and show their provider activity and API errors in the assistant."],
+        ["better", "Claude, Codex, and GPT responses now stream live, can call DevHQ's validated project tools, and stop immediately when cancelled."],
+        ["new", "Cursor Agent can now be configured as a provider using its API key and official streaming CLI, including visible tool activity and cancellation."],
+        ["new", "The tool-call limit defaults to 20 and can be changed from Settings or the model panel for every assistant provider."],
+        ["better", "Unused Windows AI provider scaffolding was removed from the assistant backend."],
+      ],
+    },
+    {
+      version: "0.42.0",
+      date: "2026-08-30",
+      title: "Local assistant panel",
+      changes: [
+        ["new", "A docked assistant can now download a verified local model on demand and run private multi-turn chats without another AI application."],
+        ["new", "Three local model sizes can be installed, selected, cancelled during download, and deleted independently."],
+        ["better", "The inference runtime and every model larger than 10 MB stay out of the installer and download only after an explicit choice."],
+        ["better", "Assistant chats stream into local history and can be stopped without blocking the window."],
+        ["better", "Provider-neutral conversations and Rust-controlled tool policy keep local models, Claude, GPT and Cursor integrations isolated."],
+        ["fix", "Local chat now hides the inference runtime shell and receives the current DevHQ project facts instead of guessing what a project contains."],
+        ["new", "Assistant answers render safe Markdown with headings, lists, emphasis, inline code and copyable code blocks."],
+        ["new", "Read-only project tools can list files, read bounded text files and search project text through a validated four-step Rust agent loop."],
+        ["new", "Assistant work is visible as model and tool steps, and questions can pause with two to five clickable answers."],
+        ["new", "Pin the assistant to reserve space beside DevHQ, or leave it unpinned as an overlay; narrow windows automatically keep overlay behavior."],
+        ["fix", "Failed assistant requests stop their pending dots, identify rejected tool names in the activity card, and retry safely without executing unknown tools."],
+        ["new", "A persistent Think checkbox creates a validated plan, runs its steps sequentially with visible results, and performs a separate final-answer synthesis."],
+        ["fix", "An assistant left open and pinned now restores open and pinned with the same reserved workspace width."],
+        ["better", "Think plans may contain however many steps the model needs, with every step kept in the scrollable conversation."],
+        ["better", "Docked mode now forms a full-height right column while the overview, status bar and terminal share the larger left side."],
+        ["better", "Visible Think steps and final answers now appear directly as the local model generates them."],
+        ["new", "A quick first-pass intent router selects project, terminal, network, utility or Windows-tool guidance before planning and answering."],
+        ["better", "Intent routing now limits context and callable schemas to the selected area; ping requests receive a validated ping tool without unrelated project context."],
+        ["new", "Every DevHQ page, utility, Windows inspector and repair now has a routed AI call list; safe inspections return structured results while interactive or system-changing actions open the exact tool for user control."],
+      ],
+    },
+    {
+      version: "0.40.1",
+      date: "2026-08-30",
+      title: "Favorite projects",
+      changes: [
+        ["new", "Star a project from the overview card, the table or its detail page. Stars stay across rescans and restarts."],
+        ["new", "A Favorites filter chip shows only the projects you have starred."],
+      ],
+    },
+    {
+      version: "0.39.2",
+      date: "2026-08-30",
+      title: "Path Ping window controls",
+      changes: [
+        ["fix", "Path Ping's Back and Close buttons now return to the overview."],
+        ["new", "Path Ping can now be opened in its own dockable window."],
+      ],
+    },
+    {
+      version: "0.39.1",
+      date: "2026-08-30",
+      title: "Path Ping follows the theme",
+      changes: [
+        ["fix", "Path Ping now uses DevHQ's light-theme surfaces, text, borders, selections and status colors throughout."],
+      ],
+    },
+    {
+      version: "0.39.0",
+      date: "2026-08-30",
+      title: "Path Ping",
+      changes: [
+        ["new", "Path Ping traces a destination and shows latency and packet loss at every hop as Windows measures it."],
+        ["better", "Probe controls, hop details and a plain-language loss verdict keep route troubleshooting in one view."],
+      ],
+    },
+    {
+      version: "0.38.0",
+      date: "2026-08-30",
+      title: "Disk Space Usage",
+      buildChecksum: "134d60bebc9797348a327da06a85a6adf8a281d7dc5d9f6b9475c69e7fa83260",
+      changes: [
+        ["new", "Disk Space Usage scans one selected drive and draws a live size diagram as folders are measured."],
+        ["new", "Click a folder to drill into it, or right-click any area to reveal it in Explorer."],
+        ["better", "Disk scans measure several top-level areas in parallel, and switching drives now cancels the active scan immediately."],
+        ["better", "Docking a detached tool or terminal now restores and focuses the main DevHQ window."],
+      ],
+    },
+    {
+      version: "0.37.0",
+      date: "2026-08-30",
+      title: "Local active-window time tracker",
+      changes: [
+        ["new", "Active Window Time Tracker records application and window-title sessions while DevHQ is open, pauses after five minutes of idle time, and shows today, 7-day and 30-day summaries."],
+        ["new", "Time history stays in an app-local database and can be exported as CSV; tracking is explicitly started or paused from the tool."],
+      ],
+    },
+    {
+      version: "0.36.2",
+      date: "2026-08-30",
+      title: "Images in clipboard history",
+      changes: [
+        ["new", "Clipboard History captures current and newly copied images, shows thumbnails and full previews with dimensions and size, and can copy an image back to Windows."],
+        ["better", "Clipboard History uses an app-local IndexedDB database instead of preference storage and accepts images up to 25 MB."],
+      ],
+    },
+    {
+      version: "0.36.1",
+      date: "2026-08-30",
+      title: "Clipboard history",
+      changes: [
+        ["new", "Clipboard History keeps up to 250 local text clips with text, link and code filters, pinned entries, inspection, copy-back and explicit forgetting."],
+      ],
+    },
+    {
+      version: "0.36.0",
+      date: "2026-08-30",
+      title: "Hotkeys for anything",
+      changes: [
+        ["new", "Settings › Hotkeys can bind tools and global actions from the command-palette catalog, with search, filters, conflict warnings and one-click default restoration."],
+      ],
+    },
+    {
+      version: "0.35.6",
+      date: "2026-08-30",
+      title: "History selection stays invisible",
+      changes: [
+        ["fix", "Choosing a history result replaces the current input with terminal editing keys. Shells that do not bind Ctrl+K no longer print a literal ^K before the command."],
+      ],
+    },
+    {
+      version: "0.35.5",
+      date: "2026-08-30",
+      title: "History shows its source",
+      changes: [
+        ["better", "The history list shows whether a command came from PSReadLine, Bash history or NuShell history instead of displaying an unavailable time."],
+      ],
+    },
+    {
+      version: "0.35.4",
+      date: "2026-08-30",
+      title: "Reverse search can go forward",
+      changes: [
+        ["better", "Enhanced history follows native reverse-search controls: Ctrl+R moves to an older match, Ctrl+S goes back toward a newer match, and Ctrl+G cancels."],
+      ],
+    },
+    {
+      version: "0.35.3",
+      date: "2026-08-30",
+      title: "Ctrl+R stays native",
+      changes: [
+        ["better", "Pressing Ctrl+R again moves to the next matching command, just like the shell's reverse search."],
+        ["better", "Enhanced search reads only native shell history. DevHQ no longer records or saves a separate command history, and refreshes the native files whenever search opens."],
+      ],
+    },
+    {
+      version: "0.35.2",
+      date: "2026-08-30",
+      title: "Honest history times",
+      changes: [
+        ["fix", "Imported shell history says when its time is unavailable instead of labeling every old command as just run. Commands observed by DevHQ still show their real relative time."],
+      ],
+    },
+    {
+      version: "0.35.1",
+      date: "2026-08-30",
+      title: "Ctrl+R includes existing history",
+      changes: [
+        ["fix", "Enhanced Ctrl+R imports existing PowerShell, Bash and NuShell history, so commands run before the feature was installed are searchable too."],
+      ],
+    },
+    {
+      version: "0.35.0",
+      date: "2026-08-30",
+      title: "A better Ctrl+R",
+      changes: [
+        ["new", "Ctrl+R opens a searchable command history across DevHQ terminals, ranked by recency, usage or best match, with keyboard actions to run or edit a result."],
+        ["better", "Settings › Terminal can turn enhanced Ctrl+R off, handing the shortcut straight back to the shell's built-in history search."],
+      ],
+    },
+    {
+      version: "0.34.6",
+      date: "2026-08-30",
+      title: "Checksum only on Store builds",
+      changes: [
+        ["fix", "What's new only hashes the running exe for an official Store package. A dev build no longer shows \"Reading this build's checksum\" or a live checksum line."],
+      ],
+    },
+    {
+      version: "0.34.5",
+      date: "2026-08-30",
+      title: "clear clears the terminal",
+      changes: [
+        ["fix", "`clear` and Clear-Host empty the scrollback as well as the screen. The history above used to stay painted, and Restore settled onto it, so a clear looked like it had done nothing."],
+      ],
+    },
+    {
+      version: "0.34.4",
+      date: "2026-08-30",
+      title: "Resize leaves the terminal where it is",
+      changes: [
+        ["fix", "Resizing a terminal — the dock, a popped-out window, or the main window — no longer scrolls it. The view stays on the lines you were looking at; only Restore from maximized, and opening a terminal again, place the scroller."],
+      ],
+    },
     {
       version: "0.34.3",
       date: "2026-08-30",

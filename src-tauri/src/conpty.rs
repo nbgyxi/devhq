@@ -72,7 +72,10 @@ impl ConPty {
             CreatePipe(&mut out_read, &mut out_write, None, 0)
                 .map_err(|e| format!("CreatePipe (stdout) failed: {e}"))?;
 
-            let size = COORD { X: cols.max(1) as i16, Y: rows.max(1) as i16 };
+            let size = COORD {
+                X: cols.max(1) as i16,
+                Y: rows.max(1) as i16,
+            };
             let hpcon = CreatePseudoConsole(size, in_read, out_write, 0)
                 .map_err(|e| format!("CreatePseudoConsole failed: {e}"))?;
 
@@ -177,7 +180,10 @@ impl ConPty {
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
         unsafe {
-            let size = COORD { X: cols.max(1) as i16, Y: rows.max(1) as i16 };
+            let size = COORD {
+                X: cols.max(1) as i16,
+                Y: rows.max(1) as i16,
+            };
             ResizePseudoConsole(self.hpcon, size)
                 .map_err(|e| format!("ResizePseudoConsole failed: {e}"))
         }

@@ -148,14 +148,25 @@ Write-Host "==> Package version: $version (release '$listVersion' in src/changel
 # The release notes and version number are the content of this build and
 # must already be in src/changelog.js. The checksum cannot go in first: it
 # is a hash of the finished exe, and putting it in the frontend would change
-# the binary. So: notes first, then this build, then hash that exact file.
+# the binary. So: notes first, then this build (with DEVHQ_OFFICIAL_BUILD so
+# What's new will hash the running Store exe), then hash that exact file.
 # The hash is written into changelog.js afterwards for the repo and for later
 # versions. Do not rebuild after that write - a second build would be a
 # different binary.
 if (-not $SkipBuild) {
     Write-Host "==> Building release exe (tauri build)..." -ForegroundColor Cyan
     Push-Location $repoRoot
-    try { npm run build } finally { Pop-Location }
+    # Marks this compile as the Store package so What's new will hash the
+    # running exe. Plain `npm run build` / `npm run dev` leave it unset.
+    $env:DEVHQ_OFFICIAL_BUILD = "1"
+    # This script creates the installer itself below. Asking Tauri to bundle as
+    # well is unnecessary and can make an unrelated WiX/MSI failure prevent the
+    # MSIX from being produced (for example, Cargo binaries that are also
+    # listed as resources collide in WiX's install directory).
+    try { npm run build -- --no-bundle } finally {
+        Remove-Item Env:DEVHQ_OFFICIAL_BUILD -ErrorAction SilentlyContinue
+        Pop-Location
+    }
     if ($LASTEXITCODE -ne 0) { throw "tauri build failed." }
 }
 

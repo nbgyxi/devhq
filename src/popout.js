@@ -55,14 +55,21 @@
   });
 
   const maxButton = document.querySelector('[data-win="max"]');
+  let wasMaximized = false;
+  let pendingRestoreSettle = false;
   async function syncMaximizeButton() {
     if (!maxButton) return;
     const maxed = await win.isMaximized().catch(() => false);
+    // Restoring from maximized is the one size change that may place the
+    // scroller; an edge-drag resize must not.
+    if (wasMaximized && !maxed) pendingRestoreSettle = true;
+    wasMaximized = maxed;
     const glyph = maxButton.querySelector(".ms");
     if (glyph) glyph.textContent = maxed ? "filter_none" : "crop_square";
     maxButton.title = maxed ? "Restore" : "Maximize";
     maxButton.setAttribute("aria-label", maxed ? "Restore" : "Maximize");
   }
+  win.isMaximized().then((maxed) => { wasMaximized = !!maxed; }).catch(() => {});
   syncMaximizeButton();
   win.onResized(() => syncMaximizeButton());
 
@@ -128,6 +135,10 @@
   document.title = folderTitle || info.projectName || "Terminal";
   view.fit();
   view.focus();
+
+  document.getElementById("pop-debug").onclick = () => {
+    navigator.clipboard.writeText(view.debugReport()).catch(() => {});
+  };
 
   document.getElementById("pop-dock").onclick = async () => {
     await handOver();
@@ -204,7 +215,11 @@
   let pending;
   new ResizeObserver(() => {
     clearTimeout(pending);
-    pending = setTimeout(() => view.fit(), 60);
+    pending = setTimeout(() => {
+      view.fit();
+      if (!pendingRestoreSettle) return;
+      pendingRestoreSettle = false;
+    }, 60);
   }).observe(host);
 
   // Alt+F4 and anything else Windows counts as a close request mean the same

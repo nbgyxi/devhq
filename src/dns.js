@@ -815,4 +815,11 @@ function renderResolvers() {
   }
 }
 
-window.devhqDns = { mount, render, opened, lookFor, recheck };
+function exportState() {
+  return { query:dns.host?.querySelector?.("#dns-name")?.value ?? dns.query, name:dns.name, lookup:dns.lookup,
+    looking:dns.looking, reversing:dns.reversing, typeFilter:dns.typeFilter, resolvers:dns.resolvers,
+    comparing:dns.comparing, domains:dns.domains, domainsLoaded:dns.domainsLoaded,
+    newDomain:dns.host?.querySelector?.("#dns-interest")?.value ?? dns.newDomain };
+}
+function importState(state) { if (!state) return; Object.assign(dns, state, { host:dns.host, built:dns.built }); if(dns.host) render(); }
+window.devhqDns = { mount, render, opened, lookFor, recheck, exportState, importState };
