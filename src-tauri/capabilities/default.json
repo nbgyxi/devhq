@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capabilities for the DevHQ window and any popped-out terminal or tool",
-  "windows": ["main", "term-*", "tool-*"],
+  "windows": ["main", "term-*", "tool-*", "global-search", "version-history"],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",
@@ -20,6 +20,7 @@
     "core:window:allow-inner-size",
     "core:window:allow-set-focus",
     "core:window:allow-show",
+    "core:window:allow-hide",
     "opener:default"
   ]
 }

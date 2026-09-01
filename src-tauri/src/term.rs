@@ -37,7 +37,9 @@ fn shell_command(profile: &str) -> Result<String, String> {
             .ok_or_else(|| "PowerShell Preview was not found.".into()),
         "powershell" => Ok("powershell.exe -NoLogo".into()),
         "cmd" => Ok("cmd.exe".into()),
-        "nu" => Ok("nu.exe".into()),
+        "nu" => Ok(nu_path()
+            .map(|path| format!(r#""{}""#, path.display()))
+            .unwrap_or_else(|| "nu.exe".into())),
         "wsl" => Ok("wsl.exe --exec bash --login".into()),
         "git-bash" => {
             let Some(bash) = git_bash_path() else {
@@ -60,6 +62,10 @@ fn find_command(name: &str) -> Option<PathBuf> {
     })
 }
 
+/// Where a shell is looked for, in order: what the user put on PATH, what an
+/// installer put in Program Files, and only then the copy DevHQ downloaded for
+/// them. A real installation always wins - DevHQ's copy is the backstop for a
+/// machine that has none, never a replacement for one that has.
 fn pwsh_path(preview: bool) -> Option<PathBuf> {
     if !preview {
         if let Some(path) = find_command("pwsh.exe") {
@@ -71,6 +77,68 @@ fn pwsh_path(preview: bool) -> Option<PathBuf> {
         .map(PathBuf::from)
         .map(|root| root.join("PowerShell").join(folder).join("pwsh.exe"))
         .filter(|path| path.is_file())
+        .or_else(|| crate::shells::managed_exe(if preview { "pwsh-preview" } else { "pwsh" }))
+}
+
+fn nu_path() -> Option<PathBuf> {
+    find_command("nu.exe").or_else(|| crate::shells::managed_exe("nu"))
+}
+
+/// The program a pane was asked to run, against what this computer has.
+///
+/// `wt split-pane … pwsh -NoExit -Command …` is what these lines look like
+/// everywhere they are written, and the whole point of taking them here is that
+/// they run on this machine unchanged. PowerShell 7 not being installed is not
+/// a reason to leave the pane empty when the same line runs perfectly well in
+/// Windows PowerShell - but it is a reason to say which one is running, because
+/// the two are not the same shell.
+///
+/// Anything else is left exactly as it was written. Guessing at a substitute
+/// for an arbitrary program is how a pane ends up quietly running the wrong
+/// thing.
+fn resolve_pane_command(command: &str) -> (String, Option<String>) {
+    let trimmed = command.trim();
+    let (first, rest) = trimmed
+        .split_once(char::is_whitespace)
+        .unwrap_or((trimmed, ""));
+    // NuShell gets the same treatment for the same reason: DevHQ may hold the
+    // only copy on the machine, and `nu` alone would not find it. `bash` is
+    // deliberately not in this list - it means Git Bash to one person and WSL
+    // to the next, and picking one of those is guessing.
+    if first.eq_ignore_ascii_case("nu") || first.eq_ignore_ascii_case("nu.exe") {
+        if find_command("nu.exe").is_some() {
+            return (command.to_string(), None);
+        }
+        return match nu_path() {
+            Some(path) => (format!("\"{}\" {rest}", path.display()), None),
+            None => (command.to_string(), None),
+        };
+    }
+    let names_pwsh = ["pwsh", "pwsh.exe"]
+        .iter()
+        .any(|name| first.eq_ignore_ascii_case(name));
+    // On PATH is the case that needs no help at all: the line runs as written.
+    if !names_pwsh || find_command("pwsh.exe").is_some() {
+        return (command.to_string(), None);
+    }
+    // There is a PowerShell 7 here, it is just not something `CreateProcess`
+    // can find by name - an install that never joined PATH, or the copy DevHQ
+    // downloaded. Naming the file is the difference between the pane running
+    // what was asked for and not opening at all.
+    if let Some(path) = pwsh_path(false) {
+        let managed = crate::shells::managed_exe("pwsh").is_some_and(|copy| copy == path);
+        return (
+            format!("\"{}\" {rest}", path.display()),
+            managed.then(|| "This pane is the PowerShell 7 DevHQ downloaded.".to_string()),
+        );
+    }
+    let Some(installed) = find_command("powershell.exe") else {
+        return (command.to_string(), None);
+    };
+    (
+        format!("\"{}\" {rest}", installed.display()),
+        Some("PowerShell 7 is not installed, so this pane is Windows PowerShell.".into()),
+    )
 }
 
 fn git_bash_path() -> Option<PathBuf> {
@@ -89,7 +157,10 @@ fn git_bash_path() -> Option<PathBuf> {
                 .join("bash.exe"),
         );
     }
-    candidates.into_iter().find(|path| path.is_file())
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .or_else(|| crate::shells::managed_exe("git-bash"))
 }
 
 /// Something to do to the pseudoconsole. Both of these can block - a full
@@ -131,6 +202,98 @@ fn registry() -> &'static Mutex<HashMap<String, Arc<Session>>> {
 fn next_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     format!("t{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Whether the installed proxy is already the one that would be copied over
+/// it. `CopyFileW` carries the source's write time across, so the pair a copy
+/// produced still matches years later.
+fn same_file(source: &Path, installed: &Path) -> bool {
+    let (Ok(from), Ok(to)) = (std::fs::metadata(source), std::fs::metadata(installed)) else {
+        return false;
+    };
+    from.len() == to.len() && from.modified().ok() == to.modified().ok()
+}
+
+/// Replaces the proxy, including while a copy of it is running - which is the
+/// normal case now that `wt` waits at the prompt for DevHQ's answer. A running
+/// image cannot be written over, but Windows will happily rename one, so the
+/// old file is moved aside and left for whoever is still in it.
+fn install_wt_proxy(source: &Path, installed: &Path) -> Result<(), String> {
+    if installed.is_file() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let aside = installed.with_file_name(format!("wt.old-{stamp}"));
+        if std::fs::rename(installed, &aside).is_err() {
+            // Not renameable either: overwrite it directly and let the error,
+            // if there is one, be the one that is reported.
+            std::fs::copy(source, installed).map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+    }
+    std::fs::copy(source, installed).map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// The proxies moved aside by an update, once nothing is running them. Failing
+/// to delete one means it is still in use, which is fine - the next terminal
+/// opened tries again.
+fn sweep_replaced_proxies(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with("wt.old-") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Installs a tiny `wt` compatibility command in an app-owned runtime folder.
+/// Its directory is prepended only to shells hosted by DevHQ, so normal
+/// Windows Terminal use elsewhere is unaffected.
+fn wt_compat_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let root = crate::shells::runtime_root();
+    std::fs::create_dir_all(&root)
+        .map_err(|e| format!("Could not create the terminal runtime folder: {e}"))?;
+    let mut candidates = Vec::new();
+    if let Ok(resources) = app.path().resource_dir() {
+        candidates.push(resources.join("devhq-cli.exe"));
+        candidates.push(resources.join("resources").join("devhq-cli.exe"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(directory) = exe.parent() {
+            candidates.push(directory.join("devhq-cli.exe"));
+            if let Some(target) = directory.parent() {
+                candidates.push(target.join("debug").join("devhq-cli.exe"));
+                candidates.push(target.join("release").join("devhq-cli.exe"));
+            }
+        }
+    }
+    let installed = root.join("wt.exe");
+    let source = candidates.into_iter().find(|path| path.is_file());
+    match source {
+        // The copy is skipped when the proxy is already this build's. It used
+        // to run on every terminal opened, which is both a needless copy of a
+        // few megabytes and a fight with a `wt` that happens to be running.
+        Some(source) if !same_file(&source, &installed) => {
+            if let Err(error) = install_wt_proxy(&source, &installed) {
+                // A proxy is already there and doing its job. Refusing to open
+                // a shell because the spare copy could not be refreshed helps
+                // nobody: the terminal is the point, the shim is a convenience.
+                if !installed.is_file() {
+                    return Err(format!("Could not install DevHQ's wt compatibility proxy: {error}"));
+                }
+            }
+        }
+        None if !installed.is_file() => {
+            return Err("This build does not contain the DevHQ CLI used by terminal compatibility. Run npm run cli:build and restart DevHQ.".to_string());
+        }
+        _ => {}
+    }
+    let old_cmd = root.join("wt.cmd");
+    if old_cmd.is_file() { let _ = std::fs::remove_file(old_cmd); }
+    sweep_replaced_proxies(&root);
+    Ok(root)
 }
 
 fn lookup(id: &str) -> Result<Arc<Session>, String> {
@@ -590,7 +753,7 @@ pub async fn term_shell_availability() -> Vec<ShellAvailability> {
             ),
             (
                 "nu",
-                find_command("nu.exe"),
+                nu_path(),
                 "NuShell is not installed or is not on PATH.",
             ),
         ];
@@ -635,29 +798,45 @@ fn term_open_sync(app: AppHandle, args: OpenArgs) -> Result<TermInfo, String> {
     // scrollback are the ones the last shell left - not a redrawing of them -
     // and the new shell starts underneath.
     let history_key = args.history_key.filter(|key| history_paths(key).is_some());
-    let grid = match &history_key {
+    let mut grid = match &history_key {
         Some(key) => replay_history(key, cols, rows),
         None => Grid::new(cols, rows),
     };
 
+    let id = next_id();
+    let compat = wt_compat_dir(&app)?;
+    let inherited_path = std::env::var("PATH").unwrap_or_default();
+    let app_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let environment = [
+        ("DEVHQ_TERM_ID", id.clone()),
+        ("DEVHQ_APP", app_exe.to_string_lossy().into_owned()),
+        ("PATH", format!("{};{inherited_path}", compat.display())),
+    ];
+    let spawn =
+        |cmd: &str| ConPty::spawn_with_env(cmd, &dir, cols as u16, rows as u16, &environment);
+    let mut notice = None;
     let (pty, command) = match &args.command {
-        Some(cmd) => (
-            ConPty::spawn(cmd, &dir, cols as u16, rows as u16)?,
-            cmd.clone(),
-        ),
+        Some(cmd) => {
+            let (resolved, said) = resolve_pane_command(cmd);
+            notice = said;
+            (spawn(&resolved)?, resolved)
+        }
         None => match args.shell.as_deref().unwrap_or("auto") {
-            "auto" => spawn_shell(&dir, cols as u16, rows as u16)?,
+            "auto" => spawn_shell_with(&spawn)?,
             profile => {
                 let shell = shell_command(profile)?;
-                (
-                    ConPty::spawn(&shell, &dir, cols as u16, rows as u16)?,
-                    shell,
-                )
+                (spawn(&shell)?, shell)
             }
         },
     };
 
-    let id = next_id();
+    // Said in the pane itself, above the shell's first prompt, because that is
+    // where whoever reads the output is looking. It is part of the terminal's
+    // stream from then on and scrolls away with everything else.
+    if let Some(text) = notice {
+        grid.feed(format!("\u{1b}[33mDevHQ: {text}\u{1b}[0m\r\n").as_bytes());
+    }
+
     let (jobs, inbox) = channel::<Job>();
     let log = history_key
         .as_deref()
@@ -690,10 +869,13 @@ fn term_open_sync(app: AppHandle, args: OpenArgs) -> Result<TermInfo, String> {
 }
 
 /// Tries each candidate shell until one starts.
-fn spawn_shell(dir: &Path, cols: u16, rows: u16) -> Result<(ConPty, String), String> {
+fn spawn_shell_with<F>(spawn: &F) -> Result<(ConPty, String), String>
+where
+    F: Fn(&str) -> Result<ConPty, String>,
+{
     let mut last = String::from("No shell available.");
     for shell in SHELLS {
-        match ConPty::spawn(shell, dir, cols, rows) {
+        match spawn(shell) {
             Ok(pty) => return Ok((pty, (*shell).to_string())),
             Err(e) => last = e,
         }
@@ -1271,6 +1453,11 @@ pub async fn term_popout(
     id: String,
     x: Option<f64>,
     y: Option<f64>,
+    position: Option<String>,
+    dimensions: Option<String>,
+    maximized: Option<bool>,
+    fullscreen: Option<bool>,
+    focus: Option<bool>,
 ) -> Result<(), String> {
     let session = lookup(&id)?;
     let label = format!("term-{id}");
@@ -1294,13 +1481,32 @@ pub async fn term_popout(
         .min_inner_size(400.0, 200.0)
         .decorations(false)
         .background_color(tauri::webview::Color(12, 13, 17, 255));
-        if let (Some(x), Some(y)) = (x, y) {
+        let pair = |value: Option<String>| {
+            value.and_then(|value| {
+                let (a, b) = value.split_once(',')?;
+                Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?))
+            })
+        };
+        if let Some((cols, rows)) = pair(dimensions) {
+            builder = builder.inner_size((cols * 9.0).max(400.0), (rows * 18.0).max(200.0));
+        }
+        if let Some((px, py)) = pair(position) {
+            builder = builder.position(px, py);
+        } else if let (Some(x), Some(y)) = (x, y) {
             builder = builder.position(x, y);
         }
         builder
             .build()
             .and_then(|window| {
-                window.set_focus()?;
+                if maximized.unwrap_or(false) {
+                    window.maximize()?;
+                }
+                if fullscreen.unwrap_or(false) {
+                    window.set_fullscreen(true)?;
+                }
+                if focus.unwrap_or(true) {
+                    window.set_focus()?;
+                }
                 Ok(())
             })
             .map_err(|e| format!("Could not open the window: {e}"))

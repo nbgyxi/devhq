@@ -1,6 +1,10 @@
 // The popped-out terminal window. It attaches to a session that already exists
 // in Rust, so nothing restarts when a terminal moves between here and the
 // DevHQ panel — a running build keeps running.
+//
+// It splits the way the panel does: up to two panes, side by side or stacked,
+// each with its own tab saying which shell it is, a divider that can be
+// dragged, and a cross that closes one pane without taking the window with it.
 
 (async () => {
   window.devhqTrackPageView?.("/terminal");
@@ -11,6 +15,9 @@
 
   const id = new URLSearchParams(location.search).get("id");
   const host = document.getElementById("pop-term");
+  const layout = document.getElementById("pop-term-layout");
+  const divider = document.querySelector(".pop-divider");
+  const subtitle = document.getElementById("pop-title");
 
   // Docking is the mirror of popping out: tell DevHQ to take the session back
   // into its panel, and this window's job is done.
@@ -22,10 +29,22 @@
   // without raising a close request nobody needs to hear.
   let handedOver = false;
   let closed = false;
+
+  // Up to two panes, in the order they are shown. `panes[0]` is the one the
+  // window is named after; when it is closed the other takes its place rather
+  // than the window going with it.
+  const panes = [];
+  let activePane = 0;
+  let splitDirection = "vertical";
+  let splitRatio = 0.5;
+  const companion = () => panes[1] || null;
+  const ownedIds = () => panes.map((pane) => pane.id);
+  const current = () => panes[activePane] || panes[0];
+
   const handOver = async () => {
     if (handedOver || closed) return;
     handedOver = true;
-    await emit("term:docked", { id });
+    await Promise.all(ownedIds().map((sessionId, pane) => emit("term:docked", { id: sessionId, pane })));
   };
 
   // Closing is not docking. The cross ends the shell immediately, the way the
@@ -35,8 +54,10 @@
   const finishClose = async () => {
     if (handedOver || closed) return;
     closed = true;
-    await emit("term:close-watch", { id }).catch(() => {});
-    await emit("term:closed", { id }).catch(() => {});
+    await Promise.all(ownedIds().flatMap((sessionId) => [
+      emit("term:close-watch", { id: sessionId }).catch(() => {}),
+      emit("term:closed", { id: sessionId }).catch(() => {}),
+    ]));
     await win.destroy().catch(() => {});
   };
 
@@ -78,48 +99,218 @@
     return;
   }
 
-  const view = new TermView(host, id);
-  view.onTitle = (t) => {
-    document.getElementById("pop-title").textContent = t;
-  };
-  view.onExit = () => {
-    document.getElementById("pop-title").textContent = "exited";
+  /* ------------------------------------------------------ shell identity */
+
+  const SHELL_CODES = { auto: "SH", pwsh: "PW7", "pwsh-preview": "PWP", powershell: "PS", cmd: "CMD", "git-bash": "GIT", wsl: "WSL", nu: "NU" };
+  const SHELL_LABELS = { auto: "Terminal", pwsh: "PowerShell 7", "pwsh-preview": "PowerShell Preview", powershell: "Windows PowerShell", cmd: "Command Prompt", "git-bash": "Git Bash", wsl: "WSL Bash", nu: "NuShell" };
+  const SHELL_COLORS = { auto: "#42b3c2", pwsh: "#4d9df5", "pwsh-preview": "#c162de", powershell: "#61afef", cmd: "#8cc265", "git-bash": "#e05561", wsl: "#d5a458", nu: "#c162de" };
+
+  /** Which shell a session is running, read from the command line it was
+   *  started with. A shell DevHQ downloaded itself lives under its own profile
+   *  folder, which is what tells the two PowerShells apart when neither is the
+   *  one in Program Files. */
+  const shellProfileFromCommand = (command) => {
+    const value = String(command || "").toLowerCase();
+    if (value.includes("git\\bin\\bash.exe") || value.includes("shells\\git-bash\\")) return "git-bash";
+    if (value.includes("7-preview\\pwsh.exe") || value.includes("shells\\pwsh-preview\\")) return "pwsh-preview";
+    if (value.includes("pwsh.exe")) return "pwsh";
+    if (value.includes("wsl.exe") || value.startsWith("wsl")) return "wsl";
+    if (value.includes("powershell.exe") || value.startsWith("powershell")) return "powershell";
+    if (value.includes("cmd.exe") || value.startsWith("cmd")) return "cmd";
+    if (value.includes("nu.exe") || value.startsWith("nu")) return "nu";
+    return "auto";
   };
 
+  /** The profile a `wt --profile` name asks for. */
+  const profileShell = (profile) => {
+    const value = String(profile || "").toLowerCase();
+    if (value.includes("command prompt") || value === "cmd") return "cmd";
+    if (value.includes("wsl") || value.includes("ubuntu") || value.includes("debian")) return "wsl";
+    if (value.includes("nu")) return "nu";
+    if (value.includes("git")) return "git-bash";
+    if (value.includes("powershell") || value.includes("pwsh")) return value.includes("7") ? "pwsh" : "powershell";
+    return "auto";
+  };
+
+  let markerStyle = "code";
+  let markerColors = {};
+  const applyMarkers = (next) => {
+    markerStyle = ["none", "dot", "code"].includes(next?.style) ? next.style : "code";
+    markerColors = next?.colors || {};
+    document.body.classList.remove("shell-markers-none", "shell-markers-dot", "shell-markers-code");
+    document.body.classList.add(`shell-markers-${markerStyle}`);
+    for (const [profile, fallback] of Object.entries(SHELL_COLORS)) {
+      const color = markerColors[profile] || fallback;
+      if (/^#[0-9a-f]{6}$/i.test(color)) document.documentElement.style.setProperty(`--shell-color-${profile}`, color);
+    }
+    renderPanes();
+  };
+
+  /** Paints one shell mark - the coloured dot or short code the panel uses -
+   *  so a pane says what it is without being clicked. */
+  const paintMark = (mark, profile) => {
+    if (!mark) return;
+    mark.className = `shell-mark shell-${profile}`;
+    mark.textContent = SHELL_CODES[profile] || "SH";
+    mark.title = SHELL_LABELS[profile] || "Terminal";
+    mark.hidden = false;
+  };
+
+  /* --------------------------------------------------------------- panes */
+
+  const paneElements = (el) => ({
+    el,
+    host: el.querySelector(".term-host"),
+    tab: el.querySelector(".pop-pane-tab"),
+    mark: el.querySelector(".pop-pane-tab .shell-mark"),
+    name: el.querySelector(".pop-pane-name"),
+    close: el.querySelector(".pop-pane-close"),
+  });
+
+  const createPaneElement = () => {
+    const el = document.createElement("div");
+    el.className = "pop-pane";
+    el.innerHTML = `<div class="pop-pane-tab">
+        <i class="shell-mark" hidden></i>
+        <span class="pop-pane-name"></span>
+        <button class="pop-pane-close" type="button" title="Close this pane" aria-label="Close this pane"><span class="ms">close</span></button>
+      </div>
+      <div class="term-host"></div>`;
+    return el;
+  };
+
+  /** Draws what the panes are: which is focused, what each one is running, and
+   *  whether there is a split at all. Everything that changes a pane ends
+   *  here, so the tabs, the divider and the title can never disagree. */
+  function renderPanes() {
+    const split = panes.length > 1;
+    layout.classList.toggle("split", split);
+    layout.classList.toggle("horizontal", split && splitDirection === "horizontal");
+    layout.style.setProperty("--pop-split", `${splitRatio * 100}%`);
+    divider.hidden = !split;
+    divider.setAttribute("aria-orientation", splitDirection === "horizontal" ? "horizontal" : "vertical");
+    // The layout follows pane order, so a swap is a change to the array and
+    // nothing else has to know the DOM order. It is only ever touched when the
+    // order really differs: moving a scroller in the DOM puts it back to the
+    // top, and this runs on every title the shell sets.
+    const wanted = [panes[0]?.el, split ? divider : null, panes[1]?.el].filter(Boolean);
+    if (wanted.some((node, index) => layout.children[index] !== node)) layout.append(...wanted);
+    panes.forEach((pane, index) => {
+      pane.el.dataset.pane = String(index);
+      pane.el.classList.toggle("active", index === activePane && split);
+      paintMark(pane.mark, pane.profile);
+      pane.name.textContent = pane.title || pane.info.projectName || "Terminal";
+      pane.name.title = pane.info.projectPath || "";
+      pane.close.hidden = !split;
+      pane.el.classList.toggle("exited", pane.exited);
+    });
+    const splitButtonEl = document.getElementById("pop-split");
+    if (splitButtonEl) {
+      splitButtonEl.title = split ? "Close the second pane" : "Split this terminal";
+      splitButtonEl.classList.toggle("on", split);
+      const glyph = splitButtonEl.querySelector(".ms");
+      if (glyph) glyph.textContent = split ? "close_fullscreen" : "splitscreen_right";
+    }
+    const active = current();
+    if (active) {
+      subtitle.textContent = active.exited ? "exited" : active.title || "";
+      document.getElementById("pop-project").textContent = active.info.projectName || "Terminal";
+      paintMark(document.getElementById("pop-shell"), active.profile);
+    }
+  }
+
+  function focusPane(index) {
+    if (!panes[index]) return;
+    activePane = index;
+    renderPanes();
+    panes[index].view.focus();
+  }
+
+  /** Attaches a view to a session and adds it as a pane. The session is
+   *  already running in Rust - this only ever builds the window's side of it. */
+  async function addPane(sessionId, el) {
+    const parts = paneElements(el);
+    const view = new TermView(parts.host, sessionId);
+    const pane = { id: sessionId, view, ...parts, title: "", exited: false, profile: "auto", info: {} };
+    view.onTitle = (text) => {
+      pane.title = text;
+      renderPanes();
+    };
+    view.onExit = () => {
+      pane.exited = true;
+      renderPanes();
+    };
+    pane.info = await view.attach();
+    pane.profile = shellProfileFromCommand(pane.info.command);
+    panes.push(pane);
+    // Clicking anywhere in a pane makes it the one the window is talking about.
+    el.addEventListener("pointerdown", () => {
+      const index = panes.indexOf(pane);
+      if (index >= 0 && index !== activePane) focusPane(index);
+    }, true);
+    parts.close.onclick = (e) => {
+      e.stopPropagation();
+      closePane(panes.indexOf(pane));
+    };
+    return pane;
+  }
+
+  /** Splits this window, or reports why it could not. The session is opened
+   *  the same way the panel opens one, so a pane here and a tab there are the
+   *  same kind of thing. */
+  async function openCompanion({ shell = "", command = "", cwd = "", name = "", direction = "vertical", size = 0 } = {}) {
+    if (panes.length > 1) return null;
+    const source = current();
+    const folder = cwd || source?.info.projectPath || "";
+    const next = await invoke("term_open", { args: {
+      projectPath: folder,
+      projectName: name || folder.split(/[\\/]/).filter(Boolean).pop() || "Terminal",
+      ...(command ? { command } : {}),
+      // An empty profile is not a profile: Rust would refuse it, where "auto"
+      // means "whatever this machine has".
+      shell: shell || "auto",
+    }});
+    splitDirection = direction === "horizontal" ? "horizontal" : "vertical";
+    if (size >= .1 && size <= .9) splitRatio = 1 - size;
+    const el = createPaneElement();
+    layout.appendChild(el);
+    const pane = await addPane(next.id, el);
+    activePane = panes.indexOf(pane);
+    renderPanes();
+    await emit("term:popped-created", { info: next }).catch(() => {});
+    for (const item of panes) item.view.fit();
+    pane.view.focus();
+    return next;
+  }
+
+  /** Closes one pane and leaves the window to the other. Closing the last one
+   *  is closing the window, which is what the titlebar cross already means. */
+  async function closePane(index) {
+    const pane = panes[index];
+    if (!pane) return;
+    if (panes.length === 1) return finishClose();
+    panes.splice(index, 1);
+    pane.view.dispose();
+    pane.el.remove();
+    await emit("term:close-watch", { id: pane.id }).catch(() => {});
+    await emit("term:closed", { id: pane.id }).catch(() => {});
+    activePane = 0;
+    renderPanes();
+    panes[0].view.fit();
+    panes[0].view.focus();
+  }
+
+  /* ------------------------------------------------- the first pane */
+
+  const first = document.querySelector('.pop-pane[data-pane="0"]');
   let info;
   try {
-    info = await view.attach();
+    info = (await addPane(id, first)).info;
   } catch (e) {
     host.textContent = String(e);
     return;
   }
-  document.getElementById("pop-project").textContent = info.projectName;
-  const marker = document.getElementById("pop-shell");
-  const markerProfile = (() => {
-    const command = String(info.command || "").toLowerCase();
-    if (command.includes("git\\bin\\bash.exe")) return "git-bash";
-    if (command.includes("7-preview\\pwsh.exe")) return "pwsh-preview";
-    if (command.includes("pwsh.exe")) return "pwsh";
-    if (command.includes("wsl.exe") || command.startsWith("wsl")) return "wsl";
-    if (command.includes("powershell.exe") || command.startsWith("powershell")) return "powershell";
-    if (command.includes("cmd.exe") || command.startsWith("cmd")) return "cmd";
-    if (command.includes("nu.exe") || command.startsWith("nu")) return "nu";
-    return "auto";
-  })();
-  const markerCodes = { auto: "SH", pwsh: "PW7", "pwsh-preview": "PWP", powershell: "PS", cmd: "CMD", "git-bash": "GIT", wsl: "WSL", nu: "NU" };
-  const markerLabels = { auto: "Terminal", pwsh: "PowerShell 7", "pwsh-preview": "PowerShell Preview", powershell: "Windows PowerShell", cmd: "Command Prompt", "git-bash": "Git Bash", wsl: "WSL Bash", nu: "NuShell" };
-  const markerDefaults = { auto: "#42b3c2", pwsh: "#4d9df5", "pwsh-preview": "#c162de", powershell: "#61afef", cmd: "#8cc265", "git-bash": "#e05561", wsl: "#d5a458", nu: "#c162de" };
-  const applyMarkers = (next) => {
-    const style = ["none", "dot", "code"].includes(next?.style) ? next.style : "code";
-    document.body.classList.remove("shell-markers-none", "shell-markers-dot", "shell-markers-code");
-    document.body.classList.add(`shell-markers-${style}`);
-    const color = next?.colors?.[markerProfile] || markerDefaults[markerProfile];
-    if (/^#[0-9a-f]{6}$/i.test(color)) document.documentElement.style.setProperty(`--shell-color-${markerProfile}`, color);
-    marker.className = `shell-mark shell-${markerProfile}`;
-    marker.textContent = markerCodes[markerProfile];
-    marker.title = markerLabels[markerProfile];
-    marker.hidden = false;
-  };
+
   try {
     const prefs = JSON.parse(localStorage.getItem("devhq.terminals.v1") || "{}");
     applyMarkers({ style: prefs.shellMarkerStyle, colors: prefs.shellColors });
@@ -127,17 +318,209 @@
     applyMarkers({ style: "code", colors: {} });
   }
   listen("term:markers", (event) => applyMarkers(event.payload));
+
   const folderTitle = String(info.projectPath || "")
     .replace(/[\\/]+$/, "")
     .split(/[\\/]/)
     .filter(Boolean)
     .pop();
   document.title = folderTitle || info.projectName || "Terminal";
-  view.fit();
-  view.focus();
+  renderPanes();
+  panes[0].view.fit();
+  panes[0].view.focus();
+
+  /* ---------------------------------------------------------- splitting */
+
+  const splitButton = document.getElementById("pop-split");
+  const splitMenu = document.getElementById("pop-split-menu");
+  let shellProfiles = [];
+
+  const closeSplitMenu = () => {
+    splitMenu.hidden = true;
+    splitButton.setAttribute("aria-expanded", "false");
+  };
+
+  /** The same list the panel's shell menu offers, with what this computer does
+   *  not have greyed out rather than hidden - a shell that is missing is worth
+   *  knowing about. */
+  async function renderSplitMenu() {
+    if (!shellProfiles.length) {
+      shellProfiles = await invoke("term_shell_availability").catch(() => []);
+    }
+    const rows = shellProfiles
+      .filter((profile) => profile.profile !== "auto")
+      .map((profile) => `<button role="menuitem" data-split-shell="${profile.profile}"${profile.available === false ? " disabled" : ""}${profile.reason ? ` title="${profile.reason.replace(/"/g, "&quot;")}"` : ""}>${SHELL_LABELS[profile.profile] || profile.profile}${profile.available === false ? "<span>Unavailable</span>" : ""}</button>`)
+      .join("");
+    splitMenu.innerHTML = `<div class="pop-menu-label">Split with</div>
+      <button role="menuitem" data-split-shell="">Same shell as this pane</button>
+      ${rows}
+      <div class="pop-menu-label">Direction</div>
+      <button role="menuitem" data-split-direction="vertical">Side by side</button>
+      <button role="menuitem" data-split-direction="horizontal">Stacked</button>`;
+  }
+
+  splitButton.onclick = async () => {
+    if (panes.length > 1) {
+      // Already split: the button folds it back up, which is the only other
+      // thing it could sensibly mean.
+      return closePane(1);
+    }
+    if (!splitMenu.hidden) return closeSplitMenu();
+    await renderSplitMenu();
+    splitMenu.hidden = false;
+    splitButton.setAttribute("aria-expanded", "true");
+  };
+
+  splitMenu.onclick = async (e) => {
+    const direction = e.target.closest("[data-split-direction]");
+    if (direction) {
+      splitDirection = direction.dataset.splitDirection;
+      renderPanes();
+      for (const pane of panes) pane.view.fit();
+      return;
+    }
+    const choice = e.target.closest("[data-split-shell]");
+    if (!choice || choice.disabled) return;
+    closeSplitMenu();
+    const wanted = choice.dataset.splitShell;
+    try {
+      await openCompanion({
+        shell: wanted || current()?.profile || "",
+        direction: splitDirection,
+      });
+    } catch (error) {
+      sayInTitle(String(error));
+    }
+  };
+
+  document.addEventListener("pointerdown", (e) => {
+    if (!splitMenu.hidden && !e.target.closest("#pop-split-menu,#pop-split")) closeSplitMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeSplitMenu();
+  });
+
+  /** Drag the divider to give one pane more room. Fitting both shells is left
+   *  until the drag ends: a pseudoconsole resize per pointer move would be one
+   *  round trip to Rust per frame, for a size nobody has settled on yet. */
+  divider.addEventListener("pointerdown", (down) => {
+    if (panes.length < 2) return;
+    down.preventDefault();
+    divider.setPointerCapture(down.pointerId);
+    const move = (e) => {
+      const rect = layout.getBoundingClientRect();
+      const ratio = splitDirection === "horizontal"
+        ? (e.clientY - rect.top) / rect.height
+        : (e.clientX - rect.left) / rect.width;
+      splitRatio = Math.min(.8, Math.max(.2, ratio));
+      layout.style.setProperty("--pop-split", `${splitRatio * 100}%`);
+    };
+    const up = () => {
+      divider.removeEventListener("pointermove", move);
+      divider.removeEventListener("pointerup", up);
+      for (const pane of panes) pane.view.fit();
+    };
+    divider.addEventListener("pointermove", move);
+    divider.addEventListener("pointerup", up);
+  });
+
+  /** A line the window says for a few seconds and then takes back - the
+   *  console is not somewhere anyone is looking. */
+  function sayInTitle(text) {
+    const previous = subtitle.textContent;
+    subtitle.textContent = text;
+    setTimeout(() => { if (subtitle.textContent === text) subtitle.textContent = previous; }, 8000);
+  }
+
+  /* --------------------------------------------------------- wt commands */
+
+  listen("term:wt-request", async (event) => {
+    const request = event.payload;
+    if (!request || !ownedIds().includes(request.termId)) return;
+    if (!["new", "-1"].includes(request.window)) {
+      if (request.maximized) await win.maximize().catch(() => {});
+      if (request.fullscreen) await win.setFullscreen(true).catch(() => {});
+      if (request.focus) await win.setFocus().catch(() => {});
+      const values = (text) => String(text || "").split(",").map(Number);
+      const [x, y] = values(request.position);
+      const Position = window.__TAURI__.dpi?.LogicalPosition;
+      if (Position && Number.isFinite(x) && Number.isFinite(y)) await win.setPosition(new Position(x, y)).catch(() => {});
+      const [cols, rows] = values(request.dimensions);
+      const Size = window.__TAURI__.dpi?.LogicalSize;
+      if (Size && Number.isFinite(cols) && Number.isFinite(rows)) {
+        await win.setSize(new Size(Math.max(400, cols * 9), Math.max(200, rows * 18))).catch(() => {});
+      }
+    }
+    const asked = panes.findIndex((pane) => pane.id === request.termId);
+    if (asked >= 0) activePane = asked;
+    for (const action of request.actions || []) {
+      if (action.kind === "focus-tab") {
+        focusPane(action.target === 1 && companion() ? 1 : 0);
+        continue;
+      }
+      if (action.kind === "move-focus") {
+        const firstPane = ["left", "up", "first", "previous", "previousInOrder"].includes(action.direction);
+        focusPane(firstPane || !companion() ? 0 : 1);
+        continue;
+      }
+      if (action.kind === "swap-pane" && companion()) {
+        panes.reverse();
+        activePane = 1 - activePane;
+        renderPanes();
+        continue;
+      }
+      if (!["new-tab", "split-pane"].includes(action.kind)) continue;
+      try {
+        const source = current();
+        const cwd = action.cwd || source?.info.projectPath || info.projectPath;
+        const shell = action.duplicate ? (source?.profile || "auto") : profileShell(action.profile);
+        const name = action.title || cwd.split(/[\\/]/).filter(Boolean).pop() || "Terminal";
+        if (action.kind === "split-pane" && !companion()) {
+          await openCompanion({
+            shell,
+            command: action.duplicate ? "" : action.command,
+            cwd,
+            name,
+            direction: action.direction || "vertical",
+            size: action.size,
+          });
+        } else {
+          const next = await invoke("term_open", { args: {
+            projectPath: cwd,
+            projectName: name,
+            ...(action.command && !action.duplicate ? { command: action.command } : {}),
+            shell,
+          }});
+          await invoke("term_popout", {
+            id: next.id, x: null, y: null, position: request.position || null,
+            dimensions: request.dimensions || null, maximized: !!request.maximized,
+            fullscreen: !!request.fullscreen, focus: request.focus !== false,
+          });
+          await emit("term:popped-created", { info: next }).catch(() => {});
+        }
+      } catch (error) {
+        // The console is not somewhere anyone is looking. A pane that never
+        // arrives says why in the window that was asked for it, and back in
+        // the shell that asked, where a script can read it.
+        const program = String(action.command || "").trim().match(/^"([^"]+)"|^(\S+)/);
+        const named = program ? (program[1] || program[2]).split(/[\\/]/).pop() : "That command";
+        // A program that is simply not here already says so in one sentence;
+        // anything else needs to name what the pane was trying to do.
+        const said = /is not installed/i.test(String(error))
+          ? String(error)
+          : `${/could not start/i.test(String(error)) ? `${named} couldn't start` : "That pane couldn't open"}: ${error}`;
+        sayInTitle(said);
+        if (request.token) await invoke("wt_report", { token: request.token, ok: false, message: String(error) }).catch(() => {});
+        return;
+      }
+    }
+    if (request.token) await invoke("wt_report", { token: request.token, ok: true, message: "" }).catch(() => {});
+  });
+
+  /* ----------------------------------------------------- window controls */
 
   document.getElementById("pop-debug").onclick = () => {
-    navigator.clipboard.writeText(view.debugReport()).catch(() => {});
+    navigator.clipboard.writeText(current().view.debugReport()).catch(() => {});
   };
 
   document.getElementById("pop-dock").onclick = async () => {
@@ -206,7 +589,7 @@
     const pos = await win.outerPosition();
     const scale = window.devicePixelRatio || 1;
     await emit("term:drop", {
-      id,
+      id: panes[0]?.id || id,
       x: pos.x + grabX * scale,
       y: pos.y + grabY * scale,
     });
@@ -216,11 +599,11 @@
   new ResizeObserver(() => {
     clearTimeout(pending);
     pending = setTimeout(() => {
-      view.fit();
+      for (const pane of panes) pane.view.fit();
       if (!pendingRestoreSettle) return;
       pendingRestoreSettle = false;
     }, 60);
-  }).observe(host);
+  }).observe(layout);
 
   // Alt+F4 and anything else Windows counts as a close request mean the same
   // as the cross: the shell ends here.

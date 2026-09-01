@@ -57,9 +57,52 @@ fn wide(s: &str) -> Vec<u16> {
         .collect()
 }
 
+/// The program a command line names, without its arguments. A whole command
+/// line quoted back is not something anyone reads: what matters is which
+/// program was wanted.
+fn program_name(command: &str) -> String {
+    let trimmed = command.trim();
+    let first = match trimmed.strip_prefix('"') {
+        Some(rest) => rest.split('"').next().unwrap_or(rest),
+        None => trimmed.split_whitespace().next().unwrap_or(trimmed),
+    };
+    Path::new(first)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| first.to_string())
+}
+
+/// Why a shell did not start, in the words of the person who asked for one.
+/// The overwhelmingly common answer is that the program is not on this
+/// computer, and "The system cannot find the file specified. (0x80070002)" is
+/// a poor way of saying so.
+fn spawn_failure(command: &str, error: &windows::core::Error) -> String {
+    const NOT_FOUND: i32 = -2147024894; // HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)
+    const NO_PATH: i32 = -2147024893; // HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)
+    let program = program_name(command);
+    match error.code().0 {
+        NOT_FOUND | NO_PATH => format!("{program} is not installed on this computer."),
+        _ => format!("{program} could not start: {}", error.message()),
+    }
+}
+
 impl ConPty {
     /// Spawns `command` in `cwd`, attached to a fresh pseudoconsole.
     pub fn spawn(command: &str, cwd: &Path, cols: u16, rows: u16) -> Result<Self, String> {
+        Self::spawn_with_env(command, cwd, cols, rows, &[])
+    }
+
+    /// Spawns a command with a few session-local environment overrides. The
+    /// desktop process itself is deliberately left untouched: only children of
+    /// this pseudoconsole see these values.
+    pub fn spawn_with_env(
+        command: &str,
+        cwd: &Path,
+        cols: u16,
+        rows: u16,
+        overrides: &[(&str, String)],
+    ) -> Result<Self, String> {
         unsafe {
             // Two pipes: one carries our keystrokes in, the other carries the
             // pseudoconsole's rendered VT stream out.
@@ -128,6 +171,21 @@ impl ConPty {
             let mut pi = PROCESS_INFORMATION::default();
             let mut cmd = wide(command);
             let dir = wide(&cwd.to_string_lossy());
+            let mut environment: Vec<(String, String)> = std::env::vars().collect();
+            for (name, value) in overrides {
+                environment.retain(|(key, _)| !key.eq_ignore_ascii_case(name));
+                environment.push(((*name).to_string(), value.clone()));
+            }
+            environment.sort_by(|a, b| a.0.to_ascii_uppercase().cmp(&b.0.to_ascii_uppercase()));
+            let mut environment_block = Vec::<u16>::new();
+            for (name, value) in environment {
+                environment_block.extend(
+                    std::ffi::OsStr::new(&format!("{name}={value}"))
+                        .encode_wide()
+                        .chain(std::iter::once(0)),
+                );
+            }
+            environment_block.push(0);
 
             let spawned = CreateProcessW(
                 PCWSTR::null(),
@@ -136,7 +194,7 @@ impl ConPty {
                 None,
                 false,
                 EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-                None,
+                Some(environment_block.as_ptr() as *const c_void),
                 PCWSTR(dir.as_ptr()),
                 &si.StartupInfo,
                 &mut pi,
@@ -147,7 +205,7 @@ impl ConPty {
                 ClosePseudoConsole(hpcon);
                 let _ = CloseHandle(in_write);
                 let _ = CloseHandle(out_read);
-                return Err(format!("Could not start {command}: {e}"));
+                return Err(spawn_failure(command, &e));
             }
 
             Ok(ConPty {

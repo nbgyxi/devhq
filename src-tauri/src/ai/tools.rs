@@ -422,7 +422,8 @@ impl ToolRegistry {
             "list_repair_targets" => {
                 let repair = required_str(&call.arguments, "repair")?.trim_start_matches("repair-");
                 if ![
-                    "audio", "swap", "gpu", "bounds", "net", "radio", "usb", "shell", "spooler",
+                    "audio", "swap", "gpu", "bounds", "net", "wifi", "radio", "usb", "shell",
+                    "spooler",
                 ]
                 .contains(&repair)
                 {
@@ -649,6 +650,7 @@ mod tests {
             "windows:repair-gpu",
             "windows:repair-bounds",
             "windows:repair-net",
+            "windows:repair-wifi",
             "windows:repair-radio",
             "windows:repair-usb",
             "windows:repair-shell",

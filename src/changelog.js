@@ -16,10 +16,264 @@
 window.devhqChangelog = (() => {
   const releases = [
     {
+      version: "0.50.1",
+      date: "2026-09-01",
+      title: "Room for the shell list",
+      changes: [
+        ["better", "The shells DevHQ can fetch now use the full width of Settings instead of being squeezed into the narrow control column. Each one has room for its version, what state this computer is in and its button on a single line, and folds to two lines rather than truncating when the window is narrow."],
+      ],
+    },
+    {
+      version: "0.50.0",
+      date: "2026-09-01",
+      title: "Split a terminal in its own window",
+      changes: [
+        ["new", "A popped-out terminal splits like the panel does. The split button in its titlebar offers every shell this computer has - or the same one the pane is already running - side by side or stacked."],
+        ["new", "Each pane in a split window has its own tab saying which shell it is, in the same colours and codes the panel uses, so the two sides can never be mistaken for each other. The tab carries the folder and a cross that closes just that pane."],
+        ["new", "The divider between two panes can be dragged, in a popped-out window as well as in the panel. Closing one pane leaves the other with the whole window instead of taking the window with it."],
+        ["better", "Clicking a pane makes it the one the titlebar, the debug report and `wt` commands are talking about."],
+        ["fix", "A `wt split-pane pwsh` line now opens PowerShell 7 when the only copy on the machine is one that is not on PATH - an install that never joined it, or the one DevHQ downloaded - instead of falling back to Windows PowerShell. The same goes for `nu`."],
+      ],
+    },
+    {
+      version: "0.49.0",
+      date: "2026-09-01",
+      title: "A shell you do not have is now a button",
+      changes: [
+        ["new", "Settings › Terminal can fetch PowerShell 7, PowerShell Preview, NuShell and Git Bash for you. Each one comes straight from the project that publishes it, is checked against that project's own SHA-256 before anything is unpacked, and lands in DevHQ's own folder - nothing is installed on the machine and nothing else on it changes."],
+        ["new", "A terminal or a `wt` pane that fails because the shell is not installed now offers to get it, instead of quoting a winget command to go and type somewhere else. The offer says how big the download is and which site it comes from."],
+        ["new", "A shell DevHQ downloaded can be removed again from the same place, with the space it is taking shown next to it."],
+        ["better", "A shell you installed yourself is always the one that runs. DevHQ's copy is only ever looked for after PATH and Program Files, so it can never quietly shadow a newer PowerShell or Git you maintain."],
+        ["better", "Downloads report their megabytes on the status bar whether or not Settings is open, and can be cancelled mid-transfer; a cancelled or corrupt download is discarded rather than left half-unpacked."],
+      ],
+    },
+    {
+      version: "0.48.1",
+      date: "2026-09-01",
+      title: "The reset names the resolver that is failing",
+      changes: [
+        ["new", "Wi-Fi & Internet Reset now asks for administrator itself, once, for the run you asked for - the same prompt the hosts file uses. Restarting the adapter and clearing the ARP cache actually happen instead of being refused. Dismiss the prompt and it still does everything that does not need it, and says so."],
+        ["new", "The connection list shows the DNS servers each adapter is using, and the reset asks every one of them for a name after it finishes: the system resolver, each configured server, and 1.1.1.1 as a control, each with the time it took. A name that resolves through 1.1.1.1 but not through the router points at the router's resolver rather than the connection."],
+        ["fix", "Reset reports no longer come back with mojibake where an accent or a separator should be."],
+      ],
+    },
+    {
+      version: "0.48.0",
+      date: "2026-09-01",
+      title: "Reset the connection that keeps dropping",
+      changes: [
+        ["new", "Wi-Fi & Internet Reset is a new tool. It lists every connection on the machine with the network it is on, its signal, its address and its gateway, and resets the one you pick: the adapter goes down and up, the DNS and ARP caches go, and a fresh DHCP lease is taken."],
+        ["new", "The reset answers with what it found afterwards - the address it came back with, whether the gateway replies, whether the internet is reachable and whether names still resolve - so an intermittent drop-out is either fixed or narrowed down in one click."],
+        ["better", "Steps Windows refuses without administrator rights no longer abandon the reset. Everything else still runs, and the report names what was refused and says to run DevHQ as administrator for those."],
+        ["fix", "Adapter and Bluetooth names with accents or symbols in them no longer come back as replacement characters in the repair tools."],
+      ],
+    },
+    {
+      version: "0.47.6",
+      date: "2026-09-01",
+      title: "Missing shells say what to install",
+      changes: [
+        ["better", "A shell that is not on this computer now reads as \"pwsh isn't installed\" with the command that installs it, instead of quoting the whole command line back with a Windows error number after it."],
+        ["better", "The same sentence is what `wt` prints at the prompt and what a popped-out terminal shows, so the answer is the same wherever the pane was asked for."],
+        ["better", "Picking a shell DevHQ cannot find from the terminal menu says how to install that one too, rather than only that it could not start."],
+      ],
+    },
+    {
+      version: "0.47.5",
+      date: "2026-09-01",
+      title: "wt lines written elsewhere run here",
+      changes: [
+        ["new", "A pane asked to run `pwsh` on a machine without PowerShell 7 runs Windows PowerShell instead, and says so on its first line. The `wt split-pane … pwsh …` lines everyone already has now work on a machine that never installed PowerShell 7, which is the entire point of DevHQ taking those lines."],
+        ["better", "Every other program a pane is asked to run is left exactly as written - a pane quietly running something other than what was asked for would be worse than one that does not open."],
+      ],
+    },
+    {
+      version: "0.47.4",
+      date: "2026-09-01",
+      title: "Terminals stop fighting their own wt",
+      buildChecksum: "2d33980a4f74e59449827b85b6debf1885498a78777f63433cc67c61608e3210",
+      changes: [
+        ["fix", "Opening a terminal no longer fails while a `wt` command is waiting. DevHQ copied its wt compatibility program over itself every time a shell started, which the running copy of that program blocks - so a split asked for by `wt` could not open the pane it was asking for."],
+        ["better", "That program is only replaced when it has actually changed, and a copy still in use is moved aside instead of blocking the update. A shell never fails to open over it again."],
+        ["better", "The failure dialog only names the program when the program is what failed, rather than blaming it for anything that went wrong on the way to the pane."],
+      ],
+    },
+    {
+      version: "0.47.3",
+      date: "2026-09-01",
+      title: "wt answers in the shell",
+      changes: [
+        ["new", "`wt` now waits for DevHQ and reports back into the terminal it was typed in: a pane that could not start prints the reason and exits non-zero, so a script that chains commands stops instead of carrying on as though the pane were there."],
+        ["new", "`wt --help` prints what DevHQ supports at the prompt rather than only flashing it in the status bar."],
+        ["better", "A `wt` command from a terminal DevHQ no longer holds says so at the prompt instead of returning silently."],
+      ],
+    },
+    {
+      version: "0.47.2",
+      date: "2026-09-01",
+      title: "A pane that cannot start says so",
+      changes: [
+        ["fix", "A `wt` command whose program is not installed - `split-pane … pwsh` on a machine without PowerShell 7 - now names that program instead of blaming the shell profile the pane would have used, which was always one that works."],
+        ["fix", "The same failure in a popped-out terminal is written across that window's title instead of only into a console nobody reads."],
+      ],
+    },
+    {
+      version: "0.47.1",
+      date: "2026-09-01",
+      title: "wt split-pane lands again",
+      changes: [
+        ["fix", "`wt split-pane` and the other Windows Terminal commands work in DevHQ's terminals again: the queue DevHQ reads them from stopped for the rest of the run the moment it could not see a window, so every command after that was accepted and then thrown away."],
+        ["better", "A `wt` command DevHQ does not take now says so in the shell instead of returning as though it had worked, and one from a terminal DevHQ no longer holds says so in the panel."],
+      ],
+    },
+    {
+      version: "0.47.0",
+      date: "2026-09-01",
+      title: "Direct AI model management",
+      buildChecksum: "6ee70495927c95f80b0d9bcf74f993c3765d01690e8221040a264691609916f6",
+      changes: [
+        ["new", "Assistant settings include a Manage models shortcut that opens the pinned AI sidebar directly on installed models, downloads, and provider configuration."],
+      ],
+    },
+    {
+      version: "0.46.4",
+      date: "2026-09-01",
+      title: "Always-pinned AI",
+      changes: [
+        ["better", "The AI assistant always opens pinned beside DevHQ, and its redundant pin/unpin control has been removed."],
+      ],
+    },
+    {
+      version: "0.46.3",
+      date: "2026-09-01",
+      title: "AI beside Terminal",
+      changes: [
+        ["better", "The AI assistant button now lives in the bottom status bar immediately beside Terminal instead of occupying the title bar."],
+      ],
+    },
+    {
+      version: "0.46.2",
+      date: "2026-09-01",
+      title: "Compact pinned-tool shelf",
+      changes: [
+        ["better", "The expanded pinned-tools shelf has a small Compact button that returns pins to the status bar and restores the More control for overflow."],
+      ],
+    },
+    {
+      version: "0.46.1",
+      date: "2026-09-01",
+      title: "Visible pinned-tool overflow",
+      changes: [
+        ["fix", "The compact toolbar's More button now switches pinned tools to their dedicated wrapping shelf instead of opening a popover that isolated tool webviews could cover."],
+      ],
+    },
+    {
+      version: "0.46.0",
+      date: "2026-09-01",
+      title: "Readable release history",
+      changes: [
+        ["better", "What's new shows one collapsed row per major/minor release and reveals its main notes and patch releases when expanded."],
+      ],
+    },
+    {
+      version: "0.45.5",
+      date: "2026-09-01",
+      title: "Authorized version-window controls",
+      changes: [
+        ["fix", "What's new is now authorized to use native window controls, so clicking outside or pressing Escape hides it and dragging its header moves it."],
+      ],
+    },
+    {
+      version: "0.45.4",
+      date: "2026-09-01",
+      title: "Search-style version dismissal",
+      changes: [
+        ["fix", "What's new now hides its current native window directly on focus loss, using the same dismissal path as Search instead of routing the close through a backend command."],
+      ],
+    },
+    {
+      version: "0.45.3",
+      date: "2026-09-01",
+      title: "Reliable version-window activation",
+      changes: [
+        ["fix", "What's new confirms native focus after its page is ready, so outside-click dismissal works even when the initial Windows focus event arrived before the page subscribed."],
+      ],
+    },
+    {
+      version: "0.45.2",
+      date: "2026-09-01",
+      title: "Stable version-window focus",
+      changes: [
+        ["fix", "What's new waits for Windows to confirm that its native window received focus before enabling outside-click dismissal, so it no longer closes while opening."],
+      ],
+    },
+    {
+      version: "0.45.1",
+      date: "2026-09-01",
+      title: "Version window dismissal",
+      changes: [
+        ["fix", "What's new now closes reliably when its native window loses focus, even when WebView2 continues to report document focus."],
+      ],
+    },
+    {
+      version: "0.45.0",
+      date: "2026-09-01",
+      title: "Navigation above isolated tools",
+      changes: [
+        ["fix", "Help tool links now navigate through the shell bridge and acknowledge navigation before their isolated webview is replaced."],
+        ["fix", "Switching tools from Help or the bottom bar serializes WebView2 teardown and creation, preventing Event Streamer and other isolated tools from freezing the app."],
+        ["fix", "The `>` command-search shortcut works inside isolated tools without intercepting text fields or editors."],
+        ["new", "What's new opens in a movable, resizable native dialog above every tool, closes with Escape, and dismisses when you click outside it."],
+      ],
+    },
+    {
+      version: "0.44.2",
+      date: "2026-09-01",
+      title: "Visible device tests",
+      changes: [
+        ["better", "Playback and microphone test buttons disable immediately and show Playing or Testing with a spinner until the test finishes."],
+      ],
+    },
+    {
+      version: "0.44.1",
+      date: "2026-09-01",
+      title: "Visible mute progress",
+      changes: [
+        ["better", "Mute and Unmute immediately disable the clicked control and show a spinner with the action in progress while Windows applies it."],
+      ],
+    },
+    {
+      version: "0.44.0",
+      date: "2026-09-01",
+      title: "Sound devices that really switch",
+      changes: [
+        ["fix", "Sound Device Switcher now uses the current Windows audio policy interface and verifies every default-device role before reporting success."],
+        ["new", "Every playback and recording endpoint has its own volume and mute controls, playback test, or microphone input test."],
+        ["better", "A device is shown as selected only when Windows reports it as the Console, Multimedia, and Communications default."],
+      ],
+    },
+    {
+      version: "0.43.4",
+      date: "2026-09-01",
+      title: "Tools that cannot take down the shell",
+      buildChecksum: "945b20b9da431a83649694ffce0c16eafe54a12ca9705bd1568c87fae81e2e5f",
+      changes: [
+        ["better", "Every tool now runs in an isolated child WebView behind a shared, tool-agnostic shell, so navigation, Search, pins and window controls remain independent of tool failures."],
+        ["new", "A versioned tool bridge carries context, state and shell requests between isolated tools and DevHQ, providing one host contract for current and future tools."],
+        ["better", "Tool-specific actions now live inside their tools, including Event Log refresh, Registry reload, Environment scanning and Git help navigation."],
+        ["better", "Pop-out and pop-in preserve the correct tool and shell layout without blocking the main window or exposing an intermediate overview."],
+        ["new", "Search now opens in its own opaque, movable native window above isolated tools, focuses immediately and includes copyable focus diagnostics."],
+        ["better", "Clicking the title-bar search anchors Search over that field, while Ctrl+K continues to open it in the center."],
+        ["fix", "Native Search activation no longer dispatches WebView focus synchronously from the Windows hotkey callback, preventing a UI-thread deadlock."],
+        ["fix", "Search only scans processes and ports for relevant kill queries instead of starting unnecessary background work whenever it opens."],
+        ["fix", "Theme changes immediately repaint both the document and native background of an already-open isolated tool."],
+      ],
+    },
+    {
       version: "0.43.3",
       date: "2026-08-31",
       title: "Clear Cursor activity",
-      buildChecksum: "368bd148a22df99a0e2706af79b959307cea0dc949068f4e7c67c521baee1ad1",
+      buildChecksum: "ee2c1acc02f6abc792bd7d102fff8747109d4e0b8df7823406fc55da0f04768c",
       changes: [
         ["fix", "Cursor activity names the tool being used instead of exposing internal timing fields; unknown activity appears neutrally as Thinking."],
       ],

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<script>document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") === "light" ? "light" : "dark";</script>
+<link rel="stylesheet" href="styles.css?v=0.43.30" />
+<link rel="stylesheet" href="changelog-window.css?v=1" />
+</head>
+<body class="changelog-window">
+  <main class="changelog-pop">
+    <header class="changelog-head" data-drag-region>
+      <span class="changelog-title">What's new</span>
+      <span class="changelog-now" id="current-version">DevHQ</span>
+      <button class="win-btn" id="close" type="button" title="Close"><span class="ms">close</span></button>
+    </header>
+    <div class="changelog-list" id="releases"></div>
+  </main>
+  <script src="changelog.js?v=0.47.0"></script>
+  <script src="changelog-window.js?v=6"></script>
+</body>
+</html>

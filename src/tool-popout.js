@@ -286,13 +286,15 @@
   };
 
   // Hide the in-page pin/close chrome — the title bar owns dock and close here.
+  window.devhqExternalToolChrome = true;
   document.body.classList.add("tool-popout-chrome");
 
   try {
     await window.devhqToolState?.receive?.(id);
     if (id === "ports") {
       host.className = "tool-pop-host ports-page tool-pop-ports";
-      await mountPorts(host);
+      window.devhqPortsTool?.mount(host);
+      await window.devhqPortsTool?.opened();
     } else if (id === "dns") {
       host.className = "tool-pop-host dns-page";
       window.devhqDns?.mount(host);
@@ -338,6 +340,9 @@
   } finally {
     hideBoot();
   }
+  // The main shell keeps its current tool covered until this exact point: the
+  // pop-out exists, its tool has mounted, and it is safe to release the source.
+  await emit("tool:ready", { id }).catch(() => {});
 
   // Always-on-top, remembered per tool id the way terminals remember per session.
   const readOnTop = () => {

@@ -7,6 +7,7 @@ pub mod conpty;
 mod cwd;
 pub mod disk_space;
 pub mod dns;
+mod download;
 pub mod git;
 pub mod github;
 #[cfg(windows)]
@@ -16,6 +17,8 @@ mod path_ping;
 #[cfg(windows)]
 mod picker;
 pub mod procs;
+#[cfg(windows)]
+mod shells;
 mod tech;
 #[cfg(windows)]
 mod term;
@@ -60,18 +63,459 @@ fn minimize_to_tray(app: AppHandle) {
 #[derive(Default)]
 struct PendingTool(Mutex<Option<String>>);
 
+#[derive(Default)]
+struct SearchGlobalShortcut(Mutex<Option<u32>>);
+
+#[tauri::command]
+fn search_global_binding_set(
+    state: tauri::State<'_, SearchGlobalShortcut>,
+    binding: String,
+) -> Result<(), String> {
+    let id = if binding.trim().is_empty() {
+        None
+    } else {
+        Some(
+            binding
+                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                .map_err(|e| format!("That Search shortcut is invalid: {e}"))?
+                .id,
+        )
+    };
+    *state.0.lock().map_err(|_| "Search shortcut state is unavailable.".to_string())? = id;
+    Ok(())
+}
+
 fn tool_arg(args: &[String]) -> Option<String> {
     args.iter()
         .find_map(|arg| arg.strip_prefix("--open-tool=").map(str::to_owned))
 }
 
 fn deliver_tool_arg(app: &AppHandle, args: &[String]) {
+    deliver_tool_arg_for(app, args, "")
+}
+
+/// `token` names the queued request, and is what the window answers on so the
+/// `wt` still waiting in the shell learns what happened. Empty for arguments
+/// that arrived on a command line, where there is nobody left to tell.
+fn deliver_tool_arg_for(app: &AppHandle, args: &[String], token: &str) {
+    if let Some(mut request) = wt_request_arg(args) {
+        request.token = token.to_string();
+        let _ = app.emit("term:wt-request", request);
+        return;
+    }
     let Some(id) = tool_arg(args) else { return };
     if let Ok(mut pending) = app.state::<PendingTool>().0.lock() {
         *pending = Some(id.clone());
     }
     show_main_window(app);
     let _ = app.emit("tray:open-tool", id);
+}
+
+/// A request the `wt` proxy left behind is only worth acting on while the
+/// terminal that sent it can still be looked at. One that nothing picked up in
+/// half a minute is from a window that has gone, and is dropped rather than
+/// replayed into whatever is open now.
+fn wt_request_is_stale(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .and_then(|data| data.modified())
+        .map(|written| written.elapsed().unwrap_or_default() > Duration::from_secs(30))
+        .unwrap_or(true)
+}
+
+fn start_wt_request_queue(app: AppHandle) {
+    std::thread::spawn(move || {
+        let Some(local) = std::env::var_os("LOCALAPPDATA") else { return };
+        let queue = PathBuf::from(local).join("DevHQ").join("runtime").join("requests");
+        let _ = std::fs::create_dir_all(&queue);
+        let mut reported = false;
+        let mut passes: u32 = 0;
+        loop {
+            passes = passes.wrapping_add(1);
+            if passes % 50 == 0 { sweep_wt_replies(); }
+            // The windows are deliberately not a condition for staying here.
+            // Ending this thread the first time none could be found - during
+            // startup, or for the instant one is being replaced - took every
+            // `wt` command for the rest of the run down with it, silently: the
+            // proxy went on writing requests that nobody was left to read.
+            match std::fs::read_dir(&queue) {
+                Ok(entries) => {
+                    reported = false;
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        let valid = path.file_name().and_then(|name| name.to_str())
+                            .is_some_and(|name| name.starts_with("wt-") && name.ends_with(".json"));
+                        if !valid { continue; }
+                        // Nothing can act on it yet. Leave it where it is and
+                        // take it on a later pass rather than dropping it.
+                        if app.webview_windows().is_empty() {
+                            if wt_request_is_stale(&path) { let _ = std::fs::remove_file(&path); }
+                            continue;
+                        }
+                        let token = path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        if let Ok(bytes) = std::fs::read(&path) {
+                            if let Ok(args) = serde_json::from_slice::<Vec<String>>(&bytes) {
+                                deliver_tool_arg_for(&app, &args, &token);
+                            }
+                        }
+                        // Removed last: the proxy waits for the file to go, and
+                        // that is what tells the shell the command was taken.
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
+                Err(error) => {
+                    if !reported {
+                        eprintln!("DevHQ: the wt request queue at {} cannot be read: {error}", queue.display());
+                        reported = true;
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        }
+    });
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct WtRequest {
+    term_id: String,
+    /// The queued file this came from. The window that acts on the request
+    /// answers on this name, and `wt` is still in the shell waiting for it.
+    token: String,
+    window: String,
+    maximized: bool,
+    fullscreen: bool,
+    focus: bool,
+    position: Option<String>,
+    dimensions: Option<String>,
+    actions: Vec<WtAction>,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+struct WtAction {
+    kind: String,
+    cwd: String,
+    title: String,
+    profile: String,
+    command: String,
+    direction: String,
+    target: Option<usize>,
+    size: Option<f64>,
+    duplicate: bool,
+    tab_color: String,
+    color_scheme: String,
+}
+
+fn quote_windows_arg(value: &str) -> String {
+    if !value.is_empty() && !value.chars().any(|c| c.is_whitespace() || c == '"') {
+        return value.to_string();
+    }
+    let mut out = String::from("\"");
+    let mut slashes = 0;
+    for ch in value.chars() {
+        if ch == '\\' {
+            slashes += 1;
+        } else if ch == '"' {
+            out.push_str(&"\\".repeat(slashes * 2 + 1));
+            out.push('"');
+            slashes = 0;
+        } else {
+            out.push_str(&"\\".repeat(slashes));
+            slashes = 0;
+            out.push(ch);
+        }
+    }
+    out.push_str(&"\\".repeat(slashes * 2));
+    out.push('"');
+    out
+}
+
+fn is_wt_action(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "new-tab"
+            | "nt"
+            | "split-pane"
+            | "sp"
+            | "focus-tab"
+            | "ft"
+            | "move-focus"
+            | "mf"
+            | "move-pane"
+            | "mp"
+            | "swap-pane"
+    )
+}
+
+fn wt_request_arg(args: &[String]) -> Option<WtRequest> {
+    let term_id = args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--devhq-wt="))?
+        .to_string();
+    let mut request = WtRequest {
+        term_id,
+        token: String::new(),
+        window: "0".into(),
+        maximized: false,
+        fullscreen: false,
+        focus: false,
+        position: None,
+        dimensions: None,
+        actions: Vec::new(),
+    };
+    let clean = args
+        .iter()
+        .skip(1)
+        .filter(|arg| !arg.starts_with("--devhq-wt="))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut groups = Vec::<Vec<String>>::new();
+    let mut group = Vec::new();
+    for arg in clean {
+        if arg == ";" || arg == "\\;" {
+            if !group.is_empty() {
+                groups.push(group);
+                group = Vec::new();
+            }
+        } else {
+            group.push(arg);
+        }
+    }
+    if !group.is_empty() {
+        groups.push(group);
+    }
+    if groups.is_empty() {
+        request.actions.push(WtAction {
+            kind: "new-tab".into(),
+            ..Default::default()
+        });
+        return Some(request);
+    }
+    for (group_index, words) in groups.into_iter().enumerate() {
+        let mut action = WtAction::default();
+        let mut index = 0;
+        if group_index == 0 {
+            while index < words.len() && !is_wt_action(&words[index]) {
+                let word = &words[index];
+                let next = || words.get(index + 1).cloned();
+                match word.as_str() {
+                    "--help" | "-h" | "-?" | "/?" => {
+                        request.actions.push(WtAction {
+                            kind: "help".into(),
+                            ..Default::default()
+                        });
+                        return Some(request);
+                    }
+                    "--window" | "-w" => {
+                        request.window = next()?;
+                        index += 2;
+                    }
+                    "--maximized" | "-M" => {
+                        request.maximized = true;
+                        index += 1;
+                    }
+                    "--fullscreen" | "-F" => {
+                        request.fullscreen = true;
+                        index += 1;
+                    }
+                    "--focus" | "-f" => {
+                        request.focus = true;
+                        index += 1;
+                    }
+                    "--pos" => {
+                        request.position = next();
+                        index += 2;
+                    }
+                    "--size" => {
+                        request.dimensions = next();
+                        index += 2;
+                    }
+                    _ => break,
+                }
+            }
+        }
+        if words.get(index).is_some_and(|word| is_wt_action(word)) {
+            action.kind = match words[index].to_ascii_lowercase().as_str() {
+                "nt" => "new-tab",
+                "sp" => "split-pane",
+                "ft" => "focus-tab",
+                "mf" => "move-focus",
+                "mp" => "move-pane",
+                other => other,
+            }
+            .into();
+            index += 1;
+        } else if group_index == 0 {
+            action.kind = "new-tab".into();
+        } else {
+            return None;
+        }
+        let mut command = Vec::new();
+        while index < words.len() {
+            let word = &words[index];
+            let lower = word.to_ascii_lowercase();
+            let next = || words.get(index + 1).cloned();
+            match lower.as_str() {
+                "--profile" | "-p" => {
+                    action.profile = next()?;
+                    index += 2;
+                }
+                _ if action.kind == "split-pane" && (word == "-D" || lower == "--duplicate") => {
+                    action.duplicate = true;
+                    index += 1;
+                }
+                "--startingdirectory" | "-d" => {
+                    action.cwd = next()?;
+                    index += 2;
+                }
+                "--title" => {
+                    action.title = next()?;
+                    index += 2;
+                }
+                "--tabcolor" => {
+                    action.tab_color = next()?;
+                    index += 2;
+                }
+                "--colorscheme" => {
+                    action.color_scheme = next()?;
+                    index += 2;
+                }
+                "--horizontal" | "-h" => {
+                    action.direction = "horizontal".into();
+                    index += 1;
+                }
+                "--vertical" | "-v" => {
+                    action.direction = "vertical".into();
+                    index += 1;
+                }
+                "--size" | "-s" if action.kind == "split-pane" => {
+                    action.size = next()?.parse().ok();
+                    index += 2;
+                }
+                "--target" | "--tab" | "-t" => {
+                    action.target = next()?.parse().ok();
+                    index += 2;
+                }
+                "--suppressapplicationtitle"
+                | "--useapplicationtitle"
+                | "--appendcommandline"
+                | "--inheritenvironment"
+                | "!--reloadenvironment" => {
+                    index += 1;
+                }
+                _ if matches!(action.kind.as_str(), "move-focus" | "swap-pane") => {
+                    action.direction = word.clone();
+                    index += 1;
+                }
+                _ => {
+                    command.extend_from_slice(&words[index..]);
+                    break;
+                }
+            }
+        }
+        action.command = command
+            .iter()
+            .map(|arg| quote_windows_arg(arg))
+            .collect::<Vec<_>>()
+            .join(" ");
+        request.actions.push(action);
+    }
+    (!request.actions.is_empty()).then_some(request)
+}
+
+fn wt_reply_dir() -> Option<PathBuf> {
+    Some(
+        PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
+            .join("DevHQ")
+            .join("runtime")
+            .join("replies"),
+    )
+}
+
+/// What became of a `wt` command, written back for the proxy still holding the
+/// shell's prompt. A pane that could not start has to be reported where the
+/// command was typed - a dialog in the window is no use to a script, and the
+/// exit status is what a script reads.
+#[tauri::command]
+async fn wt_report(token: String, ok: bool, message: String) -> Result<(), String> {
+    // The token names a file, and it arrives from a window. It may only ever
+    // be one of the queue's own names.
+    let named = token.starts_with("wt-")
+        && token.ends_with(".json")
+        && !token.contains(['/', '\\', ':'])
+        && token.len() < 128;
+    if !named {
+        return Err("That is not a wt request.".into());
+    }
+    off_thread(move || {
+        let replies = wt_reply_dir().ok_or("The local application-data folder is unavailable.")?;
+        std::fs::create_dir_all(&replies).map_err(|e| e.to_string())?;
+        let body = serde_json::json!({ "ok": ok, "message": message }).to_string();
+        // Written aside and renamed, so the proxy never reads half an answer.
+        let pending = replies.join(format!(".{token}.tmp"));
+        std::fs::write(&pending, body).map_err(|e| e.to_string())?;
+        std::fs::rename(&pending, replies.join(&token)).map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap_or_else(|| Err("Could not answer that wt command.".into()))
+}
+
+/// Answers nobody came back for - the shell was closed while `wt` waited, or
+/// the proxy was killed. They are worthless after a few seconds and must not
+/// pile up in a folder DevHQ reads on a timer.
+fn sweep_wt_replies() {
+    let Some(replies) = wt_reply_dir() else { return };
+    let Ok(entries) = std::fs::read_dir(&replies) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if wt_request_is_stale(&path) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+#[cfg(test)]
+mod wt_compat_tests {
+    use super::*;
+
+    #[test]
+    fn parses_the_existing_mock_server_split_command() {
+        let args = [
+            "devhq-desktop.exe",
+            "--devhq-wt=t7",
+            "--window",
+            "0",
+            "split-pane",
+            "--profile",
+            "PowerShell",
+            "--startingDirectory",
+            r"C:\code\app\client",
+            "--title",
+            "Angular frontend",
+            "pwsh",
+            "-noExit",
+            "-ExecutionPolicy",
+            "RemoteSigned",
+            "-Command",
+            "pnpm",
+            "start",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let request = wt_request_arg(&args).unwrap();
+        assert_eq!(request.term_id, "t7");
+        assert_eq!(request.actions[0].kind, "split-pane");
+        assert_eq!(request.actions[0].cwd, r"C:\code\app\client");
+        assert_eq!(
+            request.actions[0].command,
+            "pwsh -noExit -ExecutionPolicy RemoteSigned -Command pnpm start"
+        );
+    }
 }
 
 #[tauri::command]
@@ -92,7 +536,11 @@ fn tray_set_recent_tools(app: AppHandle, tools: Vec<TrayTool>) -> Result<(), Str
 
     #[cfg(windows)]
     {
-        let packaged_icons = app.path().resource_dir().ok().map(|path| path.join("tool-icons"));
+        let packaged_icons = app
+            .path()
+            .resource_dir()
+            .ok()
+            .map(|path| path.join("tool-icons"));
         jump_list::set_recent_tools(&tools, packaged_icons)?;
     }
 
@@ -249,6 +697,32 @@ async fn assistant_cloud_remove(provider: String) -> Result<ai::cloud::CloudStat
 fn assistant_pull(app: AppHandle, model: String) -> Result<(), String> {
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
     ai::pull(app, root, model)
+}
+
+#[cfg(windows)]
+#[tauri::command]
+async fn shell_downloads() -> Vec<shells::ShellDownload> {
+    off_thread(shells::catalog).await.unwrap_or_default()
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn shell_download_start(app: AppHandle, profile: String) -> Result<(), String> {
+    shells::install(app, profile)
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn shell_download_cancel() {
+    shells::cancel();
+}
+
+#[cfg(windows)]
+#[tauri::command]
+async fn shell_download_remove(profile: String) -> Result<(), String> {
+    off_thread(move || shells::remove(&profile))
+        .await
+        .unwrap_or_else(|| Err("The shell could not be removed.".into()))
 }
 
 #[tauri::command]
@@ -1572,6 +2046,27 @@ async fn audio_set_default(id: String) -> windows_tools::ToolResult {
 }
 
 #[tauri::command]
+async fn audio_set_volume(id: String, volume: u32) -> windows_tools::ToolResult {
+    off_thread(move || windows_tools::audio_set_volume(&id, volume))
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn audio_set_muted(id: String, muted: bool) -> windows_tools::ToolResult {
+    off_thread(move || windows_tools::audio_set_muted(&id, muted))
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn audio_test(id: String, flow: String) -> windows_tools::ToolResult {
+    off_thread(move || windows_tools::audio_test(&id, &flow))
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
 async fn repair_targets(id: String) -> Result<Vec<windows_tools::RepairTarget>, String> {
     off_thread(move || windows_tools::repair_targets(&id))
         .await
@@ -1684,16 +2179,36 @@ fn path_ping_cancel() {
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(PendingTool::default())
+        .manage(SearchGlobalShortcut::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             deliver_tool_arg(app, &args);
         }))
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    use tauri_plugin_global_shortcut::ShortcutState;
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+                    let search_id = app
+                        .state::<SearchGlobalShortcut>()
+                        .0
+                        .lock()
+                        .ok()
+                        .and_then(|value| *value);
+                    if search_id == Some(shortcut.id) {
+                        tool_window::focus_search_from_global(app);
+                    }
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
             let args: Vec<String> = std::env::args().collect();
+            start_wt_request_queue(app.handle().clone());
             if let Some(id) = tool_arg(&args) {
                 if let Ok(mut pending) = app.state::<PendingTool>().0.lock() {
                     *pending = Some(id);
@@ -1750,6 +2265,7 @@ pub fn run() {
             minimize_to_tray,
             tray_set_recent_tools,
             take_startup_tool,
+            wt_report,
             cli_status,
             cli_install,
             cli_uninstall,
@@ -1789,6 +2305,10 @@ pub fn run() {
             term::term_prune_history,
             process_survivors,
             term::term_shell_availability,
+            shell_downloads,
+            shell_download_start,
+            shell_download_cancel,
+            shell_download_remove,
             term::term_open,
             term::term_attach,
             term::term_write,
@@ -1802,6 +2322,17 @@ pub fn run() {
             tool_window::tool_focus,
             tool_window::tool_drag_preview,
             tool_window::tool_dock,
+            tool_window::tool_embedded_show,
+            tool_window::tool_embedded_hide,
+            tool_window::tool_embedded_destroy,
+            tool_window::tool_bridge_state_put,
+            tool_window::tool_bridge_state_take,
+            tool_window::search_show,
+            tool_window::search_hide,
+            tool_window::search_prepare,
+            tool_window::changelog_show,
+            tool_window::changelog_hide,
+            search_global_binding_set,
             dns_lookup,
             dns_compare,
             dns_reverse,
@@ -1829,6 +2360,9 @@ pub fn run() {
             lock_inspect,
             audio_devices,
             audio_set_default,
+            audio_set_volume,
+            audio_set_muted,
+            audio_test,
             repair_targets,
             repair_target_run,
             active_window_snapshot,
@@ -1862,6 +2396,7 @@ pub fn run() {
         minimize_to_tray,
         tray_set_recent_tools,
         take_startup_tool,
+        wt_report,
         cli_status,
         cli_install,
         cli_uninstall,
@@ -1922,12 +2457,26 @@ pub fn run() {
         github::github_api,
         audio_devices,
         audio_set_default,
+        audio_set_volume,
+        audio_set_muted,
+        audio_test,
         repair_targets,
         repair_target_run,
         tool_window::tool_popout,
         tool_window::tool_focus,
         tool_window::tool_drag_preview,
-        tool_window::tool_dock
+        tool_window::tool_dock,
+        tool_window::tool_embedded_show,
+        tool_window::tool_embedded_hide
+        ,tool_window::tool_embedded_destroy
+        ,tool_window::tool_bridge_state_put
+        ,tool_window::tool_bridge_state_take
+        ,tool_window::search_show
+        ,tool_window::search_hide
+        ,tool_window::search_prepare
+        ,tool_window::changelog_show
+        ,tool_window::changelog_hide
+        ,search_global_binding_set
     ]);
 
     builder

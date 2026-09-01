@@ -14,9 +14,30 @@
 
 const invoke = window.__TAURI__.core.invoke;
 const listen = window.__TAURI__.event.listen;
+const emit = window.__TAURI__.event.emit;
 const appWindow = window.__TAURI__.window.getCurrentWindow();
 
 const PREFS_KEY = "devhq.prefs.v1";
+/** Present only while a remembered destination is being restored. If the
+ * renderer dies before it can clear this flag, the next launch ignores that
+ * destination and opens the overview instead of repeating the crash forever. */
+const STARTUP_RESTORE_KEY = "devhq.startupRestore.v1";
+let toolRecoveryTimer = 0;
+
+/** Arm a dead-man switch before entering tool code. Exceptions can be caught,
+ * but a synchronous loop blocks this renderer so completely that no handler
+ * can run. In that case this marker survives and the next launch opens the
+ * overview. A healthy renderer clears it after it has kept pumping events. */
+function armToolRecovery(view, tool = "") {
+  clearTimeout(toolRecoveryTimer);
+  try {
+    localStorage.setItem(STARTUP_RESTORE_KEY, JSON.stringify({ view, tool, startedAt: Date.now() }));
+  } catch { /* storage disabled */ }
+  toolRecoveryTimer = setTimeout(() => {
+    try { localStorage.removeItem(STARTUP_RESTORE_KEY); } catch { /* storage disabled */ }
+    toolRecoveryTimer = 0;
+  }, 4000);
+}
 /** Last finished scan, kept so a restart within a few minutes can skip the disk. */
 const SCAN_CACHE_KEY = "devhq.scanCache.v1";
 const SCAN_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -70,6 +91,9 @@ const state = {
   utilToolId: "any",
   /** Which native Windows tool is on screen in their shared host. */
   windowsToolId: "events",
+  /** Tool whose body runs in a separate native child webview. */
+  isolatedToolId: "",
+  isolatedToolSession: "",
   portSearch: "",
   /** Which slice of the machine the explorer is listing: every listening
    *  socket, or every process whether it holds a port or not. */
@@ -207,16 +231,25 @@ function showNextConfirm() {
       <button class="btn ${request.tone === "danger" ? "danger" : "primary"}" type="button" data-confirm="accept">${esc(request.confirmLabel)}</button></div>
   </section>`;
   document.body.appendChild(layer);
+  let settled = false;
   const settle = (accepted) => {
+    if (settled) return;
+    settled = true;
     layer.remove();
     confirmOpen = false;
     request.resolve(accepted);
     showNextConfirm();
   };
+  layer.querySelectorAll("[data-confirm]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const action = button.dataset.confirm;
+      settle(action === "accept" ? true : action === "alternate" ? "alternate" : false);
+    });
+  });
   layer.addEventListener("click", (event) => {
-    const action = event.target.closest("[data-confirm]")?.dataset.confirm;
-    if (action) settle(action === "accept" ? true : action === "alternate" ? "alternate" : false);
-    else if (event.target === layer) settle(false);
+    if (event.target === layer) settle(false);
   });
   layer.addEventListener("keydown", (event) => {
     if (event.key === "Tab") {
@@ -320,6 +353,9 @@ function loadPrefs() {
     if (typeof p.windowsToolId === "string" && window.devhqWindowsTools?.catalog?.().some((tool) => tool.id === p.windowsToolId)) {
       state.windowsToolId = p.windowsToolId;
     }
+    if (typeof p.isolatedToolId === "string" && TOOLS.some((tool) => tool.id === p.isolatedToolId)) {
+      state.isolatedToolId = p.isolatedToolId;
+    }
     if (p.hotkeys && typeof p.hotkeys === "object" && !Array.isArray(p.hotkeys)) {
       state.hotkeys = Object.fromEntries(Object.entries(p.hotkeys)
         .filter(([id, binding]) => typeof id === "string" && typeof binding === "string"));
@@ -364,6 +400,7 @@ function savePrefs() {
         activeView: state.activeView,
         utilToolId: state.utilToolId,
         windowsToolId: state.windowsToolId,
+        isolatedToolId: state.isolatedToolId,
         hotkeys: state.hotkeys,
         hotkeyGlobals: [...state.hotkeyGlobals],
       })
@@ -387,6 +424,9 @@ function applyLanguage() {
 
 function applyTheme() {
   document.documentElement.dataset.theme = state.theme;
+  // Isolated tools are separate native WebViews. Re-running the generic host
+  // sync updates both their document theme and their opaque native surface.
+  if (state.activeView === "isolated-tool" && state.isolatedToolId) queueMicrotask(syncEmbeddedTool);
   // The title bar toggle and the General row are two ways to the same
   // setting, so whichever was used, the other has to show the result.
   for (const choice of el["settings-host"]?.querySelectorAll("[data-setting-theme]") || []) {
@@ -1427,7 +1467,7 @@ function closeSettings() {
 /** Everything the main area can be showing. The overview is the one that is
  *  always there; the rest are tools, each with a host of its own that
  *  `syncMainView` shows and hides. */
-const MAIN_VIEWS = ["overview", "ports", "dns", "hosts", "network", "path-ping", "disk-space", "github", "git", "tools", "windows-tools", "settings"];
+const MAIN_VIEWS = ["overview", "ports", "dns", "hosts", "network", "path-ping", "disk-space", "github", "git", "tools", "windows-tools", "isolated-tool", "settings"];
 
 function switchMainView(view) {
   if (!MAIN_VIEWS.includes(view)) return;
@@ -1440,14 +1480,8 @@ function switchMainView(view) {
     if (view === "git") { syncGitRepositories(); window.devhqGit?.opened(); }
     return;
   }
-  if (state.activeView === "windows-tools" && state.windowsToolId === "time-tracker") {
-    const permission = window.devhqTimeTracker?.confirmLeave?.();
-    if (permission && typeof permission.then === "function") {
-      permission.then((leave) => { if (leave) switchMainView(view); });
-      return;
-    }
-    if (permission === false) return;
-  }
+  // Isolated tools never get a vote on shell navigation. The entire point of
+  // this boundary is that Back/Home/Close still work when their renderer does not.
   if (state.activeView === "disk-space") {
     const permission = window.devhqDiskSpace?.confirmLeave?.();
     if (permission && typeof permission.then === "function") {
@@ -1519,10 +1553,99 @@ function openWindowsTool(id) {
   state.windowsToolId = id;
   savePrefs();
   rememberToolUse(id);
-  window.devhqWindowsTools?.open(id);
+  // The tracker is the first tool hosted in a native child webview. Do not run
+  // its open/render path in the shell renderer as well.
+  if (id !== "time-tracker") window.devhqWindowsTools?.open(id);
   if (state.activeView !== "windows-tools") return switchMainView("windows-tools");
   if (!same) window.devhqTrackPageView?.(`/tools/${id}`);
+  syncEmbeddedTool();
   markDirty("toolbar", "pins");
+}
+
+let embeddedToolOpening = false;
+let embeddedToolResyncPending = false;
+let embeddedToolMountedId = "";
+
+/** Keep the isolated tracker exactly over the ordinary Windows-tools host.
+ * Its child webview is a native sibling of the shell webview, not an iframe,
+ * so a blocked tracker event loop cannot prevent the shell from responding. */
+function syncEmbeddedTool() {
+  const id = state.isolatedToolId;
+  const isolated = state.activeView === "isolated-tool" && Boolean(id);
+  if (isolated && !state.isolatedToolSession) {
+    state.isolatedToolSession = Array.from(crypto.getRandomValues(new Uint8Array(18)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  const host = el["isolated-tool-slot"];
+  if (!isolated || !host || host.hidden) {
+    if (embeddedToolOpening) {
+      embeddedToolResyncPending = true;
+      return;
+    }
+    const mountedId = embeddedToolMountedId || id;
+    if (mountedId) {
+      embeddedToolMountedId = "";
+      embeddedToolOpening = true;
+      invoke("tool_embedded_destroy", { id: mountedId }).catch(() => {}).finally(() => {
+        embeddedToolOpening = false;
+        if (embeddedToolResyncPending) {
+          embeddedToolResyncPending = false;
+          syncEmbeddedTool();
+        }
+      });
+    }
+    return;
+  }
+  if (embeddedToolOpening) {
+    embeddedToolResyncPending = true;
+    return;
+  }
+  requestAnimationFrame(async () => {
+    const rect = host.getBoundingClientRect();
+    if (state.activeView !== "isolated-tool" || state.isolatedToolId !== id) return;
+    if (embeddedToolOpening) return;
+    embeddedToolOpening = true;
+    try {
+      // WebView2 creation and destruction both touch the native window tree.
+      // Never overlap them: switching tools used to race a close for the old
+      // environment against creation of the next one and could freeze the
+      // entire main window.
+      if (embeddedToolMountedId && embeddedToolMountedId !== id) {
+        const mountedId = embeddedToolMountedId;
+        embeddedToolMountedId = "";
+        await invoke("tool_embedded_destroy", { id: mountedId });
+      }
+      await invoke("tool_embedded_show", {
+        id,
+        session: state.isolatedToolSession,
+        theme: state.theme === "light" ? "light" : "dark",
+        pinned: isToolPinned(id),
+        x: rect.left,
+        y: rect.top,
+        width: rect.width,
+        height: rect.height,
+      });
+      // Navigation may have happened while Rust was creating WebView2.
+      if (state.activeView !== "isolated-tool" || state.isolatedToolId !== id) {
+        await invoke("tool_embedded_destroy", { id }).catch(() => {});
+      } else {
+        embeddedToolMountedId = id;
+      }
+    } catch (error) {
+      console.error("Could not show isolated Time Tracker", error);
+      state.activeView = "overview";
+      state.isolatedToolId = "";
+      savePrefs();
+      syncMainView();
+      beginWork("isolated-tool-fail", "Time Tracker could not open", String(error));
+      setTimeout(() => endWork("isolated-tool-fail"), 8000);
+    } finally {
+      embeddedToolOpening = false;
+      if (embeddedToolResyncPending) {
+        embeddedToolResyncPending = false;
+        syncEmbeddedTool();
+      }
+    }
+  });
 }
 
 // A narrower window wraps the shelf onto another row: what is under it has to
@@ -1530,6 +1653,7 @@ function openWindowsTool(id) {
 window.addEventListener("resize", () => {
   measurePinsPanel();
   if (rootEditorOpen()) placeRootPop();
+  syncEmbeddedTool();
 });
 
 window.addEventListener("devhq:open-tool", (event) => {
@@ -1577,7 +1701,9 @@ function syncMainView() {
   if (el["git-host"]) el["git-host"].hidden = state.activeView !== "git";
   if (el["tools-host"]) el["tools-host"].hidden = state.activeView !== "tools";
   if (el["windows-tools-host"]) el["windows-tools-host"].hidden = state.activeView !== "windows-tools";
+  if (el["isolated-tool-host"]) el["isolated-tool-host"].hidden = state.activeView !== "isolated-tool";
   if (el["settings-host"]) el["settings-host"].hidden = state.activeView !== "settings";
+  syncEmbeddedTool();
   el["search-input"].value = state.search;
   if (el["port-filter-input"]) el["port-filter-input"].value = state.portSearch;
   el["search-input"].placeholder = "Search projects, tools and commands...";
@@ -1606,8 +1732,15 @@ function openRestoredView() {
     window.devhqUtilTools?.opened();
   }
   if (state.activeView === "windows-tools") {
-    window.devhqWindowsTools?.open(state.windowsToolId);
-    window.devhqWindowsTools?.opened();
+    if (state.windowsToolId === "time-tracker") syncEmbeddedTool();
+    else {
+      window.devhqWindowsTools?.open(state.windowsToolId);
+      window.devhqWindowsTools?.opened();
+    }
+  }
+  if (state.activeView === "isolated-tool") {
+    renderIsolatedToolChrome();
+    syncEmbeddedTool();
   }
 }
 
@@ -2484,7 +2617,7 @@ function loadAppVersion() {
 }
 
 function changelogOpen() {
-  return !el["changelog-pop"].hidden;
+  return false;
 }
 
 /** The screen the window is showing, named for analytics. Worked out from the
@@ -2498,20 +2631,15 @@ function currentPath() {
 }
 
 function openChangelog() {
-  buildChangelog();
-  el["changelog-pop"].hidden = false;
-  el["status-version"].classList.add("on");
-  el["status-version"].setAttribute("aria-expanded", "true");
-  el["changelog-pop"].scrollTop = 0;
+  invoke("changelog_show", { theme: state.theme === "light" ? "light" : "dark" }).catch((error) => {
+    beginWork("changelog-open-fail", "Could not open What's new", String(error));
+    setTimeout(() => endWork("changelog-open-fail"), 5000);
+  });
   window.devhqTrackPageView?.("/changelog");
 }
 
 function closeChangelog() {
-  if (!changelogOpen()) return;
-  el["changelog-pop"].hidden = true;
-  el["status-version"].classList.remove("on");
-  el["status-version"].setAttribute("aria-expanded", "false");
-  window.devhqTrackPageView?.(currentPath());
+  invoke("changelog_hide").catch(() => {});
 }
 
 function syncSettingsButton() {
@@ -2804,8 +2932,8 @@ const PLACES = [
   },
 ];
 
-/** How many pins sit in the bar itself. The rest open upward under "more", so
- *  pinning stays unlimited without the status bar ever growing. */
+/** How many pins sit in the compact bar itself. "More" promotes the pins to
+ *  their dedicated wrapping shelf, so no navigation depends on an overlay. */
 const DOCK_PINS = 4;
 
 /** How many recently opened tools Ctrl+K keeps at the top of the list. */
@@ -2830,6 +2958,7 @@ function toolById(id) {
 /** The tool currently on screen, or null when the overview is. Only a tool can
  *  be pinned from the header, and only a tool lights up its chip. */
 function activeTool() {
+  if (state.activeView === "isolated-tool") return toolById(state.isolatedToolId);
   return TOOLS.find((tool) => tool.active()) || null;
 }
 
@@ -2912,8 +3041,60 @@ function openTool(id) {
     markDirty("pins");
     return;
   }
-  target.open();
+  if (toolById(id)) {
+    openIsolatedTool(id);
+    markDirty("pins");
+    return;
+  }
+  // Set this before calling foreign tool code. If it blocks the UI thread,
+  // the timeout cannot clear the marker and restart recovery stays armed.
+  if (toolById(id)) armToolRecovery("tool", id);
+  try {
+    target.open();
+  } catch (error) {
+    console.error(`Could not open tool ${id}`, error);
+    state.activeView = "overview";
+    savePrefs();
+    syncMainView();
+    beginWork("tool-open-fail", `${target.name} could not open`, "Returned to Overview");
+    setTimeout(() => endWork("tool-open-fail"), 5000);
+  }
   markDirty("pins");
+}
+
+/** Shared isolation frame: the shell owns all navigation chrome while the
+ * child webview receives only a body rectangle. It cannot cover or disable
+ * Back, Close, Home, Search, pins, or the status bar. */
+function openIsolatedTool(id) {
+  const tool = toolById(id);
+  if (!tool) return;
+  state.isolatedToolId = id;
+  state.isolatedToolSession = Array.from(
+    crypto.getRandomValues(new Uint8Array(18)),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+  state.activeView = "isolated-tool";
+  state.selectedPath = null;
+  savePrefs();
+  syncSettingsButton();
+  renderIsolatedToolChrome(tool);
+  syncMainView();
+  window.devhqTrackPageView?.(`/tools/${id}`);
+}
+
+function renderIsolatedToolChrome(tool = toolById(state.isolatedToolId)) {
+  const host = el["isolated-tool-host"];
+  if (!host || !tool) return;
+  host.querySelector("[data-isolated-icon]").innerHTML = icon(tool.icon);
+  host.querySelector("[data-isolated-name]").textContent = tool.name;
+  host.querySelector("[data-isolated-hint]").textContent = tool.hint;
+  const pin = host.querySelector("[data-pin-tool]");
+  pin.dataset.pinTool = tool.id;
+  pin.classList.toggle("on", isToolPinned(tool.id));
+  pin.innerHTML = `${icon("push_pin")}${isToolPinned(tool.id) ? "Pinned" : "Pin"}`;
+  const popout = host.querySelector("[data-popout-tool]");
+  popout.dataset.popoutTool = tool.id;
+  popout.innerHTML = `${icon("open_in_new")}Pop out`;
 }
 
 function isToolPopped(id) {
@@ -2934,22 +3115,43 @@ function rememberToolPopout(id, open) {
 
 /** Hand a tool to its own window the way a terminal tab pops out. The main
  *  view lets go immediately; the window remounts the tool on its own. */
-async function popOutTool(id, screenX, screenY) {
+const toolPopoutsOpening = new Set();
+
+function popOutTool(id, screenX, screenY) {
   const tool = toolById(id);
   if (!tool) return;
+  if (toolPopoutsOpening.has(id)) return;
   if (isToolPopped(id)) {
-    await focusToolPopout(id);
-    return;
+    void focusToolPopout(id);
+    return Promise.resolve();
   }
-  if (activeTool()?.id === id) {
-    if (id === "disk-space") window.devhqDiskSpace?.preparePopout?.();
-    await window.devhqToolState?.send?.(id);
-    openTool("overview");
-  }
+  toolPopoutsOpening.add(id);
+  // Deliberately detach the handoff from the click handler. State persistence,
+  // native window creation and renderer startup must never hold the shell's UI
+  // interaction path open.
+  void completeToolPopout(tool, screenX, screenY);
+  return Promise.resolve();
+}
+
+async function completeToolPopout(tool, screenX, screenY) {
+  const id = tool.id;
+  const leaving = activeTool()?.id === id;
+  const leavingSession = leaving && state.activeView === "isolated-tool" ? state.isolatedToolSession : "";
   rememberToolPopout(id, true);
   const key = `tool-popout:${id}`;
   beginWork(key, `Opening ${tool.name} in its own window`);
+  let readyResolve;
+  const ready = new Promise((resolve) => { readyResolve = resolve; });
+  let unlistenReady = () => {};
   try {
+    unlistenReady = await listen("tool:ready", (event) => {
+      if (event.payload?.id === id) readyResolve(true);
+    });
+    if (leaving) {
+      if (id === "disk-space") window.devhqDiskSpace?.preparePopout?.();
+      if (state.activeView === "isolated-tool") await flushIsolatedToolState();
+      else await window.devhqToolState?.send?.(id);
+    }
     await invoke("tool_popout", {
       id,
       title: tool.name,
@@ -2957,13 +3159,43 @@ async function popOutTool(id, screenX, screenY) {
       x: Number.isFinite(screenX) ? screenX - 80 : null,
       y: Number.isFinite(screenY) ? screenY - 18 : null,
     });
+    const mounted = await Promise.race([
+      ready,
+      new Promise((resolve) => setTimeout(() => resolve(false), 8000)),
+    ]);
+    if (!mounted) throw new Error(`${tool.name} did not finish opening.`);
+    // Do not steal navigation if the user used Back, Close, Home or Search
+    // while the new window was opening.
+    if (leaving && activeTool()?.id === id && (!leavingSession || state.isolatedToolSession === leavingSession)) {
+      openTool("overview");
+    }
   } catch (error) {
     rememberToolPopout(id, false);
+    await invoke("tool_dock", { id }).catch(() => {});
+    if (leaving && state.activeView === "isolated-tool" && state.isolatedToolId === id) syncEmbeddedTool();
     beginWork("tool-popout-fail", `Could not pop ${tool.name} out`, String(error));
     setTimeout(() => endWork("tool-popout-fail"), 4000);
   } finally {
+    unlistenReady();
+    toolPopoutsOpening.delete(id);
     endWork(key);
   }
+}
+
+async function flushIsolatedToolState() {
+  const session = state.isolatedToolSession;
+  if (!session) return false;
+  const commandId = `${session}:${Date.now()}`;
+  let unlistenResult = () => {};
+  const done = new Promise(async (resolve) => {
+    unlistenResult = await listen("tool:bridge-command-result", (event) => {
+      if (event.payload?.session === session && event.payload?.commandId === commandId) resolve(event.payload.ok === true);
+    });
+    await emit("tool:bridge-command", { session, commandId, action: "persist" }).catch(() => resolve(false));
+  });
+  const result = await Promise.race([done, new Promise((resolve) => setTimeout(() => resolve(false), 1200))]);
+  unlistenResult();
+  return result;
 }
 
 async function focusToolPopout(id) {
@@ -2978,12 +3210,10 @@ async function focusToolPopout(id) {
 async function dockToolPopout(id) {
   rememberToolPopout(id, false);
   await invoke("tool_dock", { id }).catch(() => {});
-  await window.devhqToolState?.receive?.(id);
-  const tool = toolById(id);
-  if (tool) {
-    tool.open();
-    markDirty("pins");
-  }
+  // Always re-enter through the central router. Calling `tool.open()` here
+  // bypasses isolation policy and can expose a shared host's previous child
+  // (for Windows tools that was usually Event Stream).
+  if (toolById(id)) openTool(id);
 }
 
 async function restoreToolPopouts() {
@@ -3159,19 +3389,56 @@ function searchQuery(value = el["search-input"]?.value || "") {
   return value.replace(/^>\s*/, "");
 }
 
-function openSearchCommands({ fresh = false } = {}) {
-  // Ctrl+K is a destination list, not a continuation of whatever was filtering
-  // the project grid — start empty so latest-used leads.
-  if (fresh && el["search-input"]) {
-    el["search-input"].value = "";
-    state.search = "";
-    markDirty("grid", "filters");
-  }
-  el["search-input"]?.focus();
-  el["search-input"]?.select();
-  searchCommandIndex = 0;
-  renderSearchCommands();
-  if (!state.ports.length && !state.portsLoading) loadPorts();
+let nativeSearchQuery = "";
+
+function rankedSearchCommands(query = "") {
+  const terms = searchQuery(query).toLowerCase().trim().split(/\s+/).filter(Boolean);
+  const browsing = terms.length === 0;
+  return availableSearchCommands(query)
+    .filter((command) => {
+      if (browsing) return searchCommandVisibleWhenEmpty(command);
+      const hay = `${command.kind} ${command.label} ${command.detail} ${command.keywords || ""}`.toLowerCase();
+      return terms.every((term) => hay.includes(term));
+    })
+    .sort((a, b) => compareSearchCommands(a, b, terms))
+    .slice(0, 60);
+}
+
+function publishNativeSearch(query = nativeSearchQuery) {
+  nativeSearchQuery = query;
+  searchCommands = rankedSearchCommands(query);
+  emit("search:results", {
+    query,
+    theme: state.theme,
+    rows: searchCommands.map((command) => ({
+      kind: command.kind,
+      label: command.label,
+      detail: command.detail || "",
+      icon: command.icon || COMMAND_KIND_ICONS[command.kind] || "chevron_right",
+      toolId: command.toolId || "",
+      pinnable: command.action === "tool" && Boolean(toolById(command.toolId)),
+      pinned: Boolean(command.toolId && isToolPinned(command.toolId)),
+    })),
+  }).catch(() => {});
+}
+
+function activateNativeSearch() {
+  publishNativeSearch(nativeSearchQuery);
+  emit("search:activate", { query: nativeSearchQuery, theme: state.theme }).catch(() => {});
+}
+
+function openSearchCommands({ fresh = false, initialQuery = "", position = null } = {}) {
+  if (fresh) nativeSearchQuery = initialQuery;
+  invoke("search_show", {
+    theme: state.theme === "light" ? "light" : "dark",
+    x: position?.x ?? null,
+    y: position?.y ?? null,
+  })
+    .then(activateNativeSearch)
+    .catch((error) => {
+      beginWork("search-open-fail", "Search could not open", String(error));
+      setTimeout(() => endWork("search-open-fail"), 4000);
+    });
 }
 
 function renderSearchCommands() {
@@ -3181,16 +3448,8 @@ function renderSearchCommands() {
   const query = searchQuery(input.value);
   const killQuery = /\bkill\b/i.test(query);
   if (killQuery && !state.ports.length && !state.portsLoading && !state.portsError) loadPorts();
-  const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
-  const browsing = terms.length === 0;
-  searchCommands = availableSearchCommands(query)
-    .filter((command) => {
-      if (browsing) return searchCommandVisibleWhenEmpty(command);
-      const hay = `${command.kind} ${command.label} ${command.detail} ${command.keywords || ""}`.toLowerCase();
-      return terms.every((term) => hay.includes(term));
-    })
-    .sort((a, b) => compareSearchCommands(a, b, terms))
-    .slice(0, 60);
+  const browsing = searchQuery(query).trim().length === 0;
+  searchCommands = rankedSearchCommands(query);
   searchCommandIndex = Math.min(searchCommandIndex, Math.max(0, searchCommands.length - 1));
   menu.innerHTML = searchCommands.length
     ? searchCommands.map((command, index) => {
@@ -3224,6 +3483,7 @@ function renderSearchCommands() {
 
 function closeSearchCommands() {
   if (el["search-menu"]) el["search-menu"].hidden = true;
+  invoke("search_hide").catch(() => {});
 }
 
 function runSearchCommand(index) {
@@ -3338,16 +3598,30 @@ async function syncGlobalHotkeys() {
   if (!api) return;
   globalHotkeyErrors.clear();
   try { await api.unregisterAll(); } catch { /* nothing registered yet */ }
-  for (const command of hotkeyCatalog()) {
+  const catalog = hotkeyCatalog();
+  const paletteBinding = state.hotkeyGlobals.has("command:palette") ? hotkeyBinding("command:palette") : "";
+  if (paletteBinding) {
+    try { await invoke("search_prepare"); }
+    catch (error) { globalHotkeyErrors.set("command:palette", String(error)); }
+  }
+  await invoke("search_global_binding_set", { binding: paletteBinding }).catch((error) => {
+    globalHotkeyErrors.set("command:palette", String(error));
+  });
+  for (const command of catalog) {
     if (!state.hotkeyGlobals.has(command.id)) continue;
     const binding = hotkeyBinding(command.id);
     if (!binding) continue;
     try {
       await api.register(binding, async (event) => {
         if (event.state && event.state !== "Pressed") return;
-        await appWindow.show().catch(() => {});
-        await appWindow.unminimize().catch(() => {});
-        await appWindow.setFocus().catch(() => {});
+        // The native palette is intentionally usable without surfacing the
+        // main window. Other global commands still bring their working context
+        // forward before executing.
+        if (command.id !== "command:palette") {
+          await appWindow.show().catch(() => {});
+          await appWindow.unminimize().catch(() => {});
+          await appWindow.setFocus().catch(() => {});
+        }
         command.action();
       });
     } catch (error) {
@@ -4108,7 +4382,6 @@ function mountShell() {
       </div>
       <div class="drag drag-fill"></div>
       <div class="win-btns">
-        <button class="win-btn" id="toggle-assistant" title="Assistant" aria-label="Open assistant" aria-pressed="false">${icon("auto_awesome")}</button>
         <button class="win-btn" id="toggle-theme" title="Use light mode" aria-label="Use light mode" aria-pressed="false">
           <svg class="win-icon theme-sun" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M11 1h2v3h-2V1Zm0 19h2v3h-2v-3ZM3.51 4.93l1.42-1.42 2.12 2.12-1.42 1.42-2.12-2.12Zm13.44 13.44 1.42-1.42 2.12 2.12-1.42 1.42-2.12-2.12ZM1 11h3v2H1v-2Zm19 0h3v2h-3v-2ZM3.51 19.07l2.12-2.12 1.42 1.42-2.12 2.12-1.42-1.42ZM16.95 5.63l2.12-2.12 1.42 1.42-2.12 2.12-1.42-1.42ZM12 6a6 6 0 1 1 0 12 6 6 0 0 1 0-12Zm0 2a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" />
@@ -4219,6 +4492,17 @@ function mountShell() {
     <main class="git-page" id="git-host" hidden></main>
     <main class="tools-page" id="tools-host" hidden></main>
     <main class="windows-tools-page" id="windows-tools-host" hidden></main>
+    <main class="isolated-tool-page" id="isolated-tool-host" hidden>
+      <header class="tool-head isolated-tool-head">
+        <button class="btn back tool-back" type="button" data-open-tool="overview">${icon("arrow_back")}Back</button>
+        <span class="tool-plate" data-isolated-icon></span>
+        <span class="tool-title"><strong data-isolated-name></strong><small data-isolated-hint></small></span>
+        <button class="tool-popout" type="button" data-popout-tool=""></button>
+        <button class="tool-pin" type="button" data-pin-tool=""></button>
+        <button class="tool-close" type="button" data-open-tool="overview" title="Back to the overview">${icon("close")}</button>
+      </header>
+      <div class="isolated-tool-slot" id="isolated-tool-slot"></div>
+    </main>
     <main class="settings-page" id="settings-host" hidden></main>
     <div class="pins-panel" id="pins-panel" hidden></div>
     <div class="statusbar">
@@ -4236,6 +4520,7 @@ function mountShell() {
         <div class="status-pins" id="status-pins"></div>
         <div class="pins-pop" id="pins-pop" role="dialog" aria-label="All pinned tools" hidden></div>
       </div>
+      <button class="status-btn" id="toggle-assistant" title="Open AI assistant" aria-label="Open AI assistant" aria-pressed="false">${icon("auto_awesome")}<span class="label">AI</span></button>
       <button class="status-btn" id="status-term" title="Open a terminal" aria-expanded="false">${icon(
         "terminal"
       )}<span class="label">Terminal</span><span class="term-count" hidden>0</span></button>
@@ -4249,12 +4534,17 @@ function mountShell() {
     "brand-sub", "loadbar", "roots-btn", "roots-label", "roots-pop", "roots-list",
     "rescan", "title-home", "search-input", "search-menu", "tech-picker", "tech-filter", "tech-filter-label",
     "tech-menu", "tech-menu-input", "tech-menu-list", "tech-clear", "sort-buttons", "view-buttons", "activity", "filters", "filter-chips",
-    "banner-host", "summary", "summary-stats", "scroll", "grid", "ports-host", "dns-host", "hosts-host", "network-host", "path-ping-host", "disk-space-host", "github-host", "git-host", "tools-host", "windows-tools-host", "port-filter-input", "port-pins", "port-tabs", "port-sort", "port-live", "ports-list", "ports-detail", "ports-dialogs", "detail-host", "settings-host", "open-settings", "toggle-theme",
+    "banner-host", "summary", "summary-stats", "scroll", "grid", "ports-host", "dns-host", "hosts-host", "network-host", "path-ping-host", "disk-space-host", "github-host", "git-host", "tools-host", "windows-tools-host", "isolated-tool-host", "isolated-tool-slot", "port-filter-input", "port-pins", "port-tabs", "port-sort", "port-live", "ports-list", "ports-detail", "ports-dialogs", "detail-host", "settings-host", "open-settings", "toggle-theme",
     "status-term", "status-progress", "status-version", "changelog-pop",
     "status-pins-wrap", "status-pins", "pins-pop", "pins-panel",
   ]) {
     el[id] = document.getElementById(id);
   }
+
+  // The native child is not part of CSS layout. Terminal docks, pin shelves,
+  // toolbars and other shell regions can resize its slot without resizing the
+  // OS window, so observe the slot itself and mirror every resulting rectangle.
+  new ResizeObserver(() => syncEmbeddedTool()).observe(el["isolated-tool-slot"]);
 
   window.devhqAssistant?.mount(document.getElementById("assistant-host"), document.getElementById("toggle-assistant"));
 
@@ -4281,12 +4571,8 @@ function mountShell() {
   try { window.devhqDiskSpace?.mount(el["disk-space-host"]); } catch (err) { console.error("Disk Space Usage failed to mount", err); }
   try { window.devhqGithub?.mount(el["github-host"]); } catch (err) { console.error("GitHub failed to mount", err); }
   try { window.devhqGit?.mount(el["git-host"]); } catch (err) { console.error("Git failed to mount", err); }
-  try {
-    window.devhqUtilTools?.mount(el["tools-host"]);
-    window.devhqWindowsTools?.mount(el["windows-tools-host"]);
-  } catch (err) {
-    console.error("Util tools failed to mount", err);
-  }
+  try { window.devhqUtilTools?.mount(el["tools-host"]); } catch (err) { console.error("Util tools failed to mount", err); }
+  try { window.devhqWindowsTools?.mount(el["windows-tools-host"]); } catch (err) { console.error("Windows tools failed to mount", err); }
 
   el["search-input"].value = state.search;
   renderVersionButton();
@@ -4436,9 +4722,12 @@ function renderPins() {
   }).join("");
 
   const more = overflow > 0
-    ? `<button class="pin-more${state.toolPinsOpen ? " on" : ""}" type="button" data-pins-more
-        aria-haspopup="dialog" aria-expanded="${state.toolPinsOpen}"
-        title="Every pinned tool">${icon("more_horiz")}${overflow} more</button>`
+    ? `<button class="pin-more" type="button" data-pins-more
+        title="Show every pinned tool on the dedicated shelf">${icon("more_horiz")}${overflow} more</button>`
+    : "";
+  const compact = state.pinsPanel && pins.length > 0
+    ? `<button class="pin-compact" type="button" data-pins-compact
+        title="Return pinned tools to the compact status bar">${icon("collapse_content")}Compact</button>`
     : "";
 
   // The offer to keep what is on screen, made in the place the pin will land.
@@ -4450,7 +4739,7 @@ function renderPins() {
   // With nothing pinned and no tool on screen the dock has nothing to say, so
   // it says nothing: no chips, no standing invitation, not even a divider. It
   // appears the moment there is a tool to put in it.
-  const dock = `${chips}${more}${offer}`;
+  const dock = `${chips}${more}${offer}${compact}`;
   host.innerHTML = dock;
   el["status-pins-wrap"].hidden = !dock;
   applyPinsPlacement(Boolean(dock));
@@ -4470,7 +4759,7 @@ function applyPinsPlacement(any) {
   const home = shelf ? panel : el["status-term"].parentNode;
   if (wrap.parentNode !== home) {
     if (shelf) panel.appendChild(wrap);
-    else el["status-term"].before(wrap);
+    else (document.getElementById("toggle-assistant") || el["status-term"]).before(wrap);
   }
   panel.hidden = !shelf || !any;
   measurePinsPanel();
@@ -4768,6 +5057,10 @@ function renderSettings() {
         </section>
         <section class="settings-group" data-section="assistant">
           <h3>Assistant</h3>
+          <div class="settings-row">
+            <span><strong>Models and providers</strong><small>Open the AI sidebar directly on model downloads, installed models, and cloud-provider keys.</small></span>
+            <button class="btn setting-control" id="setting-assistant-models" type="button">${icon("neurology")}Manage models</button>
+          </div>
           <label class="settings-row" for="setting-assistant-tool-cap">
             <span><strong>Tool-call limit</strong><small>Maximum tools an answer may call before DevHQ stops it. Applies to local models, Claude, Codex, GPT, and Cursor.</small></span>
             <input class="sort setting-control setting-number" id="setting-assistant-tool-cap" type="number" min="1" max="100" step="1" />
@@ -4781,6 +5074,10 @@ function renderSettings() {
               <select class="sort setting-control" id="setting-terminal-shell" aria-label="Default shell"></select>
               <button class="btn" type="button" id="setting-shell-scan">${icon("refresh")}Scan</button>
             </div>
+          </div>
+          <div class="settings-row shell-downloads-row">
+            <span><strong>Get a shell</strong><small>DevHQ can fetch these itself, straight from the project that publishes them, and keep them to itself. A shell you install yourself is always used first.</small></span>
+            <div class="shell-downloads" id="setting-shell-downloads"></div>
           </div>
           <label class="settings-row" for="setting-terminal-history">
             <span><strong>Save terminal history</strong><small>Keep each terminal's scrollback across restarts. When off, a terminal starts fresh and closing it clears what it showed.</small></span>
@@ -4851,6 +5148,11 @@ function renderSettings() {
     button.setAttribute("aria-pressed", String(active));
   }
   buildShellColorControls(host);
+  buildShellDownloadControls(host);
+  // What is on disk can have changed since startup - another window, or a
+  // shell removed by hand - so the list is asked for again on the way in and
+  // redrawn when the answer arrives.
+  shellSetting.loadDownloads?.().then(refreshShellDownloads);
   buildTermThemeControls(host);
   renderHotkeys(host);
   showSettingsSection(state.settingsSection);
@@ -4867,6 +5169,123 @@ function buildShellColorControls(host) {
     </label>`)
     .join("") + `<button class="btn terminal-type-colors-reset" id="setting-shell-colors-reset" type="button">Reset colors</button>`;
 }
+
+function shellMegabytes(bytes) {
+  return `${Math.round(Number(bytes || 0) / 1e6)} MB`;
+}
+
+/** The shells DevHQ can fetch, each with the state of this computer's copy.
+ *
+ *  Built once per Settings render and then only ever updated in place: a row
+ *  is rebuilt underneath a download in progress would restart its bar. */
+function buildShellDownloadControls(host) {
+  const shellSetting = window.devhqTerminalSettings;
+  const rows = shellSetting.downloads?.() || [];
+  const list = host.querySelector("#setting-shell-downloads");
+  if (!rows.length) {
+    list.innerHTML = `<p class="shell-downloads-empty">Nothing to fetch — every shell DevHQ can download is already on this computer.</p>`;
+    return;
+  }
+  list.innerHTML = rows.map((row) => {
+    const installed = shellSetting.profiles.find((profile) => profile.value === row.profile)?.available === true;
+    return `<div class="shell-download" data-shell-download="${esc(row.profile)}">
+      <span class="shell-download-name"><strong>${esc(row.label)}</strong><small>${esc(row.version)} · ${esc(row.publisher)}</small></span>
+      <span class="shell-download-state">${shellDownloadState(row, installed)}</span>
+      <div class="shell-download-bar" hidden><i style="width:0%"></i></div>
+      ${shellDownloadButton(row, installed)}
+    </div>`;
+  }).join("");
+}
+
+/** What this computer has, said plainly. A shell can be present twice - the
+ *  user's own installation and DevHQ's copy - and the user's is the one that
+ *  runs, so that is the one the row leads with. */
+function shellDownloadState(row, installed) {
+  if (installed && !row.managed) return "Installed on this computer";
+  if (installed && row.managed) return `Installed on this computer · DevHQ also has a copy (${shellMegabytes(row.installedBytes)})`;
+  if (row.managed) return `Downloaded by DevHQ · ${shellMegabytes(row.installedBytes)}`;
+  return `Not installed · ${shellMegabytes(row.downloadBytes)} from ${esc(row.source)}`;
+}
+
+function shellDownloadButton(row, installed) {
+  if (row.managed) return `<button class="btn" type="button" data-shell-remove="${esc(row.profile)}">Remove</button>`;
+  return `<button class="btn" type="button" data-shell-get="${esc(row.profile)}">${installed ? "Download anyway" : `Download ${shellMegabytes(row.downloadBytes)}`}</button>`;
+}
+
+/** Rebuilds the list after an install or a removal has changed what is there.
+ *  Safe at any time: it is only called when nothing is downloading. */
+function refreshShellDownloads() {
+  if (state.activeView !== "settings") return;
+  // Never underneath a moving bar: rebuilding the list mid-download would
+  // replace the row the progress events are writing into.
+  for (const key of work.keys()) if (key.startsWith("shell-download-")) return;
+  buildShellDownloadControls(el["settings-host"]);
+}
+
+/** Progress for one shell, reported from Rust. The status bar hears about it
+ *  whether or not Settings is open, because a 106 MB download is exactly the
+ *  kind of work that must never happen invisibly. */
+window.devhqShellDownloadProgress = (progress) => {
+  if (!progress) return;
+  const key = `shell-download-${progress.profile}`;
+  const label = window.devhqTerminalSettings?.downloads?.()
+    .find((row) => row.profile === progress.profile)?.label || "a shell";
+  const row = el["settings-host"]?.querySelector(`[data-shell-download="${progress.profile}"]`);
+  if (!work.has(key)) beginWork(key, `Downloading ${label}`);
+  if (progress.done) {
+    // The outcome stays on the status bar for a few seconds either way: a
+    // download that ends the moment its bar disappears leaves nothing to read.
+    updateWork(key, progress.error || "Ready");
+    setTimeout(() => endWork(key), progress.error ? 8000 : 3000);
+    if (!progress.error) {
+      // The work entry is still there for its few seconds on the status bar,
+      // so the list is rebuilt directly rather than through the guarded
+      // refresh, which would decline while it is.
+      if (state.activeView === "settings") buildShellDownloadControls(el["settings-host"]);
+      return;
+    }
+    // A failed or cancelled download keeps its reason on the row, but the
+    // button goes back to offering the download - there is nothing to cancel.
+    if (!row) return;
+    row.querySelector(".shell-download-bar").hidden = true;
+    row.querySelector(".shell-download-state").textContent = progress.error;
+    const button = row.querySelector("[data-shell-get]");
+    if (button) {
+      delete button.dataset.shellCancel;
+      button.disabled = false;
+      button.textContent = "Try again";
+    }
+    return;
+  }
+  const percent = progress.total ? Math.min(100, (progress.downloaded / progress.total) * 100) : 0;
+  updateWork(key, progress.detail || "");
+  if (!row) return;
+  const bar = row.querySelector(".shell-download-bar");
+  bar.hidden = false;
+  bar.querySelector("i").style.width = `${percent}%`;
+  row.querySelector(".shell-download-state").textContent = progress.detail;
+  const button = row.querySelector("[data-shell-get]");
+  if (button) {
+    button.dataset.shellCancel = progress.profile;
+    button.disabled = false;
+    button.textContent = "Cancel";
+  }
+};
+
+/** Settings, open on the shell downloads, with the one that was asked for
+ *  marked so it can be found without reading the whole list. */
+window.devhqOpenShellDownloads = (shell) => {
+  state.settingsSection = "terminal";
+  if (state.activeView !== "settings") openSettings();
+  else showSettingsSection("terminal");
+  requestAnimationFrame(() => {
+    const row = el["settings-host"]?.querySelector(`[data-shell-download="${shell}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: "center" });
+    row.classList.add("flash");
+    setTimeout(() => row.classList.remove("flash"), 1600);
+  });
+};
 
 /** Resetting throws away everything the app remembers, and there is no undo,
  *  so it takes two clicks: the first arms the button, the second wipes. The
@@ -5003,7 +5422,7 @@ function wireShell() {
     else rescan();
   };
 
-  el["status-version"].onclick = () => (changelogOpen() ? closeChangelog() : openChangelog());
+  el["status-version"].onclick = openChangelog;
 
   el["changelog-pop"].onclick = (e) => {
     if (e.target.closest("[data-changelog-act=\"close\"]")) {
@@ -5116,7 +5535,15 @@ function wireShell() {
     const go = e.target.closest("[data-open-tool]");
     if (go) return openTool(go.dataset.openTool);
     if (e.target.closest("[data-pins-more]")) {
-      state.toolPinsOpen = !state.toolPinsOpen;
+      state.pinsPanel = true;
+      state.toolPinsOpen = false;
+      savePrefs();
+      return markDirty("pins");
+    }
+    if (e.target.closest("[data-pins-compact]")) {
+      state.pinsPanel = false;
+      state.toolPinsOpen = false;
+      savePrefs();
       return markDirty("pins");
     }
     if (e.target.closest("[data-pins-close]")) return closeToolPins();
@@ -5282,7 +5709,22 @@ function wireShell() {
     searchCommandIndex = 0;
     renderSearchCommands();
   };
-  el["search-input"].onfocus = () => renderSearchCommands();
+  el["search-input"].onfocus = async () => {
+    const rect = el["search-input"].getBoundingClientRect();
+    const titlebarBottom = el["search-input"].closest(".titlebar")?.getBoundingClientRect().bottom ?? rect.bottom;
+    let position = null;
+    try {
+      const [origin, scale] = await Promise.all([appWindow.innerPosition(), appWindow.scaleFactor()]);
+      position = {
+        x: origin.x / scale + rect.left + rect.width / 2 - 340,
+        // Search's divider is 72px below its top (18px drag grip + 54px
+        // field). Align it with the shell titlebar divider.
+        y: origin.y / scale + titlebarBottom - 72,
+      };
+    } catch { /* Center Search if native window geometry is unavailable. */ }
+    openSearchCommands({ fresh: true, position });
+    el["search-input"].blur();
+  };
   el["search-input"].onkeydown = (e) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
@@ -5316,6 +5758,17 @@ function wireShell() {
     closeSearchCommands();
     if (state.activeView === "overview" && state.selectedPath) closeDetail();
     else switchMainView("overview");
+  };
+
+  // This header lives in the shell, deliberately outside the child webview.
+  // Its controls must be wired here rather than delegated through tool code.
+  el["isolated-tool-host"].onclick = (event) => {
+    const popout = event.target.closest("[data-popout-tool]");
+    if (popout) return popOutTool(popout.dataset.popoutTool);
+    const pin = event.target.closest("[data-pin-tool]");
+    if (pin) return toggleToolPin(pin.dataset.pinTool);
+    const destination = event.target.closest("[data-open-tool]")?.dataset.openTool;
+    if (destination) return openTool(destination);
   };
 
   el["ports-host"].onclick = (e) => {
@@ -5529,6 +5982,7 @@ function wireShell() {
       openUrl(ANALYTICS_SOURCE_URL);
     } else if (e.target.closest('[data-settings="close"]')) closeSettings();
     else if (navItem) showSettingsSection(navItem.dataset.settingsSection);
+    else if (e.target.closest("#setting-assistant-models")) window.devhqAssistant?.openModels?.();
     else if (e.target.closest("[data-hotkey-filter]")) {
       state.hotkeyFilter = e.target.closest("[data-hotkey-filter]").dataset.hotkeyFilter;
       renderHotkeys(el["settings-host"]);
@@ -5589,6 +6043,30 @@ function wireShell() {
     } else if (e.target.closest("#setting-shell-colors-reset")) {
       window.devhqTerminalSettings.resetShellColors();
       buildShellColorControls(el["settings-host"]);
+    } else if (e.target.closest("[data-shell-get],[data-shell-remove]")) {
+      const button = e.target.closest("[data-shell-get],[data-shell-remove]");
+      const shellSetting = window.devhqTerminalSettings;
+      // The same button becomes Cancel while its download runs, so a second
+      // click stops what the first one started rather than queueing another.
+      if (button.dataset.shellCancel) {
+        shellSetting.cancelDownload();
+        button.disabled = true;
+        return;
+      }
+      const remove = button.dataset.shellRemove;
+      button.disabled = true;
+      try {
+        if (remove) {
+          await shellSetting.removeDownload(remove);
+          refreshShellDownloads();
+        } else {
+          await shellSetting.startDownload(button.dataset.shellGet);
+        }
+      } catch (err) {
+        button.disabled = false;
+        const row = button.closest(".shell-download");
+        if (row) row.querySelector(".shell-download-state").textContent = String(err);
+      }
     } else if (e.target.closest("#setting-shell-scan")) {
       const button = e.target.closest("#setting-shell-scan");
       button.disabled = true;
@@ -5601,6 +6079,8 @@ function wireShell() {
           .map((profile) => `<option value="${profile.value}"${profile.available === false ? " disabled" : ""}>${profile.label}${profile.available === false ? " · unavailable" : ""}</option>`)
           .join("");
         select.value = shellSetting.getDefault();
+        await shellSetting.loadDownloads();
+        refreshShellDownloads();
       } finally {
         button.classList.remove("spinning");
         button.disabled = false;
@@ -5764,17 +6244,85 @@ document.addEventListener("keydown", (e) => {
     // ">" is the second way in, the way it is in an editor: it lands in the
     // box as the command prefix and the list opens under it.
     e.preventDefault();
-    openSearchCommands({ fresh: true });
-    el["search-input"].value = "> ";
-    state.search = "";
-    markDirty("grid", "filters");
-    renderSearchCommands();
+    openSearchCommands({ fresh: true, initialQuery: "> " });
   }
 });
 
 window.devhqWork = { beginWork, updateWork, endWork };
 
-function wireToolPopoutEvents() {
+async function wireToolPopoutEvents() {
+  await listen("search:ready", activateNativeSearch);
+  await listen("search:query", (event) => {
+    const query = typeof event.payload?.query === "string" ? event.payload.query : "";
+    if (/\bkill\b/i.test(query) && !state.ports.length && !state.portsLoading) loadPorts();
+    publishNativeSearch(query);
+  });
+  await listen("search:pin", (event) => {
+    const id = event.payload?.id;
+    if (id && toolById(id)) toggleToolPin(id);
+    publishNativeSearch(typeof event.payload?.query === "string" ? event.payload.query : nativeSearchQuery);
+  });
+  await listen("search:execute", async (event) => {
+    const index = Number(event.payload?.index);
+    if (!Number.isInteger(index) || !searchCommands[index]) return;
+    await appWindow.show().catch(() => {});
+    await appWindow.unminimize().catch(() => {});
+    await appWindow.setFocus().catch(() => {});
+    runSearchCommand(index);
+  });
+  await listen("tool:bridge-request", async (event) => {
+    const request = event.payload || {};
+    if (!request.session || request.session !== state.isolatedToolSession) return;
+    const reply = async (ok, value = null, error = "") => {
+      if (!request.requestId) return;
+      await emit("tool:bridge-response", {
+        session: request.session, requestId: request.requestId, ok, value, error,
+      }).catch(() => {});
+    };
+    try {
+      if (request.action === "ready") {
+        await reply(true, { accepted: true });
+      } else if (request.action === "context") {
+        const tool = toolById(state.isolatedToolId);
+        await reply(true, {
+          protocol: 1,
+          tool: tool ? { id: tool.id, name: tool.name, icon: tool.icon, hint: tool.hint, keywords: tool.keywords } : null,
+          theme: state.theme,
+          pinned: isToolPinned(state.isolatedToolId),
+          popped: isToolPopped(state.isolatedToolId),
+          projects: state.projects.map((project) => ({
+            name: project.name, path: project.path, remote: project.git?.remote || "",
+            branch: project.git?.branch || "", dirty: project.git?.dirty === true,
+            changed: project.git?.changedTotal || project.git?.changed?.length || 0,
+            ahead: project.git?.ahead || 0, behind: project.git?.behind || 0,
+          })),
+        });
+      } else if (request.action === "navigate") {
+        const destination = String(request.value || "overview");
+        // A navigation away from an isolated tool destroys the webview that
+        // sent this request. Acknowledge it before teardown so the child and
+        // Tauri event bridge cannot be left waiting on each other.
+        await reply(true);
+        setTimeout(() => openTool(destination), 0);
+      } else if (request.action === "toggle-pin") {
+        toggleToolPin(state.isolatedToolId);
+        await reply(true, { pinned: isToolPinned(state.isolatedToolId) });
+      } else if (request.action === "pop-out") {
+        popOutTool(state.isolatedToolId);
+        await reply(true);
+      } else if (request.action === "confirm") {
+        await reply(true, await appConfirm(request.value || {}));
+      } else if (request.action === "search") {
+        const initialQuery = typeof request.value?.initialQuery === "string" ? request.value.initialQuery : "";
+        openSearchCommands({ fresh: true, initialQuery });
+        await reply(true);
+      } else {
+        await reply(false, null, `Unknown tool bridge action: ${request.action}`);
+      }
+    } catch (error) {
+      await reply(false, null, String(error));
+    }
+  });
   listen("tray:open-tool", (event) => {
     const id = event.payload;
     if (typeof id === "string") openTool(id);
@@ -5792,6 +6340,13 @@ function wireToolPopoutEvents() {
   listen("tool:open", (event) => {
     const id = event.payload?.id;
     if (id) openTool(id);
+  });
+  listen("tool:shell-search", () => {
+    openSearchCommands({ fresh: true });
+  });
+  listen("tool:toggle-pin", (event) => {
+    const id = event.payload?.id;
+    if (id && toolById(id)) toggleToolPin(id);
   });
   listen("tool:pins-changed", () => {
     try {
@@ -5826,9 +6381,35 @@ window.devhqShell = {
 /* ------------------------------------------------------------------ start */
 
 (async function start() {
+  let restoreWasInterrupted = false;
+  try {
+    restoreWasInterrupted = Boolean(localStorage.getItem(STARTUP_RESTORE_KEY));
+    localStorage.removeItem(STARTUP_RESTORE_KEY);
+  } catch { /* storage disabled - the in-process guards still apply */ }
   loadPrefs();
+  // Migrate remembered modular destinations from their old in-process hosts.
+  const restoredIsolatedId = state.activeView === "ports" ? "ports"
+    : state.activeView === "tools" ? state.utilToolId
+    : state.activeView === "windows-tools" ? state.windowsToolId
+    : ["dns", "hosts", "network", "path-ping", "disk-space", "github", "git"].includes(state.activeView)
+      ? state.activeView : "";
+  if (restoredIsolatedId) {
+    state.activeView = "isolated-tool";
+    state.isolatedToolId = restoredIsolatedId;
+  }
+  if (restoreWasInterrupted) {
+    state.activeView = "overview";
+    savePrefs();
+  } else if (state.activeView !== "overview") {
+    armToolRecovery(
+      state.activeView,
+      state.activeView === "windows-tools" ? state.windowsToolId
+        : state.activeView === "tools" ? state.utilToolId : "",
+    );
+  }
   // The window is drawn and interactive before anything is asked of the disk.
   mountShell();
+  await wireToolPopoutEvents();
   syncRecentTrayTools();
   window.devhqTrackPageView?.(currentPath());
   // A restored tool is optional startup work. Its own loader must never be
@@ -5841,11 +6422,13 @@ window.devhqShell = {
     savePrefs();
     syncMainView();
   }
+  // Leave the marker in place through the first paint and immediate async
+  // startup work. A process/render crash in that window is recovered on the
+  // next launch; a healthy tool remains the remembered destination.
   syncGlobalHotkeys();
   loadAppVersion();
   window.devhqI18n?.init(state.language);
   markDirty("toolbar", "filters", "summary", "grid");
-  wireToolPopoutEvents();
   invoke("take_startup_tool").then((id) => {
     if (typeof id === "string" && id) openTool(id);
   }).catch(() => {});

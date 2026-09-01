@@ -2,7 +2,7 @@ node_modules/
 scripts/.cache/
 target/
 dist/
-src-tauri/target/
+src-tauri/target//
 src-tauri/gen/schemas/
 assistant panel.zip
 .gitignore

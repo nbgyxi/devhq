@@ -48,6 +48,7 @@ const terms = {
   pending: new Map(),
   height: 320,
   splitRatio: .5,
+  splitDirection: "vertical",
   paneActive: [null, null],
   restoreSpecs: [],
   restoreOpen: false,
@@ -63,6 +64,9 @@ const terms = {
   /** Replace the shell's small reverse search with DevHQ's searchable history. */
   enhancedHistorySearch: true,
   orphanWarnings: new Map(),
+  /** Why the last shell that failed to start failed, for the caller that has
+   *  somewhere to put it - `wt`, waiting at a prompt. */
+  lastOpenError: "",
   restoring: false,
   el: null,
 };
@@ -90,10 +94,13 @@ function termsSavePrefs() {
         popped: spec.popped,
         shell: spec.shell,
         pane: spec.pane,
+        tabColor: spec.tabColor || "",
+        colorScheme: spec.colorScheme || "",
         ...(terms.saveHistory && spec.key ? { key: spec.key } : {}),
       })),
       defaultShell: terms.defaultShell,
       splitRatio: terms.splitRatio,
+      splitDirection: terms.splitDirection,
       shellColors: terms.shellColors,
       shellMarkerStyle: terms.shellMarkerStyle,
       saveHistory: terms.saveHistory,
@@ -107,6 +114,7 @@ function termsLoadPrefs() {
     const saved = JSON.parse(localStorage.getItem(TERM_PREFS) || "{}");
     if (saved.height) terms.height = saved.height;
     if (saved.splitRatio >= .25 && saved.splitRatio <= .75) terms.splitRatio = saved.splitRatio;
+    if (["horizontal", "vertical"].includes(saved.splitDirection)) terms.splitDirection = saved.splitDirection;
     if (saved.shellColors && typeof saved.shellColors === "object") {
       for (const profile of Object.keys(DEFAULT_SHELL_COLORS)) {
         if (/^#[0-9a-f]{6}$/i.test(saved.shellColors[profile])) terms.shellColors[profile] = saved.shellColors[profile];
@@ -192,6 +200,7 @@ function dockEl() {
       <div class="term-shell-error-card">
         ${termIcon("error")}
         <div><strong id="term-shell-error-title"></strong><p></p></div>
+        <button data-shell-error-get hidden></button>
         <button data-shell-error-close>OK</button>
       </div>
     </div>`;
@@ -389,6 +398,10 @@ function dockEl() {
     if (e.key === "Escape") closeTerminalTabMenu();
   });
   el.querySelector("[data-shell-error-close]").onclick = closeShellError;
+  el.querySelector("[data-shell-error-get]").onclick = (e) => {
+    closeShellError();
+    window.devhqOpenShellDownloads?.(e.currentTarget.dataset.shellErrorGet);
+  };
   el.querySelector(".term-shell-error").onclick = (e) => {
     if (e.target.classList.contains("term-shell-error")) closeShellError();
   };
@@ -425,7 +438,10 @@ function dockEl() {
     divider.setPointerCapture(down.pointerId);
     const move = (e) => {
       const rect = views.getBoundingClientRect();
-      terms.splitRatio = Math.min(.75, Math.max(.25, (e.clientX - rect.left) / rect.width));
+      const ratio = terms.splitDirection === "horizontal"
+        ? (e.clientY - rect.top) / rect.height
+        : (e.clientX - rect.left) / rect.width;
+      terms.splitRatio = Math.min(.75, Math.max(.25, ratio));
       syncPaneLayout();
     };
     const up = () => {
@@ -592,6 +608,7 @@ function syncPaneLayout() {
   const split = [...terms.sessions.keys()].some((id) => sessionPane(id) === 1);
   views.classList.toggle("split", split);
   bar.classList.toggle("split", split);
+  views.classList.toggle("horizontal", split && terms.splitDirection === "horizontal");
   views.style.setProperty("--term-split", `${terms.splitRatio * 100}%`);
   bar.style.setProperty("--term-split", `${terms.splitRatio * 100}%`);
   for (const [id, session] of terms.sessions) {
@@ -646,7 +663,8 @@ function renderTabs() {
       if (s.info.id === terms.active) cls.push("on");
       if (terms.paneActive[sessionPane(s.info.id)] === s.info.id) cls.push("visible");
       if (s.view.exited) cls.push("dead");
-      return `<div class="${cls.join(" ")}" data-tab="${s.info.id}" title="Right-click to change shell · drag to dock or reorder · ${escAttr(
+      const tabColor = terms.known.get(s.info.id)?.tabColor;
+      return `<div class="${cls.join(" ")}" data-tab="${s.info.id}"${/^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(tabColor || "") ? ` style="--tab-color:${tabColor};border-bottom-color:${tabColor}"` : ""} title="Right-click to change shell · drag to dock or reorder · ${escAttr(
         s.info.projectPath
       )}">${shellMarker(s.info.command)}<span class="nm">${escAttr(label)}</span>
         <span class="tab-x" data-close="${s.info.id}" title="Close this terminal">${termIcon(
@@ -702,20 +720,144 @@ async function loadShellAvailability() {
   }
 }
 
+/** What DevHQ could fetch, and what it already has. Cheap enough to ask for
+ *  again after every install or removal, which is what keeps the shell menu,
+ *  the error dialog and Settings saying the same thing. */
+async function loadShellDownloads() {
+  try {
+    const rows = await term_dock_invoke("shell_downloads");
+    shellDownloads.clear();
+    for (const row of rows) shellDownloads.set(row.profile, row);
+    return rows;
+  } catch {
+    return [];
+  }
+}
+
 function closeShellError() {
   const dialog = terms.el?.querySelector(".term-shell-error");
   if (dialog) dialog.hidden = true;
 }
 
+/** `shell` names a terminal profile when the failure is one DevHQ can fix by
+ *  fetching that shell, which turns the dialog from a dead end into a way on
+ *  to the one place downloads live. */
+function showTerminalError(title, detail, shell = "") {
+  const dialog = dockEl().querySelector(".term-shell-error");
+  const offer = dialog.querySelector("[data-shell-error-get]");
+  const download = shell ? downloadableShell(shell) : null;
+  dialog.querySelector("strong").textContent = title;
+  dialog.querySelector("p").textContent = download
+    ? `${detail} DevHQ can download it for you — ${megabytes(download.downloadBytes)}, from ${download.source}.`
+    : detail;
+  offer.hidden = !download;
+  offer.textContent = download ? `Get ${download.label}` : "";
+  offer.dataset.shellErrorGet = shell;
+  dialog.hidden = false;
+  (download ? offer : dialog.querySelector("[data-shell-error-close]")).focus();
+}
+
+function megabytes(bytes) {
+  return `${Math.round(Number(bytes || 0) / 1e6)} MB`;
+}
+
+/** The shells DevHQ can fetch itself, so a missing one has somewhere to go.
+ *  Filled from Rust on startup; empty until then, and empty forever for the
+ *  shells that ship with Windows or cannot be downloaded at all. */
+const shellDownloads = new Map();
+
+/** The download offer for a shell, or nothing when there is none to make -
+ *  including when DevHQ already has its own copy, which is not a thing to
+ *  offer twice. */
+function downloadableShell(shell) {
+  const row = shellDownloads.get(shell);
+  return row && !row.managed ? row : null;
+}
+
+const PROFILE_HINTS = {
+  pwsh: "Install it with: winget install Microsoft.PowerShell — or pick Windows PowerShell.",
+  "pwsh-preview": "Install it with: winget install Microsoft.PowerShell.Preview",
+  nu: "Install it with: winget install Nushell",
+  wsl: "Install it with: wsl --install",
+  "git-bash": "Install Git for Windows.",
+};
+
 function showShellError(shell, detail = "") {
   const profile = TERM_SHELLS.find((item) => item.value === shell);
-  const status = terms.shellAvailability.get(shell);
   const label = profile?.label || "That shell";
-  const dialog = dockEl().querySelector(".term-shell-error");
-  dialog.querySelector("strong").textContent = `${label} couldn't start`;
-  dialog.querySelector("p").textContent = status?.reason || detail || `${label} is not available on this computer.`;
-  dialog.hidden = false;
-  dialog.querySelector("button").focus();
+  const reason = terms.shellAvailability.get(shell)?.reason || detail
+    || `${label} is not available on this computer.`;
+  const missing = /not installed|not available|not found|not on PATH/i.test(reason);
+  // The winget line is only worth printing for the shells DevHQ cannot fetch
+  // itself; for the rest the dialog offers the download instead of describing
+  // a command the user would have to go and type.
+  const hint = missing && !downloadableShell(shell) ? PROFILE_HINTS[shell] : "";
+  showTerminalError(
+    missing ? `${label} isn't installed` : `${label} couldn't start`,
+    hint ? `${reason} ${hint}` : reason,
+    missing ? shell : ""
+  );
+}
+
+/** The program a `wt` command line asks for, which is what failed when a pane
+ *  does not appear - not the profile the pane would have used. */
+function commandProgram(command) {
+  const first = String(command || "").trim().match(/^"([^"]+)"|^(\S+)/);
+  const program = first ? first[1] || first[2] : "";
+  return program.split(/[\\/]/).pop() || "That command";
+}
+
+/** Where to get the shells people actually ask a pane to run, so a missing one
+ *  is a thing to go and fix rather than a dead end. */
+const PWSH_HINT = "Install it with: winget install Microsoft.PowerShell — or ask the pane for powershell instead.";
+const SHELL_HINTS = {
+  pwsh: PWSH_HINT,
+  "pwsh.exe": PWSH_HINT,
+  nu: "Install it with: winget install Nushell",
+  "nu.exe": "Install it with: winget install Nushell",
+  bash: "Install Git for Windows, or ask the pane for wsl.",
+  "bash.exe": "Install Git for Windows, or ask the pane for wsl.",
+  wsl: "Install it with: wsl --install",
+  "wsl.exe": "Install it with: wsl --install",
+};
+
+/** The failure as the shell should read it: `wt` prints this at the prompt, so
+ *  it carries the same way out as the dialog does. */
+function paneErrorText(command, detail) {
+  const hint = /is not installed/i.test(detail) ? SHELL_HINTS[commandProgram(command).toLowerCase()] : "";
+  return hint ? `${detail} ${hint}` : detail;
+}
+
+/** A pane that never opened, said the way it would be said out loud: which
+ *  program was wanted, that it is not here, and what to do about it. */
+/** The terminal profile a `wt` command's program would have been, so a pane
+ *  that failed for want of `pwsh` can offer the same download Settings does. */
+const PANE_PROGRAM_PROFILES = {
+  pwsh: "pwsh", "pwsh.exe": "pwsh",
+  nu: "nu", "nu.exe": "nu",
+  bash: "git-bash", "bash.exe": "git-bash",
+};
+
+function showPaneError(command, detail) {
+  const program = commandProgram(command);
+  if (/is not installed/i.test(detail)) {
+    const shell = PANE_PROGRAM_PROFILES[program.toLowerCase()] || "";
+    const hint = downloadableShell(shell)
+      ? ""
+      : SHELL_HINTS[program.toLowerCase()] || "Install it, or ask the pane for a program this computer has.";
+    showTerminalError(
+      `${program} isn't installed`,
+      `Nothing on this computer answers to ${program}, so the pane had nothing to run.${hint ? ` ${hint}` : ""}`,
+      shell
+    );
+    return;
+  }
+  // Anything else went wrong on the way to the pane, and the program is not
+  // necessarily to blame for it.
+  showTerminalError(
+    /could not start/i.test(detail) ? `${program} couldn't start` : "That pane couldn't open",
+    detail
+  );
 }
 
 function closeTerminalTabMenu() {
@@ -852,7 +994,7 @@ function setActive(id) {
  *  stops it, and the up arrow runs it again. */
 async function openTerminal(project, opts = {}) {
   const key = `term:${project.path}:${Date.now()}`;
-  const label = opts.run ? `${project.name} · ${shortRun(opts.run)}` : project.name;
+  const label = opts.title || (opts.run ? `${project.name} · ${shortRun(opts.run)}` : project.name);
   const pane = opts.pane === 1 ? 1 : opts.pane === 0 ? 0 : terms.active ? sessionPane(terms.active) : 0;
   terms.pending.set(key, { label, pane });
   renderTabs();
@@ -867,6 +1009,7 @@ async function openTerminal(project, opts = {}) {
       args: {
         projectPath: project.path,
         projectName: label,
+        ...(opts.command ? { command: opts.command } : {}),
         shell: opts.shell || terms.defaultShell,
         ...(historyKey ? { historyKey } : {}),
       },
@@ -874,16 +1017,25 @@ async function openTerminal(project, opts = {}) {
     terms.pending.delete(key);
     await mountSession(info.id, historyKey || "", pane);
     if (opts.run) sendWhenReady(info.id, opts.run);
+    return info;
   } catch (e) {
     terms.pending.delete(key);
     renderTabs();
     const shell = opts.shell || terms.defaultShell;
-    if (shell !== "auto") showShellError(shell, String(e));
+    // Kept for whoever asked for this terminal: a `wt` command has a shell
+    // waiting on the answer, and the dialog below is not something it can read.
+    terms.lastOpenError = String(e);
+    // A command was named - by `wt`, or by a project action. Naming the shell
+    // profile here would blame something that is installed and working for a
+    // program that is not on this computer.
+    if (opts.command) showPaneError(opts.command, String(e));
+    else if (shell !== "auto") showShellError(shell, String(e));
     else termNote(`${key}:err`, `Could not open a shell in ${project.name}: ${e}`, 5000);
   } finally {
     terms.pending.delete(key);
     window.devhqWork?.endWork(key);
   }
+  return null;
 }
 
 /** The command without its package manager, for a tab that has to stay short:
@@ -1007,7 +1159,7 @@ function closeTerminal(id) {
 
 /** Hands the session to its own window. The shell is untouched — only the view
  *  moves, so a running build carries straight on. */
-async function popOutTerminal(id, screenX, screenY) {
+async function popOutTerminal(id, screenX, screenY, windowOptions = {}) {
   const session = terms.sessions.get(id);
   if (!session) return;
   const remembered = terms.known.get(id);
@@ -1026,6 +1178,11 @@ async function popOutTerminal(id, screenX, screenY) {
       id,
       x: Number.isFinite(screenX) ? screenX - 80 : null,
       y: Number.isFinite(screenY) ? screenY - 18 : null,
+      position: windowOptions.position || null,
+      dimensions: windowOptions.dimensions || null,
+      maximized: !!windowOptions.maximized,
+      fullscreen: !!windowOptions.fullscreen,
+      focus: windowOptions.focus !== false,
     });
     termsSavePrefs();
   } catch (e) {
@@ -1060,6 +1217,150 @@ term_dock_listen("term:closed", (event) => {
   termsSavePrefs();
 });
 
+term_dock_listen("term:popped-created", (event) => {
+  const info = event.payload?.info;
+  if (!info?.id) return;
+  terms.known.set(info.id, {
+    projectPath: info.projectPath,
+    projectName: info.projectName || "shell",
+    popped: true,
+    key: "",
+    shell: shellProfileFromCommand(info.command),
+    pane: 1,
+  });
+  termsSavePrefs();
+});
+
+// DevHQ terminals put a private `wt` compatibility command first on PATH.
+// Existing `wt split-pane` scripts therefore land here without being changed.
+// A popped-out terminal receives the same event and handles its own request.
+function wtShell(profile) {
+  const value = String(profile || "").toLowerCase();
+  if (value.includes("command prompt") || value === "cmd") return "cmd";
+  if (value.includes("wsl") || value.includes("ubuntu") || value.includes("debian")) return "wsl";
+  if (value.includes("git")) return "git-bash";
+  if (value.includes("powershell") || value.includes("pwsh")) return value.includes("7") ? "pwsh" : "powershell";
+  return terms.defaultShell;
+}
+
+/** Answers the `wt` that is still holding a prompt in the shell this request
+ *  came from. Only the window that acted on it replies: the other one saw the
+ *  same event and left it alone. */
+function reportWt(token, ok, message = "") {
+  if (!token) return;
+  term_dock_invoke("wt_report", { token, ok, message }).catch(() => {});
+}
+
+async function executeWtRequest(request) {
+  if (!request) return;
+  if (!terms.sessions.has(request.termId)) {
+    // A popped-out terminal answers its own request in its own window - and
+    // replies for it too, so nothing is said here. A terminal this panel has
+    // never heard of has nowhere to put the pane; `wt` learns that from the
+    // answer never arriving.
+    if (!terms.known.has(request.termId)) {
+      termNote("term:wt-lost", "A wt command arrived from a terminal DevHQ no longer holds.", 5000);
+      // With nothing popped out there is no other window that could own it, so
+      // the shell is told now rather than left waiting for an answer that is
+      // never coming.
+      if (![...terms.known.values()].some((spec) => spec.popped)) {
+        reportWt(request.token, false, "DevHQ has no terminal with that id any more.");
+      }
+    }
+    return;
+  }
+  const targetNewWindow = ["new", "-1"].includes(request.window);
+  if (!targetNewWindow) {
+    const current = window.__TAURI__.window.getCurrentWindow();
+    if (request.maximized) await current.maximize().catch(() => {});
+    if (request.fullscreen) await current.setFullscreen(true).catch(() => {});
+    if (request.focus) await current.setFocus().catch(() => {});
+    const pair = (value) => String(value || "").split(",").map(Number);
+    const [x, y] = pair(request.position);
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      const Position = window.__TAURI__.dpi?.LogicalPosition;
+      if (Position) await current.setPosition(new Position(x, y)).catch(() => {});
+    }
+    const [cols, rows] = pair(request.dimensions);
+    if (Number.isFinite(cols) && Number.isFinite(rows)) {
+      const Size = window.__TAURI__.dpi?.LogicalSize;
+      if (Size) await current.setSize(new Size(Math.max(400, cols * 9), Math.max(200, rows * 18))).catch(() => {});
+    }
+  }
+  let activeId = request.termId;
+  for (const action of request.actions || []) {
+    if (action.kind === "help") {
+      // `wt --help` is a question asked at a prompt, so it is answered there.
+      termNote("term:wt-help", "DevHQ handles wt tabs, splits, focus, movement, profiles, colors and window options.", 6000);
+      reportWt(request.token, true,
+        "DevHQ runs wt commands in its own terminal panel: new-tab, split-pane, focus-tab,\n" +
+        "move-focus, move-pane and swap-pane, with --profile, --startingDirectory, --title,\n" +
+        "--tabColor, --colorScheme, --horizontal/--vertical, --size and the window options.");
+      return;
+    }
+    if (action.kind === "focus-tab") {
+      const ids = [...terms.sessions.keys()];
+      if (ids[action.target] !== undefined) setActive(ids[action.target]);
+      continue;
+    }
+    if (action.kind === "move-focus") {
+      const pane = sessionPane(activeId);
+      const nextPane = ["left", "up", "first", "previous", "previousInOrder"].includes(action.direction) ? 0 : 1;
+      const next = terms.paneActive[nextPane === pane ? 1 - pane : nextPane];
+      if (next) { setActive(next); activeId = next; }
+      continue;
+    }
+    if (action.kind === "swap-pane") {
+      const left = terms.paneActive[0], right = terms.paneActive[1];
+      if (left && right) { terms.known.get(left).pane = 1; terms.known.get(right).pane = 0;
+        terms.paneActive = [right, left]; syncPaneLayout(); renderTabs(); termsSavePrefs(); }
+      continue;
+    }
+    if (action.kind === "move-pane") {
+      const targetId = Number.isInteger(action.target) ? [...terms.sessions.keys()][action.target] : null;
+      if (targetId) moveToPane(activeId, sessionPane(targetId));
+      continue;
+    }
+    if (!["new-tab", "split-pane"].includes(action.kind)) continue;
+    const source = terms.sessions.get(activeId)?.info;
+    const split = action.kind === "split-pane";
+    const pane = split ? 1 - sessionPane(activeId) : sessionPane(activeId);
+    if (split) {
+      terms.splitDirection = action.direction || "vertical";
+      if (action.size >= .1 && action.size <= .9) terms.splitRatio = 1 - action.size;
+    }
+    const cwd = action.cwd || source?.projectPath || newTerminalTarget(pane).path;
+    const name = action.title || cwd.split(/[\\/]/).filter(Boolean).pop() || "Terminal";
+    terms.lastOpenError = "";
+    const info = await openTerminal({ path: cwd, name }, {
+      pane, title: name, shell: action.duplicate ? shellProfileFromCommand(source?.command) : wtShell(action.profile),
+      command: action.duplicate ? "" : action.command,
+    });
+    if (!info) {
+      // The shell waiting on this reads the failure, exactly where the command
+      // was typed. Later actions in the same line are abandoned, as they would
+      // be by a `wt` whose first pane never opened.
+      reportWt(request.token, false,
+        paneErrorText(action.command, terms.lastOpenError || `${name} could not be opened.`));
+      return;
+    }
+    activeId = info.id;
+    const known = terms.known.get(info.id);
+    if (known) { known.tabColor = action.tabColor || ""; known.colorScheme = action.colorScheme || ""; }
+    if (action.colorScheme && window.devhqTermTheme) {
+      const wanted = action.colorScheme.toLowerCase();
+      const preset = window.devhqTermTheme.presets.find((item) =>
+        item.id.toLowerCase() === wanted || item.label.toLowerCase() === wanted);
+      if (preset) window.devhqTermTheme.usePreset(preset.id);
+    }
+    renderTabs();
+    if (targetNewWindow) await popOutTerminal(info.id, undefined, undefined, request);
+  }
+  reportWt(request.token, true);
+}
+
+term_dock_listen("term:wt-request", (event) => executeWtRequest(event.payload));
+
 term_dock_listen("term:close-watch", (event) => {
   const id = event.payload?.id;
   if (!id) return;
@@ -1072,7 +1373,7 @@ term_dock_listen("term:docked", async (event) => {
   const id = event.payload.id;
   await term_dock_invoke("term_dock", { id }).catch(() => {});
   try {
-    await mountSession(id);
+    await mountSession(id, "", event.payload.pane === 1 ? 1 : 0);
     setDockOpen(true);
     termsSavePrefs();
   } catch {}
@@ -1114,6 +1415,9 @@ async function restoreTerminals() {
       });
       terms.pending.delete(key);
       await mountSession(info.id, historyKey || "", spec.pane);
+      Object.assign(terms.known.get(info.id) || {}, {
+        tabColor: spec.tabColor || "", colorScheme: spec.colorScheme || "",
+      });
       restored.push(info.id);
       if (spec.popped) await popOutTerminal(info.id);
     } catch {
@@ -1220,9 +1524,29 @@ window.devhqTerminalSettings = {
     }
     termsSavePrefs();
   },
+  downloads: () => [...shellDownloads.values()],
+  loadDownloads: loadShellDownloads,
+  startDownload: (shell) => term_dock_invoke("shell_download_start", { profile: shell }),
+  cancelDownload: () => term_dock_invoke("shell_download_cancel").catch(() => {}),
+  removeDownload: async (shell) => {
+    await term_dock_invoke("shell_download_remove", { profile: shell });
+    await loadShellDownloads();
+    await loadShellAvailability();
+  },
   settleVisible,
   fitVisible,
 };
 
+/** A finished download changes what every shell picker on screen may offer, so
+ *  the availability scan is redone before anything is told it is ready. */
+term_dock_listen("shells:download-progress", async (event) => {
+  if (event.payload?.done) {
+    await loadShellDownloads();
+    await loadShellAvailability();
+  }
+  window.devhqShellDownloadProgress?.(event.payload);
+});
+
 restoreTerminals();
 loadShellAvailability();
+loadShellDownloads();

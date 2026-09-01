@@ -163,6 +163,8 @@ pub struct AudioDevice {
     pub name: String,
     pub flow: String,
     pub is_default: bool,
+    pub volume: u32,
+    pub muted: bool,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -274,11 +276,17 @@ public static class DevHQAudio {
  [InterfaceType(ComInterfaceType.InterfaceIsIUnknown),Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E")] public interface ICollection { [PreserveSig]int GetCount(out uint c); [PreserveSig]int Item(uint i,out IDevice d); }
  [InterfaceType(ComInterfaceType.InterfaceIsIUnknown),Guid("D666063F-1587-4E43-81F1-B948E807363F")] public interface IDevice { [PreserveSig]int Activate(ref Guid id,uint ctx,IntPtr p,[MarshalAs(UnmanagedType.IUnknown)]out object o); [PreserveSig]int OpenPropertyStore(uint mode,out IStore s); [PreserveSig]int GetId([MarshalAs(UnmanagedType.LPWStr)]out string id); [PreserveSig]int GetState(out uint s); }
  [InterfaceType(ComInterfaceType.InterfaceIsIUnknown),Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")] public interface IStore { [PreserveSig]int GetCount(out uint c); [PreserveSig]int GetAt(uint i,out PropertyKey k); [PreserveSig]int GetValue(ref PropertyKey k,out PropVariant v); [PreserveSig]int SetValue(ref PropertyKey k,ref PropVariant v); [PreserveSig]int Commit(); }
- [ComImport,Guid("294935CE-F637-4E7C-A41B-AB255460B862")] public class PolicyClient {}
- [InterfaceType(ComInterfaceType.InterfaceIsIUnknown),Guid("568B9108-44BF-40B4-9006-86AFE5B5A620")] public interface IPolicy { [PreserveSig]int GetMixFormat(string id,out IntPtr f); [PreserveSig]int GetDeviceFormat(string id,int d,out IntPtr f); [PreserveSig]int ResetDeviceFormat(string id); [PreserveSig]int SetDeviceFormat(string id,IntPtr e,IntPtr m); [PreserveSig]int GetProcessingPeriod(string id,int d,out long x,out long y); [PreserveSig]int SetProcessingPeriod(string id,IntPtr p); [PreserveSig]int GetShareMode(string id,IntPtr m); [PreserveSig]int SetShareMode(string id,IntPtr m); [PreserveSig]int GetPropertyValue(string id,int s,ref PropertyKey k,out PropVariant v); [PreserveSig]int SetPropertyValue(string id,int s,ref PropertyKey k,ref PropVariant v); [PreserveSig]int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)]string id,Role r); [PreserveSig]int SetEndpointVisibility(string id,int v); }
+ [ComImport,Guid("870AF99C-171D-4F9E-AF0D-E63DF40C2BC9")] public class PolicyClient {}
+ [InterfaceType(ComInterfaceType.InterfaceIsIUnknown),Guid("F8679F50-850A-41CF-9C72-430F290290C8")] public interface IPolicy { [PreserveSig]int GetMixFormat(string id,out IntPtr f); [PreserveSig]int GetDeviceFormat(string id,int d,out IntPtr f); [PreserveSig]int ResetDeviceFormat(string id); [PreserveSig]int SetDeviceFormat(string id,IntPtr e,IntPtr m); [PreserveSig]int GetProcessingPeriod(string id,int d,out long x,out long y); [PreserveSig]int SetProcessingPeriod(string id,IntPtr p); [PreserveSig]int GetShareMode(string id,IntPtr m); [PreserveSig]int SetShareMode(string id,IntPtr m); [PreserveSig]int GetPropertyValue(string id,int s,ref PropertyKey k,out PropVariant v); [PreserveSig]int SetPropertyValue(string id,int s,ref PropertyKey k,ref PropVariant v); [PreserveSig]int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)]string id,Role r); [PreserveSig]int SetEndpointVisibility(string id,int v); }
+ [InterfaceType(ComInterfaceType.InterfaceIsIUnknown),Guid("5CDF2C82-841E-4546-9722-0CF74078229A")] public interface IVolume { [PreserveSig]int RegisterControlChangeNotify(IntPtr n); [PreserveSig]int UnregisterControlChangeNotify(IntPtr n); [PreserveSig]int GetChannelCount(out uint n); [PreserveSig]int SetMasterVolumeLevel(float v,IntPtr c); [PreserveSig]int SetMasterVolumeLevelScalar(float v,IntPtr c); [PreserveSig]int GetMasterVolumeLevel(out float v); [PreserveSig]int GetMasterVolumeLevelScalar(out float v); [PreserveSig]int SetChannelVolumeLevel(uint n,float v,IntPtr c); [PreserveSig]int SetChannelVolumeLevelScalar(uint n,float v,IntPtr c); [PreserveSig]int GetChannelVolumeLevel(uint n,out float v); [PreserveSig]int GetChannelVolumeLevelScalar(uint n,out float v); [PreserveSig]int SetMute(int m,IntPtr c); [PreserveSig]int GetMute(out int m); [PreserveSig]int GetVolumeStepInfo(out uint s,out uint n); [PreserveSig]int VolumeStepUp(IntPtr c); [PreserveSig]int VolumeStepDown(IntPtr c); [PreserveSig]int QueryHardwareSupport(out uint m); [PreserveSig]int GetVolumeRange(out float min,out float max,out float step); }
+ [InterfaceType(ComInterfaceType.InterfaceIsIUnknown),Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064")] public interface IMeter { [PreserveSig]int GetPeakValue(out float v); [PreserveSig]int GetMeteringChannelCount(out uint n); [PreserveSig]int GetChannelsPeakValues(uint n,[Out]float[] v); [PreserveSig]int QueryHardwareSupport(out uint m); }
  static string Name(IDevice d) { IStore s; d.OpenPropertyStore(0,out s); var k=new PropertyKey{fmtid=new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"),pid=14}; PropVariant v; s.GetValue(ref k,out v); return v.pointer==IntPtr.Zero?"Unknown device":Marshal.PtrToStringUni(v.pointer); }
- public static object[] List() { var e=(IEnum)new Enumerator(); var result=new List<object>(); foreach(Flow f in new[]{Flow.Render,Flow.Capture}) { string def=""; IDevice dd; if(e.GetDefaultAudioEndpoint(f,Role.Multimedia,out dd)==0)dd.GetId(out def); ICollection c; e.EnumAudioEndpoints(f,State.Active,out c); uint n;c.GetCount(out n);for(uint i=0;i<n;i++){IDevice d;c.Item(i,out d);string id;d.GetId(out id);result.Add(new{id=id,name=Name(d),flow=f==Flow.Render?"playback":"recording",isDefault=id==def});}} return result.ToArray(); }
- public static void Set(string id) { var p=(IPolicy)new PolicyClient(); foreach(Role r in new[]{Role.Console,Role.Multimedia,Role.Communications}) { int rc=p.SetDefaultEndpoint(id,r); if(rc!=0)Marshal.ThrowExceptionForHR(rc); } }
+ static IVolume Volume(IDevice d) { var iid=new Guid("5CDF2C82-841E-4546-9722-0CF74078229A");object o;int rc=d.Activate(ref iid,23,IntPtr.Zero,out o);if(rc!=0)Marshal.ThrowExceptionForHR(rc);return (IVolume)o; }
+ public static object[] List() { var e=(IEnum)new Enumerator(); var result=new List<object>(); foreach(Flow f in new[]{Flow.Render,Flow.Capture}) { var defs=new HashSet<string>(); foreach(Role r in new[]{Role.Console,Role.Multimedia,Role.Communications}) { IDevice dd;string did;if(e.GetDefaultAudioEndpoint(f,r,out dd)==0&&dd.GetId(out did)==0)defs.Add(did); } ICollection c;int er=e.EnumAudioEndpoints(f,State.Active,out c);if(er!=0)Marshal.ThrowExceptionForHR(er);uint n;c.GetCount(out n);for(uint i=0;i<n;i++){IDevice d;c.Item(i,out d);string id;d.GetId(out id);float level=0;int mute=0;var v=Volume(d);v.GetMasterVolumeLevelScalar(out level);v.GetMute(out mute);result.Add(new{id=id,name=Name(d),flow=f==Flow.Render?"playback":"recording",isDefault=defs.Count==1&&defs.Contains(id),volume=(uint)Math.Round(Math.Max(0,Math.Min(1,level))*100),muted=mute!=0});}} return result.ToArray(); }
+ public static void Set(string id) { var e=(IEnum)new Enumerator();IDevice chosen;int found=e.GetDevice(id,out chosen);if(found!=0)Marshal.ThrowExceptionForHR(found);var p=(IPolicy)new PolicyClient(); foreach(Role r in new[]{Role.Console,Role.Multimedia,Role.Communications}) { int rc=p.SetDefaultEndpoint(id,r); if(rc!=0)Marshal.ThrowExceptionForHR(rc); } foreach(Role r in new[]{Role.Console,Role.Multimedia,Role.Communications}) { bool applied=false;foreach(Flow f in new[]{Flow.Render,Flow.Capture}){IDevice d;string actual;if(e.GetDefaultAudioEndpoint(f,r,out d)==0&&d.GetId(out actual)==0&&actual==id)applied=true;}if(!applied)throw new Exception("Windows did not apply the selected endpoint for "+r+"."); } }
+ public static void SetVolume(string id,uint level) { var e=(IEnum)new Enumerator();IDevice d;int rc=e.GetDevice(id,out d);if(rc!=0)Marshal.ThrowExceptionForHR(rc);rc=Volume(d).SetMasterVolumeLevelScalar(Math.Max(0,Math.Min(100,level))/100f,IntPtr.Zero);if(rc!=0)Marshal.ThrowExceptionForHR(rc); }
+ public static void SetMute(string id,bool muted) { var e=(IEnum)new Enumerator();IDevice d;int rc=e.GetDevice(id,out d);if(rc!=0)Marshal.ThrowExceptionForHR(rc);rc=Volume(d).SetMute(muted?1:0,IntPtr.Zero);if(rc!=0)Marshal.ThrowExceptionForHR(rc); }
+ public static string Test(string id,string flow) { var e=(IEnum)new Enumerator();IDevice d;int rc=e.GetDevice(id,out d);if(rc!=0)Marshal.ThrowExceptionForHR(rc);if(flow=="recording"){var iid=new Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064");object o;rc=d.Activate(ref iid,23,IntPtr.Zero,out o);if(rc!=0)Marshal.ThrowExceptionForHR(rc);var meter=(IMeter)o;float peak=0;for(int i=0;i<30;i++){float value;rc=meter.GetPeakValue(out value);if(rc!=0)Marshal.ThrowExceptionForHR(rc);peak=Math.Max(peak,value);System.Threading.Thread.Sleep(50);}return "Microphone peak: "+Math.Round(peak*100)+"%";}Set(id);const int rate=44100,ms=500,samples=rate*ms/1000;var stream=new System.IO.MemoryStream();var w=new System.IO.BinaryWriter(stream);w.Write(System.Text.Encoding.ASCII.GetBytes("RIFF"));w.Write(36+samples*2);w.Write(System.Text.Encoding.ASCII.GetBytes("WAVEfmt "));w.Write(16);w.Write((short)1);w.Write((short)1);w.Write(rate);w.Write(rate*2);w.Write((short)2);w.Write((short)16);w.Write(System.Text.Encoding.ASCII.GetBytes("data"));w.Write(samples*2);for(int i=0;i<samples;i++)w.Write((short)(Math.Sin(2*Math.PI*660*i/rate)*9000));stream.Position=0;new System.Media.SoundPlayer(stream).PlaySync();return "Test sound played through the selected device"; }
 }
 '@;"#;
 
@@ -576,10 +584,36 @@ pub fn audio_set_default(id: &str) -> ToolResult {
     output_result(ps(&script, &[("DEVHQ_AUDIO_ID", id)]))
 }
 
+pub fn audio_set_volume(id: &str, volume: u32) -> ToolResult {
+    if id.trim().is_empty() {
+        return ToolResult { error: "Choose an audio device.".into(), ..Default::default() };
+    }
+    let level = volume.min(100).to_string();
+    let script=format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [DevHQAudio]::SetVolume($env:DEVHQ_AUDIO_ID,[uint32]$env:DEVHQ_AUDIO_VOLUME); 'Volume changed to '+$env:DEVHQ_AUDIO_VOLUME+'%'");
+    output_result(ps(&script, &[("DEVHQ_AUDIO_ID", id), ("DEVHQ_AUDIO_VOLUME", &level)]))
+}
+
+pub fn audio_set_muted(id: &str, muted: bool) -> ToolResult {
+    if id.trim().is_empty() {
+        return ToolResult { error: "Choose an audio device.".into(), ..Default::default() };
+    }
+    let state = if muted { "true" } else { "false" };
+    let script=format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [DevHQAudio]::SetMute($env:DEVHQ_AUDIO_ID,[bool]::Parse($env:DEVHQ_AUDIO_MUTED)); if([bool]::Parse($env:DEVHQ_AUDIO_MUTED)){{'Device muted'}}else{{'Device unmuted'}}");
+    output_result(ps(&script, &[("DEVHQ_AUDIO_ID", id), ("DEVHQ_AUDIO_MUTED", state)]))
+}
+
+pub fn audio_test(id: &str, flow: &str) -> ToolResult {
+    if id.trim().is_empty() || !matches!(flow, "playback" | "recording") {
+        return ToolResult { error: "Choose an audio device to test.".into(), ..Default::default() };
+    }
+    let script=format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [DevHQAudio]::Test($env:DEVHQ_AUDIO_ID,$env:DEVHQ_AUDIO_FLOW)");
+    output_result(ps(&script, &[("DEVHQ_AUDIO_ID", id), ("DEVHQ_AUDIO_FLOW", flow)]))
+}
+
 pub fn repair_targets(id: &str) -> Result<Vec<RepairTarget>, String> {
     let (script, env) = match id {
         "radio" => (
-            r#"$a=Get-NetAdapter -Physical -ErrorAction SilentlyContinue|ForEach-Object{[pscustomobject]@{id='net:'+ $_.Name;name=$_.InterfaceDescription;detail=$_.Name+' · '+$_.LinkSpeed;status=$_.Status}};$b=Get-PnpDevice -Class Bluetooth -Status OK -ErrorAction SilentlyContinue|ForEach-Object{[pscustomobject]@{id='pnp:'+ $_.InstanceId;name=$_.FriendlyName;detail='Bluetooth device';status=$_.Status}};@($a)+@($b)|ConvertTo-Json -Compress"#,
+            r#"[Console]::OutputEncoding=[Text.Encoding]::UTF8;$a=Get-NetAdapter -Physical -ErrorAction SilentlyContinue|ForEach-Object{[pscustomobject]@{id='net:'+ $_.Name;name=$_.InterfaceDescription;detail=$_.Name+' · '+$_.LinkSpeed;status=$_.Status}};$b=Get-PnpDevice -Class Bluetooth -Status OK -ErrorAction SilentlyContinue|ForEach-Object{[pscustomobject]@{id='pnp:'+ $_.InstanceId;name=$_.FriendlyName;detail='Bluetooth device';status=$_.Status}};@($a)+@($b)|ConvertTo-Json -Compress"#,
             vec![],
         ),
         "usb" => (
@@ -593,6 +627,10 @@ pub fn repair_targets(id: &str) -> Result<Vec<RepairTarget>, String> {
         ),
         "gpu" => (
             r#"$g=Get-CimInstance Win32_VideoController|ForEach-Object{[pscustomobject]@{id=$_.PNPDeviceID;name=$_.Name;detail=('driver '+$_.DriverVersion+' · '+[math]::Round($_.AdapterRAM/1GB,1)+' GB');status=$_.Status}};$m=Get-PnpDevice -Class Monitor -PresentOnly -ErrorAction SilentlyContinue|ForEach-Object{[pscustomobject]@{id=$_.InstanceId;name=$_.FriendlyName;detail='display endpoint';status=$_.Status}};@($g)+@($m)|ConvertTo-Json -Compress"#,
+            vec![],
+        ),
+        "wifi" => (
+            r#"[Console]::OutputEncoding=[Text.Encoding]::UTF8;$wifi=@{};$cur=$null;try{foreach($line in (netsh wlan show interfaces)){if($line -match '^\s*Name\s*:\s*(.+)$'){$cur=$Matches[1].Trim();$wifi[$cur]=@{}}elseif($cur -and $line -match '^\s*SSID\s*:\s*(.+)$'){$wifi[$cur].SSID=$Matches[1].Trim()}elseif($cur -and $line -match '^\s*Signal\s*:\s*(.+)$'){$wifi[$cur].Signal=$Matches[1].Trim()}}}catch{};$rows=@([pscustomobject]@{id='all';name='Every connection on this machine';detail='Restarts each physical adapter, flushes DNS, clears ARP, renews every DHCP lease';status='full cycle'});foreach($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue)){$ip=@(Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue|ForEach-Object IPAddress)[0];$gw=@(Get-NetRoute -InterfaceIndex $a.ifIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue|ForEach-Object NextHop)[0];$bits=@($a.Name);if($wifi.ContainsKey($a.Name)){if($wifi[$a.Name].SSID){$bits+=('SSID '+$wifi[$a.Name].SSID)};if($wifi[$a.Name].Signal){$bits+=('signal '+$wifi[$a.Name].Signal)}}else{$bits+=[string]$a.LinkSpeed};$bits+=$(if($ip){'IP '+$ip}else{'no IPv4'});if($gw){$bits+=('gateway '+$gw)};$dnsServers=@(Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue|ForEach-Object ServerAddresses|Where-Object{$_});if($dnsServers.Count){$bits+=('DNS '+($dnsServers -join ', '))};$rows+=[pscustomobject]@{id='net:'+$a.Name;name=$a.InterfaceDescription;detail=($bits -join ' · ');status=[string]$a.Status}};$rows|ConvertTo-Json -Compress"#,
             vec![],
         ),
         "net" => (
@@ -633,12 +671,259 @@ pub fn repair_targets(id: &str) -> Result<Vec<RepairTarget>, String> {
     }
 }
 
+/// Everything the Wi-Fi reset does, in the order Windows wants it: bounce the
+/// adapter, wait for it to associate again, drop the caches that sit between it
+/// and the internet, take a fresh DHCP lease, then ask every resolver in play
+/// whether it still answers.
+const WIFI_RESET_PS: &str = r#"
+# Run by DevHQ, elevated when Windows will grant it. Native tools here report
+# trouble on stderr and half of them need administrator rights, so the script
+# never stops at the first refusal: it does what it can and says, step by step,
+# what happened. The report is written to -Report because an elevated process
+# has no pipe back to DevHQ.
+param([string] $Scope, [string] $Name, [string] $Report)
+$ErrorActionPreference = 'Continue'
+$elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+function Write-Report([string] $line) {
+  if ($Report) { Set-Content -LiteralPath $Report -Value $line -Encoding UTF8 } else { $line }
+}
+$names = if ($Scope -eq 'all') {
+  @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object Status -ne 'Disabled' | ForEach-Object Name)
+} else { @($Name) | Where-Object { $_ } }
+if (-not $names -or $names.Count -eq 0) { Write-Report 'ERROR: There is no connection to reset.'; exit 1 }
+$names = @(Get-NetAdapter -Name $names -ErrorAction SilentlyContinue | ForEach-Object Name)
+if ($names.Count -eq 0) { Write-Report 'ERROR: That connection is not on this machine any more.'; exit 1 }
+function Invoke-Native([scriptblock] $step) {
+  try { & $step 2>&1 | Out-Null; return $LASTEXITCODE -eq 0 } catch { return $false }
+}
+$done = @()
+$notes = @()
+$restarted = @()
+foreach ($n in $names) {
+  try { Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction Stop; $restarted += $n }
+  catch { $notes += ('could not restart ' + $n + ': ' + $_.Exception.Message.Trim()) }
+}
+if ($restarted.Count) {
+  $done += 'restarted ' + ($restarted -join ', ')
+  $deadline = (Get-Date).AddSeconds(25)
+  while ((Get-Date) -lt $deadline) {
+    if (@(Get-NetAdapter -Name $names -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up').Count -ge 1) { break }
+    Start-Sleep -Milliseconds 500
+  }
+}
+if (Invoke-Native { ipconfig /flushdns }) { $done += 'flushed the DNS cache' } else { $notes += 'could not flush the DNS cache' }
+if (Invoke-Native { arp -d * }) { $done += 'cleared the ARP cache' } else { $notes += 'could not clear the ARP cache' }
+$renewed = @()
+foreach ($n in $names) {
+  [void](Invoke-Native { ipconfig /release $n })
+  if (Invoke-Native { ipconfig /renew $n }) { $renewed += $n }
+}
+if ($renewed.Count) { $done += 'renewed the DHCP lease' } else { $notes += 'no DHCP lease was renewed' }
+$ip = @(Get-NetIPAddress -InterfaceAlias $names -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object IPAddress)[0]
+$gw = @(Get-NetRoute -InterfaceAlias $names -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | ForEach-Object NextHop)[0]
+$gwUp = if ($gw) { [bool](Test-Connection -ComputerName $gw -Count 1 -Quiet -ErrorAction SilentlyContinue) } else { $false }
+$online = [bool](Test-Connection -ComputerName 1.1.1.1 -Count 2 -Quiet -ErrorAction SilentlyContinue)
+# Which resolvers this connection actually uses, and whether each one answers.
+# A name that resolves through 1.1.1.1 but not through the router says the fault
+# is the router's resolver rather than the connection.
+$servers = @(Get-DnsClientServerAddress -InterfaceAlias $names -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object ServerAddresses | Where-Object { $_ } | Select-Object -Unique)
+function Test-Resolver($server) {
+  $label = if ($server) { $server } else { 'the system resolver' }
+  $watch = [Diagnostics.Stopwatch]::StartNew()
+  try {
+    $answer = if ($server) { Resolve-DnsName -Name www.microsoft.com -Type A -Server $server -DnsOnly -QuickTimeout -ErrorAction Stop }
+              else { Resolve-DnsName -Name www.microsoft.com -Type A -DnsOnly -QuickTimeout -ErrorAction Stop }
+    $watch.Stop()
+    if ($answer) { return ($label + ' answered in ' + [int]$watch.ElapsedMilliseconds + ' ms') }
+  } catch { }
+  $watch.Stop()
+  return ($label + ' did not answer')
+}
+$parts = @()
+$parts += $(if ($done.Count) { $done -join ', ' } else { 'nothing could be reset' })
+$parts += $(if ($ip) { 'IPv4 ' + $ip } else { 'no IPv4 address' })
+$parts += $(if ($gw) { 'gateway ' + $gw + ' ' + $(if ($gwUp) { 'answers' } else { 'is silent' }) } else { 'no gateway' })
+$parts += $(if ($online) { 'internet reachable' } else { 'internet unreachable' })
+$parts += $(if ($servers.Count) { 'DNS servers ' + ($servers -join ', ') } else { 'no DNS server is configured' })
+$parts += Test-Resolver $null
+foreach ($s in $servers) { $parts += Test-Resolver $s }
+if ($servers -notcontains '1.1.1.1') { $parts += Test-Resolver '1.1.1.1' }
+$parts += $(if ($elevated) { 'ran as administrator' } else { 'ran without administrator rights' })
+$parts += $notes
+Write-Report ($parts -join ' · ')
+"#;
+
+/// Runs the staged reset as an administrator, the way the hosts file asks for
+/// the one write it cannot do: a single `runas` prompt for this one action, a
+/// hidden window, and a bounded wait for it to finish.
+#[cfg(windows)]
+fn run_elevated(params: &str) -> Result<(), String> {
+    use windows::core::{w, HSTRING, PCWSTR};
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+    use windows::Win32::System::Threading::WaitForSingleObject;
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+    use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+
+    let params = HSTRING::from(params);
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS,
+        lpVerb: w!("runas"),
+        lpFile: w!("powershell.exe"),
+        lpParameters: PCWSTR(params.as_ptr()),
+        nShow: SW_HIDE.0,
+        ..Default::default()
+    };
+    unsafe {
+        // ShellExecuteExW wants COM on the calling thread, and this runs on a
+        // blocking worker that has none of its own.
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        ShellExecuteExW(&mut info)
+            .map_err(|_| "The administrator prompt was declined".to_string())?;
+        if info.hProcess.is_invalid() {
+            return Err("Windows did not start the elevated reset".into());
+        }
+        WaitForSingleObject(info.hProcess, 180_000);
+        let _ = CloseHandle(info.hProcess);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn run_elevated(_params: &str) -> Result<(), String> {
+    Err("Only Windows connections can be reset".into())
+}
+
+/// Reset one connection, or every physical adapter on the machine when the
+/// target is `all`.
+///
+/// The two steps that matter most - bouncing the adapter and clearing the ARP
+/// cache - need administrator rights, and DevHQ never runs elevated. So the
+/// script is staged beside the report it writes and started through `runas`:
+/// one prompt, for this one action. Declining is not the end of it; the same
+/// script then runs unelevated, does what it can, and names what was refused.
+fn wifi_reset(target: &str) -> ToolResult {
+    let (scope, name) = if target == "all" {
+        ("all", "")
+    } else if let Some(rest) = target.strip_prefix("net:") {
+        ("one", rest)
+    } else {
+        return ToolResult {
+            error: "Choose a connection to reset.".into(),
+            ..Default::default()
+        };
+    };
+    if name.contains('"') {
+        return ToolResult {
+            error: "That adapter name cannot be handed to Windows safely.".into(),
+            ..Default::default()
+        };
+    }
+    let stamp = std::process::id();
+    let script = std::env::temp_dir().join(format!("devhq-wifi-reset-{stamp}.ps1"));
+    let report = std::env::temp_dir().join(format!("devhq-wifi-reset-{stamp}.txt"));
+    let _ = std::fs::remove_file(&report);
+    // PowerShell 5.1 reads a .ps1 without a byte-order mark in the ANSI code
+    // page, which would turn every non-ASCII character in the report into
+    // mojibake. The mark is what makes it read the file as UTF-8.
+    let staged = format!("\u{feff}{WIFI_RESET_PS}");
+    if let Err(error) = std::fs::write(&script, staged) {
+        return ToolResult {
+            error: format!("Could not stage the reset: {error}"),
+            ..Default::default()
+        };
+    }
+    let args = [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        &script.display().to_string(),
+        "-Scope",
+        scope,
+        "-Name",
+        name,
+        "-Report",
+        &report.display().to_string(),
+    ]
+    .map(str::to_string);
+    let run_plain = || {
+        Command::new("powershell.exe")
+            .args(&args)
+            .output()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    };
+    let mut declined = false;
+    let started = if crate::dns::is_elevated() {
+        run_plain()
+    } else {
+        let quoted = args
+            .iter()
+            .map(|arg| {
+                if arg.contains(' ') {
+                    format!("\"{arg}\"")
+                } else {
+                    arg.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        match run_elevated(&quoted) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                declined = true;
+                run_plain()
+            }
+        }
+    };
+    let _ = std::fs::remove_file(&script);
+    if let Err(error) = started {
+        let _ = std::fs::remove_file(&report);
+        return ToolResult {
+            error: format!("The reset could not be started: {error}"),
+            ..Default::default()
+        };
+    }
+    let written = std::fs::read_to_string(&report).unwrap_or_default();
+    let _ = std::fs::remove_file(&report);
+    let written = written.trim_start_matches('\u{feff}').trim();
+    if let Some(message) = written.strip_prefix("ERROR: ") {
+        return ToolResult {
+            error: message.trim().to_string(),
+            ..Default::default()
+        };
+    }
+    if written.is_empty() {
+        return ToolResult {
+            error: "The reset finished without reporting anything back.".into(),
+            ..Default::default()
+        };
+    }
+    let mut output = written.to_string();
+    if declined {
+        output.push_str(" · administrator was declined, so only the steps that do not need it ran");
+    }
+    ToolResult {
+        ok: true,
+        output,
+        error: String::new(),
+    }
+}
+
 pub fn repair_target_run(id: &str, target: &str) -> ToolResult {
     if target.trim().is_empty() {
         return ToolResult {
             error: "Choose an item first.".into(),
             ..Default::default()
         };
+    }
+    if id == "wifi" {
+        return wifi_reset(target);
     }
     let (script, key, value) = match id {
         "radio" if target.starts_with("net:") => (
@@ -723,7 +1008,7 @@ mod tests {
     #[test]
     fn repair_target_enumeration_runs() {
         for id in [
-            "bounds", "radio", "usb", "audio", "gpu", "net", "shell", "spooler",
+            "bounds", "radio", "usb", "audio", "gpu", "net", "wifi", "shell", "spooler",
         ] {
             repair_targets(id).unwrap_or_else(|error| panic!("{id} enumeration failed: {error}"));
         }

@@ -2,6 +2,78 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::Path;
 
+fn run_as_wt_proxy() -> bool {
+    let invoked_as_wt = std::env::current_exe().ok()
+        .and_then(|path| path.file_stem().map(|name| name.to_string_lossy().into_owned()))
+        .is_some_and(|name| name.eq_ignore_ascii_case("wt"));
+    if !invoked_as_wt { return false; }
+    let term_id = std::env::var_os("DEVHQ_TERM_ID");
+    let Some(term_id) = term_id else {
+        eprintln!("wt: DevHQ terminal context is unavailable.");
+        std::process::exit(2);
+    };
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+        eprintln!("wt: the local application-data folder is unavailable.");
+        std::process::exit(2);
+    };
+    let queue = std::path::PathBuf::from(local).join("DevHQ").join("runtime").join("requests");
+    if let Err(error) = std::fs::create_dir_all(&queue) {
+        eprintln!("wt: could not open DevHQ's request queue: {error}");
+        std::process::exit(2);
+    }
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_nanos();
+    let name = format!("wt-{}-{stamp}.json", std::process::id());
+    let pending = queue.join(format!(".{name}.tmp"));
+    let ready = queue.join(&name);
+    let mut forwarded = vec!["wt.exe".to_string(), format!("--devhq-wt={}", term_id.to_string_lossy())];
+    forwarded.extend(std::env::args().skip(1));
+    let result = serde_json::to_vec(&forwarded)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| std::fs::write(&pending, bytes).map_err(|error| error.to_string()))
+        .and_then(|_| std::fs::rename(&pending, &ready).map_err(|error| error.to_string()));
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&pending);
+        eprintln!("wt: could not send the command to DevHQ: {error}");
+        std::process::exit(2);
+    }
+    // `wt` holds the prompt until DevHQ says what happened. The pane opens in
+    // another process, so without this the shell gets its prompt straight back
+    // and a pane that never started looks exactly like one that did.
+    let replies = queue.with_file_name("replies");
+    let reply = replies.join(&name);
+    let taken_by = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let answer_by = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut taken = false;
+    loop {
+        if let Ok(bytes) = std::fs::read(&reply) {
+            let _ = std::fs::remove_file(&reply);
+            let answer: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            let message = answer.get("message").and_then(Value::as_str).unwrap_or("");
+            if answer.get("ok").and_then(Value::as_bool) == Some(true) {
+                if !message.is_empty() { println!("{message}"); }
+                std::process::exit(0);
+            }
+            eprintln!("wt: {}", if message.is_empty() { "DevHQ could not run this command." } else { message });
+            std::process::exit(1);
+        }
+        if !taken {
+            taken = !ready.exists();
+            if !taken && std::time::Instant::now() >= taken_by {
+                let _ = std::fs::remove_file(&ready);
+                eprintln!("wt: DevHQ did not take this command. Its terminal panel is not listening.");
+                std::process::exit(1);
+            }
+        } else if std::time::Instant::now() >= answer_by {
+            // Taken, but no window owned up to it: the terminal this was typed
+            // in is no longer one DevHQ is showing.
+            eprintln!("wt: DevHQ took this command but never reported what happened to it.");
+            std::process::exit(1);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 const HELP: &str = r#"DevHQ CLI
 
 Usage: devhq <command> [arguments]
@@ -338,6 +410,7 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
 }
 
 fn main() {
+    if run_as_wt_proxy() { return; }
     if let Err(error) = run(std::env::args().skip(1).collect()) {
         eprintln!("devhq: {error}");
         std::process::exit(2);

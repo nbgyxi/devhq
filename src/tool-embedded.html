@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<script>
+(function () {
+  var theme = new URLSearchParams(location.search).get("theme") === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = theme;
+  window.devhqEmbeddedTool = true;
+  window.devhqExternalToolChrome = true;
+})();
+</script>
+<style>html,body,#tool-host{width:100%;height:100%;margin:0;overflow:hidden;background:#0c0d11}html[data-theme="light"],html[data-theme="light"] body,html[data-theme="light"] #tool-host{background:#f4f5f8}.embedded-tool .tool-head{display:none!important}.embedded-tool .tool-popout{display:none}</style>
+<link rel="stylesheet" href="styles.css?v=0.43.30" />
+</head>
+<body class="embedded-tool">
+<main id="tool-host" class="windows-tools-page"></main>
+<script src="maturity.js"></script>
+<script src="tool-bridge.js?v=1"></script>
+<script src="tool-embedded.js"></script>
+</body>
+</html>

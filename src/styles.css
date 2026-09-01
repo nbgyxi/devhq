@@ -1042,6 +1042,45 @@ html[dir="rtl"] .tech-menu{left:auto;right:0}
 .terminal-type-color input{width:26px;height:22px;padding:0;border:0;background:transparent;cursor:pointer}
 .terminal-type-colors-reset{grid-column:1/-1;justify-self:end;height:30px;margin-top:4px;font-size:11.5px}
 .setting-check{width:18px;height:18px;accent-color:var(--accent);flex:0 0 auto}
+
+/* ---------- shells DevHQ can fetch ---------- */
+/* This row does not share the settings column with its label: four shells, each
+   with a version, a state sentence and a button, need the whole width, so the
+   label sits above the list rather than beside it. */
+.shell-downloads-row{flex-direction:column;align-items:stretch;gap:12px}
+.shell-downloads{width:100%;display:flex;flex-direction:column;gap:8px}
+.shell-downloads-empty{margin:0;color:var(--dim);font-size:12px}
+.shell-download{
+  display:grid;grid-template-columns:minmax(150px,auto) minmax(0,1fr) auto;
+  grid-template-areas:"name state button" "bar bar bar";
+  align-items:center;gap:2px 18px;padding:10px 13px;
+  border:1px solid var(--line);border-radius:9px;background:var(--bg1);
+}
+.shell-download-name{grid-area:name;display:flex;flex-direction:column;gap:2px}
+.shell-download-name strong{font-size:12.5px}
+.shell-download-name small{color:var(--dim);font-size:11px}
+.shell-download-state{grid-area:state;color:var(--dim);font-size:11.5px;line-height:1.4}
+.shell-download .btn{grid-area:button;height:30px;min-width:150px;justify-content:center;font-size:11.5px;white-space:nowrap}
+.shell-download-bar{grid-area:bar;height:4px;margin-top:7px;border-radius:2px;background:var(--line);overflow:hidden}
+.shell-download-bar[hidden]{display:none}
+.shell-download-bar i{display:block;height:100%;background:var(--accent);transition:width .2s linear}
+/* Arriving from a failed terminal, the row that was asked for says so once. */
+.shell-download.flash{animation:shell-download-flash 1.6s ease-out}
+@keyframes shell-download-flash{
+  0%,40%{border-color:var(--accent);box-shadow:0 0 0 2px rgba(66,179,194,.22)}
+  100%{border-color:var(--line);box-shadow:none}
+}
+/* Too narrow for three columns: the state drops under the name and the button
+   keeps its own column rather than being squeezed to an ellipsis. */
+@media (max-width:1040px){
+  .shell-download{
+    grid-template-columns:minmax(0,1fr) auto;
+    grid-template-areas:"name button" "state button" "bar bar";
+    gap:3px 14px;
+  }
+  .shell-download .btn{min-width:132px}
+}
+
 .settings-heading-icon{width:21px;height:21px;fill:currentColor;flex:0 0 auto}
 
 /* The one destructive control in Settings, and it looks like it. */
@@ -1480,6 +1519,12 @@ body.popout .brand .shell-mark{margin-left:2px}
 .term-shell-error-card strong{display:block;color:var(--text);font-size:15px;margin:2px 0 6px}
 .term-shell-error-card p{margin:0;color:var(--dim);font-size:12.5px;line-height:1.5}
 .term-shell-error-card button{grid-column:2;justify-self:end;min-width:76px;height:32px;padding:0 16px;border-radius:7px;background:var(--accent);color:#fff;font-size:12px;font-weight:600}
+/* A shell DevHQ could fetch gets a second action beside OK. Both sit on the
+   same row, one to each end, so the offer never pushes the dialog taller. */
+.term-shell-error-card button[data-shell-error-get]{grid-row:2;justify-self:start;background:transparent;border:1px solid var(--accent);color:var(--accent)}
+.term-shell-error-card button[data-shell-error-get]:hover{background:var(--accent);color:#fff}
+.term-shell-error-card button[data-shell-error-get][hidden]{display:none}
+.term-shell-error-card button[data-shell-error-close]{grid-row:2}
 .term-shutdown{position:fixed;inset:0;z-index:131;display:grid;place-items:center;padding:20px;background:rgba(0,0,0,.58)}
 #term-dock .term-shutdown{position:absolute;inset:39px 0 0}
 .term-shutdown[hidden]{display:none}
@@ -1605,9 +1650,12 @@ html[dir="rtl"] .changelog-pop{right:auto;left:0;direction:rtl;text-align:right}
 .dock-views .term-host.on{display:block}
 .dock-views.split .term-host[data-pane="0"]{right:calc(100% - var(--term-split) + 3px)}
 .dock-views.split .term-host[data-pane="1"]{left:calc(var(--term-split) + 3px)}
+.dock-views.split.horizontal .term-host[data-pane="0"]{left:0;right:0;bottom:calc(100% - var(--term-split) + 3px)}
+.dock-views.split.horizontal .term-host[data-pane="1"]{left:0;right:0;top:calc(var(--term-split) + 3px)}
 .dock-divider{display:none;position:absolute;z-index:4;top:0;bottom:0;left:calc(var(--term-split) - 3px);width:6px;cursor:ew-resize;background:var(--line)}
 .dock-divider:hover{background:var(--accent)}
 .dock-views.split .dock-divider{display:block}
+.dock-views.split.horizontal .dock-divider{left:0;right:0;top:calc(var(--term-split) - 3px);bottom:auto;width:auto;height:6px;cursor:ns-resize}
 .dock-pane-empty{position:absolute;top:0;bottom:0;display:grid;place-items:center;color:var(--dim2);font-size:12px}
 .dock-pane-empty[data-empty-pane="0"]{left:0;right:calc(100% - var(--term-split) + 3px)}
 .dock-pane-empty[data-empty-pane="1"]{left:calc(var(--term-split) + 3px);right:0}
@@ -1691,6 +1739,54 @@ html[dir="rtl"] .changelog-pop{right:auto;left:0;direction:rtl;text-align:right}
 /* ---------- popped-out terminal window ---------- */
 body.popout{display:flex;flex-direction:column}
 body.popout .term-host{flex:1;min-height:0;background:var(--term-bg)}
+body.popout #pop-term-layout{--pop-split:50%;flex:1;min-height:0;display:flex;background:var(--term-bg)}
+body.popout .pop-pane{min-width:0;min-height:0;flex:1;display:flex;flex-direction:column}
+body.popout .pop-pane>.term-host{flex:1;min-height:0}
+body.popout #pop-term-layout.split>.pop-pane:first-child{flex:0 0 var(--pop-split)}
+body.popout #pop-term-layout.split.horizontal{flex-direction:column}
+
+/* Each pane says which shell it is only once there are two of them: with a
+   single terminal the titlebar already says it, and a second line saying the
+   same thing is a line of the shell nobody gets back. */
+body.popout .pop-pane-tab{display:none}
+body.popout #pop-term-layout.split .pop-pane-tab{
+  display:flex;align-items:center;gap:7px;height:26px;padding:0 4px 0 9px;flex:0 0 auto;
+  background:var(--bg1);border-bottom:1px solid var(--line);
+  color:var(--dim);font-size:11.5px;
+}
+body.popout #pop-term-layout.split .pop-pane.active .pop-pane-tab{color:var(--text);background:var(--bg2)}
+body.popout .pop-pane-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+body.popout .pop-pane.exited .pop-pane-name{text-decoration:line-through;opacity:.6}
+body.popout .pop-pane-close{
+  width:20px;height:20px;flex:0 0 auto;display:grid;place-items:center;border-radius:5px;
+  background:transparent;color:var(--dim);
+}
+body.popout .pop-pane-close:hover{background:var(--red);color:#fff}
+body.popout .pop-pane-close .ms{font-size:14px}
+body.popout .pop-pane-close[hidden]{display:none}
+
+/* The divider is the split itself, so it is a control rather than a border. */
+body.popout .pop-divider{flex:0 0 6px;background:var(--line);cursor:ew-resize}
+body.popout .pop-divider:hover{background:var(--accent)}
+body.popout .pop-divider[hidden]{display:none}
+body.popout #pop-term-layout.horizontal .pop-divider{cursor:ns-resize}
+
+/* The split menu hangs under the titlebar button that opens it. */
+body.popout .pop-split-menu{
+  position:fixed;z-index:60;top:34px;right:8px;min-width:216px;padding:5px;
+  border:1px solid var(--line);border-radius:9px;background:var(--bg2);
+  box-shadow:0 16px 40px rgba(0,0,0,.5);
+}
+body.popout .pop-split-menu[hidden]{display:none}
+body.popout .pop-split-menu button{
+  width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;
+  height:28px;padding:0 9px;border-radius:6px;background:transparent;
+  color:var(--text);font-size:12px;text-align:left;
+}
+body.popout .pop-split-menu button:hover:not(:disabled){background:var(--bg3)}
+body.popout .pop-split-menu button:disabled{color:var(--dim);cursor:default}
+body.popout .pop-split-menu button span{color:var(--dim);font-size:10.5px}
+body.popout .pop-menu-label{padding:7px 9px 4px;color:var(--dim);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em}
 
 /* ---------- what a card lets you do ---------- */
 .card-top{position:relative}
@@ -2051,12 +2147,12 @@ body.tool-popout .help-page{
    would otherwise read as an empty compartment nobody can fill. */
 .status-pins-wrap[hidden]{display:none}
 .status-pins{display:flex;align-items:center;gap:6px;min-width:0;padding:0 11px;overflow:hidden}
-.pin-chip,.pin-more,.pin-add{
+.pin-chip,.pin-more,.pin-add,.pin-compact{
   flex:0 0 auto;display:inline-flex;align-items:center;height:22px;
   border:1px solid var(--line);border-radius:6px;background:var(--bg2);color:var(--dim);
   font-size:11.5px;font-weight:600;transition:color .12s,border-color .12s,background .12s;
 }
-.pin-more,.pin-add{gap:5px;padding:0 8px}
+.pin-more,.pin-add,.pin-compact{gap:5px;padding:0 8px}
 /* Two hits in one chip: the name opens the tool, the cross gives the seat back.
    The cross is dimmed until the pointer is on the chip, so a row of pins reads
    as names rather than as a row of crosses. */
@@ -2078,9 +2174,9 @@ body.tool-popout .help-page{
 }
 .pin-chip:hover .pin-chip-off{opacity:1}
 .pin-chip-off:hover{color:var(--red);opacity:1;background:rgba(242,84,91,.16)}
-.pin-chip .ms,.pin-more .ms,.pin-add .ms{font-size:14px}
+.pin-chip .ms,.pin-more .ms,.pin-add .ms,.pin-compact .ms{font-size:14px}
 .pin-chip-off .ms{font-size:13px}
-.pin-chip:hover,.pin-more:hover{color:var(--text);border-color:var(--dim2)}
+.pin-chip:hover,.pin-more:hover,.pin-compact:hover{color:var(--text);border-color:var(--dim2)}
 .pin-chip.on{border-color:rgba(109,139,255,.5);background:rgba(109,139,255,.16);color:var(--text)}
 .pin-more.on{border-color:var(--dim2);background:var(--bg3);color:var(--text)}
 .pin-add{border-style:dashed;color:var(--dim2)}
@@ -2629,6 +2725,8 @@ html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
 .tools-block-head .tools-cell-copy{margin-left:4px}
 .windows-tools-page{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--bg);color:var(--text);overflow:hidden}
 .windows-tools-page[hidden]{display:none}.windows-tools-page .win-refresh{height:29px;padding:0 10px;font-size:11.5px}
+.isolated-tool-page{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--bg);color:var(--text);overflow:hidden}
+.isolated-tool-page[hidden]{display:none}.isolated-tool-slot{flex:1;min-width:0;min-height:0;position:relative;background:var(--bg);overflow:hidden}
 .win-tool-body{flex:1;min-height:0;overflow:auto;padding:14px 16px 18px}
 /* Event Log: fill the pane with flex so the list scrolls inside — a fixed
    calc(100% - Npx) was always a few pixels short and left a phantom scrollbar. */
@@ -2638,12 +2736,14 @@ html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
 .win-table{width:100%;border-collapse:separate;border-spacing:0;margin:12px 0 24px;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow:hidden;font-size:12px}.win-table th{text-align:left;color:var(--dim);background:var(--bg2);font-weight:600;padding:8px;border-bottom:1px solid var(--line)}.win-table td{padding:8px;border-bottom:1px solid var(--line);vertical-align:top;max-width:620px;overflow-wrap:anywhere}.win-table tr:last-child td{border-bottom:0}.win-table .mono{font-family:'Cascadia Mono',Consolas,monospace;user-select:text}.linklike{border:0;background:none;color:var(--text);display:flex;gap:6px;cursor:pointer}.linklike .ms{font-size:16px;color:var(--accent)}.state-pill{padding:2px 7px;border-radius:10px;background:rgba(63,202,127,.12);color:var(--green)}.path-missing .state-pill{color:var(--red);background:rgba(242,84,91,.12)}.path-duplicate .state-pill,.path-unresolved .state-pill{color:var(--amber);background:rgba(242,181,68,.12)}
 .repair-grid{display:grid;gap:12px;margin-top:12px}.repair-grid.single{grid-template-columns:minmax(280px,680px)}.repair-card{display:flex;flex-direction:column;min-height:190px;border:1px solid var(--line);border-radius:11px;background:var(--bg1);padding:18px}.repair-card>div{display:flex;align-items:center;gap:10px}.repair-card>div>.ms{font-size:22px;color:var(--accent)}.repair-card h3{margin:0;font-size:15px}.repair-card p{max-width:62ch;flex:1;margin:12px 0;color:var(--dim);font-size:12.5px;line-height:1.55}.repair-card .btn{align-self:flex-start}.btn.danger,.iconbtn.danger{color:#fff;background:var(--red);border-color:var(--red)}
 .log-tail-output{height:calc(100% - 92px);min-height:280px;overflow:auto;margin:0;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--bg1);color:var(--text);font:12px/1.5 'Cascadia Mono',Consolas,monospace;white-space:pre-wrap;user-select:text}
-.audio-groups{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:12px;margin-top:12px}.audio-group{border:1px solid var(--line);border-radius:11px;background:var(--bg1);overflow:hidden}.audio-group>header{display:grid;grid-template-columns:22px 1fr;align-items:center;gap:3px 8px;padding:11px 12px;border-bottom:1px solid var(--line);background:var(--bg2)}.audio-group>header>.ms{grid-row:1/3;color:var(--accent);font-size:19px}.audio-group>header strong{font-size:13px}.audio-group>header small{color:var(--dim2);font-size:10.5px}.audio-device{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border-bottom:1px solid var(--line);text-align:left;color:var(--text)}.audio-device:last-child{border-bottom:0}.audio-device:hover{background:var(--bg2)}.audio-device.on{background:rgba(109,139,255,.1)}.audio-device>span{display:flex;align-items:center;gap:9px;min-width:0}.audio-device .ms{font-size:17px;color:var(--dim2)}.audio-device.on .ms{color:var(--green)}.audio-device strong{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.audio-device small{flex:0 0 auto;color:var(--dim2);font-size:10.5px}
+.audio-groups{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:12px;margin-top:12px}.audio-group{border:1px solid var(--line);border-radius:11px;background:var(--bg1);overflow:hidden}.audio-group>header{display:grid;grid-template-columns:22px 1fr;align-items:center;gap:3px 8px;padding:11px 12px;border-bottom:1px solid var(--line);background:var(--bg2)}.audio-group>header>.ms{grid-row:1/3;color:var(--accent);font-size:19px}.audio-group>header strong{font-size:13px}.audio-group>header small{color:var(--dim2);font-size:10.5px}.audio-device-row{border-bottom:1px solid var(--line)}.audio-device-row:last-child{border-bottom:0}.audio-device-row.on{background:rgba(109,139,255,.1)}.audio-device{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px 7px;text-align:left;color:var(--text)}.audio-device:hover{background:var(--bg2)}.audio-device>span{display:flex;align-items:center;gap:9px;min-width:0}.audio-device .ms{font-size:17px;color:var(--dim2)}.audio-device-row.on .audio-device .ms{color:var(--green)}.audio-device strong{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.audio-device small{flex:0 0 auto;color:var(--dim2);font-size:10.5px}.audio-device-controls{display:flex;align-items:center;gap:10px;padding:0 12px 10px}.audio-volume{min-width:0;flex:1;display:flex;align-items:center;gap:8px}.audio-volume>span{display:flex;align-items:center;gap:4px;width:57px;color:var(--dim);font-size:10px}.audio-volume .ms{font-size:15px}.audio-volume input{min-width:70px;flex:1;accent-color:var(--accent)}.audio-device-controls>.btn{height:27px;padding:0 8px;font-size:10px}
 .target-list{margin-top:12px;border:1px solid var(--line);border-radius:11px;background:var(--bg1);overflow:hidden}.target-row{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;border-bottom:1px solid var(--line);color:var(--text);text-align:left}.target-row:last-child{border-bottom:0}.target-row:hover{background:var(--bg2)}.target-row.armed{background:rgba(242,181,68,.1)}.target-row>span{display:grid;grid-template-columns:22px 1fr;gap:2px 8px;min-width:0}.target-row .ms{grid-row:1/3;color:var(--dim2);font-size:17px}.target-row.armed .ms{color:var(--amber)}.target-row strong{font-size:12.5px}.target-row small{color:var(--dim2);font-size:10.5px}.target-row em{color:var(--dim);font-size:10.5px;font-style:normal}
 .registry-tabs{display:flex;gap:2px;margin:-14px -16px 0;padding:8px 16px 0;border-bottom:1px solid var(--line);background:var(--bg1)}.registry-tabs button{display:flex;align-items:center;gap:6px;padding:8px 12px;border-radius:8px 8px 0 0;color:var(--dim);font-size:12px}.registry-tabs button.on{background:var(--bg);color:var(--text);border:1px solid var(--line);border-bottom-color:var(--bg);margin-bottom:-1px}.registry-tabs .ms{font-size:16px}.registry-workspace{height:calc(100% - 40px);min-height:430px;display:grid;grid-template-columns:220px minmax(380px,1fr) 300px;margin:0 -16px -18px}.registry-nav,.registry-detail{min-height:0;overflow:auto;background:var(--bg1)}.registry-nav{padding:10px 8px;border-right:1px solid var(--line)}.registry-nav h3{padding:9px 8px 5px;color:var(--dim2);font-size:10px;text-transform:uppercase;letter-spacing:.07em}.registry-nav button{width:100%;display:grid;grid-template-columns:20px 1fr;align-items:center;gap:7px;padding:7px 8px;border-radius:7px;text-align:left}.registry-nav button:hover{background:var(--bg2)}.registry-nav button>.ms{color:var(--accent);font-size:16px}.registry-nav button span{min-width:0;display:flex;flex-direction:column;gap:1px}.registry-nav strong{font-size:11.5px}.registry-nav small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim2);font-size:9.5px}.registry-main{min-width:0;min-height:0;overflow:auto;padding:12px}.registry-path{display:flex;gap:7px;margin-bottom:9px}.registry-path>button:first-child{width:34px;display:grid;place-items:center;border:1px solid var(--line);border-radius:8px;background:var(--bg1);color:var(--dim)}.registry-path input{flex:1;min-width:0;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg1);font:11.5px 'Cascadia Mono',Consolas,monospace}.registry-key-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px;margin-top:10px}.registry-key-grid button{display:grid;grid-template-columns:20px 1fr 18px;align-items:center;gap:5px;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg1);text-align:left}.registry-key-grid button:hover{background:var(--bg2)}.registry-key-grid .ms{font-size:16px;color:var(--accent)}.registry-key-grid .ms:last-child{color:var(--dim2)}.registry-values tr{cursor:pointer}.registry-values tr.on td{background:rgba(109,139,255,.12)}.registry-values td>.ms{font-size:15px;color:var(--dim2);vertical-align:-2px}.registry-detail{border-left:1px solid var(--line);padding:12px}.registry-detail>header{display:flex;align-items:center;gap:9px;padding-bottom:12px;border-bottom:1px solid var(--line)}.registry-detail>header>.ms{font-size:20px;color:var(--accent)}.registry-detail>header div{min-width:0;display:flex;flex-direction:column}.registry-detail>header strong{font-size:13px}.registry-detail>header small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim2);font-size:9.5px}.registry-detail label{display:flex;flex-direction:column;gap:5px;margin-top:12px;color:var(--dim);font-size:10.5px;font-weight:600}.registry-detail select,.registry-detail textarea{border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);padding:8px}.registry-detail select{height:34px}.registry-detail textarea{height:150px;resize:vertical;font-size:11px;user-select:text}.registry-detail-actions{display:flex;gap:7px;margin-top:10px}.registry-detail>p{margin-top:12px;color:var(--dim2);font-size:10.5px;line-height:1.5}.registry-watch-head{display:flex;align-items:center;justify-content:space-between;padding:2px 0 10px}.registry-watch-head>div{display:flex;flex-direction:column;gap:2px}.registry-watch-head strong{font-size:13px}.registry-watch-head small{color:var(--dim2);font-size:10.5px}.registry-feed{margin-top:10px;border:1px solid var(--line);border-radius:9px;background:var(--bg1);overflow:hidden}.registry-feed-row{display:grid;grid-template-columns:90px 20px 60px minmax(120px,1fr) minmax(100px,1fr);gap:7px;padding:8px 10px;border-bottom:1px solid var(--line);font-size:10.5px}.registry-feed-row time,.registry-feed-row small{color:var(--dim2)}.registry-feed-row .ms{font-size:15px;color:var(--amber)}
 .event-toolbar{flex:0 0 auto;display:flex;align-items:flex-end;gap:12px;margin:-14px -16px 0;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--bg1)}.event-checks{display:flex;flex-wrap:wrap;gap:4px 8px;max-width:250px}.event-checks strong{flex:0 0 100%;color:var(--dim2);font-size:9.5px;text-transform:uppercase}.event-checks label{display:flex;align-items:center;gap:3px;font-size:10.5px}.event-filter{height:34px;flex:1;min-width:170px;display:flex;align-items:center;gap:7px;padding:0 9px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}.event-filter:focus-within{border-color:var(--accent)}.event-filter .ms{font-size:16px;color:var(--dim2)}.event-filter input{width:100%;font:11px 'Cascadia Mono',Consolas,monospace}.event-presets{flex:0 0 auto;display:flex;align-items:center;gap:5px;margin:0 -16px;padding:7px 16px;border-bottom:1px solid var(--line);background:var(--bg1)}.event-presets>span{color:var(--dim2);font-size:9.5px;text-transform:uppercase}.event-presets button{display:flex;align-items:center;gap:4px;padding:4px 7px;border:1px solid var(--line);border-radius:6px;color:var(--dim);font-size:10px}.event-presets button:hover{background:var(--bg2);color:var(--text)}.event-presets button:last-child{margin-left:auto}.event-presets .ms{font-size:14px}.event-status{flex:0 0 auto;margin-top:10px}.event-workspace{flex:1;min-height:0;display:grid;grid-template-columns:minmax(480px,1fr) minmax(300px,38%);gap:10px;margin-top:10px}.event-list,.event-detail{min-height:0;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow:hidden}.event-list{display:flex;flex-direction:column}.event-list>header{display:grid;grid-template-columns:78px 62px minmax(130px,1fr) 48px 75px;gap:8px;padding:7px 10px;border-bottom:1px solid var(--line);background:var(--bg2);color:var(--dim2);font-size:9.5px;text-transform:uppercase}.event-list>[data-event-results]{flex:1;min-height:0;overflow:auto}.event-row{grid-template-columns:78px 62px minmax(130px,1fr) 48px 75px;padding:8px 10px}.event-row.on{background:rgba(109,139,255,.12)}.event-row p{grid-column:3/-1;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}.event-detail{display:flex;flex-direction:column}.event-detail>header{display:flex;align-items:center;gap:10px;padding:11px 12px;border-bottom:1px solid var(--line);background:var(--bg2)}.event-detail>header>div{min-width:0;display:flex;flex-direction:column;gap:2px}.event-detail>header strong{font-size:12.5px}.event-detail>header small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim2);font-size:9.5px}.event-detail-tabs{display:flex;padding:7px 10px 0;border-bottom:1px solid var(--line)}.event-detail-tabs button{padding:6px 10px;color:var(--dim);font-size:10.5px}.event-detail-tabs button.on{margin-bottom:-1px;border-bottom:2px solid var(--accent);color:var(--text)}.event-detail pre{flex:1;min-height:0;overflow:auto;padding:12px;color:var(--text);font:10.5px/1.55 'Cascadia Mono',Consolas,monospace;white-space:pre-wrap;user-select:text}
 @media(max-width:1050px){.event-workspace{grid-template-columns:1fr}.event-detail{min-height:280px}.event-toolbar{flex-wrap:wrap}.event-filter{order:3;flex-basis:70%}.registry-workspace{grid-template-columns:180px minmax(360px,1fr)}.registry-detail{display:none}}@media(max-width:800px){.win-controls{align-items:stretch;flex-direction:column}.event-presets{overflow:auto}.win-tool-body:has(.event-workspace){overflow:auto}.event-workspace{flex:1 1 auto;min-height:360px}.event-list{min-height:360px}.event-row,.event-list>header{grid-template-columns:70px 55px minmax(110px,1fr) 42px}.event-row small,.event-list>header span:nth-child(5){display:none}.event-row p{grid-column:3/-1}.win-tool-body{padding:12px}.win-refresh{font-size:0}.win-refresh .ms{font-size:17px}.audio-groups{grid-template-columns:1fr}.audio-device{align-items:flex-start;flex-direction:column}.registry-workspace{grid-template-columns:1fr;margin-left:-12px;margin-right:-12px}.registry-nav{display:none}.registry-tabs{margin-left:-12px;margin-right:-12px}}
 .event-list{--event-cols:82px 68px minmax(130px,1fr) 54px 82px}.event-list>header{grid-template-columns:var(--event-cols);padding-right:20px}.event-list>[data-event-results]{overflow-y:auto;scrollbar-gutter:stable}.event-list .event-row{width:100%;grid-template-columns:var(--event-cols);gap:8px}
+.registry-nav-actions{padding:0 0 7px;border-bottom:1px solid var(--line)}.registry-nav .registry-nav-actions button{display:flex;grid-template-columns:none;justify-content:center;text-align:center}
+.system-vars-actions{padding:8px;border-bottom:1px solid var(--line);background:var(--bg2)}.system-vars-actions .btn{width:100%;justify-content:center}
 .system-tabs{display:flex;gap:2px;margin:-14px -16px 12px;padding:8px 16px;border-bottom:1px solid var(--line);background:var(--bg1)}.system-tabs button{display:flex;align-items:center;gap:6px;height:30px;padding:0 10px;border-radius:7px;color:var(--dim);font-size:11.5px}.system-tabs button:hover{background:var(--bg2)}.system-tabs button.on{background:var(--bg3);color:var(--text)}.system-tabs .ms{font-size:16px}.system-env{height:calc(100% - 50px);min-height:440px;display:grid;grid-template-columns:250px minmax(400px,1fr) 300px;gap:12px}.system-vars,.system-path-panel,.system-findings>section{min-height:0;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow:hidden}.system-vars{display:flex;flex-direction:column;overflow:auto}.system-scopes{display:flex;gap:5px;padding:8px;border-bottom:1px solid var(--line);background:var(--bg2)}.system-scopes button{flex:1;display:flex;justify-content:center;align-items:center;gap:5px;height:27px;border-radius:6px;color:var(--dim);font-size:10.5px}.system-scopes button.on{background:var(--bg3);color:var(--text)}.system-scopes .ms{font-size:14px}.system-var{display:grid;grid-template-columns:20px 1fr;gap:7px;padding:8px 10px;border-bottom:1px solid var(--bg2);text-align:left}.system-var:hover,.system-var.on{background:var(--bg2)}.system-var>.ms{font-size:15px;color:var(--dim2)}.system-var>span{min-width:0;display:flex;flex-direction:column;gap:2px}.system-var strong{font:600 11px 'Cascadia Mono',Consolas,monospace}.system-var small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim2);font:9.5px 'Cascadia Mono',Consolas,monospace}.system-vars footer{margin-top:auto;padding:9px 10px;border-top:1px solid var(--line);background:var(--bg2);color:var(--dim2);font-size:10px}.system-path-panel{display:flex;flex-direction:column}.system-path-panel>header{display:flex;align-items:center;gap:7px;padding:9px 11px;border-bottom:1px solid var(--line);background:var(--bg2)}.system-path-panel>header>.ms{font-size:17px;color:var(--accent)}.system-path-panel>header strong{font-size:12px}.system-path-panel>header span,.system-path-panel>header em{padding:2px 5px;border-radius:5px;background:var(--bg3);color:var(--dim2);font-size:9px;font-style:normal}.system-path-panel>header i{flex:1}.system-path-rows{min-height:0;overflow:auto}.system-path-row{display:grid;grid-template-columns:25px 20px 1fr 70px;align-items:center;gap:7px;padding:8px 10px;border-bottom:1px solid var(--bg2)}.system-path-row>code{color:var(--dim2);font-size:9.5px;text-align:right}.system-path-row>.ms{font-size:16px;color:var(--green)}.system-path-row.path-missing>.ms{color:var(--red)}.system-path-row.path-duplicate>.ms,.system-path-row.path-unresolved>.ms{color:var(--amber)}.system-path-row>span{min-width:0;display:flex;flex-direction:column;gap:2px}.system-path-row strong{overflow-wrap:anywhere;font-size:10.5px}.system-path-row small{display:flex;align-items:center;gap:4px;color:var(--dim2);font-size:9.5px}.system-path-row small .ms{font-size:12px}.system-path-row>em{text-align:right;color:var(--dim2);font-size:9px;font-style:normal}.system-findings{min-height:0;display:flex;flex-direction:column;gap:12px}.system-findings>section>header{display:flex;align-items:center;gap:7px;padding:9px 10px;border-bottom:1px solid var(--line);background:var(--bg2)}.system-findings>section>header .ms{font-size:15px;color:var(--accent)}.system-findings>section>header strong{flex:1;font:600 11px 'Cascadia Mono',Consolas,monospace}.system-findings>section>header small{color:var(--dim2);font-size:9px}.system-findings>section>p{padding:10px;overflow-wrap:anywhere;color:var(--text);font-size:10px;line-height:1.6;user-select:text}.system-findings .findings{flex:1;overflow:auto}.findings>div{display:flex;gap:7px;padding:9px 10px;border-bottom:1px solid var(--bg2)}.findings>div>.ms{font-size:16px;color:var(--amber)}.findings>div>span{display:flex;flex-direction:column;gap:2px}.findings>div strong{font-size:10.5px;text-transform:capitalize}.findings>div small{color:var(--dim2);font-size:9px;overflow-wrap:anywhere}.system-clean{align-items:center;color:var(--green);font-size:10.5px}.system-subtool{height:calc(100% - 50px);min-height:400px}.system-subtool .log-tail-output{height:calc(100% - 86px)}
 @media(max-width:1100px){.system-env{grid-template-columns:210px 1fr}.system-findings{display:none}}@media(max-width:760px){.system-env{grid-template-columns:1fr}.system-vars{max-height:210px}.system-path-panel{min-height:380px}}
 .repair-intro{display:flex;align-items:center;gap:12px;padding:2px 0 12px}.repair-intro>span{width:40px;height:40px;display:grid;place-items:center;border:1px solid rgba(109,139,255,.3);border-radius:10px;background:rgba(109,139,255,.12);color:var(--accent)}.repair-intro>span .ms{font-size:22px}.repair-intro>div{flex:1}.repair-intro p{max-width:80ch;color:var(--dim);font-size:11.5px}.repair-intro>code{padding:5px 8px;border-radius:6px;background:var(--bg2);color:var(--dim2);font-size:9.5px}.repair-designed{margin-top:10px;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow:hidden}.repair-state-row{display:grid;grid-template-columns:24px 22px 1fr auto;align-items:center;gap:8px;padding:11px 12px;border-bottom:1px solid var(--line)}.repair-state-row:last-child{border-bottom:0}.repair-state-row>code{text-align:center;color:var(--dim2);font-size:10px}.repair-state-row>.ms{font-size:18px;color:var(--accent)}.repair-state-row>span{display:flex;flex-direction:column;gap:2px}.repair-state-row strong{font-size:12px}.repair-state-row small{color:var(--dim2);font-size:10px}.repair-action-bar{display:flex;align-items:center;gap:12px;margin-top:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg1)}.repair-action-bar>span{flex:1;color:var(--dim);font-size:10.5px}.repair-action-bar .btn{flex:0 0 auto}
@@ -3029,11 +3129,12 @@ html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
 
 /* Shared confirmation dialog ------------------------------------------- */
 .confirm-layer{position:fixed;inset:0;z-index:20000;display:grid;place-items:center;padding:24px;background:rgba(4,5,8,.68);backdrop-filter:blur(5px);animation:confirm-in .12s ease-out}
-.confirm-card{width:min(440px,100%);display:grid;grid-template-columns:48px 1fr;gap:16px;padding:22px;border:1px solid var(--line);border-radius:14px;background:var(--bg1);color:var(--text);box-shadow:0 24px 80px rgba(0,0,0,.55)}
+.confirm-card{width:min(520px,100%);display:grid;grid-template-columns:48px 1fr;gap:16px;padding:22px;border:1px solid var(--line);border-radius:14px;background:var(--bg1);color:var(--text);box-shadow:0 24px 80px rgba(0,0,0,.55)}
 .confirm-icon{width:46px;height:46px;display:grid;place-items:center;border-radius:12px;background:rgba(109,139,255,.12);color:var(--accent)}.confirm-icon.danger{background:rgba(242,84,91,.12);color:var(--red)}.confirm-icon .ms{font-size:25px}
-.confirm-copy h2{margin:1px 0 7px;font-size:17px}.confirm-copy p{margin:0;color:var(--dim);font-size:12px;line-height:1.55}.confirm-actions{grid-column:1/-1;display:flex;justify-content:flex-end;gap:9px;margin-top:5px}.confirm-actions .btn{min-width:108px;justify-content:center}.confirm-actions .btn.danger{border-color:rgba(242,84,91,.55);background:var(--red);color:white}.confirm-actions .btn.danger:hover{filter:brightness(1.08)}
+.confirm-copy h2{margin:1px 0 7px;font-size:17px}.confirm-copy p{margin:0;color:var(--dim);font-size:12px;line-height:1.55}.confirm-actions{grid-column:1/-1;display:flex;justify-content:flex-end;align-items:stretch;gap:9px;margin-top:5px}.confirm-actions .btn{min-width:108px;height:auto;min-height:31px;padding-block:7px;justify-content:center;line-height:1.3;white-space:normal;text-align:center}.confirm-actions .btn.danger{border-color:rgba(242,84,91,.55);background:var(--red);color:white}.confirm-actions .btn.danger:hover{filter:brightness(1.08)}
 @keyframes confirm-in{from{opacity:0;transform:scale(.985)}to{opacity:1;transform:scale(1)}}
 .confirm-actions [data-confirm="alternate"]{border-color:rgba(109,139,255,.5);color:var(--accent)}
+@media(max-width:560px){.confirm-actions{flex-direction:column-reverse}.confirm-actions .btn{width:100%}}
 /* -------------------------------------------------------------- path ping */
 .path-page{height:100%;min-height:0;display:flex;flex-direction:column;background:var(--bg);color:var(--text)}
 .path-page[hidden]{display:none}.path-runbar{display:flex;gap:10px;padding:12px;border-bottom:1px solid var(--line);background:var(--bg1)}
@@ -3076,3 +3177,15 @@ button.copy-confirmed .ms{color:var(--green)!important}button.copy-failed .ms{co
 .git-tool-body{position:relative}.git-tool-body>.git-commit-view{inset:0}
 @media(max-width:900px){.git-branch-menu{width:240px}.sp-shell:has(.git-branch-menu)>.sp-layout,.sp-shell:has(.git-branch-menu)>.git-alert{margin-left:240px}}
 @media(max-width:760px){.git-header-repo{max-width:145px}.git-header-repo strong{max-width:92px}.git-header-repo small{display:none}}
+
+/* Tool-owned actions live inside the isolated body, below shell chrome. Each
+   action bar is intentionally emitted only by the tool that needs it. */
+.win-context-actions{display:flex;align-items:center;gap:8px;margin:-14px -16px 12px;padding:8px 16px;border-bottom:1px solid var(--line);background:var(--bg1);color:var(--dim2);font-size:10.5px}
+.win-context-actions>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.win-context-actions>i{flex:1}
+.win-context-actions .btn{flex:0 0 auto}
+
+/* This is tool navigation, not shell navigation: it exits the Git guide and
+   returns to the active repository without leaving the Git tool. */
+.hw-page-head>button:first-child{display:flex}
+.audio-device-row.muted .audio-volume{color:var(--dim2);opacity:.48}.audio-volume input:disabled{filter:grayscale(1);cursor:not-allowed}

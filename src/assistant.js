@@ -3,6 +3,7 @@
   const listen = window.__TAURI__.event.listen;
   const STORE = "devhq.assistant.v1";
   const data = load();
+  if (data.pinned !== true) { data.pinned = true; save(); }
   data.toolCallCap = clampToolCallCap(data.toolCallCap);
   let host, button, open = false, status = null, cloud = null, loading = false, running = "", pull = null, forceScroll = false, chatScrollTop = 0, chatFollowBottom = true;
 
@@ -55,13 +56,13 @@
     const item = { id: crypto.randomUUID(), title: "New chat", model: data.model, created: Date.now(), messages: [] };
     data.chats.unshift(item); data.active = item.id; save(); render(); requestAnimationFrame(() => host.querySelector("textarea")?.focus());
   }
-  function toggle(value = !open) {
+  function toggle(value = !open, refreshModels = true) {
     open = value; data.open = open; save(); host.hidden = !open; button.classList.toggle("on", open); button.setAttribute("aria-pressed", String(open));
     document.documentElement.classList.toggle("assistant-open", open);
-    document.documentElement.classList.toggle("assistant-pinned", open && data.pinned);
+    document.documentElement.classList.toggle("assistant-pinned", open);
     setTimeout(() => window.devhqTerminalSettings?.fitVisible?.(), 180);
     if (open && !chat()) newChat();
-    if (open) refresh();
+    if (open && refreshModels) refresh();
   }
   async function refresh() {
     loading = true; render();
@@ -130,7 +131,7 @@
     const models = [...(status?.models || []), ...cloudModels()];
     const isCloud = (current?.model || data.model || "").includes(":");
     host.innerHTML = `<header><span class="ms">auto_awesome</span><div><strong>${esc(current?.title || "Assistant")}</strong><small>${running ? (isCloud ? "waiting for cloud API…" : "thinking locally…") : (isCloud ? "using your API key" : "private · on device")}</small></div>
-      <button data-ai="new" title="New chat"><span class="ms">add</span></button><button data-ai="history" title="Chat history"><span class="ms">history</span></button><button data-ai="pin" class="${data.pinned ? "on" : ""}" title="${data.pinned ? "Unpin assistant" : "Pin assistant beside DevHQ"}" aria-pressed="${data.pinned}"><span class="ms">push_pin</span></button><button data-ai="close" title="Close"><span class="ms">close</span></button></header>
+      <button data-ai="new" title="New chat"><span class="ms">add</span></button><button data-ai="history" title="Chat history"><span class="ms">history</span></button><button data-ai="close" title="Close"><span class="ms">close</span></button></header>
       <div class="assistant-modelbar"><select data-ai-model aria-label="Model"><option value="">Choose a model…</option>${models.map(m => `<option value="${esc(m.name)}" ${m.name === (current?.model || data.model) ? "selected" : ""}>${esc(m.displayName || m.name)} · ${esc(m.size)}</option>`).join("")}</select><button data-ai="models"><span class="ms">tune</span>Models</button></div>
       <div class="assistant-messages">${notice ? `<div class="assistant-notice">${esc(notice)}</div>` : ""}${!current?.messages.length ? emptyView() : current.messages.map(messageView).join("")}</div>
       <form class="assistant-compose"><textarea rows="2" placeholder="Ask the selected model…" ${running ? "disabled" : ""}></textarea><div><span><span class="ms">${isCloud ? "cloud" : "shield"}</span> ${isCloud ? "Cloud API" : "Local only"}</span><label class="assistant-think" title="Plan and complete visible steps before answering"><input type="checkbox" data-ai-think ${data.think ? "checked" : ""} ${running || isCloud ? "disabled" : ""}/><span class="ms">psychology</span>Think</label><button type="submit" class="assistant-send" title="${running ? "Stop" : "Send"}"><span class="ms">${running ? "stop" : "arrow_upward"}</span></button></div></form>
@@ -183,7 +184,6 @@
       const action = event.target.closest("[data-ai]")?.dataset.ai;
       const prompt = event.target.closest("[data-prompt]")?.dataset.prompt;
       if (action === "close") toggle(false); else if (action === "new") newChat(); else if (action === "models") modelLayer();
-      else if (action === "pin") { data.pinned = !data.pinned; save(); document.documentElement.classList.toggle("assistant-pinned", open && data.pinned); render(); setTimeout(() => window.devhqTerminalSettings?.fitVisible?.(), 180); }
       else if (action === "history") historyLayer(); else if (prompt) send(prompt);
       const choice = event.target.closest("[data-question-choice]")?.dataset.questionChoice; if (choice) send(choice);
       const copyCode = event.target.closest("[data-copy-code]"); if (copyCode) window.devhqCopy.copy(copyCode.closest("pre")?.querySelector("code")?.textContent || "", copyCode).catch(() => {});
@@ -225,5 +225,10 @@
     const layer = host.querySelector(".assistant-layer"); layer.hidden = false;
     layer.innerHTML = `<section class="assistant-history"><header><strong>Recent chats</strong><button data-layer-close><span class="ms">close</span></button></header>${data.chats.map(c => `<button data-chat-id="${c.id}" class="${c.id === data.active ? "on" : ""}"><strong>${esc(c.title)}</strong><small>${esc(c.model || "No model")} · ${new Date(c.created).toLocaleDateString()}</small></button>`).join("")}</section>`;
   }
-  window.devhqAssistant = { mount, toggle, getToolCallCap: () => data.toolCallCap, setToolCallCap };
+  async function openModels() {
+    toggle(true, false);
+    await refresh();
+    modelLayer();
+  }
+  window.devhqAssistant = { mount, toggle, openModels, getToolCallCap: () => data.toolCallCap, setToolCallCap };
 })();

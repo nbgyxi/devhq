@@ -1,0 +1,20 @@
+html,body{width:100%;height:100%;margin:0;overflow:hidden;background:var(--bg1)}
+body.global-search-window{box-sizing:border-box;color:var(--text)}
+.global-search{height:100%;display:grid;grid-template-rows:18px 54px minmax(0,1fr) 34px;background:var(--bg1);border:1px solid var(--line);box-sizing:border-box;overflow:hidden}
+.global-search-drag{display:grid;place-items:center;width:100%;height:18px;background:var(--bg2);cursor:move}.global-search-drag i{width:44px;height:2px;border-radius:2px;background:var(--line2)}.global-search-drag:hover i{background:var(--dim2)}
+.global-search-field{display:grid;grid-template-columns:24px minmax(0,1fr) auto;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--line);background:var(--bg2)}
+.global-search-field>.ms{font-size:21px;color:var(--accent)}
+.global-search-field input{height:100%;min-width:0;background:none;color:var(--text);font-size:16px;outline:0}
+.global-search-field kbd,.global-search footer kbd{padding:2px 6px;border:1px solid var(--line);border-bottom-color:var(--line2);border-radius:5px;background:var(--bg3);color:var(--dim);font-size:10px;box-shadow:0 1px 0 rgba(0,0,0,.25)}
+.global-search-results{min-height:0;overflow:auto;padding:7px}
+.global-search-row{display:grid;grid-template-columns:26px minmax(150px,1fr) minmax(90px,.8fr) 30px;align-items:center;gap:10px;width:100%;height:42px;padding:0 9px;border-radius:8px;color:var(--text);text-align:left}
+.global-search-row:hover,.global-search-row.on{background:var(--bg3)}
+.global-search-row>.ms{font-size:19px;color:var(--dim2)}
+.global-search-row.kind-tool>.ms{color:var(--accent)}
+.global-search-row strong,.global-search-row small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.global-search-row strong{font-size:13px;font-weight:600}.global-search-row small{text-align:right;color:var(--dim2);font:10.5px 'Cascadia Mono','Cascadia Code',Consolas,monospace}
+.global-search-pin{width:28px;height:28px;display:grid;place-items:center;border-radius:7px;color:var(--dim2);opacity:0}
+.global-search-item:hover .global-search-pin,.global-search-pin:focus-visible,.global-search-pin.on{opacity:1}.global-search-pin.on{color:var(--amber)}
+.global-search-item{display:grid;grid-template-columns:minmax(0,1fr) 30px;align-items:center}.global-search-item .global-search-row{grid-column:1/-1;grid-row:1}.global-search-item .global-search-pin{grid-column:2;grid-row:1;z-index:1}
+.global-search-empty{display:grid;place-items:center;height:100%;color:var(--dim2);font-size:13px}
+.global-search footer{display:flex;align-items:center;gap:18px;padding:0 14px;border-top:1px solid var(--line);color:var(--dim2);font-size:10.5px}.global-search footer span{display:flex;align-items:center;gap:4px}.global-search footer button{margin-left:auto;color:var(--dim2);font-size:10.5px}.global-search footer button:hover{color:var(--text)}.global-search-scope{text-transform:uppercase;letter-spacing:.1em;color:var(--accent)!important}

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<script>
+document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") === "light" ? "light" : "dark";
+</script>
+<link rel="stylesheet" href="styles.css?v=0.43.30" />
+<link rel="stylesheet" href="search.css?v=1" />
+</head>
+<body class="global-search-window">
+  <main class="global-search">
+    <button class="global-search-drag" id="search-drag" type="button" aria-label="Move Search" title="Drag to move Search"><i></i></button>
+    <label class="global-search-field">
+      <span class="ms">search</span>
+      <input id="query" spellcheck="false" autocomplete="off" autofocus placeholder="Search tools, projects and commands…" />
+      <kbd>Esc</kbd>
+    </label>
+    <div class="global-search-results" id="results" role="listbox"></div>
+    <footer><span><kbd>↑</kbd><kbd>↓</kbd> navigate</span><span><kbd>Enter</kbd> open</span><button id="copy-debug" type="button">Copy debug info</button><span class="global-search-scope">DevHQ</span></footer>
+  </main>
+  <script src="search.js?v=1"></script>
+</body>
+</html>

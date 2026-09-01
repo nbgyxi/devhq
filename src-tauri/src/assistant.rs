@@ -1,9 +1,8 @@
 use crate::ai::{provider::ToolCall, tools::ToolRegistry};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File},
-    io::{BufReader, Read, Write},
+    fs,
+    io::{BufReader, Read},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -211,65 +210,19 @@ fn download(
     hash: &str,
     target: &Path,
 ) -> Result<(), String> {
-    let part = target.with_extension("part");
-    if let Some(p) = target.parent() {
-        fs::create_dir_all(p).map_err(|e| e.to_string())?
-    }
-    let mut response = reqwest::blocking::Client::builder()
-        .user_agent("DevHQ/0.42")
-        .build()
-        .map_err(|e| e.to_string())?
-        .get(url)
-        .send()
-        .map_err(|e| format!("Download failed: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("Download failed: {e}"))?;
-    let total = response.content_length().unwrap_or(expected);
-    let mut out = File::create(&part).map_err(|e| e.to_string())?;
-    let mut sha = Sha256::new();
-    let mut buf = [0u8; 131072];
-    let mut n = 0u64;
-    let mut next = 0;
-    loop {
-        if CANCEL.load(Ordering::Relaxed) {
-            drop(out);
-            let _ = fs::remove_file(&part);
-            return Err("Download cancelled.".into());
-        }
-        let got = response.read(&mut buf).map_err(|e| e.to_string())?;
-        if got == 0 {
-            break;
-        }
-        out.write_all(&buf[..got]).map_err(|e| e.to_string())?;
-        sha.update(&buf[..got]);
-        n += got as u64;
-        if n >= next {
-            next = n + 2_000_000;
-            progress(
-                app,
-                model,
-                phase,
-                format!("{} of {}", size(n), size(total)),
-                n,
-                total,
-                false,
-                String::new(),
-            )
-        }
-    }
-    out.flush().map_err(|e| e.to_string())?;
-    drop(out);
-    if n != expected {
-        let _ = fs::remove_file(&part);
-        return Err(format!(
-            "Size verification failed ({n} of {expected} bytes)."
-        ));
-    }
-    if format!("{:x}", sha.finalize()) != hash {
-        let _ = fs::remove_file(&part);
-        return Err("SHA-256 verification failed; the download was discarded.".into());
-    }
-    fs::rename(part, target).map_err(|e| e.to_string())
+    let mut report = |n: u64, total: u64| {
+        progress(
+            app,
+            model,
+            phase,
+            format!("{} of {}", size(n), size(total)),
+            n,
+            total,
+            false,
+            String::new(),
+        )
+    };
+    crate::download::fetch(url, expected, hash, target, &CANCEL, &mut report)
 }
 fn runtime(app: &AppHandle, model: &str, root: &Path) -> Result<(), String> {
     let (r, _) = dirs(root);
@@ -296,31 +249,7 @@ fn runtime(app: &AppHandle, model: &str, root: &Path) -> Result<(), String> {
         RUNTIME_HASH,
         &archive,
     )?;
-    fs::create_dir_all(&r).map_err(|e| e.to_string())?;
-    let mut zip = zip::ZipArchive::new(File::open(&archive).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    for i in 0..zip.len() {
-        if CANCEL.load(Ordering::Relaxed) {
-            return Err("Download cancelled.".into());
-        }
-        let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
-        let Some(name) = entry.enclosed_name() else {
-            continue;
-        };
-        let dest = r.join(name);
-        if entry.is_dir() {
-            fs::create_dir_all(dest).map_err(|e| e.to_string())?
-        } else {
-            if let Some(p) = dest.parent() {
-                fs::create_dir_all(p).map_err(|e| e.to_string())?
-            }
-            std::io::copy(
-                &mut entry,
-                &mut File::create(dest).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?;
-        }
-    }
+    crate::download::unzip(&archive, &r, &CANCEL)?;
     let _ = fs::remove_file(archive);
     if !r.join("llama-cli.exe").is_file() {
         return Err("The verified runtime archive was incomplete.".into());

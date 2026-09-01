@@ -1,0 +1,18 @@
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg2)}
+body.changelog-window{margin:0;color:var(--text)}
+.changelog-window .changelog-pop{position:static;width:100%;max-width:none;height:100%;border:0;border-radius:0;box-shadow:none}
+.changelog-window .changelog-head{user-select:none}
+.changelog-window .changelog-head[data-drag-region]{cursor:move}
+.changelog-window .changelog-head button{cursor:pointer}
+.changelog-window .changelog-list{max-height:none;padding-bottom:20px}
+.release-group{border-bottom:1px solid var(--line)}
+.release-group>summary{list-style:none}
+.release-group>summary::-webkit-details-marker{display:none}
+.release-group-head{display:grid;grid-template-columns:18px auto minmax(0,1fr) auto auto;align-items:center;gap:9px;padding:13px 14px;cursor:pointer;user-select:none}
+.release-group-head:hover{background:var(--bg1)}
+.release-group-head>.ms{font-size:17px;color:var(--dim2);transition:transform .12s ease}
+.release-group[open]>.release-group-head>.ms{transform:rotate(90deg)}
+.release-group-head small{color:var(--dim2);font-size:10px;white-space:nowrap}
+.release-group-body{padding:0 14px 10px;background:var(--bg1);border-top:1px solid var(--line)}
+.release-group-body>h3{margin:13px 0 0;color:var(--dim2);font-size:10px;text-transform:uppercase;letter-spacing:.07em}
+.release-group-body>.release{padding-left:0;padding-right:0}
