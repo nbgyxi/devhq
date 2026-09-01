@@ -16,11 +16,13 @@
     "msix": "powershell -ExecutionPolicy Bypass -File ./scripts/package-msix.ps1",
     "msix:local": "powershell -ExecutionPolicy Bypass -File ./scripts/package-msix.ps1 -SelfSign",
     "tauri": "node scripts/tauri-with-cargo-path.js",
-    "test:e2e": "node scripts/e2e/run.js"
+    "test:e2e": "node scripts/e2e/run-browser.js",
+    "test:e2e:webview": "node scripts/e2e/run.js"
   },
   "devDependencies": {
     "@napi-rs/canvas": "^0.1.67",
     "@tauri-apps/cli": "^2",
+    "playwright": "^1",
     "selenium-webdriver": "^4",
     "wawoff2": "^2.0.1"
   },
