@@ -92,18 +92,18 @@ impl ToolRegistry {
         let mut tools = vec![
             ToolDefinition {
                 name: "list_project_files".into(),
-                description: "List files below a project directory open in DevHQ.".into(),
+                description: "List files below a project directory open in WinT.".into(),
                 parameters: json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}),
             },
             ToolDefinition {
                 name: "read_project_file".into(),
-                description: "Read up to 64 KB from one UTF-8 file below a DevHQ project root."
+                description: "Read up to 64 KB from one UTF-8 file below a WinT project root."
                     .into(),
                 parameters: json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}),
             },
             ToolDefinition {
                 name: "search_project_text".into(),
-                description: "Search text files below a DevHQ project root for a literal query."
+                description: "Search text files below a WinT project root for a literal query."
                     .into(),
                 parameters: json!({"type":"object","properties":{"path":{"type":"string"},"query":{"type":"string"}},"required":["path","query"],"additionalProperties":false}),
             },
@@ -221,7 +221,7 @@ impl ToolRegistry {
         );
         tools.extend(self.area_tools.iter().map(|(name, id)| ToolDefinition {
             name: name.clone(),
-            description: format!("Open DevHQ's {id} tool so the user can inspect results or confirm interactive and system-changing actions."),
+            description: format!("Open WinT's {id} tool so the user can inspect results or confirm interactive and system-changing actions."),
             parameters: json!({"type":"object","properties":{"input":{"type":"string","description":"Optional value the user wants to use in the tool"}},"additionalProperties":false}),
         }));
         tools.retain(|tool| self.enabled.contains(&tool.name));
@@ -247,7 +247,7 @@ impl ToolRegistry {
         let path =
             fs::canonicalize(raw).map_err(|_| "The requested project path does not exist.")?;
         if !self.roots.iter().any(|root| path.starts_with(root)) {
-            return Err("Tool path is outside DevHQ's project roots.".into());
+            return Err("Tool path is outside WinT's project roots.".into());
         }
         if file && !path.is_file() {
             return Err("The requested path is not a file.".into());
@@ -276,7 +276,7 @@ impl ToolRegistry {
                     .area_tools
                     .iter()
                     .find(|(tool, _)| tool == name)
-                    .ok_or("Unknown DevHQ tool route.")?;
+                    .ok_or("Unknown WinT tool route.")?;
                 let input = call
                     .arguments
                     .get("input")
@@ -287,7 +287,7 @@ impl ToolRegistry {
                         .map_err(|e| e.to_string())?;
                 }
                 Ok(
-                    json!({"opened":id,"input":input,"interactive":true,"message":"The DevHQ tool was opened. The user remains in control of interactive or system-changing actions."}),
+                    json!({"opened":id,"input":input,"interactive":true,"message":"The WinT tool was opened. The user remains in control of interactive or system-changing actions."}),
                 )
             }
             "list_ports" => {
@@ -559,7 +559,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     fn root() -> PathBuf {
         let p = std::env::temp_dir().join(format!(
-            "devhq-ai-tools-{}",
+            "wint-ai-tools-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -572,14 +572,14 @@ mod tests {
     fn reads_only_below_registered_root() {
         let dir = root();
         let file = dir.join("README.md");
-        fs::write(&file, "hello DevHQ").unwrap();
+        fs::write(&file, "hello WinT").unwrap();
         let registry = ToolRegistry::project(vec![dir.display().to_string()]);
         let call = ToolCall {
             id: "1".into(),
             name: "read_project_file".into(),
             arguments: json!({"path":file}),
         };
-        assert_eq!(registry.execute(&call).unwrap()["content"], "hello DevHQ");
+        assert_eq!(registry.execute(&call).unwrap()["content"], "hello WinT");
         let _ = fs::remove_dir_all(dir);
     }
     #[test]

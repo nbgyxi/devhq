@@ -577,17 +577,17 @@ const util = {
 };
 
 function utilIcon(name) {
-  return window.devhqShell?.icon(name) ?? `<span class="ms" aria-hidden="true">${name}</span>`;
+  return window.wintShell?.icon(name) ?? `<span class="ms" aria-hidden="true">${name}</span>`;
 }
 
 function utilEsc(value) {
-  return window.devhqShell?.esc(value) ?? String(value ?? "")
+  return window.wintShell?.esc(value) ?? String(value ?? "")
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
 
 function utilDirty() {
-  window.devhqShell?.markDirty("tools");
+  window.wintShell?.markDirty("tools");
 }
 
 function utilById(id) {
@@ -627,21 +627,21 @@ function formatCharCount(n) {
 }
 
 async function downloadOutputFile(text, tool) {
-  const defaultName = `devhq-${tool?.id || "output"}.txt`;
-  window.devhqWork?.beginWork("tools-save", "Saving output…");
+  const defaultName = `wint-${tool?.id || "output"}.txt`;
+  window.wintWork?.beginWork("tools-save", "Saving output…");
   try {
     const path = await util_invoke("save_text_file", { text, defaultName });
     if (!path) {
-      window.devhqWork?.endWork("tools-save");
+      window.wintWork?.endWork("tools-save");
       return;
     }
     const base = String(path).split(/[\\/]/).pop() || defaultName;
-    window.devhqWork?.beginWork("tools-save", `Saved ${base}`);
-    setTimeout(() => window.devhqWork?.endWork("tools-save"), 2000);
+    window.wintWork?.beginWork("tools-save", `Saved ${base}`);
+    setTimeout(() => window.wintWork?.endWork("tools-save"), 2000);
   } catch (err) {
     const msg = err && err.message ? err.message : String(err || "Could not save");
-    window.devhqWork?.beginWork("tools-save", msg);
-    setTimeout(() => window.devhqWork?.endWork("tools-save"), 2400);
+    window.wintWork?.beginWork("tools-save", msg);
+    setTimeout(() => window.wintWork?.endWork("tools-save"), 2400);
   }
 }
 
@@ -765,11 +765,11 @@ function wire() {
 
   util.host.onclick = (event) => {
     const pop = event.target.closest("[data-popout-tool]");
-    if (pop) return window.devhqShell?.popOutTool?.(pop.dataset.popoutTool);
+    if (pop) return window.wintShell?.popOutTool?.(pop.dataset.popoutTool);
     const pin = event.target.closest("[data-pin-tool]");
-    if (pin) return window.devhqShell?.toggleToolPin(pin.dataset.pinTool);
+    if (pin) return window.wintShell?.toggleToolPin(pin.dataset.pinTool);
     const go = event.target.closest("[data-open-tool]");
-    if (go) return window.devhqShell?.openTool(go.dataset.openTool);
+    if (go) return window.wintShell?.openTool(go.dataset.openTool);
 
     const act = event.target.closest("[data-tools]");
     if (act) return action(act.dataset.tools, act);
@@ -806,10 +806,10 @@ function wire() {
 async function copyPiece(text, button) {
   if (text === undefined || text === null || text === "") return;
   try {
-    await window.devhqCopy.copy(String(text), button);
+    await window.wintCopy.copy(String(text), button);
   } catch {
-    window.devhqWork?.beginWork("tools-copy", "Could not copy");
-    setTimeout(() => window.devhqWork?.endWork("tools-copy"), 1600);
+    window.wintWork?.beginWork("tools-copy", "Could not copy");
+    setTimeout(() => window.wintWork?.endWork("tools-copy"), 1600);
   }
 }
 
@@ -819,8 +819,8 @@ async function action(name) {
     try {
       utilSetInput(await navigator.clipboard.readText());
     } catch {
-      window.devhqWork?.beginWork("tools-paste", "Clipboard is not readable");
-      setTimeout(() => window.devhqWork?.endWork("tools-paste"), 1600);
+      window.wintWork?.beginWork("tools-paste", "Clipboard is not readable");
+      setTimeout(() => window.wintWork?.endWork("tools-paste"), 1600);
     }
     return;
   }
@@ -859,7 +859,7 @@ async function action(name) {
     if (!hit) return;
     const target = hit[0];
     util.inputs[target] = utilInput(tool);
-    window.devhqShell?.openTool?.(target);
+    window.wintShell?.openTool?.(target);
   }
 }
 
@@ -1024,7 +1024,7 @@ function render() {
   // Every util tool shares this one header, so the badge is restamped with the
   // name rather than being part of the markup that is built once.
   const maturity = util.host.querySelector("#tools-maturity");
-  if (maturity) maturity.innerHTML = window.devhqMaturity?.badge(tool.id) ?? "";
+  if (maturity) maturity.innerHTML = window.wintMaturity?.badge(tool.id) ?? "";
   const pin = util.host.querySelector("#tool-pin-util");
   pin.dataset.pinTool = tool.id;
   const pop = util.host.querySelector("#tool-popout-util");
@@ -1061,7 +1061,7 @@ function catalog() {
   }));
 }
 
-window.devhqUtilTools = {
+window.wintUtilTools = {
   mount,
   render,
   opened,

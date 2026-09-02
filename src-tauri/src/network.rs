@@ -254,7 +254,7 @@ fn pktmon_say(args: &[&str]) -> Result<String, String> {
 }
 
 const ACCESS_DENIED: &str =
-    "pktmon needs administrator rights. Restart DevHQ as an administrator to capture.";
+    "pktmon needs administrator rights. Restart WinT as an administrator to capture.";
 
 fn pktmon_exists() -> bool {
     if PathBuf::from(r"C:\Windows\System32\pktmon.exe").exists() {
@@ -698,7 +698,7 @@ pub fn start(app: AppHandle, options: StartOptions) -> Result<Started, String> {
     for filter in &options.filters {
         match filter_args(filter) {
             Some(args) => {
-                let name = format!("devhq-{}-{}", filter.kind, applied.len());
+                let name = format!("wint-{}-{}", filter.kind, applied.len());
                 let mut call: Vec<&str> = vec!["filter", "add", name.as_str()];
                 call.extend(args.iter().map(String::as_str));
                 if let Err(err) = pktmon_say(&call) {
@@ -946,7 +946,7 @@ pub fn capture_dir() -> PathBuf {
     std::env::var_os("USERPROFILE")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("DevHQ")
+        .join("WinT")
         .join("captures")
 }
 
@@ -1001,7 +1001,7 @@ pub fn export(path: Option<String>) -> Result<Exported, String> {
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            dir.join(format!("devhq-{stamp}.pcapng"))
+            dir.join(format!("wint-{stamp}.pcapng"))
         }
     };
 
@@ -1013,7 +1013,7 @@ pub fn export(path: Option<String>) -> Result<Exported, String> {
     shb.extend_from_slice(&1u16.to_le_bytes());
     shb.extend_from_slice(&0u16.to_le_bytes());
     shb.extend_from_slice(&(-1i64).to_le_bytes());
-    option(&mut shb, 4, b"DevHQ network watcher"); // shb_userappl
+    option(&mut shb, 4, b"WinT network watcher"); // shb_userappl
     end_options(&mut shb);
     block(&mut out, 0x0A0D_0D0A, &shb);
 

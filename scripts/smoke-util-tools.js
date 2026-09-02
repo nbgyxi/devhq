@@ -71,8 +71,8 @@ sandbox.globalThis = sandbox;
 sandbox.window = sandbox;
 
 vm.runInNewContext(src, sandbox, { filename: "util-tools.js" });
-const api = sandbox.window.devhqUtilTools;
-if (!api) throw new Error("devhqUtilTools missing");
+const api = sandbox.window.wintUtilTools;
+if (!api) throw new Error("wintUtilTools missing");
 const catalog = api.catalog();
 const ids = catalog.map((t) => t.id);
 console.log("tools:", ids.length, ids.join(", "));

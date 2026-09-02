@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Builds DevHQ and packages it as an MSIX for Microsoft Store submission
+  Builds WinT and packages it as an MSIX for Microsoft Store submission
   (or local sideload testing).
 
 .DESCRIPTION
@@ -20,15 +20,15 @@
 
 .EXAMPLE
   # Store submission build (unsigned). The identity defaults below are already
-  # DevHQ's reserved Partner Center values, so this is the whole command:
+  # WinT's reserved Partner Center values, so this is the whole command:
   #   1. add the release to the top of src/changelog.js
   #   2. then:
   ./scripts/package-msix.ps1 -BumpVersion
 
 .EXAMPLE
   # Local test build, self-signed so you can install it:
-  ./scripts/package-msix.ps1 -SelfSign -IdentityName "Dev.DevHQ" `
-      -Publisher "CN=DevHQDev" -PublisherDisplayName "Dev"
+  ./scripts/package-msix.ps1 -SelfSign -IdentityName "Dev.WinT" `
+      -Publisher "CN=WinTDev" -PublisherDisplayName "Dev"
 #>
 [CmdletBinding()]
 param(
@@ -45,7 +45,7 @@ param(
     # Publisher Display Name from Partner Center.
     [string]$PublisherDisplayName = "Gyxi",
 
-    [string]$DisplayName = "DevHQ",
+    [string]$DisplayName = "WinT",
     [string]$Description = "Developer overview of every project in a folder.",
 
     # Skip the tauri build step and reuse the existing release exe.
@@ -148,7 +148,7 @@ Write-Host "==> Package version: $version (release '$listVersion' in src/changel
 # The release notes and version number are the content of this build and
 # must already be in src/changelog.js. The checksum cannot go in first: it
 # is a hash of the finished exe, and putting it in the frontend would change
-# the binary. So: notes first, then this build (with DEVHQ_OFFICIAL_BUILD so
+# the binary. So: notes first, then this build (with WINT_OFFICIAL_BUILD so
 # What's new will hash the running Store exe), then hash that exact file.
 # The hash is written into changelog.js afterwards for the repo and for later
 # versions. Do not rebuild after that write - a second build would be a
@@ -158,21 +158,21 @@ if (-not $SkipBuild) {
     Push-Location $repoRoot
     # Marks this compile as the Store package so What's new will hash the
     # running exe. Plain `npm run build` / `npm run dev` leave it unset.
-    $env:DEVHQ_OFFICIAL_BUILD = "1"
+    $env:WINT_OFFICIAL_BUILD = "1"
     # This script creates the installer itself below. Asking Tauri to bundle as
     # well is unnecessary and can make an unrelated WiX/MSI failure prevent the
     # MSIX from being produced (for example, Cargo binaries that are also
     # listed as resources collide in WiX's install directory).
     try { npm run build -- --no-bundle } finally {
-        Remove-Item Env:DEVHQ_OFFICIAL_BUILD -ErrorAction SilentlyContinue
+        Remove-Item Env:WINT_OFFICIAL_BUILD -ErrorAction SilentlyContinue
         Pop-Location
     }
     if ($LASTEXITCODE -ne 0) { throw "tauri build failed." }
 }
 
-# Cargo names the binary after the package (`devhq`), which is not the product
+# Cargo names the binary after the package (`wint`), which is not the product
 # name; the manifest's Executable= is, so it is copied across under that name.
-$exeSource = Join-Path $tauriRoot "target/release/devhq.exe"
+$exeSource = Join-Path $tauriRoot "target/release/wint.exe"
 if (-not (Test-Path $exeSource)) {
     throw "Release exe not found at $exeSource. Run without -SkipBuild first."
 }
@@ -219,7 +219,7 @@ $stage = Join-Path $OutDir "layout"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Force -Path (Join-Path $stage "Assets") | Out-Null
 
-Copy-Item $exeSource (Join-Path $stage "DevHQ.exe") -Force
+Copy-Item $exeSource (Join-Path $stage "WinT.exe") -Force
 
 # --- 4. Generate logo assets from icon.png --------------------------------
 Add-Type -AssemblyName System.Drawing
@@ -263,13 +263,13 @@ $manifest = $manifest.
     Replace("{{VERSION}}", $version)
 Set-Content -Path (Join-Path $stage "AppxManifest.xml") -Value $manifest -Encoding UTF8
 
-if ($IdentityName -eq "Dev.DevHQ" -or $Publisher -eq "CN=DevHQDev") {
+if ($IdentityName -eq "Dev.WinT" -or $Publisher -eq "CN=WinTDev") {
     Write-Warning "Using dev identity values. The .msix will build but is NOT submittable until you pass the real Partner Center values."
 }
 
 # --- 6. Pack --------------------------------------------------------------
 $makeappx = Find-SdkTool "makeappx.exe"
-$msixPath = Join-Path $OutDir ("DevHQ_{0}.msix" -f $version)
+$msixPath = Join-Path $OutDir ("WinT_{0}.msix" -f $version)
 Write-Host "==> Packing $msixPath ..." -ForegroundColor Cyan
 & $makeappx pack /o /d $stage /p $msixPath
 if ($LASTEXITCODE -ne 0) { throw "makeappx failed." }

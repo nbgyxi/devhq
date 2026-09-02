@@ -4,13 +4,13 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Terminal</title>
-<link rel="icon" type="image/png" href="devhq-icon.png" />
+<link rel="icon" type="image/png" href="wint-icon.png" />
 <link rel="stylesheet" href="styles.css" />
 </head>
 <body class="popout">
 <div class="titlebar">
   <div class="drag">
-    <div class="brand"><img src="devhq-icon.png" alt="" />
+    <div class="brand"><img src="wint-icon.png" alt="" />
       <i class="shell-mark" id="pop-shell" hidden></i>
       <span id="pop-project">Terminal</span>
       <span class="sub" id="pop-title"></span>
@@ -20,7 +20,7 @@
     <button class="win-btn" id="pop-split" title="Split this terminal"><span class="ms">splitscreen_right</span></button>
     <button class="win-btn" id="pop-debug" title="Copy terminal debug report"><span class="ms">bug_report</span></button>
     <button class="win-btn" id="pop-ontop" title="Keep this window on top" aria-pressed="false"><span class="ms">keep</span></button>
-    <button class="win-btn" id="pop-dock" title="Dock back into DevHQ"><span class="ms">dock_to_bottom</span></button>
+    <button class="win-btn" id="pop-dock" title="Dock back into WinT"><span class="ms">dock_to_bottom</span></button>
     <button class="win-btn" data-win="min"><span class="ms">remove</span></button>
     <button class="win-btn" data-win="max"><span class="ms">crop_square</span></button>
     <button class="win-btn close" data-win="close" title="Close this terminal" aria-label="Close this terminal"><span class="ms">close</span></button>
@@ -40,7 +40,7 @@
 </div>
 <script src="analytics.js"></script>
 <script src="i18n.js"></script>
-<script>window.devhqI18n.init(window.devhqI18n.storedLanguage());</script>
+<script>window.wintI18n.init(window.wintI18n.storedLanguage());</script>
 <script src="terminal.js"></script>
 <script src="popout.js"></script>
 </body>

@@ -1,4 +1,4 @@
-# DevHQ
+# WinT*
 
 A Tauri + Rust desktop app that scans a folder of development projects and
 reports git status, running processes and detected tech at a glance.
@@ -80,11 +80,11 @@ behind the version in `tauri.conf.json` — the two are read side by side, and
 
 ## Do not launch the app
 
-**Never start, foreground or screenshot the DevHQ window.** No `npm run dev`,
-no running `devhq.exe`, no `PrintWindow` / `CopyFromScreen` captures, no
+**Never start, foreground or screenshot the WinT* window.** No `npm run dev`,
+no running `wint.exe`, no `PrintWindow` / `CopyFromScreen` captures, no
 sending input to the window. The user runs and tests the app themselves.
 
 Verify changes without it: `cargo check` / `cargo clippy` for the Rust side,
 `cargo run --example scan_cli` for the scan itself, and `node --check` for the
-front-end files. If something can only be confirmed by looking at the runningT
-window, say so and hand it over rather than launching it.
+front-end files. If something can only be confirmed by looking at the running
+WinT* window, say so and hand it over rather than launching it.

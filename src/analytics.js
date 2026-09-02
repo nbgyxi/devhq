@@ -10,8 +10,8 @@
 // window is refused before it reaches the network - the request has to leave
 // the app outside the webview to arrive at all.
 (() => {
-  const prefsKey = "devhq.prefs.v1";
-  const visitorKey = "devhq.analytics.visitor.v1";
+  const prefsKey = "wint.prefs.v1";
+  const visitorKey = "wint.analytics.visitor.v1";
   let visitorId;
   let lastPath = null;
   let allowed = false;
@@ -35,11 +35,11 @@
   }
 
   /** Follows the setting, whether it was just answered or just switched off. */
-  window.devhqAnalyticsConsent = (on) => {
+  window.wintAnalyticsConsent = (on) => {
     allowed = on === true;
   };
 
-  window.devhqTrackPageView = (path) => {
+  window.wintTrackPageView = (path) => {
     // `lastPath` is left alone while switched off, so turning it on later still
     // counts the screen that is on the window right then.
     if (!allowed || !path || path === lastPath) return;

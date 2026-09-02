@@ -2,7 +2,7 @@
 // mount/open/opened/render/exportState/importState.
 (async () => {
   "use strict";
-  const bridge = window.devhqToolBridge;
+  const bridge = window.wintToolBridge;
   const loading = document.getElementById("tool-loading");
   const phase = document.getElementById("tool-loading-phase");
   // The loading screen names the real phase rather than saying "Loading…" at
@@ -25,7 +25,7 @@
   try {
     context = await bridge.ready;
   } catch (error) {
-    stall(`${queryName} could not reach DevHQ. ${String(error)}`);
+    stall(`${queryName} could not reach WinT. ${String(error)}`);
     return;
   }
   const label = context?.tool?.name || queryName;
@@ -45,23 +45,23 @@
     sayPhase(`Loading ${label}…`);
     if (modules[id]) {
       await load(modules[id]);
-      api = { ports: window.devhqPortsTool, dns: window.devhqDns, hosts: window.devhqHosts, network: window.devhqNetwork,
-        "path-ping": window.devhqPathPing, "disk-space": window.devhqDiskSpace,
-        github: window.devhqGithub, git: window.devhqGit }[id];
+      api = { ports: window.wintPortsTool, dns: window.wintDns, hosts: window.wintHosts, network: window.wintNetwork,
+        "path-ping": window.wintPathPing, "disk-space": window.wintDiskSpace,
+        github: window.wintGithub, git: window.wintGit }[id];
     } else {
       await load("util-tools.js");
-      if (window.devhqUtilTools?.byId?.(id)) api = window.devhqUtilTools;
+      if (window.wintUtilTools?.byId?.(id)) api = window.wintUtilTools;
       else {
         await load("windows-tools.js");
-        if (window.devhqWindowsTools?.catalog?.().some((tool) => tool.id === id)) api = window.devhqWindowsTools;
+        if (window.wintWindowsTools?.catalog?.().some((tool) => tool.id === id)) api = window.wintWindowsTools;
       }
     }
     if (!api) throw new Error(`${context.tool?.name || id} has no isolated adapter.`);
     bridge.attach(api);
     const saved = await bridge.takeState();
     if (saved) api.importState?.(saved, id);
-    const utilFamily = window.devhqUtilTools?.byId?.(id);
-    const windowsFamily = window.devhqWindowsTools?.catalog?.().some((tool) => tool.id === id);
+    const utilFamily = window.wintUtilTools?.byId?.(id);
+    const windowsFamily = window.wintWindowsTools?.catalog?.().some((tool) => tool.id === id);
     const family = utilFamily ? "tools-page"
       : windowsFamily ? "windows-tools-page"
       : id === "network" ? "net-page" : id === "path-ping" ? "path-page"
@@ -80,7 +80,7 @@
     // A tool that cannot open keeps the loading screen and says so there -
     // better than a spinner that never stops over an empty page.
     if (loading) stall(`${label} could not open. ${String(error)}`);
-    else host.innerHTML = `<div class="win-empty">${window.devhqShell.esc(String(error))}</div>`;
+    else host.innerHTML = `<div class="win-empty">${window.wintShell.esc(String(error))}</div>`;
     await bridge.request("ready", { error: String(error) }).catch(() => {});
   }
 })();

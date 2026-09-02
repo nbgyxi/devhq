@@ -1,4 +1,4 @@
-# DevHQ
+# WinT*
 
 A native Windows desktop app that gives a developer-oriented overview of every
 project in a folder: what's dirty, what's running, what it's built with.
@@ -7,13 +7,13 @@ project in a folder: what's dirty, what's running, what it's built with.
 
 ## License
 
-DevHQ is **source-available**: the code is public so you can read it, run it
+WinT* is **source-available**: the code is public so you can read it, run it
 locally, and contribute back — but Gyxi keeps control of the project. There is
-one official DevHQ; you may not publish your own version of it.
+one official WinT*; you may not publish your own version of it.
 
 | Allowed | Not allowed |
 | --- | --- |
-| Browse and study the source | Publish, sell, or redistribute DevHQ |
+| Browse and study the source | Publish, sell, or redistribute WinT* |
 | Build and run it for yourself | Release your own version or fork as a product |
 | Fork on GitHub to send a pull request | Use this code in another project or product |
 | Open branches and pull requests here | Host a competing public copy |
@@ -68,13 +68,13 @@ handed the current screen; docking back closes that window and remounts the same
 session in the panel. A build running when you pop the terminal out is still
 running when it lands.
 
-Closing DevHQ kills every session, so no shell outlives the window that owned it.
+Closing WinT* kills every session, so no shell outlives the window that owned it.
 
 ### How it works
 
 There is no terminal dependency — not a pty crate, not xterm.js. The whole stack
 is `windows` (Microsoft's own bindings, already used for reading process working
-directories) plus DevHQ's own code:
+directories) plus WinT*'s own code:
 
 | Path | Purpose |
 | --- | --- |
@@ -106,7 +106,7 @@ Selections persist in `localStorage`. `Ctrl+K` (or `Ctrl+F`) focuses search, `F5
 ## How "running" is decided
 
 A command line alone can't tell you which project a dev server belongs to —
-`npm run dev` and `node server.js` both show up with relative paths. So DevHQ
+`npm run dev` and `node server.js` both show up with relative paths. So WinT*
 reads each process's actual working directory out of its PEB
 ([`src-tauri/src/cwd.rs`](src-tauri/src/cwd.rs)), the same route Process
 Explorer takes, since Windows exposes no API for it.
@@ -151,12 +151,12 @@ Useful for checking the scanner without opening the window:
 ```bash
 cd src-tauri
 cargo run --example scan_cli -- "C:\code"
-cargo run --example todo_cli -- "C:\code\devhq"
+cargo run --example todo_cli -- "C:\code\wint"
 ```
 
 ## Command-line interface
 
-In DevHQ, open **Settings → General → DevHQ command-line interface** and choose
+In WinT*, open **Settings → General → WinT command-line interface** and choose
 **Install CLI**. This is the normal installation path and can also remove the
 command later.
 
@@ -166,16 +166,16 @@ For a source checkout, it can alternatively be built and installed directly:
 npm run cli:install
 ```
 
-The installer puts `devhq.exe` in `%LOCALAPPDATA%\DevHQ\bin` and adds that
-directory to the current user's `PATH`. Open a new terminal and `devhq` can be
+The installer puts `wint.exe` in `%LOCALAPPDATA%\WinT\bin` and adds that
+directory to the current user's `PATH`. Open a new terminal and `wint` can be
 run from any working directory, independently of the desktop app:
 
 ```powershell
-devhq scan C:\code --pretty
-devhq git status C:\code\devhq --pretty
-devhq ports list
-devhq dns lookup example.com 1.1.1.1 A AAAA
-devhq help
+wint scan C:\code --pretty
+wint git status C:\code\wint --pretty
+wint ports list
+wint dns lookup example.com 1.1.1.1 A AAAA
+wint help
 ```
 
 CLI output is compact JSON by default for piping to other tools; `--pretty`
@@ -189,6 +189,6 @@ Tauri event loop.
 ## Regenerating the icon
 
 ```bash
-node scripts/make-icon.js   # writes src/devhq-icon.png
+node scripts/make-icon.js   # writes src/wint-icon.png
 npm run icons               # expands it into src-tauri/icons/
 ```

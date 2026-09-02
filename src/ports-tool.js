@@ -1,8 +1,8 @@
 (() => {
   "use strict";
   const invoke = window.__TAURI__.core.invoke;
-  const icon = (name) => window.devhqShell?.icon?.(name) || `<span class="ms">${name}</span>`;
-  const esc = (value) => window.devhqShell?.esc?.(value) || String(value ?? "");
+  const icon = (name) => window.wintShell?.icon?.(name) || `<span class="ms">${name}</span>`;
+  const esc = (value) => window.wintShell?.esc?.(value) || String(value ?? "");
   const s = { host:null, rows:[], search:"", tab:"listen", selected:"", samples:new Map(), loading:false, error:"", timer:0, sampleTimer:0 };
   const processName = (row) => row.process || row.executablePath?.split(/[\\/]/).pop() || "Unknown process";
   const entries = () => s.rows.flatMap((row) => (row.ports?.length ? row.ports.map((binding) => ({
@@ -34,7 +34,7 @@
   function render(){if(!s.host)return;const input=s.host.querySelector("[data-port-filter]");const focused=input===document.activeElement;const caret=focused?input.selectionStart:null;if(!s.host.querySelector("[data-ports-list]"))s.host.innerHTML=body();renderList();renderDetail();const next=s.host.querySelector("[data-port-filter]");if(next&&next.value!==s.search)next.value=s.search;if(focused){next.focus();next.setSelectionRange(caret,caret)}}
   async function load(){if(s.loading)return;s.loading=true;render();try{s.rows=await invoke("port_list");s.error=""}catch(error){s.error=String(error)}finally{s.loading=false;render();sample()}}
   async function sample(){const pids=[...new Set(visible().map((entry)=>entry.pid))].slice(0,600);if(!pids.length)return;try{const rows=await invoke("port_sample",{pids});for(const row of rows||[]){const prior=s.samples.get(row.pid);const now=Date.now();const seconds=prior?(now-prior.at)/1000:0;const cpu=prior&&seconds>.2?Math.max(0,(row.cpuSeconds-prior.cpuSeconds)/seconds/(navigator.hardwareConcurrency||4)*100):null;s.samples.set(row.pid,{...row,cpu,at:now});}renderList();renderDetail()}catch{}}
-  async function kill(pid){const row=s.rows.find((item)=>item.pid===pid);if(!row)return;const yes=await window.devhqConfirm?.({title:`Kill ${processName(row)}?`,message:`PID ${pid} will be terminated immediately.`,confirmLabel:"Kill process",tone:"danger",icon:"stop_circle"});if(!yes)return;await invoke("port_kill",{pid,expectedExecutable:row.executablePath||"",expectedProcess:row.process||"",tree:true});await load()}
+  async function kill(pid){const row=s.rows.find((item)=>item.pid===pid);if(!row)return;const yes=await window.wintConfirm?.({title:`Kill ${processName(row)}?`,message:`PID ${pid} will be terminated immediately.`,confirmLabel:"Kill process",tone:"danger",icon:"stop_circle"});if(!yes)return;await invoke("port_kill",{pid,expectedExecutable:row.executablePath||"",expectedProcess:row.process||"",tree:true});await load()}
   function mount(host){s.host=host;host.onclick=(event)=>{const tab=event.target.closest("[data-port-tab]");if(tab){s.tab=tab.dataset.portTab;s.selected="";host.innerHTML=body();return render()}if(event.target.closest("[data-ports-refresh]"))return load();const pick=event.target.closest("[data-port-select]");if(pick){s.selected=pick.dataset.portSelect;return render()}const open=event.target.closest("[data-port-open]");if(open)return invoke("plugin:opener|open_url",{url:open.dataset.portOpen});const copy=event.target.closest("[data-port-copy]");if(copy)return navigator.clipboard.writeText(copy.dataset.portCopy);const stop=event.target.closest("[data-port-kill]");if(stop)return kill(Number(stop.dataset.portKill))};host.oninput=(event)=>{if(event.target.matches("[data-port-filter]")){s.search=event.target.value;renderList();renderDetail()}};host.innerHTML=body();render()}
   async function opened(){await load();clearInterval(s.timer);clearInterval(s.sampleTimer);s.timer=setInterval(load,30000);s.sampleTimer=setInterval(sample,2000)}
   // Kept alive but off screen: stop sampling the process table every 2s.
@@ -42,5 +42,5 @@
   async function resume(){await opened()}
   function exportState(){return {search:s.search,tab:s.tab,selected:s.selected}}
   function importState(saved){if(!saved)return;s.search=saved.search||"";s.tab=saved.tab==="all"?"all":"listen";s.selected=saved.selected||""}
-  window.devhqPortsTool={mount,opened,render,suspend,resume,exportState,importState};
+  window.wintPortsTool={mount,opened,render,suspend,resume,exportState,importState};
 })();

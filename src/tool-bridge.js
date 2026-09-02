@@ -1,4 +1,4 @@
-// DevHQ isolated tool protocol v1. This is the only API a tool renderer gets
+// WinT isolated tool protocol v1. This is the only API a tool renderer gets
 // from the parent shell. Requests are correlated and session-scoped.
 (() => {
   "use strict";
@@ -68,13 +68,13 @@
       persist().catch(() => {});
     }
   }
-  window.devhqToolBridge = {
+  window.wintToolBridge = {
     protocol: 1, id, session, ready, request, context: () => context,
     attach(nextApi) { api = nextApi; }, persist,
     takeState: () => invoke("tool_bridge_state_take", { id }).catch(() => null),
     reportReady: () => request("ready"),
   };
-  window.devhqShell = {
+  window.wintShell = {
     icon, esc,
     markDirty(...regions) { api?.render?.(...regions); schedulePersist(); },
     isToolPinned: (toolId) => toolId === id && context?.pinned === true,
@@ -83,8 +83,8 @@
     openTool: (toolId) => request("navigate", toolId), popOutTool: () => request("pop-out"),
     projects: () => (context?.projects || []).map((project) => ({ ...project })),
   };
-  window.devhqConfirm = (options) => request("confirm", options);
-  window.devhqWork = { beginWork() {}, updateWork() {}, endWork() {} };
+  window.wintConfirm = (options) => request("confirm", options);
+  window.wintWork = { beginWork() {}, updateWork() {}, endWork() {} };
   document.addEventListener("keydown", (event) => {
     const target = event.target;
     const editing = target instanceof Element && (target.matches("input,textarea,select") || target.isContentEditable);

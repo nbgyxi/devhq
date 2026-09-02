@@ -9,7 +9,7 @@ pub struct KeepAwakeResult {
 }
 
 /// Ask Windows to suspend its normal idle policy for this process. Windows
-/// automatically releases the request when DevHQ exits.
+/// automatically releases the request when WinT exits.
 pub fn keep_awake_set(
     system: bool,
     display: bool,
@@ -187,7 +187,7 @@ pub struct ActiveWindow {
 }
 
 /// A cheap snapshot used by the local time tracker. No hook is installed: the
-/// front end samples this while DevHQ is alive, so tracking cannot outlive the
+/// front end samples this while WinT is alive, so tracking cannot outlive the
 /// app or leave a background helper behind.
 #[cfg(windows)]
 pub fn active_window() -> Result<ActiveWindow, String> {
@@ -259,14 +259,14 @@ pub fn active_window() -> Result<ActiveWindow, String> {
 
 const WINDOW_BOUNDS_CS: &str = r#"Add-Type -TypeDefinition @'
 using System;using System.Collections.Generic;using System.Runtime.InteropServices;using System.Text;
-public static class DevHQWindows { public delegate bool CB(IntPtr h,IntPtr l); [StructLayout(LayoutKind.Sequential)]struct R{public int l,t,r,b;} [DllImport("user32.dll")]static extern bool EnumWindows(CB c,IntPtr l);[DllImport("user32.dll")]static extern bool IsWindowVisible(IntPtr h);[DllImport("user32.dll")]static extern bool IsIconic(IntPtr h);[DllImport("user32.dll")]static extern bool GetWindowRect(IntPtr h,out R r);[DllImport("user32.dll")]static extern int GetWindowText(IntPtr h,StringBuilder s,int n);[DllImport("user32.dll")]static extern IntPtr MonitorFromRect(ref R r,uint f);[DllImport("user32.dll")]static extern bool SetWindowPos(IntPtr h,IntPtr a,int x,int y,int w,int z,uint f);
+public static class WinTWindows { public delegate bool CB(IntPtr h,IntPtr l); [StructLayout(LayoutKind.Sequential)]struct R{public int l,t,r,b;} [DllImport("user32.dll")]static extern bool EnumWindows(CB c,IntPtr l);[DllImport("user32.dll")]static extern bool IsWindowVisible(IntPtr h);[DllImport("user32.dll")]static extern bool IsIconic(IntPtr h);[DllImport("user32.dll")]static extern bool GetWindowRect(IntPtr h,out R r);[DllImport("user32.dll")]static extern int GetWindowText(IntPtr h,StringBuilder s,int n);[DllImport("user32.dll")]static extern IntPtr MonitorFromRect(ref R r,uint f);[DllImport("user32.dll")]static extern bool SetWindowPos(IntPtr h,IntPtr a,int x,int y,int w,int z,uint f);
 public static object[] List(){var o=new List<object>();EnumWindows((h,l)=>{R r;if(!IsWindowVisible(h)||IsIconic(h)||!GetWindowRect(h,out r))return true;var s=new StringBuilder(512);GetWindowText(h,s,512);if(s.Length==0)return true;bool off=MonitorFromRect(ref r,0)==IntPtr.Zero;if(off)o.Add(new{id=h.ToInt64().ToString(),name=s.ToString(),detail="("+r.l+", "+r.t+") "+(r.r-r.l)+"x"+(r.b-r.t),status="off-screen"});return true;},IntPtr.Zero);return o.ToArray();}
 public static void Pull(long id){var h=new IntPtr(id);R r;if(!GetWindowRect(h,out r))throw new Exception("Window no longer exists");int w=Math.Max(640,Math.Min(1280,r.r-r.l)),z=Math.Max(480,Math.Min(900,r.b-r.t));if(!SetWindowPos(h,IntPtr.Zero,120,120,w,z,0x0004|0x0010))throw new Exception("SetWindowPos failed");}}
 '@;"#;
 
 const CORE_AUDIO_CS: &str = r#"Add-Type -TypeDefinition @'
 using System; using System.Collections.Generic; using System.Runtime.InteropServices;
-public static class DevHQAudio {
+public static class WinTAudio {
  public enum Flow { Render, Capture, All } public enum Role { Console, Multimedia, Communications }
  [Flags] public enum State:uint { Active=1 }
  [StructLayout(LayoutKind.Sequential)] public struct PropertyKey { public Guid fmtid; public uint pid; }
@@ -338,14 +338,14 @@ pub fn event_query(query: EventQuery) -> Result<Vec<EventRecord>, String> {
     }
     let limit = query.limit.clamp(1, 500).to_string();
     let levels = query.levels.join(",");
-    let script = r#"$ErrorActionPreference='Stop'; $logs=$env:DEVHQ_CHANNELS -split ','; $wanted=$env:DEVHQ_LEVELS -split ','; $needle=$env:DEVHQ_TEXT; Get-WinEvent -FilterHashtable @{LogName=$logs} -MaxEvents ([int]$env:DEVHQ_LIMIT) | Where-Object { (!$wanted[0] -or $wanted -contains $_.LevelDisplayName) -and (!$needle -or $_.ProviderName -match $needle -or $_.Message -match $needle -or [string]$_.Id -eq $needle) } | ForEach-Object { [pscustomobject]@{time=$_.TimeCreated.ToString('o');channel=$_.LogName;level=$_.LevelDisplayName;provider=$_.ProviderName;id=[uint32]$_.Id;message=[string]$_.Message;xml=$_.ToXml()} } | ConvertTo-Json -Compress"#;
+    let script = r#"$ErrorActionPreference='Stop'; $logs=$env:WINT_CHANNELS -split ','; $wanted=$env:WINT_LEVELS -split ','; $needle=$env:WINT_TEXT; Get-WinEvent -FilterHashtable @{LogName=$logs} -MaxEvents ([int]$env:WINT_LIMIT) | Where-Object { (!$wanted[0] -or $wanted -contains $_.LevelDisplayName) -and (!$needle -or $_.ProviderName -match $needle -or $_.Message -match $needle -or [string]$_.Id -eq $needle) } | ForEach-Object { [pscustomobject]@{time=$_.TimeCreated.ToString('o');channel=$_.LogName;level=$_.LevelDisplayName;provider=$_.ProviderName;id=[uint32]$_.Id;message=[string]$_.Message;xml=$_.ToXml()} } | ConvertTo-Json -Compress"#;
     let out = ps(
         script,
         &[
-            ("DEVHQ_CHANNELS", &channels.join(",")),
-            ("DEVHQ_LEVELS", &levels),
-            ("DEVHQ_TEXT", &query.text),
-            ("DEVHQ_LIMIT", &limit),
+            ("WINT_CHANNELS", &channels.join(",")),
+            ("WINT_LEVELS", &levels),
+            ("WINT_TEXT", &query.text),
+            ("WINT_LIMIT", &limit),
         ],
     )?;
     if !out.status.success() {
@@ -398,8 +398,8 @@ fn normalize_registry_path(path: &str) -> Result<String, String> {
 
 pub fn registry_list(path: &str) -> Result<Vec<RegistryItem>, String> {
     let path = normalize_registry_path(path)?;
-    let script = r#"$ErrorActionPreference='Stop'; $p='Registry::'+$env:DEVHQ_REG_PATH; $rows=@(); Get-ChildItem -LiteralPath $p -ErrorAction SilentlyContinue | ForEach-Object { $rows += [pscustomobject]@{name=$_.PSChildName;kind='KEY';value='';isKey=$true} }; $key=Get-Item -LiteralPath $p; foreach($n in $key.GetValueNames()){ $k=[string]$key.GetValueKind($n); $v=$key.GetValue($n,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); if($v -is [array]){$v=$v -join '\0'}; $rows += [pscustomobject]@{name=if($n){$n}else{'(Default)'};kind=$k;value=[string]$v;isKey=$false} }; $rows | ConvertTo-Json -Compress"#;
-    let out = ps(script, &[("DEVHQ_REG_PATH", &path)])?;
+    let script = r#"$ErrorActionPreference='Stop'; $p='Registry::'+$env:WINT_REG_PATH; $rows=@(); Get-ChildItem -LiteralPath $p -ErrorAction SilentlyContinue | ForEach-Object { $rows += [pscustomobject]@{name=$_.PSChildName;kind='KEY';value='';isKey=$true} }; $key=Get-Item -LiteralPath $p; foreach($n in $key.GetValueNames()){ $k=[string]$key.GetValueKind($n); $v=$key.GetValue($n,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); if($v -is [array]){$v=$v -join '\0'}; $rows += [pscustomobject]@{name=if($n){$n}else{'(Default)'};kind=$k;value=[string]$v;isKey=$false} }; $rows | ConvertTo-Json -Compress"#;
+    let out = ps(script, &[("WINT_REG_PATH", &path)])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().into());
     }
@@ -539,7 +539,7 @@ pub fn lock_inspect(path: &str) -> Result<Vec<LockProcess>, String> {
     // process table, it asks the kernel which registered processes hold it.
     let script = r#"$ErrorActionPreference='Stop'; Add-Type -TypeDefinition @'
 using System; using System.Collections.Generic; using System.Runtime.InteropServices;
-public static class DevHQLocks {
+public static class WinTLocks {
  [StructLayout(LayoutKind.Sequential)] struct RM_UNIQUE_PROCESS { public int pid; public System.Runtime.InteropServices.ComTypes.FILETIME start; }
  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct RM_PROCESS_INFO { public RM_UNIQUE_PROCESS Process; [MarshalAs(UnmanagedType.ByValTStr,SizeConst=256)] public string app; [MarshalAs(UnmanagedType.ByValTStr,SizeConst=64)] public string service; public uint type; public uint status; public uint session; [MarshalAs(UnmanagedType.Bool)] public bool restartable; }
  [DllImport("rstrtmgr.dll",CharSet=CharSet.Unicode)] static extern int RmStartSession(out uint h,int flags,string key);
@@ -548,8 +548,8 @@ public static class DevHQLocks {
  [DllImport("rstrtmgr.dll",CharSet=CharSet.Unicode)] static extern int RmGetList(uint h,out uint needed,ref uint count,[In,Out] RM_PROCESS_INFO[] info,ref uint reasons);
  public static object[] Find(string path) { uint h; string key=Guid.NewGuid().ToString("N"); int rc=RmStartSession(out h,0,key); if(rc!=0) throw new Exception("RmStartSession: "+rc); try { rc=RmRegisterResources(h,1,new[]{path},0,IntPtr.Zero,0,null); if(rc!=0) throw new Exception("RmRegisterResources: "+rc); uint need=0,count=0,reasons=0; rc=RmGetList(h,out need,ref count,null,ref reasons); if(rc==0)return new object[0]; if(rc!=234)throw new Exception("RmGetList: "+rc); var rows=new RM_PROCESS_INFO[need]; count=need; rc=RmGetList(h,out need,ref count,rows,ref reasons); if(rc!=0)throw new Exception("RmGetList: "+rc); var result=new List<object>(); for(int i=0;i<count;i++) result.Add(new {pid=(uint)rows[i].Process.pid,name=rows[i].app??"",service=rows[i].service??"",applicationType=rows[i].type.ToString(),restartable=rows[i].restartable}); return result.ToArray(); } finally { RmEndSession(h); } }
 }
-'@; [DevHQLocks]::Find($env:DEVHQ_LOCK_PATH) | ConvertTo-Json -Compress"#;
-    let out = ps(script, &[("DEVHQ_LOCK_PATH", path)])?;
+'@; [WinTLocks]::Find($env:WINT_LOCK_PATH) | ConvertTo-Json -Compress"#;
+    let out = ps(script, &[("WINT_LOCK_PATH", path)])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().into());
     }
@@ -570,7 +570,7 @@ public static class DevHQLocks {
 }
 
 pub fn audio_devices() -> Result<Vec<AudioDevice>, String> {
-    let script = format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [DevHQAudio]::List() | ConvertTo-Json -Compress");
+    let script = format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [WinTAudio]::List() | ConvertTo-Json -Compress");
     let out = ps(&script, &[])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().into());
@@ -598,8 +598,8 @@ pub fn audio_set_default(id: &str) -> ToolResult {
             ..Default::default()
         };
     }
-    let script=format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [DevHQAudio]::Set($env:DEVHQ_AUDIO_ID); 'Default endpoint changed for all three roles'");
-    output_result(ps(&script, &[("DEVHQ_AUDIO_ID", id)]))
+    let script=format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [WinTAudio]::Set($env:WINT_AUDIO_ID); 'Default endpoint changed for all three roles'");
+    output_result(ps(&script, &[("WINT_AUDIO_ID", id)]))
 }
 
 pub fn audio_set_volume(id: &str, volume: u32) -> ToolResult {
@@ -607,8 +607,8 @@ pub fn audio_set_volume(id: &str, volume: u32) -> ToolResult {
         return ToolResult { error: "Choose an audio device.".into(), ..Default::default() };
     }
     let level = volume.min(100).to_string();
-    let script=format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [DevHQAudio]::SetVolume($env:DEVHQ_AUDIO_ID,[uint32]$env:DEVHQ_AUDIO_VOLUME); 'Volume changed to '+$env:DEVHQ_AUDIO_VOLUME+'%'");
-    output_result(ps(&script, &[("DEVHQ_AUDIO_ID", id), ("DEVHQ_AUDIO_VOLUME", &level)]))
+    let script=format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [WinTAudio]::SetVolume($env:WINT_AUDIO_ID,[uint32]$env:WINT_AUDIO_VOLUME); 'Volume changed to '+$env:WINT_AUDIO_VOLUME+'%'");
+    output_result(ps(&script, &[("WINT_AUDIO_ID", id), ("WINT_AUDIO_VOLUME", &level)]))
 }
 
 pub fn audio_set_muted(id: &str, muted: bool) -> ToolResult {
@@ -616,16 +616,16 @@ pub fn audio_set_muted(id: &str, muted: bool) -> ToolResult {
         return ToolResult { error: "Choose an audio device.".into(), ..Default::default() };
     }
     let state = if muted { "true" } else { "false" };
-    let script=format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [DevHQAudio]::SetMute($env:DEVHQ_AUDIO_ID,[bool]::Parse($env:DEVHQ_AUDIO_MUTED)); if([bool]::Parse($env:DEVHQ_AUDIO_MUTED)){{'Device muted'}}else{{'Device unmuted'}}");
-    output_result(ps(&script, &[("DEVHQ_AUDIO_ID", id), ("DEVHQ_AUDIO_MUTED", state)]))
+    let script=format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [WinTAudio]::SetMute($env:WINT_AUDIO_ID,[bool]::Parse($env:WINT_AUDIO_MUTED)); if([bool]::Parse($env:WINT_AUDIO_MUTED)){{'Device muted'}}else{{'Device unmuted'}}");
+    output_result(ps(&script, &[("WINT_AUDIO_ID", id), ("WINT_AUDIO_MUTED", state)]))
 }
 
 pub fn audio_test(id: &str, flow: &str) -> ToolResult {
     if id.trim().is_empty() || !matches!(flow, "playback" | "recording") {
         return ToolResult { error: "Choose an audio device to test.".into(), ..Default::default() };
     }
-    let script=format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [DevHQAudio]::Test($env:DEVHQ_AUDIO_ID,$env:DEVHQ_AUDIO_FLOW)");
-    output_result(ps(&script, &[("DEVHQ_AUDIO_ID", id), ("DEVHQ_AUDIO_FLOW", flow)]))
+    let script=format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [WinTAudio]::Test($env:WINT_AUDIO_ID,$env:WINT_AUDIO_FLOW)");
+    output_result(ps(&script, &[("WINT_AUDIO_ID", id), ("WINT_AUDIO_FLOW", flow)]))
 }
 
 pub fn repair_targets(id: &str) -> Result<Vec<RepairTarget>, String> {
@@ -638,7 +638,7 @@ pub fn repair_targets(id: &str) -> Result<Vec<RepairTarget>, String> {
             r#"Get-PnpDevice -Class USB -PresentOnly -ErrorAction Stop|Where-Object FriendlyName|ForEach-Object{[pscustomobject]@{id=$_.InstanceId;name=$_.FriendlyName;detail=$_.Class;status=$_.Status}}|ConvertTo-Json -Compress"#,
             vec![],
         ),
-        "bounds" => ("[DevHQWindows]::List()|ConvertTo-Json -Compress", vec![]),
+        "bounds" => ("[WinTWindows]::List()|ConvertTo-Json -Compress", vec![]),
         "audio" => (
             r#"Get-Service Audiosrv,AudioEndpointBuilder -ErrorAction Stop|ForEach-Object{[pscustomobject]@{id=$_.Name;name=$_.DisplayName;detail=($_.DependentServices.Count.ToString()+' dependent services');status=[string]$_.Status}}|ConvertTo-Json -Compress"#,
             vec![],
@@ -694,11 +694,11 @@ pub fn repair_targets(id: &str) -> Result<Vec<RepairTarget>, String> {
 /// and the internet, take a fresh DHCP lease, then ask every resolver in play
 /// whether it still answers.
 const WIFI_RESET_PS: &str = r#"
-# Run by DevHQ, elevated when Windows will grant it. Native tools here report
+# Run by WinT, elevated when Windows will grant it. Native tools here report
 # trouble on stderr and half of them need administrator rights, so the script
 # never stops at the first refusal: it does what it can and says, step by step,
 # what happened. The report is written to -Report because an elevated process
-# has no pipe back to DevHQ.
+# has no pipe back to WinT.
 param([string] $Scope, [string] $Name, [string] $Report)
 $ErrorActionPreference = 'Continue'
 $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -818,7 +818,7 @@ fn run_elevated(_params: &str) -> Result<(), String> {
 /// target is `all`.
 ///
 /// The two steps that matter most - bouncing the adapter and clearing the ARP
-/// cache - need administrator rights, and DevHQ never runs elevated. So the
+/// cache - need administrator rights, and WinT never runs elevated. So the
 /// script is staged beside the report it writes and started through `runas`:
 /// one prompt, for this one action. Declining is not the end of it; the same
 /// script then runs unelevated, does what it can, and names what was refused.
@@ -840,8 +840,8 @@ fn wifi_reset(target: &str) -> ToolResult {
         };
     }
     let stamp = std::process::id();
-    let script = std::env::temp_dir().join(format!("devhq-wifi-reset-{stamp}.ps1"));
-    let report = std::env::temp_dir().join(format!("devhq-wifi-reset-{stamp}.txt"));
+    let script = std::env::temp_dir().join(format!("wint-wifi-reset-{stamp}.ps1"));
+    let report = std::env::temp_dir().join(format!("wint-wifi-reset-{stamp}.txt"));
     let _ = std::fs::remove_file(&report);
     // PowerShell 5.1 reads a .ps1 without a byte-order mark in the ANSI code
     // page, which would turn every non-ASCII character in the report into
@@ -952,23 +952,23 @@ pub fn repair_target_run(id: &str, target: &str) -> ToolResult {
     }
     let (script, key, value) = match id {
         "radio" if target.starts_with("net:") => (
-            "Restart-NetAdapter -Name $env:DEVHQ_TARGET -Confirm:$false",
-            "DEVHQ_TARGET",
+            "Restart-NetAdapter -Name $env:WINT_TARGET -Confirm:$false",
+            "WINT_TARGET",
             &target[4..],
         ),
         "radio" if target.starts_with("pnp:") => (
-            "pnputil /restart-device $env:DEVHQ_TARGET",
-            "DEVHQ_TARGET",
+            "pnputil /restart-device $env:WINT_TARGET",
+            "WINT_TARGET",
             &target[4..],
         ),
         "usb" => (
-            "pnputil /restart-device $env:DEVHQ_TARGET",
-            "DEVHQ_TARGET",
+            "pnputil /restart-device $env:WINT_TARGET",
+            "WINT_TARGET",
             target,
         ),
         "bounds" => (
-            "[DevHQWindows]::Pull([long]$env:DEVHQ_TARGET)",
-            "DEVHQ_TARGET",
+            "[WinTWindows]::Pull([long]$env:WINT_TARGET)",
+            "WINT_TARGET",
             target,
         ),
         _ => {

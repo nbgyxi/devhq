@@ -9,7 +9,7 @@ through a real browser engine, so it also catches a front-end hang — a
 synchronous loop or runaway render that wedges the page's own main thread.
 
 Both variants navigate the same way the app's own pin chips and back
-buttons do (dispatching the `devhq:open-tool` event `app.js` already
+buttons do (dispatching the `wint:open-tool` event `app.js` already
 listens for), then read the real DOM to confirm the right screen actually
 came up. Neither ever clicks an action button inside a tool (no killing
 processes, running repairs, starting disk scans, or closing terminals) — so
@@ -78,7 +78,7 @@ One-time setup:
    `msedgedriver.exe` on your `PATH`.
 
 Then just: `npm run test:e2e:webview`. It builds the app for you first if
-`src-tauri/target/release/devhq.exe` is missing or **stale** — older than
+`src-tauri/target/release/wint.exe` is missing or **stale** — older than
 any Rust or front-end source file (`needsRebuild()` in `run.js`). This
 matters beyond convenience: Tauri bundles the front end into the binary at
 build time, and cargo's own dependency graph doesn't know to rebuild just
@@ -86,9 +86,9 @@ because a `.js` file changed, so a stale exe can silently be testing an
 older version of the app than what's on disk (this bit an earlier session —
 search couldn't find a tool that existed in current source, because the
 running build simply predated it). Skip the auto-build with
-`DEVHQ_E2E_SKIP_BUILD=1` if you're iterating fast and want to control
-builds yourself, or point `DEVHQ_E2E_EXE` at a build you manage separately
-(either opts out of auto-build, and `DEVHQ_E2E_EXE` also opts out of the
+`WINT_E2E_SKIP_BUILD=1` if you're iterating fast and want to control
+builds yourself, or point `WINT_E2E_EXE` at a build you manage separately
+(either opts out of auto-build, and `WINT_E2E_EXE` also opts out of the
 staleness check — you're on your own for keeping that one fresh).
 
 Only this variant additionally runs, since both depend on real
@@ -185,14 +185,14 @@ All optional, via environment variables:
 
 | Variable | Applies to | Default | Purpose |
 | --- | --- | --- | --- |
-| `DEVHQ_E2E_STEP_TIMEOUT_MS` | both | `4000` (browser) / `6000` (webview) | How long a screen/tool has to become active before `FAIL_NO_ACTIVATE`. |
-| `DEVHQ_E2E_SCRIPT_TIMEOUT_MS` | both | `2500` (browser) / `3000` (webview) | How long a single call into the page can take before it's treated as wedged. |
-| `DEVHQ_E2E_CHROMIUM_PATH` | browser | Playwright-managed Chromium | Use a specific Chromium binary instead of Playwright's own download. |
-| `DEVHQ_E2E_EXE` | webview | `src-tauri/target/release/devhq.exe` | Path to the built app to test. |
-| `DEVHQ_E2E_PORT` | webview | `4444` | Port tauri-driver listens on. |
-| `DEVHQ_E2E_SKIP_BUILD` | webview | unset | Set to `1` to skip the automatic staleness check/build and use whatever's already at `DEVHQ_E2E_EXE`/the default path as-is. |
-| `DEVHQ_E2E_TOOL_SETTLE_MS` | webview | `400` | Pause after each tool visit and each auxiliary scenario, giving WebView2 a moment to actually finish releasing that tool's dedicated environment before the next one starts. Raise this if late-run window creation starts failing again; lower it (or set 0) once you trust the machine can keep up, to speed the run back up. |
-| `DEVHQ_E2E_TOOL_VISIBLE_MS` | webview | `500` | Pause after a tool opens, before bouncing back to Overview - purely so a tool is actually visible on screen for a moment if you're watching the run live. Doesn't affect what's checked. |
+| `WINT_E2E_STEP_TIMEOUT_MS` | both | `4000` (browser) / `6000` (webview) | How long a screen/tool has to become active before `FAIL_NO_ACTIVATE`. |
+| `WINT_E2E_SCRIPT_TIMEOUT_MS` | both | `2500` (browser) / `3000` (webview) | How long a single call into the page can take before it's treated as wedged. |
+| `WINT_E2E_CHROMIUM_PATH` | browser | Playwright-managed Chromium | Use a specific Chromium binary instead of Playwright's own download. |
+| `WINT_E2E_EXE` | webview | `src-tauri/target/release/wint.exe` | Path to the built app to test. |
+| `WINT_E2E_PORT` | webview | `4444` | Port tauri-driver listens on. |
+| `WINT_E2E_SKIP_BUILD` | webview | unset | Set to `1` to skip the automatic staleness check/build and use whatever's already at `WINT_E2E_EXE`/the default path as-is. |
+| `WINT_E2E_TOOL_SETTLE_MS` | webview | `400` | Pause after each tool visit and each auxiliary scenario, giving WebView2 a moment to actually finish releasing that tool's dedicated environment before the next one starts. Raise this if late-run window creation starts failing again; lower it (or set 0) once you trust the machine can keep up, to speed the run back up. |
+| `WINT_E2E_TOOL_VISIBLE_MS` | webview | `500` | Pause after a tool opens, before bouncing back to Overview - purely so a tool is actually visible on screen for a moment if you're watching the run live. Doesn't affect what's checked. |
 
 ## Scope / what this suite doesn't cover
 

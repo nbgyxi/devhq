@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Draws the DevHQ source icon (a terminal prompt mark on a rounded gradient
+// Draws the WinT source icon (a terminal prompt mark on a rounded gradient
 // tile) straight to a PNG. Written by hand with zlib so the repo needs no image
 // dependency just to regenerate one file.
 
@@ -114,6 +114,6 @@ const png = Buffer.concat([
   chunk("IEND", Buffer.alloc(0)),
 ]);
 
-const out = path.join(__dirname, "..", "src", "devhq-icon.png");
+const out = path.join(__dirname, "..", "src", "wint-icon.png");
 fs.writeFileSync(out, png);
 console.log(`wrote ${out} (${SIZE}x${SIZE}, ${png.length} bytes)`);

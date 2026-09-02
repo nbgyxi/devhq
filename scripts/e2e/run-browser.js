@@ -33,8 +33,8 @@ const { serveDir } = require("./static-server");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const SRC_DIR = path.join(REPO_ROOT, "src");
-const STEP_TIMEOUT_MS = Number(process.env.DEVHQ_E2E_STEP_TIMEOUT_MS || 4000);
-const SCRIPT_TIMEOUT_MS = Number(process.env.DEVHQ_E2E_SCRIPT_TIMEOUT_MS || 2500);
+const STEP_TIMEOUT_MS = Number(process.env.WINT_E2E_STEP_TIMEOUT_MS || 4000);
+const SCRIPT_TIMEOUT_MS = Number(process.env.WINT_E2E_SCRIPT_TIMEOUT_MS || 2500);
 const POLL_INTERVAL_MS = 150;
 // A genuinely wedged main thread can take a long time to actually bring the
 // tab down (observed ~25s in one real case) - long past this suite's normal
@@ -101,7 +101,7 @@ async function pollForState(session, entry, startedAt) {
 async function dispatchOpen(session, id) {
   return evalChecked(
     session,
-    (toolId) => { window.dispatchEvent(new CustomEvent("devhq:open-tool", { detail: { id: toolId } })); },
+    (toolId) => { window.dispatchEvent(new CustomEvent("wint:open-tool", { detail: { id: toolId } })); },
     [id],
     `dispatching navigation to "${id}" did not return within ${SCRIPT_TIMEOUT_MS}ms - the page's main thread appears wedged`,
   );
@@ -281,7 +281,7 @@ async function main() {
 
   const site = await serveDir(SRC_DIR);
   const launchOptions = {};
-  if (process.env.DEVHQ_E2E_CHROMIUM_PATH) launchOptions.executablePath = process.env.DEVHQ_E2E_CHROMIUM_PATH;
+  if (process.env.WINT_E2E_CHROMIUM_PATH) launchOptions.executablePath = process.env.WINT_E2E_CHROMIUM_PATH;
   const browser = await chromium.launch(launchOptions);
   const consoleErrors = [];
 

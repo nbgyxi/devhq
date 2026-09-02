@@ -5,9 +5,9 @@ const listen = window.__TAURI__.event.listen;
 const s = { host:null, built:false, wired:false, target:"", queries:10, maxHops:30, resolve:true,
   running:false, token:0, phase:"idle", lines:[], hops:[], selected:0, error:"", started:0 };
 
-const icon = (n) => window.devhqShell?.icon(n) ?? `<span class="ms">${n}</span>`;
-const esc = (v) => window.devhqShell?.esc(v) ?? String(v ?? "");
-const dirty = () => window.devhqShell?.markDirty("path-ping");
+const icon = (n) => window.wintShell?.icon(n) ?? `<span class="ms">${n}</span>`;
+const esc = (v) => window.wintShell?.esc(v) ?? String(v ?? "");
+const dirty = () => window.wintShell?.markDirty("path-ping");
 
 function mount(host) {
   if (!host || s.built) return;
@@ -58,31 +58,31 @@ function wire() {
   s.host.querySelector("#path-resolve").addEventListener("change", e => s.resolve=e.target.checked);
   s.host.addEventListener("click", e => {
     const pop=e.target.closest("[data-popout-tool]");
-    if(pop)return window.devhqShell?.popOutTool?.(pop.dataset.popoutTool);
+    if(pop)return window.wintShell?.popOutTool?.(pop.dataset.popoutTool);
     const pin=e.target.closest("[data-pin-tool]");
-    if(pin)return window.devhqShell?.toggleToolPin?.(pin.dataset.pinTool);
+    if(pin)return window.wintShell?.toggleToolPin?.(pin.dataset.pinTool);
     const go=e.target.closest("[data-open-tool]");
-    if(go)return window.devhqShell?.openTool?.(go.dataset.openTool);
+    if(go)return window.wintShell?.openTool?.(go.dataset.openTool);
     const setting=e.target.closest("[data-path-setting] button");
     if (setting && !s.running) { s[setting.parentElement.dataset.pathSetting]=Number(setting.dataset.value); render(); }
     const row=e.target.closest("[data-hop]"); if(row){s.selected=Number(row.dataset.hop); render();}
   });
   listen("path-ping:line", e => { if(s.running && !s.token)s.token=e.payload.token; if(e.payload.token!==s.token)return; parseLine(e.payload.text); dirty(); });
-  listen("path-ping:done", e => { if(e.payload.token!==s.token)return; s.running=false; s.phase="done"; s.error=e.payload.error; window.devhqWork?.endWork("path-ping"); saveRecent(); dirty(); });
+  listen("path-ping:done", e => { if(e.payload.token!==s.token)return; s.running=false; s.phase="done"; s.error=e.payload.error; window.wintWork?.endWork("path-ping"); saveRecent(); dirty(); });
 }
 
 async function run() {
   const target=s.host.querySelector("#path-target").value.trim(); if(!target)return;
   s.target=target; s.running=true; s.token=0; s.phase="trace"; s.lines=[]; s.hops=[]; s.selected=0; s.error=""; s.started=Date.now(); dirty();
-  window.devhqWork?.beginWork("path-ping", `Probing ${target}`, "Tracing route");
+  window.wintWork?.beginWork("path-ping", `Probing ${target}`, "Tracing route");
   try { s.token=await invoke("path_ping_start",{options:{target,queries:s.queries,maxHops:s.maxHops,resolveNames:s.resolve}}); }
-  catch(err){s.running=false;s.error=String(err);window.devhqWork?.endWork("path-ping");dirty();}
+  catch(err){s.running=false;s.error=String(err);window.wintWork?.endWork("path-ping");dirty();}
 }
-async function stop(){ await invoke("path_ping_cancel"); s.running=false;s.phase="idle";window.devhqWork?.endWork("path-ping");dirty(); }
+async function stop(){ await invoke("path_ping_cancel"); s.running=false;s.phase="idle";window.wintWork?.endWork("path-ping");dirty(); }
 
 function parseLine(text) {
   s.lines.push(text);
-  if (/computing statistics|gathering statistics/i.test(text)) { s.phase="measure"; window.devhqWork?.updateWork("path-ping",`Measuring ${s.hops.length} hops`); return; }
+  if (/computing statistics|gathering statistics/i.test(text)) { s.phase="measure"; window.wintWork?.updateWork("path-ping",`Measuring ${s.hops.length} hops`); return; }
   // Trace rows: hop, then a latency or *, then the router/address.
   let m=text.match(/^\s*(\d+)\s+(?:(<?\d+)\s*ms|\*)\s+(.*\S)\s*$/i);
   if(m && !text.includes("/")) { upsert(Number(m[1]), m[3], Number(m[2])||0, null); return; }
@@ -100,8 +100,8 @@ function verdict() {
   const bad=losses.find(h=>s.hops.filter(x=>x.n>h.n&&x.loss!==null).some(x=>x.loss>=h.loss));
   return bad?{tone:"bad",title:`Loss starts at hop ${bad.n}`,body:`${bad.loss}% loss appears here and persists farther along the route. Check this network segment first.`}:{tone:"warn",title:"A hop is limiting probe replies",body:"Loss does not persist downstream, so forwarded traffic is probably unaffected."};
 }
-function saveRecent(){if(!s.hops.length)return;try{let a=JSON.parse(localStorage.getItem("devhq.pathPing.runs")||"[]");a.unshift({target:s.target,when:Date.now(),hops:s.hops.length,loss:Math.max(0,...s.hops.map(h=>h.loss||0))});localStorage.setItem("devhq.pathPing.runs",JSON.stringify(a.slice(0,6)));}catch(_){}}
-function recent(){try{return JSON.parse(localStorage.getItem("devhq.pathPing.runs")||"[]");}catch(_){return[];}}
+function saveRecent(){if(!s.hops.length)return;try{let a=JSON.parse(localStorage.getItem("wint.pathPing.runs")||"[]");a.unshift({target:s.target,when:Date.now(),hops:s.hops.length,loss:Math.max(0,...s.hops.map(h=>h.loss||0))});localStorage.setItem("wint.pathPing.runs",JSON.stringify(a.slice(0,6)));}catch(_){}}
+function recent(){try{return JSON.parse(localStorage.getItem("wint.pathPing.runs")||"[]");}catch(_){return[];}}
 
 function render() {
   if(!s.host)return; const $=q=>s.host.querySelector(q); const selected=s.hops.find(h=>h.n===s.selected); const v=verdict();
@@ -119,5 +119,5 @@ function render() {
 function opened(){render();}
 function exportState(){return {...s,host:null,built:false,wired:false};}
 function importState(state){if(!state)return;Object.assign(s,state,{host:s.host,built:s.built,wired:s.wired});if(s.host)render();}
-window.devhqPathPing={mount,render,opened,exportState,importState};
+window.wintPathPing={mount,render,opened,exportState,importState};
 })();

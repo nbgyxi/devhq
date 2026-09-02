@@ -2,7 +2,7 @@
 const invoke = window.__TAURI__.core.invoke;
 const listen = window.__TAURI__.event.listen;
 const ds = { host: null, drives: [], drive: null, path: "", items: [], scanning: false, scanId: null, scanToken: "", history: [], skipped: 0, error: "", wired: false, loadingDrives: false };
-const TRANSFER_KEY = "devhq.disk-space.popout.v1";
+const TRANSFER_KEY = "wint.disk-space.popout.v1";
 let popoutHandoff = false;
 let leavePrompt = null;
 window.addEventListener("storage", (event) => {
@@ -15,9 +15,9 @@ try {
     localStorage.removeItem(TRANSFER_KEY);
   }
 } catch (_) { /* A fresh tool state is safe if storage is unavailable. */ }
-const icon = (name) => window.devhqShell?.icon(name) || `<span class="ms">${name}</span>`;
-const esc = (value) => window.devhqShell?.esc(value) || String(value ?? "");
-const dirty = () => window.devhqShell?.markDirty("disk-space");
+const icon = (name) => window.wintShell?.icon(name) || `<span class="ms">${name}</span>`;
+const esc = (value) => window.wintShell?.esc(value) || String(value ?? "");
+const dirty = () => window.wintShell?.markDirty("disk-space");
 function saveTransfer() {
   if (!popoutHandoff) return;
   try {
@@ -66,11 +66,11 @@ async function opened() {
   ds.loadingDrives = true;
   ds.error = "";
   dirty();
-  window.devhqWork?.beginWork("disk-drives", "Reading available drives");
+  window.wintWork?.beginWork("disk-drives", "Reading available drives");
   try { ds.drives = await invoke("disk_space_drives"); }
   catch (error) { ds.error = String(error); }
   ds.loadingDrives = false;
-  window.devhqWork?.endWork("disk-drives");
+  window.wintWork?.endWork("disk-drives");
   dirty();
 }
 
@@ -81,7 +81,7 @@ async function wire() {
     if (ds.scanId === null) ds.scanId = payload.scanId;
     ds.items.push(payload.item);
     ds.items.sort((a, b) => b.bytes - a.bytes);
-    window.devhqWork?.updateWork("disk-scan", `${ds.items.length} areas measured · ${bytes(ds.items.reduce((n, x) => n + x.bytes, 0))}`);
+    window.wintWork?.updateWork("disk-scan", `${ds.items.length} areas measured · ${bytes(ds.items.reduce((n, x) => n + x.bytes, 0))}`);
     dirty();
     saveTransfer();
   });
@@ -91,7 +91,7 @@ async function wire() {
     ds.scanId = payload.scanId;
     ds.error = payload.error || "";
     if (payload.result) { ds.items = payload.result.children; ds.path = payload.result.path; ds.skipped = payload.result.skipped; }
-    window.devhqWork?.endWork("disk-scan");
+    window.wintWork?.endWork("disk-scan");
     dirty();
     saveTransfer();
   });
@@ -105,15 +105,15 @@ async function scan(path, push = true) {
     ds.scanning = false;
     ds.scanId = null;
     ds.scanToken = "";
-    window.devhqWork?.endWork("disk-scan");
+    window.wintWork?.endWork("disk-scan");
   }
   if (push && ds.path) ds.history.push(ds.path);
   ds.path = path; ds.items = []; ds.skipped = 0; ds.error = ""; ds.scanning = true; ds.scanId = null;
   ds.scanToken = `${Date.now()}-${Math.random()}`;
-  window.devhqWork?.beginWork("disk-scan", `Scanning ${path}`, "measuring folders as they appear");
+  window.wintWork?.beginWork("disk-scan", `Scanning ${path}`, "measuring folders as they appear");
   dirty();
   try { const id = await invoke("disk_space_scan_start", { path, token: ds.scanToken }); if (ds.scanId === null) ds.scanId = id; }
-  catch (error) { ds.scanning = false; ds.error = String(error); window.devhqWork?.endWork("disk-scan"); dirty(); }
+  catch (error) { ds.scanning = false; ds.error = String(error); window.wintWork?.endWork("disk-scan"); dirty(); }
 }
 
 function cancelScan() {
@@ -122,16 +122,16 @@ function cancelScan() {
   ds.scanId = null;
   ds.scanToken = "";
   invoke("disk_space_scan_cancel").catch(() => {});
-  window.devhqWork?.endWork("disk-scan");
+  window.wintWork?.endWork("disk-scan");
 }
 
 function confirmLeave() {
   if (popoutHandoff) return true;
   if (!ds.scanning) return true;
   if (leavePrompt) return leavePrompt;
-  const canPopOut = !window.devhqShell?.isToolPopped?.("disk-space");
-  const ask = window.devhqConfirm
-    ? window.devhqConfirm({
+  const canPopOut = !window.wintShell?.isToolPopped?.("disk-space");
+  const ask = window.wintConfirm
+    ? window.wintConfirm({
         title: "Stop scanning this drive?",
         message: canPopOut
           ? "Disk Space Usage is still measuring folders. Keep it open in its own window, stay here, or stop the scan."
@@ -145,7 +145,7 @@ function confirmLeave() {
     : Promise.resolve(window.confirm("Stop the active disk scan and leave?"));
   leavePrompt = ask.then((choice) => {
     if (choice === "alternate") {
-      window.devhqShell?.popOutTool?.("disk-space");
+      window.wintShell?.popOutTool?.("disk-space");
       return true;
     }
     if (choice) cancelScan();
@@ -186,12 +186,12 @@ function render() {
   const pin = ds.host.querySelector('.tool-pin[data-pin-tool="disk-space"]');
   const pop = ds.host.querySelector('.tool-popout[data-popout-tool="disk-space"]');
   if (pin) {
-    const on = !!window.devhqShell?.isToolPinned?.("disk-space");
+    const on = !!window.wintShell?.isToolPinned?.("disk-space");
     pin.classList.toggle("on", on); pin.setAttribute("aria-pressed", String(on));
     pin.innerHTML = `${icon("push_pin")}${on ? "Pinned" : "Pin to dock"}`;
   }
   if (pop) {
-    const out = !!window.devhqShell?.isToolPopped?.("disk-space");
+    const out = !!window.wintShell?.isToolPopped?.("disk-space");
     pop.classList.toggle("on", out);
     pop.innerHTML = `${icon("open_in_new")}${out ? "Show window" : "Pop out"}`;
   }
@@ -203,9 +203,9 @@ function mount(host) {
     const pop = event.target.closest("[data-popout-tool]");
     const pin = event.target.closest("[data-pin-tool]");
     const go = event.target.closest("[data-open-tool]");
-    if (pop) return window.devhqShell?.popOutTool?.(pop.dataset.popoutTool);
-    if (pin) return window.devhqShell?.toggleToolPin?.(pin.dataset.pinTool);
-    if (go) return window.devhqShell?.openTool?.(go.dataset.openTool);
+    if (pop) return window.wintShell?.popOutTool?.(pop.dataset.popoutTool);
+    if (pin) return window.wintShell?.toggleToolPin?.(pin.dataset.pinTool);
+    if (go) return window.wintShell?.openTool?.(go.dataset.openTool);
     const drive = event.target.closest("[data-disk-drive]");
     const tile = event.target.closest("[data-disk-path]");
     if (drive) choose(drive.dataset.diskDrive);
@@ -233,5 +233,5 @@ function exportState(){return {drives:ds.drives,drive:ds.drive,path:ds.path,item
 // scan running in a webview that has gone, whose progress events can never
 // arrive, so restoring it true shows a scan that will never finish.
 function importState(state){if(!state)return;Object.assign(ds,state,{host:ds.host,wired:ds.wired,loadingDrives:false,scanning:false});if(ds.host)render();}
-window.devhqDiskSpace = { mount, render, opened, confirmLeave, preparePopout, exportState, importState };
+window.wintDiskSpace = { mount, render, opened, confirmLeave, preparePopout, exportState, importState };
 })();

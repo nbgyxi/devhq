@@ -17,7 +17,7 @@ const SRC = path.join(REPO_ROOT, "src");
 
 // ports/dns/hosts/network/path-ping/disk-space/github/git all live in
 // app.js's TOOLS array (not PLACES), each with an `open: () =>
-// switchMainView(id)` handler - but openTool() (what "devhq:open-tool"
+// switchMainView(id)` handler - but openTool() (what "wint:open-tool"
 // dispatches into) never calls that handler for anything toolById() finds:
 // it always routes to openIsolatedTool() instead, same as every util-tool
 // and windows-tool. Those switchMainView handlers are dead code for this
@@ -82,8 +82,8 @@ function loadUtilToolCatalog() {
   sandbox.globalThis = sandbox;
   sandbox.window = sandbox;
   vm.runInNewContext(src, sandbox, { filename: "util-tools.js" });
-  const api = sandbox.window.devhqUtilTools;
-  if (!api) throw new Error("src/util-tools.js did not expose window.devhqUtilTools");
+  const api = sandbox.window.wintUtilTools;
+  if (!api) throw new Error("src/util-tools.js did not expose window.wintUtilTools");
   return api.catalog().map((tool) => ({ id: tool.id, label: tool.name }));
 }
 
@@ -106,8 +106,8 @@ function loadWindowsToolCatalog() {
     { window, localStorage, location, indexedDB, console, setInterval, clearInterval, prompt: () => null },
     { filename: "windows-tools.js" },
   );
-  const api = window.devhqWindowsTools;
-  if (!api) throw new Error("src/windows-tools.js did not expose window.devhqWindowsTools");
+  const api = window.wintWindowsTools;
+  if (!api) throw new Error("src/windows-tools.js did not expose window.wintWindowsTools");
   return api.catalog().map((tool) => ({ id: tool.id, label: tool.name }));
 }
 

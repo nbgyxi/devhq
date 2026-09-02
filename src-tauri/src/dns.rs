@@ -816,7 +816,7 @@ fn is_writable(path: &std::path::Path) -> bool {
 
 fn backup_dir() -> PathBuf {
     let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
-    PathBuf::from(base).join("DevHQ\\hosts-backups")
+    PathBuf::from(base).join("WinT\\hosts-backups")
 }
 
 #[derive(Serialize, Clone)]
@@ -916,7 +916,7 @@ pub fn is_elevated() -> bool {
 }
 
 /// Copies `from` over `to` as an administrator. Used only when the plain write
-/// was refused: DevHQ itself never runs elevated, so the one action that needs
+/// was refused: WinT itself never runs elevated, so the one action that needs
 /// it asks for it, once, and hands the work to a `cmd` that exits immediately.
 #[cfg(windows)]
 fn elevated_copy(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
@@ -1000,7 +1000,7 @@ pub fn hosts_write(request: HostsWrite) -> HostsWriteResult {
 
     if let Err(direct) = std::fs::write(&path, &request.text) {
         used_elevation = true;
-        let temp = std::env::temp_dir().join("devhq-hosts.tmp");
+        let temp = std::env::temp_dir().join("wint-hosts.tmp");
         if let Err(e) = std::fs::write(&temp, &request.text) {
             error = format!("Could not stage the new hosts file: {e}");
         } else if let Err(e) = elevated_copy(&temp, &path) {

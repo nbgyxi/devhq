@@ -6,7 +6,7 @@ const localStorage = { getItem: () => null, setItem: () => {}, removeItem: () =>
 const location = { pathname: "/index.html" };
 const window = { localStorage, location, addEventListener: () => {}, __TAURI__: { core: { invoke: async () => { throw new Error("not invoked by catalog smoke test"); } } } };
 vm.runInNewContext(fs.readFileSync("src/windows-tools.js", "utf8"), { window, localStorage, location, console, setInterval, clearInterval, prompt: () => null });
-const catalog = window.devhqWindowsTools.catalog();
+const catalog = window.wintWindowsTools.catalog();
 const ids = catalog.map((tool) => tool.id);
 for (const id of ["help", "events", "registry", "system", "log-tail", "lock-inspector"]) assert(ids.includes(id), `${id} is missing`);
 for (const id of ["audio", "swap", "gpu", "bounds", "net", "wifi", "radio", "usb", "shell", "spooler"]) {
@@ -23,7 +23,7 @@ const css = fs.readFileSync("src/styles.css", "utf8");
 assert(fs.readFileSync("src/windows-tools.js", "utf8").includes('data-help-tool="${esc(item.id)}"'), "Help tool cards must be navigable");
 const windowsToolsSource = fs.readFileSync("src/windows-tools.js", "utf8");
 assert(
-  windowsToolsSource.includes("window.devhqShell?.openTool(helpTool.dataset.helpTool)"),
+  windowsToolsSource.includes("window.wintShell?.openTool(helpTool.dataset.helpTool)"),
   "Help tool cards must navigate through the shell bridge",
 );
 const appSource = fs.readFileSync("src/app.js", "utf8");
@@ -47,5 +47,5 @@ const pageRule = css.match(/\.windows-tools-page\{([^}]*)\}/)?.[1] || "";
 assert(pageRule.includes("flex:1"), "Windows tools must fill the shell's remaining height");
 assert(!pageRule.includes("position:absolute"), "Windows tools must not cover the shared toolbar");
 assert(css.includes(".windows-tools-page[hidden]{display:none}"), "hidden Windows tools must leave the flex layout");
-assert(!css.includes(".material-symbols-rounded"), "Windows tools must use DevHQ's .ms icon renderer");
+assert(!css.includes(".material-symbols-rounded"), "Windows tools must use WinT's .ms icon renderer");
 console.log(`Windows tool catalog smoke test passed (${catalog.length} tools).`);

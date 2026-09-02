@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Centers app-icon.png on a square transparent canvas so Tauri's icon
-// generator accepts it, then refreshes src/devhq-icon.png for the UI.
+// generator accepts it, then refreshes src/wint-icon.png for the UI.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -8,7 +8,7 @@ const { createCanvas, loadImage } = require("@napi-rs/canvas");
 
 const ROOT = path.join(__dirname, "..");
 const SOURCE = path.join(ROOT, "app-icon.png");
-const UI_ICON = path.join(ROOT, "src", "devhq-icon.png");
+const UI_ICON = path.join(ROOT, "src", "wint-icon.png");
 const UI_SIZE = 512;
 
 async function main() {
@@ -28,7 +28,7 @@ async function main() {
   ui.getContext("2d").drawImage(square, 0, 0, UI_SIZE, UI_SIZE);
   fs.writeFileSync(UI_ICON, ui.toBuffer("image/png"));
 
-  console.log(`Normalized app-icon.png to ${size}x${size}, wrote src/devhq-icon.png at ${UI_SIZE}px.`);
+  console.log(`Normalized app-icon.png to ${size}x${size}, wrote src/wint-icon.png at ${UI_SIZE}px.`);
 }
 
 main().catch((error) => {

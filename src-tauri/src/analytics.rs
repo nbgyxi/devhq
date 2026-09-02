@@ -13,7 +13,7 @@
 //! This file is only the wire. Whether anything is sent at all, and what the
 //! id is, is decided in `src/analytics.js`: it holds the user's yes or no, and
 //! the random number generated once and kept in the browser store. The link in
-//! the question DevHQ asks on first run points here, so both halves can be
+//! the question WinT asks on first run points here, so both halves can be
 //! read before answering it.
 
 const HOST: &str = "pagerain.net";
@@ -62,7 +62,7 @@ fn post(body: &str) -> Result<(), String> {
         }
     }
 
-    let agent = wide("DevHQ");
+    let agent = wide("WinT");
     let host = wide(HOST);
     let verb = wide("POST");
     let object = wide(ENDPOINT);

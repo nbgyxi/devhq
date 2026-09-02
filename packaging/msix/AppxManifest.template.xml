@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  MSIX manifest template for DevHQ.
+  MSIX manifest template for WinT.
   Tokens (e.g. {{VERSION}}) are substituted by scripts/package-msix.ps1.
 
   Identity values below MUST match what you reserved in Partner Center
@@ -35,7 +35,7 @@
   </Resources>
 
   <Applications>
-    <Application Id="App" Executable="DevHQ.exe" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="App" Executable="WinT.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="{{DISPLAY_NAME}}"
         Description="{{DESCRIPTION}}"
@@ -51,7 +51,7 @@
     <!-- The webview pulls its fonts from Google Fonts, and `git` reaches the
          network on the user's behalf. -->
     <Capability Name="internetClient" />
-    <!-- DevHQ is a desktop app in a package: it reads folders the user points
+    <!-- WinT is a desktop app in a package: it reads folders the user points
          it at, shells out to `git`, walks the process table and starts real
          pseudoconsoles. None of that is possible without full trust. -->
     <rescap:Capability Name="runFullTrust" />

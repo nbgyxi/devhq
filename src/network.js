@@ -54,7 +54,7 @@ const NET_SUGGESTED = [
   { kind: "not", value: "arp" },
 ];
 
-const NET_PREFS_KEY = "devhq.network.v1";
+const NET_PREFS_KEY = "wint.network.v1";
 
 function netLoadPrefs() {
   try {
@@ -144,29 +144,29 @@ const net = {
 /* ------------------------------------------------------------- the shell */
 
 function netIcon(name) {
-  return window.devhqShell?.icon(name) ?? `<span class="ms" aria-hidden="true">${name}</span>`;
+  return window.wintShell?.icon(name) ?? `<span class="ms" aria-hidden="true">${name}</span>`;
 }
 
 function netEsc(value) {
-  return window.devhqShell?.esc(value) ?? String(value ?? "");
+  return window.wintShell?.esc(value) ?? String(value ?? "");
 }
 
 function netDirty() {
-  window.devhqShell?.markDirty("network");
+  window.wintShell?.markDirty("network");
 }
 
 function netWork(key, label, detail) {
-  window.devhqWork?.beginWork(key, label, detail);
+  window.wintWork?.beginWork(key, label, detail);
 }
 
 function netDone(key) {
-  window.devhqWork?.endWork(key);
+  window.wintWork?.endWork(key);
 }
 
 /** The capture's line in the status bar, kept true while it runs. The rule is
  *  a count rather than a spinner wherever there is one to give. */
 function netProgress(detail) {
-  window.devhqWork?.updateWork("net-capture", detail);
+  window.wintWork?.updateWork("net-capture", detail);
 }
 
 /** Says something in the tool for a moment, next to the thing that caused it.
@@ -230,7 +230,7 @@ function mount(host) {
         <strong>Network</strong>
         <small>live packet capture, nothing to install</small>
       </span>
-      ${window.devhqMaturity?.badge("network") ?? ""}
+      ${window.wintMaturity?.badge("network") ?? ""}
       <button class="tool-popout" type="button" data-popout-tool="network"></button>
       <button class="tool-pin" id="tool-pin-network" type="button" data-pin-tool="network"></button>
       <button class="tool-close" type="button" data-open-tool="overview"
@@ -363,11 +363,11 @@ function wire() {
 
   net.host.onclick = (event) => {
     const pop = event.target.closest("[data-popout-tool]");
-    if (pop) return window.devhqShell?.popOutTool?.(pop.dataset.popoutTool);
+    if (pop) return window.wintShell?.popOutTool?.(pop.dataset.popoutTool);
     const pin = event.target.closest("[data-pin-tool]");
-    if (pin) return window.devhqShell?.toggleToolPin(pin.dataset.pinTool);
+    if (pin) return window.wintShell?.toggleToolPin(pin.dataset.pinTool);
     const go = event.target.closest("[data-open-tool]");
-    if (go) return window.devhqShell?.openTool(go.dataset.openTool);
+    if (go) return window.wintShell?.openTool(go.dataset.openTool);
 
     const act = event.target.closest("[data-net]");
     if (act) return action(act.dataset.net, act.dataset, act);
@@ -401,7 +401,7 @@ function action(name, data, button) {
   if (name === "pkt-size") return setPacketSize(Number(data.size));
   if (name === "open-captures") return openCaptures();
   if (name === "elevate-help") return netSay(
-    "Close DevHQ, right-click it and choose Run as administrator. pktmon talks to a kernel driver, and Windows will not open that to a normal process.",
+    "Close WinT, right-click it and choose Run as administrator. pktmon talks to a kernel driver, and Windows will not open that to a normal process.",
     "warn"
   );
 }
@@ -670,7 +670,7 @@ function openCaptures() {
 async function copyCommand(button) {
   if (!net.command) return;
   try {
-    await window.devhqCopy.copy(net.command, button);
+    await window.wintCopy.copy(net.command, button);
   } catch (_) {
     netSay("The clipboard refused the copy.", "bad");
   }
@@ -1141,6 +1141,6 @@ function renderBar() {
 
 function exportState() { const {host,built,wired,autoScrolling,...state}=net; return {...state,offComps:[...net.offComps]}; }
 function importState(state) { if(!state)return;Object.assign(net,state,{offComps:new Set(state.offComps||[]),host:net.host,built:net.built,wired:net.wired,autoScrolling:false});if(net.host)render(); }
-window.devhqNetwork = { mount, render, opened, exportState, importState };
+window.wintNetwork = { mount, render, opened, exportState, importState };
 
 })();

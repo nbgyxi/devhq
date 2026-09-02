@@ -430,7 +430,7 @@ pub async fn git_action(request: ActionRequest) -> Result<ActionResult, String> 
                 &request.value,
             ],
             "restore" => vec!["reset", "--hard", &request.value],
-            "stash" => vec!["stash", "push", "-u", "-m", "DevHQ stash"],
+            "stash" => vec!["stash", "push", "-u", "-m", "WinT stash"],
             "commit" if !request.value.trim().is_empty() => {
                 if request.amend {
                     vec!["commit", "--amend", "-m", &request.value]

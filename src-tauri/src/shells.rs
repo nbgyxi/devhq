@@ -1,7 +1,7 @@
-//! Shells DevHQ can fetch on demand, so a missing one is a button and not a
+//! Shells WinT can fetch on demand, so a missing one is a button and not a
 //! dead end.
 //!
-//! DevHQ ships none of these. A machine that already has PowerShell 7, NuShell
+//! WinT ships none of these. A machine that already has PowerShell 7, NuShell
 //! or Git for Windows installed keeps using its own copy - what is downloaded
 //! here is only ever consulted last, in [`managed_exe`], so a private copy can
 //! never quietly shadow the newer one the user maintains themselves.
@@ -97,13 +97,13 @@ const CATALOG: &[Entry] = &[
 static BUSY: AtomicBool = AtomicBool::new(false);
 static CANCEL: AtomicBool = AtomicBool::new(false);
 
-/// Where DevHQ keeps the programs it manages itself, next to the `wt.exe`
+/// Where WinT keeps the programs it manages itself, next to the `wt.exe`
 /// proxy the terminal dock already installs there.
 pub fn runtime_root() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
-        .join("DevHQ")
+        .join("WinT")
         .join("runtime")
 }
 
@@ -121,7 +121,7 @@ fn entry(profile: &str) -> Option<&'static Entry> {
     CATALOG.iter().find(|item| item.profile == profile)
 }
 
-/// The copy DevHQ downloaded for this profile, if it is there and complete.
+/// The copy WinT downloaded for this profile, if it is there and complete.
 ///
 /// Every caller in `term.rs` asks this **after** looking on PATH and in Program
 /// Files: a real installation always wins.
@@ -155,14 +155,14 @@ pub struct ShellDownload {
     download_bytes: u64,
     /// What the unpacked copy actually takes, measured, or 0 when not present.
     installed_bytes: u64,
-    /// True when DevHQ has its own copy of this shell.
+    /// True when WinT has its own copy of this shell.
     managed: bool,
     /// The host the bytes come from, so the offer names its source.
     source: String,
 }
 
 /// What Settings shows: every shell that can be fetched, and the state of the
-/// copy DevHQ manages for it.
+/// copy WinT manages for it.
 pub fn catalog() -> Vec<ShellDownload> {
     CATALOG
         .iter()
@@ -351,7 +351,7 @@ fn run(app: &AppHandle, entry: &Entry) -> Result<(), String> {
 /// Starts a download on its own thread and reports it through
 /// `shells:download-progress`. Nothing here touches the window thread.
 pub fn install(app: AppHandle, profile: String) -> Result<(), String> {
-    let entry = *entry(&profile).ok_or("That shell is not one DevHQ can download.")?;
+    let entry = *entry(&profile).ok_or("That shell is not one WinT can download.")?;
     if BUSY.swap(true, Ordering::SeqCst) {
         return Err("Another shell is already downloading.".into());
     }
@@ -368,10 +368,10 @@ pub fn cancel() {
     CANCEL.store(true, Ordering::SeqCst);
 }
 
-/// Removes DevHQ's copy. The machine's own installation, if it has one, is
-/// untouched - this only ever deletes inside DevHQ's runtime folder.
+/// Removes WinT's copy. The machine's own installation, if it has one, is
+/// untouched - this only ever deletes inside WinT's runtime folder.
 pub fn remove(profile: &str) -> Result<(), String> {
-    let entry = entry(profile).ok_or("That shell is not one DevHQ manages.")?;
+    let entry = entry(profile).ok_or("That shell is not one WinT manages.")?;
     let dir = runtime_root().join("shells").join(entry.profile);
     if !dir.exists() {
         return Ok(());

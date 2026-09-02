@@ -1,7 +1,7 @@
 //! Native common-item dialogs: choose a folder, or save a text file.
 //!
 //! The common item dialog runs its own modal message loop for as long as it is
-//! on screen, and that loop must never be the one drawing the DevHQ window
+//! on screen, and that loop must never be the one drawing the WinT window
 //! (see CLAUDE.md). Everything here therefore runs on a worker thread: it
 //! enters a single-threaded apartment of its own, shows the dialog, and hands
 //! the chosen path back. The main window keeps painting throughout; it is only

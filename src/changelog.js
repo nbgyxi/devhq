@@ -1,6 +1,6 @@
 // The release history behind the version button in the status bar.
 //
-// Newest first. `devhqChangelog.current` is the version the status bar shows,
+// Newest first. `wintChangelog.current` is the version the status bar shows,
 // and it is the version at the top of this list - the two can never drift
 // apart because there is only one place to write it down.
 //
@@ -13,12 +13,39 @@
 // new hashes the running exe for the current version only on an official
 // Store package (`package-msix.ps1`); older versions show the recorded number
 // from when they shipped. Dev builds never hash or show a live checksum line.
-window.devhqChangelog = (() => {
+window.wintChangelog = (() => {
   const releases = [
+    {
+      version: "0.55.1",
+      date: "2026-09-02",
+      title: "A popped-out terminal keeps its width",
+      changes: [
+        ["fix", "Popping a terminal out no longer puts a blank line between every line. The new window opened at a fixed size, and the narrower grid made the shell re-wrap everything already printed - so anything padded to the full width, like a dev server writing its timestamps down the right edge, spilled onto a second, empty-looking row. The window now opens with the width the terminal had in the panel."],
+      ],
+    },
+    {
+      version: "0.55.0",
+      date: "2026-09-02",
+      title: "Claude Code is a terminal type",
+      changes: [
+        ["new", "Claude Code now sits in the terminal list beside PowerShell and Git Bash. Open one on a project and you get the real Claude chat, in a pane, already in that folder."],
+        ["new", "It uses the Claude Code you already have installed and signed in - WinT asks for no API key and stores no credentials. If it is not on this computer, the entry says so and tells you how to install it."],
+      ],
+    },
+    {
+      version: "0.54.0",
+      date: "2026-09-02",
+      title: "DevHQ is now WinT*",
+      buildChecksum: "39ce63c9fa9d7e721ecb2cb9ebe59ac63eef613a1bbb1879a9f3fbc4fe24bd67",
+      changes: [
+        ["new", "DevHQ is now called WinT*. Same app, same license, same everything else - just a new name in the title bar, the Start menu, and everywhere else it's written."],
+      ],
+    },
     {
       version: "0.53.5",
       date: "2026-09-02",
       title: "A tool that failed to open once now recovers",
+      buildChecksum: "e0266b14290ab55e7726a2e1b1e21cd3de37de0638e3243a128a0326a4b0a758",
       changes: [
         ["fix", "A tool's own isolated window could end up with a corrupted environment - most often from being interrupted mid-creation - and once it did, every future attempt to open that same tool failed the same way for good, with no visible way to recover. It now clears that environment and tries once more automatically the next time you open it."],
       ],
@@ -78,7 +105,7 @@ window.devhqChangelog = (() => {
         ["new", "Opening a tool no longer shows a blank grey panel while it starts. It shows the tool - by its real name, Process Explorer rather than ports - with a spinner and a shimmering outline of the page that is coming, centred in the space it will fill."],
         ["better", "A popped-out tool window carries its name in the title bar and on the taskbar from the very first frame, instead of reading \"Tool\" until the tool had loaded."],
         ["better", "The line along the bottom now says which tool is opening, and stops saying it the moment that tool has drawn itself."],
-        ["better", "The loading line names the step it is really on - reaching DevHQ, loading the tool, starting it - so a tool that stalls says where."],
+        ["better", "The loading line names the step it is really on - reaching WinT, loading the tool, starting it - so a tool that stalls says where."],
         ["fix", "A tool that fails to open now says so on that screen, with the reason. It used to throw you back to the overview and take the explanation with it."],
         ["fix", "Clicking the version in the status bar opens this list again. The window was being brought to the front and then hiding itself in the same breath, because it trusted Windows' answer about whether it had focus - Search already asked the second question that gets this right."],
       ],
@@ -88,7 +115,7 @@ window.devhqChangelog = (() => {
       date: "2026-09-02",
       title: "Tool windows open sooner",
       changes: [
-        ["better", "Tools open faster, especially the first time. Every window carried the whole Material Symbols icon set - 5.2 MB - and no icon could appear until all of it had been read. Each tool keeps its own cache, so each one paid that toll on its first open. DevHQ now ships only the icons it actually draws: 465 KB, about a ninth of the size."],
+        ["better", "Tools open faster, especially the first time. Every window carried the whole Material Symbols icon set - 5.2 MB - and no icon could appear until all of it had been read. Each tool keeps its own cache, so each one paid that toll on its first open. WinT now ships only the icons it actually draws: 465 KB, about a ninth of the size."],
         ["fix", "Every icon in the smaller set was checked against the original, one by one, so none of them changed shape or went missing."],
       ],
     },
@@ -108,7 +135,7 @@ window.devhqChangelog = (() => {
       date: "2026-09-01",
       title: "Room for the shell list",
       changes: [
-        ["better", "The shells DevHQ can fetch now use the full width of Settings instead of being squeezed into the narrow control column. Each one has room for its version, what state this computer is in and its button on a single line, and folds to two lines rather than truncating when the window is narrow."],
+        ["better", "The shells WinT can fetch now use the full width of Settings instead of being squeezed into the narrow control column. Each one has room for its version, what state this computer is in and its button on a single line, and folds to two lines rather than truncating when the window is narrow."],
       ],
     },
     {
@@ -120,7 +147,7 @@ window.devhqChangelog = (() => {
         ["new", "Each pane in a split window has its own tab saying which shell it is, in the same colours and codes the panel uses, so the two sides can never be mistaken for each other. The tab carries the folder and a cross that closes just that pane."],
         ["new", "The divider between two panes can be dragged, in a popped-out window as well as in the panel. Closing one pane leaves the other with the whole window instead of taking the window with it."],
         ["better", "Clicking a pane makes it the one the titlebar, the debug report and `wt` commands are talking about."],
-        ["fix", "A `wt split-pane pwsh` line now opens PowerShell 7 when the only copy on the machine is one that is not on PATH - an install that never joined it, or the one DevHQ downloaded - instead of falling back to Windows PowerShell. The same goes for `nu`."],
+        ["fix", "A `wt split-pane pwsh` line now opens PowerShell 7 when the only copy on the machine is one that is not on PATH - an install that never joined it, or the one WinT downloaded - instead of falling back to Windows PowerShell. The same goes for `nu`."],
       ],
     },
     {
@@ -128,10 +155,10 @@ window.devhqChangelog = (() => {
       date: "2026-09-01",
       title: "A shell you do not have is now a button",
       changes: [
-        ["new", "Settings › Terminal can fetch PowerShell 7, PowerShell Preview, NuShell and Git Bash for you. Each one comes straight from the project that publishes it, is checked against that project's own SHA-256 before anything is unpacked, and lands in DevHQ's own folder - nothing is installed on the machine and nothing else on it changes."],
+        ["new", "Settings › Terminal can fetch PowerShell 7, PowerShell Preview, NuShell and Git Bash for you. Each one comes straight from the project that publishes it, is checked against that project's own SHA-256 before anything is unpacked, and lands in WinT's own folder - nothing is installed on the machine and nothing else on it changes."],
         ["new", "A terminal or a `wt` pane that fails because the shell is not installed now offers to get it, instead of quoting a winget command to go and type somewhere else. The offer says how big the download is and which site it comes from."],
-        ["new", "A shell DevHQ downloaded can be removed again from the same place, with the space it is taking shown next to it."],
-        ["better", "A shell you installed yourself is always the one that runs. DevHQ's copy is only ever looked for after PATH and Program Files, so it can never quietly shadow a newer PowerShell or Git you maintain."],
+        ["new", "A shell WinT downloaded can be removed again from the same place, with the space it is taking shown next to it."],
+        ["better", "A shell you installed yourself is always the one that runs. WinT's copy is only ever looked for after PATH and Program Files, so it can never quietly shadow a newer PowerShell or Git you maintain."],
         ["better", "Downloads report their megabytes on the status bar whether or not Settings is open, and can be cancelled mid-transfer; a cancelled or corrupt download is discarded rather than left half-unpacked."],
       ],
     },
@@ -152,7 +179,7 @@ window.devhqChangelog = (() => {
       changes: [
         ["new", "Wi-Fi & Internet Reset is a new tool. It lists every connection on the machine with the network it is on, its signal, its address and its gateway, and resets the one you pick: the adapter goes down and up, the DNS and ARP caches go, and a fresh DHCP lease is taken."],
         ["new", "The reset answers with what it found afterwards - the address it came back with, whether the gateway replies, whether the internet is reachable and whether names still resolve - so an intermittent drop-out is either fixed or narrowed down in one click."],
-        ["better", "Steps Windows refuses without administrator rights no longer abandon the reset. Everything else still runs, and the report names what was refused and says to run DevHQ as administrator for those."],
+        ["better", "Steps Windows refuses without administrator rights no longer abandon the reset. Everything else still runs, and the report names what was refused and says to run WinT as administrator for those."],
         ["fix", "Adapter and Bluetooth names with accents or symbols in them no longer come back as replacement characters in the repair tools."],
       ],
     },
@@ -163,7 +190,7 @@ window.devhqChangelog = (() => {
       changes: [
         ["better", "A shell that is not on this computer now reads as \"pwsh isn't installed\" with the command that installs it, instead of quoting the whole command line back with a Windows error number after it."],
         ["better", "The same sentence is what `wt` prints at the prompt and what a popped-out terminal shows, so the answer is the same wherever the pane was asked for."],
-        ["better", "Picking a shell DevHQ cannot find from the terminal menu says how to install that one too, rather than only that it could not start."],
+        ["better", "Picking a shell WinT cannot find from the terminal menu says how to install that one too, rather than only that it could not start."],
       ],
     },
     {
@@ -171,7 +198,7 @@ window.devhqChangelog = (() => {
       date: "2026-09-01",
       title: "wt lines written elsewhere run here",
       changes: [
-        ["new", "A pane asked to run `pwsh` on a machine without PowerShell 7 runs Windows PowerShell instead, and says so on its first line. The `wt split-pane … pwsh …` lines everyone already has now work on a machine that never installed PowerShell 7, which is the entire point of DevHQ taking those lines."],
+        ["new", "A pane asked to run `pwsh` on a machine without PowerShell 7 runs Windows PowerShell instead, and says so on its first line. The `wt split-pane … pwsh …` lines everyone already has now work on a machine that never installed PowerShell 7, which is the entire point of WinT taking those lines."],
         ["better", "Every other program a pane is asked to run is left exactly as written - a pane quietly running something other than what was asked for would be worse than one that does not open."],
       ],
     },
@@ -181,7 +208,7 @@ window.devhqChangelog = (() => {
       title: "Terminals stop fighting their own wt",
       buildChecksum: "2d33980a4f74e59449827b85b6debf1885498a78777f63433cc67c61608e3210",
       changes: [
-        ["fix", "Opening a terminal no longer fails while a `wt` command is waiting. DevHQ copied its wt compatibility program over itself every time a shell started, which the running copy of that program blocks - so a split asked for by `wt` could not open the pane it was asking for."],
+        ["fix", "Opening a terminal no longer fails while a `wt` command is waiting. WinT copied its wt compatibility program over itself every time a shell started, which the running copy of that program blocks - so a split asked for by `wt` could not open the pane it was asking for."],
         ["better", "That program is only replaced when it has actually changed, and a copy still in use is moved aside instead of blocking the update. A shell never fails to open over it again."],
         ["better", "The failure dialog only names the program when the program is what failed, rather than blaming it for anything that went wrong on the way to the pane."],
       ],
@@ -191,9 +218,9 @@ window.devhqChangelog = (() => {
       date: "2026-09-01",
       title: "wt answers in the shell",
       changes: [
-        ["new", "`wt` now waits for DevHQ and reports back into the terminal it was typed in: a pane that could not start prints the reason and exits non-zero, so a script that chains commands stops instead of carrying on as though the pane were there."],
-        ["new", "`wt --help` prints what DevHQ supports at the prompt rather than only flashing it in the status bar."],
-        ["better", "A `wt` command from a terminal DevHQ no longer holds says so at the prompt instead of returning silently."],
+        ["new", "`wt` now waits for WinT and reports back into the terminal it was typed in: a pane that could not start prints the reason and exits non-zero, so a script that chains commands stops instead of carrying on as though the pane were there."],
+        ["new", "`wt --help` prints what WinT supports at the prompt rather than only flashing it in the status bar."],
+        ["better", "A `wt` command from a terminal WinT no longer holds says so at the prompt instead of returning silently."],
       ],
     },
     {
@@ -210,8 +237,8 @@ window.devhqChangelog = (() => {
       date: "2026-09-01",
       title: "wt split-pane lands again",
       changes: [
-        ["fix", "`wt split-pane` and the other Windows Terminal commands work in DevHQ's terminals again: the queue DevHQ reads them from stopped for the rest of the run the moment it could not see a window, so every command after that was accepted and then thrown away."],
-        ["better", "A `wt` command DevHQ does not take now says so in the shell instead of returning as though it had worked, and one from a terminal DevHQ no longer holds says so in the panel."],
+        ["fix", "`wt split-pane` and the other Windows Terminal commands work in WinT's terminals again: the queue WinT reads them from stopped for the rest of the run the moment it could not see a window, so every command after that was accepted and then thrown away."],
+        ["better", "A `wt` command WinT does not take now says so in the shell instead of returning as though it had worked, and one from a terminal WinT no longer holds says so in the panel."],
       ],
     },
     {
@@ -228,7 +255,7 @@ window.devhqChangelog = (() => {
       date: "2026-09-01",
       title: "Always-pinned AI",
       changes: [
-        ["better", "The AI assistant always opens pinned beside DevHQ, and its redundant pin/unpin control has been removed."],
+        ["better", "The AI assistant always opens pinned beside WinT, and its redundant pin/unpin control has been removed."],
       ],
     },
     {
@@ -347,7 +374,7 @@ window.devhqChangelog = (() => {
       buildChecksum: "945b20b9da431a83649694ffce0c16eafe54a12ca9705bd1568c87fae81e2e5f",
       changes: [
         ["better", "Every tool now runs in an isolated child WebView behind a shared, tool-agnostic shell, so navigation, Search, pins and window controls remain independent of tool failures."],
-        ["new", "A versioned tool bridge carries context, state and shell requests between isolated tools and DevHQ, providing one host contract for current and future tools."],
+        ["new", "A versioned tool bridge carries context, state and shell requests between isolated tools and WinT, providing one host contract for current and future tools."],
         ["better", "Tool-specific actions now live inside their tools, including Event Log refresh, Registry reload, Environment scanning and Git help navigation."],
         ["better", "Pop-out and pop-in preserve the correct tool and shell layout without blocking the main window or exposing an intermediate overview."],
         ["new", "Search now opens in its own opaque, movable native window above isolated tools, focuses immediately and includes copyable focus diagnostics."],
@@ -391,7 +418,7 @@ window.devhqChangelog = (() => {
         ["new", "GPT offers the Luna, Terra, and Sol variants, with Luna selected by default for a newly configured OpenAI provider."],
         ["better", "Cloud API keys persist in Windows Credential Manager instead of browser storage, with an explicit warning about the limits of local credential protection."],
         ["better", "Cloud requests run away from the window thread and show their provider activity and API errors in the assistant."],
-        ["better", "Claude, Codex, and GPT responses now stream live, can call DevHQ's validated project tools, and stop immediately when cancelled."],
+        ["better", "Claude, Codex, and GPT responses now stream live, can call WinT's validated project tools, and stop immediately when cancelled."],
         ["new", "Cursor Agent can now be configured as a provider using its API key and official streaming CLI, including visible tool activity and cancellation."],
         ["new", "The tool-call limit defaults to 20 and can be changed from Settings or the model panel for every assistant provider."],
         ["better", "Unused Windows AI provider scaffolding was removed from the assistant backend."],
@@ -407,11 +434,11 @@ window.devhqChangelog = (() => {
         ["better", "The inference runtime and every model larger than 10 MB stay out of the installer and download only after an explicit choice."],
         ["better", "Assistant chats stream into local history and can be stopped without blocking the window."],
         ["better", "Provider-neutral conversations and Rust-controlled tool policy keep local models, Claude, GPT and Cursor integrations isolated."],
-        ["fix", "Local chat now hides the inference runtime shell and receives the current DevHQ project facts instead of guessing what a project contains."],
+        ["fix", "Local chat now hides the inference runtime shell and receives the current WinT project facts instead of guessing what a project contains."],
         ["new", "Assistant answers render safe Markdown with headings, lists, emphasis, inline code and copyable code blocks."],
         ["new", "Read-only project tools can list files, read bounded text files and search project text through a validated four-step Rust agent loop."],
         ["new", "Assistant work is visible as model and tool steps, and questions can pause with two to five clickable answers."],
-        ["new", "Pin the assistant to reserve space beside DevHQ, or leave it unpinned as an overlay; narrow windows automatically keep overlay behavior."],
+        ["new", "Pin the assistant to reserve space beside WinT, or leave it unpinned as an overlay; narrow windows automatically keep overlay behavior."],
         ["fix", "Failed assistant requests stop their pending dots, identify rejected tool names in the activity card, and retry safely without executing unknown tools."],
         ["new", "A persistent Think checkbox creates a validated plan, runs its steps sequentially with visible results, and performs a separate final-answer synthesis."],
         ["fix", "An assistant left open and pinned now restores open and pinned with the same reserved workspace width."],
@@ -420,7 +447,7 @@ window.devhqChangelog = (() => {
         ["better", "Visible Think steps and final answers now appear directly as the local model generates them."],
         ["new", "A quick first-pass intent router selects project, terminal, network, utility or Windows-tool guidance before planning and answering."],
         ["better", "Intent routing now limits context and callable schemas to the selected area; ping requests receive a validated ping tool without unrelated project context."],
-        ["new", "Every DevHQ page, utility, Windows inspector and repair now has a routed AI call list; safe inspections return structured results while interactive or system-changing actions open the exact tool for user control."],
+        ["new", "Every WinT page, utility, Windows inspector and repair now has a routed AI call list; safe inspections return structured results while interactive or system-changing actions open the exact tool for user control."],
       ],
     },
     {
@@ -446,7 +473,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-30",
       title: "Path Ping follows the theme",
       changes: [
-        ["fix", "Path Ping now uses DevHQ's light-theme surfaces, text, borders, selections and status colors throughout."],
+        ["fix", "Path Ping now uses WinT's light-theme surfaces, text, borders, selections and status colors throughout."],
       ],
     },
     {
@@ -467,7 +494,7 @@ window.devhqChangelog = (() => {
         ["new", "Disk Space Usage scans one selected drive and draws a live size diagram as folders are measured."],
         ["new", "Click a folder to drill into it, or right-click any area to reveal it in Explorer."],
         ["better", "Disk scans measure several top-level areas in parallel, and switching drives now cancels the active scan immediately."],
-        ["better", "Docking a detached tool or terminal now restores and focuses the main DevHQ window."],
+        ["better", "Docking a detached tool or terminal now restores and focuses the main WinT window."],
       ],
     },
     {
@@ -475,7 +502,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-30",
       title: "Local active-window time tracker",
       changes: [
-        ["new", "Active Window Time Tracker records application and window-title sessions while DevHQ is open, pauses after five minutes of idle time, and shows today, 7-day and 30-day summaries."],
+        ["new", "Active Window Time Tracker records application and window-title sessions while WinT is open, pauses after five minutes of idle time, and shows today, 7-day and 30-day summaries."],
         ["new", "Time history stays in an app-local database and can be exported as CSV; tracking is explicitly started or paused from the tool."],
       ],
     },
@@ -534,7 +561,7 @@ window.devhqChangelog = (() => {
       title: "Ctrl+R stays native",
       changes: [
         ["better", "Pressing Ctrl+R again moves to the next matching command, just like the shell's reverse search."],
-        ["better", "Enhanced search reads only native shell history. DevHQ no longer records or saves a separate command history, and refreshes the native files whenever search opens."],
+        ["better", "Enhanced search reads only native shell history. WinT no longer records or saves a separate command history, and refreshes the native files whenever search opens."],
       ],
     },
     {
@@ -542,7 +569,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-30",
       title: "Honest history times",
       changes: [
-        ["fix", "Imported shell history says when its time is unavailable instead of labeling every old command as just run. Commands observed by DevHQ still show their real relative time."],
+        ["fix", "Imported shell history says when its time is unavailable instead of labeling every old command as just run. Commands observed by WinT still show their real relative time."],
       ],
     },
     {
@@ -558,7 +585,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-30",
       title: "A better Ctrl+R",
       changes: [
-        ["new", "Ctrl+R opens a searchable command history across DevHQ terminals, ranked by recency, usage or best match, with keyboard actions to run or edit a result."],
+        ["new", "Ctrl+R opens a searchable command history across WinT terminals, ranked by recency, usage or best match, with keyboard actions to run or edit a result."],
         ["better", "Settings › Terminal can turn enhanced Ctrl+R off, handing the shortcut straight back to the shell's built-in history search."],
       ],
     },
@@ -656,7 +683,7 @@ window.devhqChangelog = (() => {
     {
       version: "0.33.2",
       date: "2026-08-30",
-      title: "A new face for DevHQ",
+      title: "A new face for WinT",
       changes: [
         ["better", "The app icon is new — a code editor over a terminal prompt, in mint and charcoal. Everywhere the icon appears — the window, the taskbar, the Store tile, the brand mark in the UI — picks it up from the same source."],
       ],
@@ -676,7 +703,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-30",
       title: "A restored terminal is the terminal, not a picture of one",
       changes: [
-        ["better", "Restored history is no longer a reconstruction. DevHQ used to save what a terminal's cells looked like and paint them back, which is why little things were off - a stray space in front of a command, output that had been coloured by a program coming back plain. Each terminal is now kept as the stream of bytes its shell actually wrote, and opening it feeds those bytes back through the same parser that drew them the first time. The scrollback you get back is not a copy of the old one; it is produced the same way it was produced originally."],
+        ["better", "Restored history is no longer a reconstruction. WinT used to save what a terminal's cells looked like and paint them back, which is why little things were off - a stray space in front of a command, output that had been coloured by a program coming back plain. Each terminal is now kept as the stream of bytes its shell actually wrote, and opening it feeds those bytes back through the same parser that drew them the first time. The scrollback you get back is not a copy of the old one; it is produced the same way it was produced originally."],
         ["better", "What that fixes, it fixes everywhere at once: wrapping, alignment, colours, cursor addressing, anything a program drew. There is nothing left to reproduce, so there is nothing left to reproduce wrongly."],
         ["better", "Terminal output has left localStorage. A shell's scrollback was never something a browser store should have been holding - it is a file now, one per terminal, capped and trimmed at a point where the stream can safely be cut. Closing a terminal is what ends its history; quitting is not."],
         ["fix", "The panel's own state - which shells, where, in what order - can no longer be lost because one terminal printed too much."],
@@ -699,7 +726,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-30",
       title: "The terminal answers the moment you press the key",
       changes: [
-        ["better", "Arrow up, and every other keystroke, reaches the shell without waiting for the window. Typing used to be handed to the pseudoconsole on the same thread that draws DevHQ, behind a lock that closing or resizing a terminal can hold for a noticeable moment - so a recalled command could arrive late for no visible reason. Keystrokes now go onto the session's own queue, in the order you typed them, and a thread of its own does the waiting."],
+        ["better", "Arrow up, and every other keystroke, reaches the shell without waiting for the window. Typing used to be handed to the pseudoconsole on the same thread that draws WinT, behind a lock that closing or resizing a terminal can hold for a noticeable moment - so a recalled command could arrive late for no visible reason. Keystrokes now go onto the session's own queue, in the order you typed them, and a thread of its own does the waiting."],
         ["better", "Closing a terminal, resizing one and listing them no longer run on the window's thread either. Tearing a pseudoconsole down blocks until Windows lets go of it, and that pause used to be the window's pause too."],
       ],
     },
@@ -717,7 +744,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-30",
       title: "A tool window you move stays where you put it",
       changes: [
-        ["fix", "Dragging a popped-out tool by its title bar now just moves the window. Dropping it anywhere over DevHQ used to pull the tool back into the main window, so an ordinary move across the screen looked like the window had vanished. The dock button in the title bar is the way back in."],
+        ["fix", "Dragging a popped-out tool by its title bar now just moves the window. Dropping it anywhere over WinT used to pull the tool back into the main window, so an ordinary move across the screen looked like the window had vanished. The dock button in the title bar is the way back in."],
       ],
     },
     {
@@ -877,7 +904,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-29",
       title: "Tool pop-out title bar",
       changes: [
-        ["fix", "A popped-out tool's title bar matches the terminal: left-aligned name beside the DevHQ icon, without a material-icon ligature or the long hint crowding the strip."],
+        ["fix", "A popped-out tool's title bar matches the terminal: left-aligned name beside the WinT icon, without a material-icon ligature or the long hint crowding the strip."],
       ],
     },
     {
@@ -886,8 +913,8 @@ window.devhqChangelog = (() => {
       title: "Pop tools out into their own window",
       changes: [
         ["new", "Any tool can open in its own window from the Pop out button in its header."],
-        ["new", "Drag a pinned tool past the edge of DevHQ to tear it into a new window, the same way terminal tabs do."],
-        ["better", "Dock a popped-out tool back with the dock button, or by dragging its title bar onto DevHQ; closing the window leaves the tool available from its pin."],
+        ["new", "Drag a pinned tool past the edge of WinT to tear it into a new window, the same way terminal tabs do."],
+        ["better", "Dock a popped-out tool back with the dock button, or by dragging its title bar onto WinT; closing the window leaves the tool available from its pin."],
       ],
     },
     {
@@ -1080,7 +1107,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-29",
       title: "The repair tools do the repair",
       changes: [
-        ["fix", "Default Device Hot-Swapper now lists real playback and recording endpoints inside DevHQ and assigns the selected one to Console, Multimedia, and Communications instead of opening Sound Settings."],
+        ["fix", "Default Device Hot-Swapper now lists real playback and recording endpoints inside WinT and assigns the selected one to Console, Multimedia, and Communications instead of opening Sound Settings."],
         ["fix", "Window Bounds Recalibrator now lists genuinely off-screen windows and pulls the selected one into the primary viewport instead of opening Display Settings."],
         ["better", "Adapter and Bluetooth Power-Cycler lists real devices and restarts only the one you select."],
         ["better", "USB Hub Re-enumerator lists present USB devices and restarts the selected device through Plug and Play instead of doing a generic scan."],
@@ -1092,7 +1119,7 @@ window.devhqChangelog = (() => {
       title: "Windows tools fit the window",
       changes: [
         ["fix", "Windows tools no longer cover the search bar or collapse their content area; they fill the space below the toolbar like every other screen."],
-        ["fix", "Windows tools now use DevHQ's real icons instead of showing names such as play_arrow as button text."],
+        ["fix", "Windows tools now use WinT's real icons instead of showing names such as play_arrow as button text."],
         ["better", "Every Windows tool surface, panel, field, table and log output now follows the active light or dark theme."],
         ["better", "Windows tools share the same header, pin, close, refresh, spacing and control styles as DNS and the utility tools."],
       ],
@@ -1377,7 +1404,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-28",
       title: "Reliable terminal cleanup warnings",
       changes: [
-        ["new", "Terminals close immediately, then DevHQ checks their former child processes two seconds later and shows a numbered warning beside Terminal when any remain."],
+        ["new", "Terminals close immediately, then WinT checks their former child processes two seconds later and shows a numbered warning beside Terminal when any remain."],
         ["better", "Terminal tabs now close immediately while cleanup checks happen afterward without blocking the interface."],
       ],
     },
@@ -1476,7 +1503,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-28",
       title: "See the response",
       changes: [
-        ["new", "Browser-readable port badges and Local development labels show the HTTP response code DevHQ received, including errors such as HTTP 500."],
+        ["new", "Browser-readable port badges and Local development labels show the HTTP response code WinT received, including errors such as HTTP 500."],
       ],
     },
     {
@@ -1620,7 +1647,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-28",
       title: "Your call",
       changes: [
-        ["new", "DevHQ now asks before counting anything, and links you straight to the handful of lines that do it. Say no and nothing is ever sent."],
+        ["new", "WinT now asks before counting anything, and links you straight to the handful of lines that do it. Say no and nothing is ever sent."],
         ["new", "Settings has a switch for it, so you can change your mind whenever you like."],
         ["fix", "The counts that were meant to be sent never actually left the app. They do now - just which screen you opened, nothing about your projects."],
       ],
@@ -1726,7 +1753,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-28",
       title: "Refresh installed shells",
       changes: [
-        ["new", "Terminal settings can rescan installed shells without restarting DevHQ."],
+        ["new", "Terminal settings can rescan installed shells without restarting WinT."],
         ["fix", "The current shell stays normally styled in the tab menu instead of looking unavailable."],
       ],
     },
@@ -1743,7 +1770,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-28",
       title: "Use the shells you have",
       changes: [
-        ["new", "DevHQ now discovers installed shells at startup, including PowerShell stable and preview, Windows PowerShell, Command Prompt, Git Bash, WSL and NuShell."],
+        ["new", "WinT now discovers installed shells at startup, including PowerShell stable and preview, Windows PowerShell, Command Prompt, Git Bash, WSL and NuShell."],
         ["better", "Unavailable shells are disabled in terminal menus, with a clear dialog if one still fails to launch."],
       ],
     },
@@ -1752,7 +1779,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-28",
       title: "Short terminal titles",
       changes: [
-        ["better", "A popped-out terminal uses only its folder name in the taskbar and window title, such as devhq instead of the full C:\\code\\devhq path."],
+        ["better", "A popped-out terminal uses only its folder name in the taskbar and window title, such as wint instead of the full C:\\code\\wint path."],
       ],
     },
     {
@@ -1812,7 +1839,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-28",
       title: "A face of its own",
       changes: [
-        ["better", "DevHQ has a new app icon, cropped so the artwork fills the tile edge to edge - it shows up on the taskbar, in the window corner, in the installer and on the browser tab."],
+        ["better", "WinT has a new app icon, cropped so the artwork fills the tile edge to edge - it shows up on the taskbar, in the window corner, in the installer and on the browser tab."],
       ],
     },
     {
@@ -1850,7 +1877,7 @@ window.devhqChangelog = (() => {
       date: "2026-08-12",
       title: "Eleven languages",
       changes: [
-        ["new", "DevHQ speaks Chinese, Hindi, Spanish, French, Arabic, Bengali, Portuguese, Russian and Indonesian besides English, and follows Windows by default."],
+        ["new", "WinT speaks Chinese, Hindi, Spanish, French, Arabic, Bengali, Portuguese, Russian and Indonesian besides English, and follows Windows by default."],
         ["new", "Arabic lays the whole window out right to left, status bar and terminal dock included."],
         ["new", "MSIX packaging for the Microsoft Store."],
         ["better", "Icons come from a bundled Material Symbols font instead of the network, so the window draws the same offline."],
@@ -1887,7 +1914,7 @@ window.devhqChangelog = (() => {
       changes: [
         ["new", "Every project opens a shell in its own folder, in a dock along the bottom. Ctrl+` toggles it."],
         ["new", "Run starts the project in one - `npm run dev`, `cargo run`, `npx expo start`, whatever the folder itself says."],
-        ["new", "No terminal dependency: ConPTY through Microsoft's own bindings, plus DevHQ's own VT parser and screen grid."],
+        ["new", "No terminal dependency: ConPTY through Microsoft's own bindings, plus WinT's own VT parser and screen grid."],
         ["better", "The front end never sees an escape sequence - it receives rows already resolved into coloured runs."],
       ],
     },
@@ -1940,7 +1967,7 @@ window.devhqChangelog = (() => {
       date: "2026-05-28",
       title: "First build",
       changes: [
-        ["new", "Point DevHQ at a folder of projects and see all of them at once."],
+        ["new", "Point WinT at a folder of projects and see all of them at once."],
         ["new", "Per project: branch and upstream, staged, modified and untracked counts, ahead and behind, conflicts, stashes, the last commit and the 30-day commit count."],
         ["new", "A detail view with the changed-file list and the patch beside it."],
         ["new", "Open a project in VS Code, Explorer or an external shell."],

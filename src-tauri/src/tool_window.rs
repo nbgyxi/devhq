@@ -132,7 +132,7 @@ pub async fn search_prepare(app: AppHandle) -> Result<(), String> {
             SEARCH_LABEL,
             WebviewUrl::App("search.html?theme=dark&prepared=1".into()),
         )
-        .title("Search DevHQ")
+        .title("Search WinT")
         .inner_size(680.0, 520.0)
         .min_inner_size(520.0, 320.0)
         .decorations(false)
@@ -198,7 +198,7 @@ pub async fn search_show(
     let build_app = app.clone();
     off_thread(move || {
         let mut builder = WebviewWindowBuilder::new(&app, SEARCH_LABEL, WebviewUrl::App(page.into()))
-            .title("Search DevHQ")
+            .title("Search WinT")
             .inner_size(680.0, 520.0)
             .min_inner_size(520.0, 320.0)
             .decorations(false)
@@ -254,7 +254,7 @@ pub async fn changelog_show(app: AppHandle, theme: Option<String>) -> Result<(),
     let build_app = app.clone();
     off_thread(move || {
         WebviewWindowBuilder::new(&app, CHANGELOG_LABEL, WebviewUrl::App(page.into()))
-            .title("What's new in DevHQ")
+            .title("What's new in WinT")
             .inner_size(560.0, 680.0)
             .min_inner_size(440.0, 360.0)
             .decorations(false)
@@ -580,7 +580,7 @@ pub async fn tool_drag_preview(
     .unwrap_or_else(|| Err("Could not show the tool drag preview.".to_string()))
 }
 
-/// Destroys the popped-out window when the tool docks back into DevHQ.
+/// Destroys the popped-out window when the tool docks back into WinT.
 #[tauri::command]
 pub async fn tool_dock(app: AppHandle, id: String) -> Result<(), String> {
     let label = label_for(&id);

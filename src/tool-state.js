@@ -1,9 +1,9 @@
 (() => {
   "use strict";
   const invoke = window.__TAURI__.core.invoke;
-  const PREFIX = "devhq.tool-handoff.v1:";
+  const PREFIX = "wint.tool-handoff.v1:";
   const dbReady = new Promise((resolve) => {
-    const request = indexedDB.open("devhq-tool-handoff", 1);
+    const request = indexedDB.open("wint-tool-handoff", 1);
     request.onupgradeneeded = () => request.result.createObjectStore("states");
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => resolve(null);
@@ -11,16 +11,16 @@
   async function dbPut(key, value) { const db=await dbReady;if(!db)return false;return new Promise((resolve)=>{const request=db.transaction("states","readwrite").objectStore("states").put(value,key);request.onsuccess=()=>resolve(true);request.onerror=()=>resolve(false);}); }
   async function dbTake(key) { const db=await dbReady;if(!db)return null;return new Promise((resolve)=>{const store=db.transaction("states","readwrite").objectStore("states");const request=store.get(key);request.onsuccess=()=>{const value=request.result||null;store.delete(key);resolve(value);};request.onerror=()=>resolve(null);}); }
   const apiFor = (id) => {
-    if (id === "ports") return window.devhqPortsTool || window.devhqPortsState;
-    if (id === "dns") return window.devhqDns;
-    if (id === "hosts") return window.devhqHosts;
-    if (id === "network") return window.devhqNetwork;
-    if (id === "path-ping") return window.devhqPathPing;
-    if (id === "disk-space") return window.devhqDiskSpace;
-    if (id === "github") return window.devhqGithub;
-    if (id === "git") return window.devhqGit;
-    if (window.devhqUtilTools?.byId?.(id)) return window.devhqUtilTools;
-    if (window.devhqWindowsTools?.catalog?.().some((tool) => tool.id === id)) return window.devhqWindowsTools;
+    if (id === "ports") return window.wintPortsTool || window.wintPortsState;
+    if (id === "dns") return window.wintDns;
+    if (id === "hosts") return window.wintHosts;
+    if (id === "network") return window.wintNetwork;
+    if (id === "path-ping") return window.wintPathPing;
+    if (id === "disk-space") return window.wintDiskSpace;
+    if (id === "github") return window.wintGithub;
+    if (id === "git") return window.wintGit;
+    if (window.wintUtilTools?.byId?.(id)) return window.wintUtilTools;
+    if (window.wintWindowsTools?.catalog?.().some((tool) => tool.id === id)) return window.wintWindowsTools;
     return null;
   };
   async function send(id) {
@@ -45,5 +45,5 @@
     apiFor(id)?.importState?.(transfer.state, id);
     return true;
   }
-  window.devhqToolState = { send, receive };
+  window.wintToolState = { send, receive };
 })();

@@ -1043,7 +1043,7 @@ html[dir="rtl"] .tech-menu{left:auto;right:0}
 .terminal-type-colors-reset{grid-column:1/-1;justify-self:end;height:30px;margin-top:4px;font-size:11.5px}
 .setting-check{width:18px;height:18px;accent-color:var(--accent);flex:0 0 auto}
 
-/* ---------- shells DevHQ can fetch ---------- */
+/* ---------- shells WinT can fetch ---------- */
 /* This row does not share the settings column with its label: four shells, each
    with a version, a state sentence and a button, need the whole width, so the
    label sits above the list rather than beside it. */
@@ -1461,6 +1461,7 @@ body.term-drag-preview .ms{font-size:16px;color:var(--accent)}
 .shell-mark.shell-git-bash{color:var(--shell-color-git-bash)}
 .shell-mark.shell-wsl{color:var(--shell-color-wsl)}
 .shell-mark.shell-nu{color:var(--shell-color-nu)}
+.shell-mark.shell-claude{color:var(--shell-color-claude)}
 #term-dock.shell-markers-none .shell-mark{display:none}
 #term-dock.shell-markers-dot .shell-mark{width:7px;min-width:7px;height:7px;padding:0;border:0;border-radius:50%;background:currentColor;font-size:0}
 body.popout.shell-markers-none .shell-mark{display:none}
@@ -1519,7 +1520,7 @@ body.popout .brand .shell-mark{margin-left:2px}
 .term-shell-error-card strong{display:block;color:var(--text);font-size:15px;margin:2px 0 6px}
 .term-shell-error-card p{margin:0;color:var(--dim);font-size:12.5px;line-height:1.5}
 .term-shell-error-card button{grid-column:2;justify-self:end;min-width:76px;height:32px;padding:0 16px;border-radius:7px;background:var(--accent);color:#fff;font-size:12px;font-weight:600}
-/* A shell DevHQ could fetch gets a second action beside OK. Both sit on the
+/* A shell WinT could fetch gets a second action beside OK. Both sit on the
    same row, one to each end, so the offer never pushes the dialog taller. */
 .term-shell-error-card button[data-shell-error-get]{grid-row:2;justify-self:start;background:transparent;border:1px solid var(--accent);color:var(--accent)}
 .term-shell-error-card button[data-shell-error-get]:hover{background:var(--accent);color:#fff}

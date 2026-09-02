@@ -1,7 +1,7 @@
 //! The `TODO` / `FIXME` notes left in a project's own source.
 //!
 //! This is a plain walk rather than `git grep`, because plenty of the folders
-//! DevHQ lists are not repositories and the ones that are should not answer a
+//! WinT lists are not repositories and the ones that are should not answer a
 //! different question from the ones that are not.
 
 use serde::Serialize;

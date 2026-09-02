@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Drives the real, built DevHQ app through every screen and tool via
+ * Drives the real, built WinT app through every screen and tool via
  * tauri-driver + WebView2, to catch regressions where a tool has totally
  * stopped working, the UI freezes, or navigating away gets stuck.
  *
@@ -14,12 +14,12 @@
  * Builds the app for you first if it's missing or stale (any Rust or
  * front-end source file newer than the exe - see needsRebuild()), so a
  * fresh checkout or an edited source tree Just Works. Skip that with
- * DEVHQ_E2E_SKIP_BUILD=1, or point DEVHQ_E2E_EXE at a build you manage
+ * WINT_E2E_SKIP_BUILD=1, or point WINT_E2E_EXE at a build you manage
  * yourself (either opts out of auto-build).
  *
  * What this does and does not check:
  *   - It navigates to every screen/tool the exact way the app's own pin
- *     chips and back buttons do (dispatching the same "devhq:open-tool"
+ *     chips and back buttons do (dispatching the same "wint:open-tool"
  *     event app.js already listens for), then reads the real DOM to prove
  *     the right thing is actually on screen and didn't render an error.
  *   - For each tool, it also makes a best-effort attempt to invoke one
@@ -54,18 +54,18 @@ const { Builder, By } = require("selenium-webdriver");
 const { buildCatalog } = require("./catalog");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
-const DEFAULT_EXE = path.join(REPO_ROOT, "src-tauri", "target", "release", "devhq.exe");
+const DEFAULT_EXE = path.join(REPO_ROOT, "src-tauri", "target", "release", "wint.exe");
 // firstRunFolders() needs a real, existing folder before it'll let you
 // through. This repo's own checkout would technically work, but it's a
 // genuinely heavy first scan (node_modules/, Rust target/ build output) -
 // slow enough to plausibly delay early navigation for several seconds while
 // it runs. An empty, dedicated folder scans near-instantly and this suite
 // doesn't care what the scan actually finds.
-const FALLBACK_SCAN_ROOT = path.join(os.tmpdir(), "devhq-e2e-scan-root");
-const APP_EXE = process.env.DEVHQ_E2E_EXE || DEFAULT_EXE;
-const DRIVER_PORT = Number(process.env.DEVHQ_E2E_PORT || 4444);
-const STEP_TIMEOUT_MS = Number(process.env.DEVHQ_E2E_STEP_TIMEOUT_MS || 6000);
-const SCRIPT_TIMEOUT_MS = Number(process.env.DEVHQ_E2E_SCRIPT_TIMEOUT_MS || 3000);
+const FALLBACK_SCAN_ROOT = path.join(os.tmpdir(), "wint-e2e-scan-root");
+const APP_EXE = process.env.WINT_E2E_EXE || DEFAULT_EXE;
+const DRIVER_PORT = Number(process.env.WINT_E2E_PORT || 4444);
+const STEP_TIMEOUT_MS = Number(process.env.WINT_E2E_STEP_TIMEOUT_MS || 6000);
+const SCRIPT_TIMEOUT_MS = Number(process.env.WINT_E2E_SCRIPT_TIMEOUT_MS || 3000);
 // Each isolated tool gets its own dedicated WebView2 environment - a real
 // separate renderer process, by the app's own design (see
 // src-tauri/src/tool_window.rs), specifically so a hung tool can't take the
@@ -75,13 +75,13 @@ const SCRIPT_TIMEOUT_MS = Number(process.env.DEVHQ_E2E_SCRIPT_TIMEOUT_MS || 3000
 // (window creation just never completing) - this settle delay gives
 // WebView2 a moment to actually finish releasing each one before the next
 // tool's dispatch starts piling more on top.
-const TOOL_SETTLE_MS = Number(process.env.DEVHQ_E2E_TOOL_SETTLE_MS || 400);
+const TOOL_SETTLE_MS = Number(process.env.WINT_E2E_TOOL_SETTLE_MS || 400);
 // Purely for a human watching the window: without this, a tool's deep check
 // finishes and bounceToOverview() fires immediately after, so the tool
 // never actually gets painted on screen before Overview replaces it again.
 // Doesn't change what's being checked, just gives each tool a moment to
 // actually be visible.
-const TOOL_VISIBLE_MS = Number(process.env.DEVHQ_E2E_TOOL_VISIBLE_MS || 500);
+const TOOL_VISIBLE_MS = Number(process.env.WINT_E2E_TOOL_VISIBLE_MS || 500);
 const POLL_INTERVAL_MS = 250;
 const DRIVER_START_TIMEOUT_MS = 15000;
 const REPORT_PATH = path.join(__dirname, "last-run-report.json");
@@ -117,7 +117,7 @@ function withTimeout(promise, ms, message) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-const SKIP_BUILD = process.env.DEVHQ_E2E_SKIP_BUILD === "1";
+const SKIP_BUILD = process.env.WINT_E2E_SKIP_BUILD === "1";
 const IGNORED_DIR_NAMES = new Set(["target", "node_modules", ".git"]);
 
 /** Newest mtime of any file under `dir` (recursive), skipping build/VCS
@@ -177,7 +177,7 @@ function runCargoBuild() {
     console.log("Source is newer than the built app - running cargo build --release...");
     const proc = spawn(
       "cargo",
-      ["build", "--release", "--manifest-path", path.join(REPO_ROOT, "src-tauri", "Cargo.toml"), "--bin", "devhq"],
+      ["build", "--release", "--manifest-path", path.join(REPO_ROOT, "src-tauri", "Cargo.toml"), "--bin", "wint"],
       { stdio: "inherit", shell: process.platform === "win32" },
     );
     proc.on("error", (err) => reject(new Error(`Could not start cargo: ${err.message}. Is it on PATH? (a fresh terminal may be needed after installing Rust)`)));
@@ -411,7 +411,7 @@ async function dismissFirstRunOnboarding(driver) {
 
 async function dispatchOpen(driver, id) {
   return driver.executeScript(function (toolId) {
-    window.dispatchEvent(new CustomEvent("devhq:open-tool", { detail: { id: toolId } }));
+    window.dispatchEvent(new CustomEvent("wint:open-tool", { detail: { id: toolId } }));
   }, id);
 }
 
@@ -688,8 +688,8 @@ async function runAuxiliaryScenarios(driver, mainHandle, catalog, results) {
             title: document.title,
             href: location.href,
             hasTauri: typeof window.__TAURI__ !== "undefined",
-            hasChangelogData: typeof window.devhqChangelog !== "undefined",
-            releaseCount: window.devhqChangelog?.releases?.length ?? null,
+            hasChangelogData: typeof window.wintChangelog !== "undefined",
+            releaseCount: window.wintChangelog?.releases?.length ?? null,
             releasesElExists: !!el,
             releasesChildCount: el?.children.length ?? null,
             releasesInnerHtmlLength: el?.innerHTML.length ?? null,
@@ -708,7 +708,7 @@ async function runAuxiliaryScenarios(driver, mainHandle, catalog, results) {
     driver, mainHandle,
     { id: "scenario:tool-popout", kind: "scenario", label: 'Tool pop-out ("Anything")' },
     "tool.html",
-    async (driver) => { await driver.executeScript(function () { window.devhqShell?.popOutTool?.("any"); }); },
+    async (driver) => { await driver.executeScript(function () { window.wintShell?.popOutTool?.("any"); }); },
     async (scoped, startedAt) => {
       const entry = { id: "scenario:tool-popout", kind: "scenario", label: 'Tool pop-out ("Anything")' };
       const ok = await waitForCondition(scoped, function () {
@@ -835,16 +835,16 @@ async function main() {
     process.exit(1);
   }
   // Auto-build only targets the default release path - cargo always
-  // produces that one, so building toward a custom DEVHQ_E2E_EXE wouldn't
-  // make sense. Pointing DEVHQ_E2E_EXE somewhere else is opting out of
-  // auto-build, the same as DEVHQ_E2E_SKIP_BUILD.
-  const usingDefaultExe = !process.env.DEVHQ_E2E_EXE;
+  // produces that one, so building toward a custom WINT_E2E_EXE wouldn't
+  // make sense. Pointing WINT_E2E_EXE somewhere else is opting out of
+  // auto-build, the same as WINT_E2E_SKIP_BUILD.
+  const usingDefaultExe = !process.env.WINT_E2E_EXE;
   if (SKIP_BUILD || !usingDefaultExe) {
     if (!fs.existsSync(APP_EXE)) {
       console.error(`Built app not found at: ${APP_EXE}`);
       console.error(!usingDefaultExe
-        ? "DEVHQ_E2E_EXE points somewhere custom, so this suite won't build it for you."
-        : "DEVHQ_E2E_SKIP_BUILD=1 was set, so this suite won't build it for you.");
+        ? "WINT_E2E_EXE points somewhere custom, so this suite won't build it for you."
+        : "WINT_E2E_SKIP_BUILD=1 was set, so this suite won't build it for you.");
       process.exit(1);
     }
   } else if (needsRebuild(APP_EXE)) {

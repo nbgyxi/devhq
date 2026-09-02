@@ -1,7 +1,7 @@
 (() => {
   const invoke = window.__TAURI__.core.invoke;
   const listen = window.__TAURI__.event.listen;
-  const STORE = "devhq.assistant.v1";
+  const STORE = "wint.assistant.v1";
   const data = load();
   if (data.pinned !== true) { data.pinned = true; save(); }
   data.toolCallCap = clampToolCallCap(data.toolCallCap);
@@ -14,7 +14,7 @@
   function clampToolCallCap(value) { return Math.min(100, Math.max(1, Number.parseInt(value, 10) || 20)); }
   function setToolCallCap(value) {
     data.toolCallCap = clampToolCallCap(value); save();
-    window.dispatchEvent(new CustomEvent("devhq:assistant-tool-cap-changed", { detail: { value: data.toolCallCap } }));
+    window.dispatchEvent(new CustomEvent("wint:assistant-tool-cap-changed", { detail: { value: data.toolCallCap } }));
     const input = host?.querySelector("[data-ai-tool-cap]"); if (input) input.value = data.toolCallCap;
     return data.toolCallCap;
   }
@@ -60,7 +60,7 @@
     open = value; data.open = open; save(); host.hidden = !open; button.classList.toggle("on", open); button.setAttribute("aria-pressed", String(open));
     document.documentElement.classList.toggle("assistant-open", open);
     document.documentElement.classList.toggle("assistant-pinned", open);
-    setTimeout(() => window.devhqTerminalSettings?.fitVisible?.(), 180);
+    setTimeout(() => window.wintTerminalSettings?.fitVisible?.(), 180);
     if (open && !chat()) newChat();
     if (open && refreshModels) refresh();
   }
@@ -99,10 +99,10 @@
     current.messages.push({ role: "user", text }, { role: "activity", text: "", steps: [] }, { role: "assistant", text: "" });
     running = crypto.randomUUID(); forceScroll = true; save(); render();
     const history = current.messages.filter((m) => ["user", "assistant", "question"].includes(m.role)).slice(0, -1).map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.text}${m.role === "question" ? ` Choices: ${(m.choices || []).join(" | ")}` : ""}`).join("\n\n");
-    const projectContext = window.devhqAssistantContext?.() || "No DevHQ project context is currently available.";
-    const prompt = `You are DevHQ's ${isCloud ? "cloud-connected" : "private local"} assistant. Be concise and useful.${isCloud ? " The user supplied the API key used for this request." : " This conversation stays on this PC."}\n\nConversation:\n${history}\n\nAssistant:`;
+    const projectContext = window.wintAssistantContext?.() || "No WinT project context is currently available.";
+    const prompt = `You are WinT's ${isCloud ? "cloud-connected" : "private local"} assistant. Be concise and useful.${isCloud ? " The user supplied the API key used for this request." : " This conversation stays on this PC."}\n\nConversation:\n${history}\n\nAssistant:`;
     const areas = [
-      { id: "text", name: "Text-only response", description: "Default for questions that do not need any DevHQ tool or project context" },
+      { id: "text", name: "Text-only response", description: "Default for questions that do not need any WinT tool or project context" },
       { id: "project", name: "Projects", description: "Project setup, source files, dependencies, scripts, Git, or code" },
       { id: "terminal", name: "Terminal", description: "Shell commands, terminal output, processes, or command failures" },
       { id: "ports", name: "Ports", description: "Listening ports and the processes using them" },
@@ -111,11 +111,11 @@
       { id: "network", name: "Network", description: "Connections, adapters, routing, and connectivity" },
       { id: "path-ping", name: "Path and ping", description: "Ping, traceroute, and network path diagnostics" },
       { id: "disk-space", name: "Disk space", description: "Drive usage and large-file scanning" },
-      { id: "settings", name: "Settings", description: "DevHQ appearance, behavior, terminal, and hotkeys settings" },
-      ...(window.devhqUtilTools?.catalog?.() || []).map(item => ({ id: `utility:${item.id}`, name: item.name, description: item.hint || "DevHQ utility tool" })),
-      ...(window.devhqWindowsTools?.catalog?.() || []).map(item => ({ id: `windows:${item.id}`, name: item.name, description: item.hint || "DevHQ Windows tool" })),
+      { id: "settings", name: "Settings", description: "WinT appearance, behavior, terminal, and hotkeys settings" },
+      ...(window.wintUtilTools?.catalog?.() || []).map(item => ({ id: `utility:${item.id}`, name: item.name, description: item.hint || "WinT utility tool" })),
+      ...(window.wintWindowsTools?.catalog?.() || []).map(item => ({ id: `windows:${item.id}`, name: item.name, description: item.hint || "WinT Windows tool" })),
     ];
-    try { await invoke("assistant_chat", { requestId: running, model, question: text, prompt, projectContext, roots: window.devhqAssistantRoots?.() || [], areas, think: data.think, toolCallCap: data.toolCallCap }); }
+    try { await invoke("assistant_chat", { requestId: running, model, question: text, prompt, projectContext, roots: window.wintAssistantRoots?.() || [], areas, think: data.think, toolCallCap: data.toolCallCap }); }
     catch (error) { current.messages[current.messages.length - 1].error = String(error); running = ""; save(); render(); }
   }
   function render(notice = "") {
@@ -151,7 +151,7 @@
     requestAnimationFrame(() => { if (!followBottom || chatFollowBottom) restoreScroll(); });
   }
   function emptyView() {
-    return `<section class="assistant-empty"><span class="ms">auto_awesome</span><h2>Ask DevHQ.</h2><p>Run a private model on this PC, or connect Claude, Codex, or GPT with your own API key.</p>
+    return `<section class="assistant-empty"><span class="ms">auto_awesome</span><h2>Ask WinT.</h2><p>Run a private model on this PC, or connect Claude, Codex, or GPT with your own API key.</p>
       ${loading ? `<div class="assistant-loading">Checking AI providers…</div>` : !status?.models?.length && !cloudModels().length ? `<button class="assistant-setup" data-ai="models"><span class="ms">tune</span>Choose a model</button>` : `<div class="assistant-starters"><button data-prompt="Explain this project setup">Explain this project setup</button><button data-prompt="Help me debug a slow development machine">Debug a slow machine</button><button data-prompt="Suggest my next troubleshooting step">Suggest a next step</button></div>`}</section>`;
   }
   function messageView(message) {
@@ -164,11 +164,11 @@
     const layer = host.querySelector(".assistant-layer"); layer.hidden = false;
     layer.innerHTML = `<section class="assistant-models"><header><div><strong>Local AI models</strong><small>Downloads require your explicit action</small></div><button data-layer-close><span class="ms">close</span></button></header>
       <h3>Agent limits</h3><label class="assistant-tool-limit"><span><strong>Tool-call limit</strong><small>Maximum calls per answer (1-100)</small></span><input type="number" min="1" max="100" step="1" value="${data.toolCallCap}" data-ai-tool-cap aria-label="Tool-call limit"></label>
-      ${!status?.available ? `<div class="assistant-runtime"><span class="ms">download</span><div><strong>Runtime downloads with your first model</strong><p>The 18 MB verified runtime is fetched on demand. It is not packaged in DevHQ, and nothing downloads until you choose a model.</p></div></div>` : ""}
+      ${!status?.available ? `<div class="assistant-runtime"><span class="ms">download</span><div><strong>Runtime downloads with your first model</strong><p>The 18 MB verified runtime is fetched on demand. It is not packaged in WinT, and nothing downloads until you choose a model.</p></div></div>` : ""}
       <h3>Installed models</h3>${status?.models?.length ? status.models.map(m => `<div class="assistant-model-row"><span class="ms">check_circle</span><div><strong>${esc(m.name)}</strong><small>${esc(m.size)} · ${esc(m.modified)}</small></div><button data-use-model="${esc(m.name)}">Use</button><button data-delete-model="${esc(m.name)}" title="Delete model"><span class="ms">delete</span></button></div>`).join("") : `<p class="assistant-none">No local models installed.</p>`}
       <h3>Available models</h3>${(status?.catalog || []).map(m => `<div class="assistant-model-row"><span class="ms">neurology</span><div><strong>${esc(m.displayName)}</strong><small>${humanSize(m.size)} · ${esc(m.recommendedMemory)} RAM · ${esc(m.license)}${m.toolCallingSupport ? " · tools" : ""}</small></div>${installed(m.id) ? `<button data-use-model="${m.id}">Use</button>` : `<button data-pull-model="${m.id}" ${pull ? "disabled" : ""}>Download</button>`}</div>`).join("")}
       ${pull ? `<div class="assistant-pull"><span>${esc(pull.phase === "runtime" ? "Runtime" : pull.model)}</span><small>${esc(pull.detail || "Starting download…")}</small><i><em style="width:${pull.total ? Math.min(100, pull.downloaded / pull.total * 100) : 0}%"></em></i><button data-cancel-pull>Cancel</button></div>` : ""}
-      <h3>Cloud providers</h3>${providerConfig("claude", "Claude", cloud?.claudeConfigured, "Anthropic API key", "sk-ant-…")}${providerConfig("openai", "Codex & GPT", cloud?.openaiConfigured, "OpenAI API key", "sk-…")}${providerConfig("cursor", "Cursor Agent", cloud?.cursorConfigured, "Cursor API key · requires cursor-agent", "key_…")}<p class="assistant-key-note"><span class="ms">shield_lock</span><span>Keys are stored in ${esc(cloud?.credentialStorage || "Windows Credential Manager")}, not IndexedDB. This protects them at rest, but it is not absolute security: malware, an administrator, or a compromised DevHQ process running as you may still access them.</span></p></section>`;
+      <h3>Cloud providers</h3>${providerConfig("claude", "Claude", cloud?.claudeConfigured, "Anthropic API key", "sk-ant-…")}${providerConfig("openai", "Codex & GPT", cloud?.openaiConfigured, "OpenAI API key", "sk-…")}${providerConfig("cursor", "Cursor Agent", cloud?.cursorConfigured, "Cursor API key · requires cursor-agent", "key_…")}<p class="assistant-key-note"><span class="ms">shield_lock</span><span>Keys are stored in ${esc(cloud?.credentialStorage || "Windows Credential Manager")}, not IndexedDB. This protects them at rest, but it is not absolute security: malware, an administrator, or a compromised WinT process running as you may still access them.</span></p></section>`;
   }
   function providerConfig(id, name, configured, label, placeholder) {
     return `<form class="assistant-cloud-config" data-cloud-provider="${id}"><span class="ms">${configured ? "cloud_done" : "cloud_off"}</span><div><strong>${name}</strong><small>${configured ? "Saved in Windows Credential Manager" : label}</small>${configured ? "" : `<input type="password" name="key" required autocomplete="off" spellcheck="false" placeholder="${placeholder}" aria-label="${label}">`}</div>${configured ? `<button type="button" data-remove-cloud="${id}">Remove</button>` : `<button type="submit">Save</button>`}</form>`;
@@ -186,7 +186,7 @@
       if (action === "close") toggle(false); else if (action === "new") newChat(); else if (action === "models") modelLayer();
       else if (action === "history") historyLayer(); else if (prompt) send(prompt);
       const choice = event.target.closest("[data-question-choice]")?.dataset.questionChoice; if (choice) send(choice);
-      const copyCode = event.target.closest("[data-copy-code]"); if (copyCode) window.devhqCopy.copy(copyCode.closest("pre")?.querySelector("code")?.textContent || "", copyCode).catch(() => {});
+      const copyCode = event.target.closest("[data-copy-code]"); if (copyCode) window.wintCopy.copy(copyCode.closest("pre")?.querySelector("code")?.textContent || "", copyCode).catch(() => {});
       const close = event.target.closest("[data-layer-close]"); if (close) host.querySelector(".assistant-layer").hidden = true;
       const use = event.target.closest("[data-use-model]")?.dataset.useModel; if (use) { data.model = use; if (chat()) chat().model = use; save(); render(); }
       const pullId = event.target.closest("[data-pull-model]")?.dataset.pullModel; if (pullId) pullModel(pullId);
@@ -201,12 +201,12 @@
     listen("assistant:chunk", ({ payload }) => { if (payload.requestId !== running) return; const current = chat(); const message = current?.messages.at(-1); if (!message) return; if (payload.kind === "question") { message.role = "question"; message.text = payload.question; message.choices = payload.choices || []; } else if (payload.kind === "replace") message.text = payload.text || ""; else message.text += payload.text || ""; if (payload.done) { message.error = payload.error || (!message.text && message.role !== "question" ? "The model completed without returning visible text." : ""); const activity = [...current.messages].reverse().find(item => item.role === "activity" && !item.complete); if (activity) activity.complete = true; running = ""; } save(); render(); });
     listen("assistant:step", ({ payload }) => { if (payload.requestId !== running) return; const activity = [...(chat()?.messages || [])].reverse().find(message => message.role === "activity"); if (!activity) return; const existing = activity.steps.find(step => step.id === payload.id); if (existing) { const streamed = existing.detail; Object.assign(existing, payload); if (!payload.detail && streamed) existing.detail = streamed; } else activity.steps.push(payload); save(); render(); });
     listen("assistant:step-chunk", ({ payload }) => { if (payload.requestId !== running) return; const activity = [...(chat()?.messages || [])].reverse().find(message => message.role === "activity"); const step = activity?.steps.find(item => item.id === payload.id); if (!step) return; step.detail = (step.detail || "") + (payload.text || ""); save(); render(); });
-    listen("assistant:open-tool", ({ payload }) => { if (payload?.id) window.dispatchEvent(new CustomEvent("devhq:open-tool", { detail: payload })); });
+    listen("assistant:open-tool", ({ payload }) => { if (payload?.id) window.dispatchEvent(new CustomEvent("wint:open-tool", { detail: payload })); });
     listen("assistant:model-progress", ({ payload }) => { if (!pull || payload.model !== pull.model) return; pull.detail = payload.detail || pull.detail; pull.phase = payload.phase; pull.downloaded = payload.downloaded; pull.total = payload.total; if (payload.done) { const error = payload.error; pull = null; refresh().then(() => { modelLayer(); if (error) { pull = { model: payload.model, detail: error, phase: "error" }; modelLayer(); } }); } else modelLayer(); });
     if (data.open) requestAnimationFrame(() => toggle(true));
   }
   async function deleteModel(model) {
-    const allowed = await (window.devhqConfirm?.({ title: "Delete local model?", message: `${model} will be removed from this PC. Conversation history stays.`, confirmLabel: "Delete model", tone: "danger", icon: "delete" }) ?? Promise.resolve(false));
+    const allowed = await (window.wintConfirm?.({ title: "Delete local model?", message: `${model} will be removed from this PC. Conversation history stays.`, confirmLabel: "Delete model", tone: "danger", icon: "delete" }) ?? Promise.resolve(false));
     if (!allowed) return;
     try { await invoke("assistant_model_delete", { model }); if (data.model === model) data.model = ""; if (chat()?.model === model) chat().model = ""; save(); await refresh(); modelLayer(); }
     catch (error) { pull = { model, detail: String(error) }; modelLayer(); }
@@ -230,5 +230,5 @@
     await refresh();
     modelLayer();
   }
-  window.devhqAssistant = { mount, toggle, openModels, getToolCallCap: () => data.toolCallCap, setToolCallCap };
+  window.wintAssistant = { mount, toggle, openModels, getToolCallCap: () => data.toolCallCap, setToolCallCap };
 })();

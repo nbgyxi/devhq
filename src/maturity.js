@@ -1,6 +1,6 @@
 // How finished each tool is, said on the tool itself.
 //
-// DevHQ grows a tool at a time, and they are not all at the same point. A
+// WinT grows a tool at a time, and they are not all at the same point. A
 // badge in every tool's header says which stage this one is at, and clicking
 // it explains what the stage means — so "it did something odd" is something
 // the user was warned about rather than something they discover.
@@ -9,7 +9,7 @@
 // window builds its tool headers from `app.js`, and a popped-out tool builds
 // the same header from `tool-popout.js`. One list, read by both.
 
-window.devhqMaturity = (() => {
+window.wintMaturity = (() => {
   /** The stages, in order, and what each one promises. The wording is the
    *  whole point of the badge — it has to say what the user can expect, not
    *  just colour a word. */

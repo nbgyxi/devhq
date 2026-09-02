@@ -132,7 +132,7 @@ fn item(id: &str) -> Result<Manifest, String> {
         .iter()
         .copied()
         .find(|x| x.id == id)
-        .ok_or_else(|| "That model is not in DevHQ's verified catalog.".into())
+        .ok_or_else(|| "That model is not in WinT's verified catalog.".into())
 }
 fn size(n: u64) -> String {
     if n >= 1_000_000_000 {
@@ -348,7 +348,7 @@ impl ProtocolGate {
             return Some(text.into());
         }
         self.buffer.push_str(text);
-        let controls = ["DEVHQ_TOOL_CALL", "DEVHQ_QUESTION"];
+        let controls = ["WINT_TOOL_CALL", "WINT_QUESTION"];
         let candidate = self.buffer.trim_start();
         let upper = candidate.to_ascii_uppercase();
         if controls.iter().any(|p| p.starts_with(&upper)) {
@@ -365,7 +365,7 @@ impl ProtocolGate {
     fn finish(&mut self) -> Option<String> {
         let candidate = self.buffer.trim_start();
         let upper = candidate.to_ascii_uppercase();
-        if self.plain || upper.starts_with("DEVHQ_TOOL_CALL") || upper.starts_with("DEVHQ_QUESTION")
+        if self.plain || upper.starts_with("WINT_TOOL_CALL") || upper.starts_with("WINT_QUESTION")
         {
             None
         } else {
@@ -381,7 +381,7 @@ impl ProtocolGate {
 }
 fn is_control_output(text: &str) -> bool {
     let text = text.trim_start().to_ascii_uppercase();
-    text.starts_with("DEVHQ_TOOL_CALL") || text.starts_with("DEVHQ_QUESTION")
+    text.starts_with("WINT_TOOL_CALL") || text.starts_with("WINT_QUESTION")
 }
 fn control_payload<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
     let text = text.trim();
@@ -392,7 +392,7 @@ fn control_payload<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
 }
 fn parse_question(text: &str) -> Result<Option<Question>, String> {
     let cleaned = clean_model_text(text);
-    let raw = if let Some(raw) = control_payload(&cleaned, "DEVHQ_QUESTION") {
+    let raw = if let Some(raw) = control_payload(&cleaned, "WINT_QUESTION") {
         raw
     } else if cleaned.starts_with('{') && cleaned.ends_with('}') && cleaned.contains("\"question\"")
     {
@@ -433,7 +433,7 @@ fn final_assistant_turn(saved: &str, fallback: &str) -> String {
 fn parse_plan(output: &str) -> Result<Vec<String>, String> {
     let text = output
         .trim()
-        .strip_prefix("DEVHQ_PLAN")
+        .strip_prefix("WINT_PLAN")
         .unwrap_or(output.trim())
         .trim()
         .trim_matches('`')
@@ -478,7 +478,7 @@ fn run_model_stream_limited<F: FnMut(&str)>(
         .unwrap_or_default()
         .as_nanos();
     let output_file =
-        std::env::temp_dir().join(format!("devhq-ai-{}-{stamp}.txt", std::process::id()));
+        std::env::temp_dir().join(format!("wint-ai-{}-{stamp}.txt", std::process::id()));
     let output_name = output_file.to_string_lossy().to_string();
     let mut cmd = Command::new(exe);
     let max_tokens = max_tokens.to_string();
@@ -622,11 +622,11 @@ fn route_intent(
     areas: &[RouteOption],
 ) -> Result<Vec<RouteOption>, String> {
     let options = serde_json::to_string(areas).unwrap_or_else(|_| "[]".into());
-    let prompt = format!("Classify one DevHQ user request. Choose the best matching option IDs. Usually choose exactly one; choose multiple only when the request genuinely spans areas. Choose the text option when no tool or DevHQ area is relevant. Do not answer the request.\nOptions: {options}\nUser request: {question}\nReturn only DEVHQ_INTENT followed by JSON {{\"intents\":[\"option-id\"]}}.\nAssistant:");
+    let prompt = format!("Classify one WinT user request. Choose the best matching option IDs. Usually choose exactly one; choose multiple only when the request genuinely spans areas. Choose the text option when no tool or WinT area is relevant. Do not answer the request.\nOptions: {options}\nUser request: {question}\nReturn only WINT_INTENT followed by JSON {{\"intents\":[\"option-id\"]}}.\nAssistant:");
     let output = run_model_stream_limited(exe, model, &prompt, 160, |_| {})?;
     let text = output
         .trim()
-        .strip_prefix("DEVHQ_INTENT")
+        .strip_prefix("WINT_INTENT")
         .unwrap_or(output.trim())
         .trim();
     let start = text
@@ -704,9 +704,9 @@ fn area_instruction(area: &RouteOption) -> String {
         "hosts" => "Focus on Windows hosts-file syntax, precedence, permissions, and safe validation.",
         "network" | "path-ping" => "Focus on adapters, routes, reachability, latency, packet loss, and layered network diagnosis.",
         "disk-space" => "Focus on drive capacity, large paths, safe cleanup candidates, and avoid suggesting destructive deletion without evidence.",
-        "settings" => "Answer specifically in terms of DevHQ settings and clearly distinguish existing behavior from proposed behavior.",
-        id if id.starts_with("utility:") => "Treat this as a request about the named DevHQ utility. Explain the expected input, transformation, output, and relevant validation.",
-        id if id.starts_with("windows:") => "Treat this as a request about the named DevHQ Windows tool. Focus on what it observes or changes, required privileges, safety, and interpretation of its result.",
+        "settings" => "Answer specifically in terms of WinT settings and clearly distinguish existing behavior from proposed behavior.",
+        id if id.starts_with("utility:") => "Treat this as a request about the named WinT utility. Explain the expected input, transformation, output, and relevant validation.",
+        id if id.starts_with("windows:") => "Treat this as a request about the named WinT Windows tool. Focus on what it observes or changes, required privileges, safety, and interpretation of its result.",
         "text" | "general" => "Answer directly from the conversation. Do not assume project state, application state, terminal output, or tool results that were not supplied.",
         _ => "Answer directly and do not assume project or terminal context unless the request provides it.",
     };
@@ -744,7 +744,7 @@ pub fn chat(
             "intent",
             "Route request",
             "running",
-            "Choosing the relevant DevHQ area".into(),
+            "Choosing the relevant WinT area".into(),
         );
         let selected = match route_intent(&exe, &path, &question, &areas) {
             Ok(selected) => selected,
@@ -784,21 +784,21 @@ pub fn chat(
         let registry = ToolRegistry::routed(Some(app.clone()), roots, &selected_ids);
         let tools = registry.definitions();
         let protocol = if tools.is_empty() {
-            "\n\nNo callable tools are needed for this routed request. Ask a necessary question with DEVHQ_QUESTION plus its JSON only when required; never ask for a value already present in the user's request. Otherwise answer in clean Markdown.".into()
+            "\n\nNo callable tools are needed for this routed request. Ask a necessary question with WINT_QUESTION plus its JSON only when required; never ask for a value already present in the user's request. Otherwise answer in clean Markdown.".into()
         } else {
             let definitions = serde_json::to_string(&tools).unwrap_or_default();
-            format!("\n\nCallable tools for this routed request only: {definitions}\nTo request one, output exactly DEVHQ_TOOL_CALL on its own line followed by one JSON object with id, name, and arguments. To ask the user a genuinely necessary question, output exactly DEVHQ_QUESTION on its own line followed by JSON {{\"question\":\"...\",\"choices\":[\"...\"]}}. Never ask for a domain, string, path, or other parameter already present in the user's request. Otherwise answer in clean Markdown. Never mix a tool request or question with prose.")
+            format!("\n\nCallable tools for this routed request only: {definitions}\nTo request one, output exactly WINT_TOOL_CALL on its own line followed by one JSON object with id, name, and arguments. To ask the user a genuinely necessary question, output exactly WINT_QUESTION on its own line followed by JSON {{\"question\":\"...\",\"choices\":[\"...\"]}}. Never ask for a domain, string, path, or other parameter already present in the user's request. Otherwise answer in clean Markdown. Never mix a tool request or question with prose.")
         };
         let base_prompt = prompt
             .trim_end()
             .strip_suffix("Assistant:")
             .unwrap_or(prompt.trim_end());
         let scoped_context = if selected_ids.iter().any(|id| id == "project") {
-            format!("\n\nDevHQ project context:\n{project_context}")
+            format!("\n\nWinT project context:\n{project_context}")
         } else {
             String::new()
         };
-        let base = format!("{base_prompt}{scoped_context}\n\nSelected DevHQ focus areas:\n{focus}\nUse only this routed context and these area-specific instructions for the response.");
+        let base = format!("{base_prompt}{scoped_context}\n\nSelected WinT focus areas:\n{focus}\nUse only this routed context and these area-specific instructions for the response.");
         let mut working = format!("{base}{protocol}\n\nAssistant:");
         step(
             &app,
@@ -828,7 +828,7 @@ pub fn chat(
                 "running",
                 "Requesting a structured plan".into(),
             );
-            let plan_prompt=format!("{base}\nCreate a practical plan before answering. Output only DEVHQ_PLAN followed by JSON {{\"steps\":[\"step one\",\"step two\"]}}. Include as many concrete steps as the task needs. Do not perform them yet.\nAssistant:");
+            let plan_prompt=format!("{base}\nCreate a practical plan before answering. Output only WINT_PLAN followed by JSON {{\"steps\":[\"step one\",\"step two\"]}}. Include as many concrete steps as the task needs. Do not perform them yet.\nAssistant:");
             let plan_output = match run_model(&exe, &path, &plan_prompt) {
                 Ok(v) => v,
                 Err(e) => {
@@ -944,7 +944,7 @@ pub fn chat(
                 if !gate.emitted() && !is_control_output(&result) {
                     step_chunk(&app, &request_id, &id, &result);
                 }
-                if let Some(raw) = control_payload(&result, "DEVHQ_TOOL_CALL") {
+                if let Some(raw) = control_payload(&result, "WINT_TOOL_CALL") {
                     if tool_calls_used >= tool_call_cap {
                         final_error =
                             format!("The assistant reached the {tool_call_cap}-call tool limit.");
@@ -1171,7 +1171,7 @@ pub fn chat(
                 "done",
                 format!("{} characters received", output.len()),
             );
-            if let Some(raw) = control_payload(&output, "DEVHQ_TOOL_CALL") {
+            if let Some(raw) = control_payload(&output, "WINT_TOOL_CALL") {
                 if tool_calls_used >= tool_call_cap {
                     final_error =
                         format!("The assistant reached the {tool_call_cap}-call tool limit.");
@@ -1331,7 +1331,7 @@ mod tests {
     #[test]
     fn accepts_a_visible_plan() {
         assert_eq!(
-            parse_plan("DEVHQ_PLAN\n{\"steps\":[\"Inspect files\",\"Summarize\"]}").unwrap(),
+            parse_plan("WINT_PLAN\n{\"steps\":[\"Inspect files\",\"Summarize\"]}").unwrap(),
             vec!["Inspect files", "Summarize"]
         );
     }
@@ -1350,13 +1350,13 @@ mod tests {
         assert_eq!(gate.finish(), Some(String::new()));
         assert!(!gate.emitted());
         assert!(!is_control_output("A saved final answer"));
-        assert!(is_control_output("DEVHQ_TOOL_CALL\n{}"));
+        assert!(is_control_output("WINT_TOOL_CALL\n{}"));
     }
     #[test]
     fn questions_allow_leading_whitespace() {
-        let text = "\n  DEVHQ_QUESTION\n{\"question\":\"Which host?\",\"choices\":[\"A\",\"B\"]}";
+        let text = "\n  WINT_QUESTION\n{\"question\":\"Which host?\",\"choices\":[\"A\",\"B\"]}";
         assert_eq!(
-            control_payload(text, "DEVHQ_QUESTION")
+            control_payload(text, "WINT_QUESTION")
                 .unwrap()
                 .chars()
                 .next(),
@@ -1367,7 +1367,7 @@ mod tests {
             "Which host?"
         );
         let mut gate = ProtocolGate::default();
-        assert!(gate.push("\n  DEVHQ_").is_none());
+        assert!(gate.push("\n  WINT_").is_none());
         assert!(gate.push("QUESTION\n{}").is_none());
         assert!(!gate.emitted());
         let bare = parse_question("{\"question\":\"What string should be used?\"}")

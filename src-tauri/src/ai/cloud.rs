@@ -121,7 +121,7 @@ pub fn remove(provider: &str) -> Result<CloudStatus, String> {
 
 #[cfg(windows)]
 fn entry(provider: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new("DevHQ AI providers", provider)
+    keyring::Entry::new("WinT AI providers", provider)
         .map_err(|e| format!("Could not access Windows Credential Manager: {e}"))
 }
 #[cfg(windows)]
@@ -436,7 +436,7 @@ async fn run(
     let registry = ToolRegistry::routed(Some(app.clone()), roots, &areas);
     let tools = definitions(&registry, anthropic);
     let client = reqwest::Client::builder()
-        .user_agent("DevHQ/0.43")
+        .user_agent("WinT/0.43")
         .build()
         .map_err(|e| e.to_string())?;
     let mut messages = vec![json!({"role":"user","content":prompt})];
@@ -621,7 +621,7 @@ fn cursor_chat(
                         calls += 1;
                         if calls > tool_call_cap {
                             final_error =
-                                format!("Cursor reached DevHQ's {tool_call_cap}-call tool limit.");
+                                format!("Cursor reached WinT's {tool_call_cap}-call tool limit.");
                             if let Ok(mut active) = cursor_task().lock() {
                                 if let Some(run) = active.as_mut() {
                                     let _ = run.child.kill();

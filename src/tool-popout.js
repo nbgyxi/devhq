@@ -1,5 +1,5 @@
 // Popped-out tool window. Each tool remounts here independently — there is no
-// shared session the way terminals have — and docks back by telling DevHQ to
+// shared session the way terminals have — and docks back by telling WinT to
 // open it again and destroying this frame.
 
 (async () => {
@@ -10,8 +10,8 @@
 
   const id = new URLSearchParams(location.search).get("id");
   const host = document.getElementById("tool-host");
-  const PREFS_KEY = "devhq.prefs.v1";
-  const ONTOP_KEY = "devhq.tools.ontop.v1";
+  const PREFS_KEY = "wint.prefs.v1";
+  const ONTOP_KEY = "wint.tools.ontop.v1";
 
   let handedOver = false;
   let closed = false;
@@ -115,9 +115,9 @@
     if (id === "git") {
       return { id: "git", name: "Git", icon: "bookmark_added", hint: "save, upload and restore versions of your work" };
     }
-    const util = window.devhqUtilTools?.catalog?.().find((tool) => tool.id === id);
+    const util = window.wintUtilTools?.catalog?.().find((tool) => tool.id === id);
     if (util) return { ...util, kind: "util" };
-    const winTool = window.devhqWindowsTools?.catalog?.().find((tool) => tool.id === id);
+    const winTool = window.wintWindowsTools?.catalog?.().find((tool) => tool.id === id);
     if (winTool) return { ...winTool, kind: "windows" };
     return null;
   };
@@ -131,7 +131,7 @@
 
   const handOver = async () => {
     if (handedOver || closed) return;
-    await window.devhqToolState?.send?.(id);
+    await window.wintToolState?.send?.(id);
     handedOver = true;
     await emit("tool:docked", { id }).catch(() => {});
     await win.destroy().catch(() => {});
@@ -173,7 +173,7 @@
     await finishClose();
   });
 
-  // The name DevHQ put in the URL. It is the display name, never the id, and
+  // The name WinT put in the URL. It is the display name, never the id, and
   // it is all this window has to go on until the tool catalog has loaded.
   const openedAs = new URLSearchParams(location.search).get("name") || "";
 
@@ -192,7 +192,7 @@
     return;
   }
 
-  window.devhqTrackPageView?.(`/tool-popout/${id}`);
+  window.wintTrackPageView?.(`/tool-popout/${id}`);
   document.title = meta.name;
   document.getElementById("pop-name").textContent = meta.name;
   const applyBrandIcon = () => {
@@ -214,14 +214,14 @@
   // The title bar is the only place this window says what it is: the name, and
   // beside it the Alpha/Beta mark that used to sit in the page header. The hint
   // sentence stays out — it crowds the bar and reads as centered noise.
-  document.getElementById("pop-hint").innerHTML = window.devhqMaturity?.badge(id) ?? "";
+  document.getElementById("pop-hint").innerHTML = window.wintMaturity?.badge(id) ?? "";
   showBoot(meta.name, `Starting ${meta.name}…`);
   // Show themed chrome and the named loading screen — never the blank flash.
   clearTimeout(revealFallback);
   await reveal();
 
   const workBusy = new Map();
-  window.devhqWork = {
+  window.wintWork = {
     beginWork(key, label) {
       workBusy.set(key, label);
     },
@@ -241,17 +241,17 @@
   // markDirty / flushRender; without it here a tool mounts once and then never
   // updates again — every result it streams in lands on a page nobody redraws.
   const renderers = {
-    dns: () => window.devhqDns?.render(),
-    hosts: () => window.devhqHosts?.render(),
-    network: () => window.devhqNetwork?.render(),
-    "path-ping": () => window.devhqPathPing?.render(),
-    "disk-space": () => window.devhqDiskSpace?.render(),
-    tools: () => window.devhqUtilTools?.render(),
+    dns: () => window.wintDns?.render(),
+    hosts: () => window.wintHosts?.render(),
+    network: () => window.wintNetwork?.render(),
+    "path-ping": () => window.wintPathPing?.render(),
+    "disk-space": () => window.wintDiskSpace?.render(),
+    tools: () => window.wintUtilTools?.render(),
   };
   const dirtyRegions = new Set();
   let renderQueued = 0;
 
-  window.devhqShell = {
+  window.wintShell = {
     icon,
     esc,
     markDirty(...regions) {
@@ -288,60 +288,60 @@
   };
 
   let portHandoff = null;
-  window.devhqPortsState = {
+  window.wintPortsState = {
     exportState() { return { search:document.getElementById("pop-port-filter")?.value||"", ...portHandoff }; },
     importState(state) { portHandoff=state||null; const input=document.getElementById("pop-port-filter");if(input)input.value=portHandoff?.search||""; },
   };
 
   // Hide the in-page pin/close chrome — the title bar owns dock and close here.
-  window.devhqExternalToolChrome = true;
+  window.wintExternalToolChrome = true;
   document.body.classList.add("tool-popout-chrome");
 
   let mounted = false;
   try {
-    await window.devhqToolState?.receive?.(id);
+    await window.wintToolState?.receive?.(id);
     if (id === "ports") {
       host.className = "tool-pop-host ports-page tool-pop-ports";
-      window.devhqPortsTool?.mount(host);
-      await window.devhqPortsTool?.opened();
+      window.wintPortsTool?.mount(host);
+      await window.wintPortsTool?.opened();
     } else if (id === "dns") {
       host.className = "tool-pop-host dns-page";
-      window.devhqDns?.mount(host);
-      window.devhqDns?.opened();
+      window.wintDns?.mount(host);
+      window.wintDns?.opened();
     } else if (id === "hosts") {
       host.className = "tool-pop-host hosts-page";
-      window.devhqHosts?.mount(host);
-      window.devhqHosts?.opened();
+      window.wintHosts?.mount(host);
+      window.wintHosts?.opened();
     } else if (id === "network") {
       host.className = "tool-pop-host net-page";
-      window.devhqNetwork?.mount(host);
-      window.devhqNetwork?.opened();
+      window.wintNetwork?.mount(host);
+      window.wintNetwork?.opened();
     } else if (id === "path-ping") {
       host.className = "tool-pop-host path-page";
-      window.devhqPathPing?.mount(host);
-      window.devhqPathPing?.opened();
+      window.wintPathPing?.mount(host);
+      window.wintPathPing?.opened();
     } else if (id === "disk-space") {
       host.className = "tool-pop-host disk-page";
-      window.devhqDiskSpace?.mount(host);
-      window.devhqDiskSpace?.opened();
+      window.wintDiskSpace?.mount(host);
+      window.wintDiskSpace?.opened();
     } else if (id === "github") {
       host.className = "tool-pop-host github-page";
-      window.devhqGithub?.mount(host);
-      window.devhqGithub?.opened();
+      window.wintGithub?.mount(host);
+      window.wintGithub?.opened();
     } else if (id === "git") {
       host.className = "tool-pop-host git-page";
-      window.devhqGit?.mount(host);
-      window.devhqGit?.opened();
-    } else if (window.devhqUtilTools?.byId?.(id)) {
+      window.wintGit?.mount(host);
+      window.wintGit?.opened();
+    } else if (window.wintUtilTools?.byId?.(id)) {
       host.className = "tool-pop-host tools-page";
-      window.devhqUtilTools.mount(host);
-      window.devhqUtilTools.open(id);
-      window.devhqUtilTools.opened();
-    } else if (window.devhqWindowsTools?.catalog?.().some((tool) => tool.id === id)) {
+      window.wintUtilTools.mount(host);
+      window.wintUtilTools.open(id);
+      window.wintUtilTools.opened();
+    } else if (window.wintWindowsTools?.catalog?.().some((tool) => tool.id === id)) {
       host.className = "tool-pop-host windows-tools-page";
-      window.devhqWindowsTools.mount(host);
-      window.devhqWindowsTools.open(id);
-      window.devhqWindowsTools.opened();
+      window.wintWindowsTools.mount(host);
+      window.wintWindowsTools.open(id);
+      window.wintWindowsTools.opened();
     } else {
       failBoot(`${meta.name} could not be mounted in its own window.`);
       return;
@@ -388,7 +388,7 @@
   await applyOnTop();
 
   // Drag the title bar to move the window. Nothing else: dropping a tool onto
-  // DevHQ used to dock it, which made an ordinary move look like the window had
+  // WinT used to dock it, which made an ordinary move look like the window had
   // vanished. Docking is the dock button, and only the dock button.
   document.querySelector(".titlebar .drag").addEventListener("pointerdown", async (e) => {
     if (e.button !== 0) return;

@@ -32,7 +32,7 @@ const FONT_FAMILY = "Material Symbols Rounded";
 const THEMES = ["dark", "light"];
 const DEFAULT_GLYPH = "handyman";
 
-/** Match DevHQ CSS: teal on dark surfaces, body text on light. */
+/** Match WinT CSS: teal on dark surfaces, body text on light. */
 const THEME_STYLE = {
   dark: { glyph: "#3ad6c8" },
   light: { glyph: "#1a1c24" },

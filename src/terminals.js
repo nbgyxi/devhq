@@ -1,4 +1,4 @@
-// The terminal dock: a strip of live shells at the bottom of DevHQ, each one
+// The terminal dock: a strip of live shells at the bottom of WinT, each one
 // tied to the project it was opened from.
 //
 // The dock lives outside `#root` on purpose. `render()` replaces that subtree
@@ -9,7 +9,7 @@ const term_dock_invoke = window.__TAURI__.core.invoke;
 const term_dock_listen = window.__TAURI__.event.listen;
 const term_dock_emit = window.__TAURI__.event.emit;
 
-const TERM_PREFS = "devhq.terminals.v1";
+const TERM_PREFS = "wint.terminals.v1";
 
 /** Names one terminal's kept stream. The output itself never comes through
  *  here: the session in Rust keeps the bytes the shell wrote and replays them
@@ -29,10 +29,11 @@ const TERM_SHELLS = [
   { value: "git-bash", label: "Git Bash" },
   { value: "wsl", label: "WSL Bash" },
   { value: "nu", label: "NuShell" },
+  { value: "claude", label: "Claude Code" },
 ];
 const DEFAULT_SHELL_COLORS = {
   pwsh: "#4d9df5", "pwsh-preview": "#c162de", powershell: "#61afef",
-  cmd: "#8cc265", "git-bash": "#e05561", wsl: "#d5a458", nu: "#c162de", auto: "#42b3c2",
+  cmd: "#8cc265", "git-bash": "#e05561", wsl: "#d5a458", nu: "#c162de", claude: "#d97757", auto: "#42b3c2",
 };
 
 const terms = {
@@ -61,7 +62,7 @@ const terms = {
   shellMarkerStyle: "code",
   /** When false, terminals start fresh and nothing is replayed on restore. */
   saveHistory: true,
-  /** Replace the shell's small reverse search with DevHQ's searchable history. */
+  /** Replace the shell's small reverse search with WinT's searchable history. */
   enhancedHistorySearch: true,
   orphanWarnings: new Map(),
   /** Why the last shell that failed to start failed, for the caller that has
@@ -81,7 +82,7 @@ function historyKeyForOpen(existing = "") {
  *  never has to, and a terminal's scrollback was never something localStorage
  *  should have been holding. */
 function termsSavePrefs() {
-  if (terms.restoring || window.devhqResetting) return;
+  if (terms.restoring || window.wintResetting) return;
   const entries = [...terms.known.entries()];
   try {
     localStorage.setItem(TERM_PREFS, JSON.stringify({
@@ -160,7 +161,7 @@ function shellMarker(command) {
   const label = TERM_SHELLS.find((item) => item.value === profile)?.label || "Terminal";
   const short = {
     auto: "SH", pwsh: "PW7", "pwsh-preview": "PWP", powershell: "PS",
-    cmd: "CMD", "git-bash": "GIT", wsl: "WSL", nu: "NU",
+    cmd: "CMD", "git-bash": "GIT", wsl: "WSL", nu: "NU", claude: "CC",
   }[profile] || "SH";
   return `<i class="shell-mark shell-${profile}" title="${escAttr(label)}" aria-label="${escAttr(label)}">${short}</i>`;
 }
@@ -254,7 +255,7 @@ function dockEl() {
 
   // Keep this gesture inside the webview rather than using HTML drag/drop.
   // Native browser dragging can activate whatever is behind the app when the
-  // pointer leaves the window. Pointer capture keeps DevHQ in charge and also
+  // pointer leaves the window. Pointer capture keeps WinT in charge and also
   // lets us draw a clear preview of what is moving.
   const tabBar = el.querySelector(".dock-bar");
   const views = el.querySelector(".dock-views");
@@ -400,7 +401,7 @@ function dockEl() {
   el.querySelector("[data-shell-error-close]").onclick = closeShellError;
   el.querySelector("[data-shell-error-get]").onclick = (e) => {
     closeShellError();
-    window.devhqOpenShellDownloads?.(e.currentTarget.dataset.shellErrorGet);
+    window.wintOpenShellDownloads?.(e.currentTarget.dataset.shellErrorGet);
   };
   el.querySelector(".term-shell-error").onclick = (e) => {
     if (e.target.classList.contains("term-shell-error")) closeShellError();
@@ -490,7 +491,7 @@ async function openTerminalWindow(shell = terms.defaultShell) {
     return;
   }
   const key = `term:window:${target.path}:${Date.now()}`;
-  window.devhqWork?.beginWork(key, `Opening a shell in ${target.name} in its own window`);
+  window.wintWork?.beginWork(key, `Opening a shell in ${target.name} in its own window`);
   let opened = null;
   try {
     const historyKey = historyKeyForOpen();
@@ -527,7 +528,7 @@ async function openTerminalWindow(shell = terms.defaultShell) {
     } else if (shell !== "auto") showShellError(shell, String(e));
     else termNote(`${key}:err`, `Could not open a shell in ${target.name}: ${e}`, 5000);
   } finally {
-    window.devhqWork?.endWork(key);
+    window.wintWork?.endWork(key);
   }
 }
 
@@ -701,8 +702,8 @@ function moveToPane(id, pane) {
 
 /** A short-lived line in the main window's activity strip. */
 function termNote(key, label, ms = 2600) {
-  window.devhqWork?.beginWork(key, label);
-  setTimeout(() => window.devhqWork?.endWork(key), ms);
+  window.wintWork?.beginWork(key, label);
+  setTimeout(() => window.wintWork?.endWork(key), ms);
 }
 
 function renderTabs() {
@@ -779,7 +780,7 @@ async function loadShellAvailability() {
   }
 }
 
-/** What DevHQ could fetch, and what it already has. Cheap enough to ask for
+/** What WinT could fetch, and what it already has. Cheap enough to ask for
  *  again after every install or removal, which is what keeps the shell menu,
  *  the error dialog and Settings saying the same thing. */
 async function loadShellDownloads() {
@@ -798,7 +799,7 @@ function closeShellError() {
   if (dialog) dialog.hidden = true;
 }
 
-/** `shell` names a terminal profile when the failure is one DevHQ can fix by
+/** `shell` names a terminal profile when the failure is one WinT can fix by
  *  fetching that shell, which turns the dialog from a dead end into a way on
  *  to the one place downloads live. */
 function showTerminalError(title, detail, shell = "") {
@@ -807,7 +808,7 @@ function showTerminalError(title, detail, shell = "") {
   const download = shell ? downloadableShell(shell) : null;
   dialog.querySelector("strong").textContent = title;
   dialog.querySelector("p").textContent = download
-    ? `${detail} DevHQ can download it for you — ${megabytes(download.downloadBytes)}, from ${download.source}.`
+    ? `${detail} WinT can download it for you — ${megabytes(download.downloadBytes)}, from ${download.source}.`
     : detail;
   offer.hidden = !download;
   offer.textContent = download ? `Get ${download.label}` : "";
@@ -820,13 +821,13 @@ function megabytes(bytes) {
   return `${Math.round(Number(bytes || 0) / 1e6)} MB`;
 }
 
-/** The shells DevHQ can fetch itself, so a missing one has somewhere to go.
+/** The shells WinT can fetch itself, so a missing one has somewhere to go.
  *  Filled from Rust on startup; empty until then, and empty forever for the
  *  shells that ship with Windows or cannot be downloaded at all. */
 const shellDownloads = new Map();
 
 /** The download offer for a shell, or nothing when there is none to make -
- *  including when DevHQ already has its own copy, which is not a thing to
+ *  including when WinT already has its own copy, which is not a thing to
  *  offer twice. */
 function downloadableShell(shell) {
   const row = shellDownloads.get(shell);
@@ -839,6 +840,7 @@ const PROFILE_HINTS = {
   nu: "Install it with: winget install Nushell",
   wsl: "Install it with: wsl --install",
   "git-bash": "Install Git for Windows.",
+  claude: "Install it with: npm install -g @anthropic-ai/claude-code — then run claude once to sign in.",
 };
 
 function showShellError(shell, detail = "") {
@@ -847,7 +849,7 @@ function showShellError(shell, detail = "") {
   const reason = terms.shellAvailability.get(shell)?.reason || detail
     || `${label} is not available on this computer.`;
   const missing = /not installed|not available|not found|not on PATH/i.test(reason);
-  // The winget line is only worth printing for the shells DevHQ cannot fetch
+  // The winget line is only worth printing for the shells WinT cannot fetch
   // itself; for the rest the dialog offers the download instead of describing
   // a command the user would have to go and type.
   const hint = missing && !downloadableShell(shell) ? PROFILE_HINTS[shell] : "";
@@ -957,7 +959,7 @@ async function switchTerminalShell(id, shell) {
   const pane = sessionPane(id);
   const label = old.info.projectName || "shell";
   const key = `term:switch:${id}`;
-  window.devhqWork?.beginWork(key, `Restarting ${label} with ${TERM_SHELLS.find((profile) => profile.value === shell)?.label || shell}`);
+  window.wintWork?.beginWork(key, `Restarting ${label} with ${TERM_SHELLS.find((profile) => profile.value === shell)?.label || shell}`);
   let replacement = null;
   try {
     const historyKey = historyKeyForOpen();
@@ -998,7 +1000,7 @@ async function switchTerminalShell(id, shell) {
     }
     showShellError(shell, String(e));
   } finally {
-    window.devhqWork?.endWork(key);
+    window.wintWork?.endWork(key);
   }
 }
 
@@ -1007,7 +1009,7 @@ async function switchTerminalShell(id, shell) {
 function newTerminalTarget(pane = terms.active ? sessionPane(terms.active) : 0) {
   const active = terms.sessions.get(terms.paneActive[pane])?.info;
   if (active) return { path: active.projectPath, name: active.projectName || "this project" };
-  const root = window.devhqPrimaryRoot?.() || "";
+  const root = window.wintPrimaryRoot?.() || "";
   return { path: root, name: root.split(/[\/]/).filter(Boolean).pop() || root || "no folder" };
 }
 
@@ -1058,7 +1060,7 @@ async function openTerminal(project, opts = {}) {
   terms.pending.set(key, { label, pane });
   renderTabs();
   setDockOpen(true);
-  window.devhqWork?.beginWork(
+  window.wintWork?.beginWork(
     key,
     opts.run ? `Starting ${opts.run} in ${project.name}` : `Starting a shell in ${project.name}`
   );
@@ -1092,7 +1094,7 @@ async function openTerminal(project, opts = {}) {
     else termNote(`${key}:err`, `Could not open a shell in ${project.name}: ${e}`, 5000);
   } finally {
     terms.pending.delete(key);
-    window.devhqWork?.endWork(key);
+    window.wintWork?.endWork(key);
   }
   return null;
 }
@@ -1193,13 +1195,13 @@ function scheduleOrphanCheck(expected) {
   if (!expected?.length) return;
   setTimeout(() => {
     const key = `terminal-orphans:${Date.now()}`;
-    window.devhqWork?.beginWork(key, "Checking for terminal processes left running");
+    window.wintWork?.beginWork(key, "Checking for terminal processes left running");
     term_dock_invoke("process_survivors", { expected })
       .then((survivors) => {
         for (const process of survivors || []) terms.orphanWarnings.set(process.pid, process);
         syncTerminalButton();
       })
-      .finally(() => window.devhqWork?.endWork(key));
+      .finally(() => window.wintWork?.endWork(key));
   }, 2000);
 }
 
@@ -1216,12 +1218,33 @@ function closeTerminal(id) {
   closeTerminalAndWatch(id);
 }
 
+/** The `cols,rows` a popped-out window should open with, or null when the
+ *  view never measured itself. Kept inside what the screen can show, since the
+ *  panel can be wider than a free-standing window is allowed to be. */
+function popoutGrid(view) {
+  const cols = view?.cols;
+  const rows = view?.rows;
+  if (!cols || !rows) return null;
+  // `term_popout` turns these back into pixels at 9 x 18, a little more than a
+  // cell really is - so the window opens a few columns roomier than the panel
+  // was, and a line that fit in the panel still fits.
+  const maxCols = Math.floor(((screen.availWidth || 1600) * 0.92) / 9);
+  const maxRows = Math.floor(((screen.availHeight || 900) * 0.86) / 18);
+  return `${Math.min(cols, maxCols)},${Math.min(rows, maxRows)}`;
+}
+
 /** Hands the session to its own window. The shell is untouched — only the view
  *  moves, so a running build carries straight on. */
 async function popOutTerminal(id, screenX, screenY, windowOptions = {}) {
   const session = terms.sessions.get(id);
   if (!session) return;
   const remembered = terms.known.get(id);
+  // The window has to come up with the grid the terminal already had. A
+  // narrower one makes ConPTY reflow the scrollback, and every line a program
+  // padded out to the full width - a dev server writing its timestamps against
+  // the right edge, say - wraps into a second, near-empty row: a blank line
+  // between every line, until it is docked back in and reflowed again.
+  const grid = popoutGrid(session.view);
   // The panel lets go on the same frame as the click; the window is opened
   // behind it. Waiting for the window first would leave the terminal sitting
   // in the dock looking as though nothing happened.
@@ -1231,14 +1254,14 @@ async function popOutTerminal(id, screenX, screenY, windowOptions = {}) {
   if (remembered) remembered.popped = true;
   focusNext();
   const key = `popout:${id}`;
-  window.devhqWork?.beginWork(key, `Opening ${session.info.projectName || "the terminal"} in its own window`);
+  window.wintWork?.beginWork(key, `Opening ${session.info.projectName || "the terminal"} in its own window`);
   try {
     await term_dock_invoke("term_popout", {
       id,
       x: Number.isFinite(screenX) ? screenX - 80 : null,
       y: Number.isFinite(screenY) ? screenY - 18 : null,
       position: windowOptions.position || null,
-      dimensions: windowOptions.dimensions || null,
+      dimensions: windowOptions.dimensions || grid,
       maximized: !!windowOptions.maximized,
       fullscreen: !!windowOptions.fullscreen,
       focus: windowOptions.focus !== false,
@@ -1254,7 +1277,7 @@ async function popOutTerminal(id, screenX, screenY, windowOptions = {}) {
     await mountSession(id).catch(() => {});
     setDockOpen(true);
   } finally {
-    window.devhqWork?.endWork(key);
+    window.wintWork?.endWork(key);
   }
 }
 
@@ -1290,7 +1313,7 @@ term_dock_listen("term:popped-created", (event) => {
   termsSavePrefs();
 });
 
-// DevHQ terminals put a private `wt` compatibility command first on PATH.
+// WinT terminals put a private `wt` compatibility command first on PATH.
 // Existing `wt split-pane` scripts therefore land here without being changed.
 // A popped-out terminal receives the same event and handles its own request.
 function wtShell(profile) {
@@ -1318,12 +1341,12 @@ async function executeWtRequest(request) {
     // never heard of has nowhere to put the pane; `wt` learns that from the
     // answer never arriving.
     if (!terms.known.has(request.termId)) {
-      termNote("term:wt-lost", "A wt command arrived from a terminal DevHQ no longer holds.", 5000);
+      termNote("term:wt-lost", "A wt command arrived from a terminal WinT no longer holds.", 5000);
       // With nothing popped out there is no other window that could own it, so
       // the shell is told now rather than left waiting for an answer that is
       // never coming.
       if (![...terms.known.values()].some((spec) => spec.popped)) {
-        reportWt(request.token, false, "DevHQ has no terminal with that id any more.");
+        reportWt(request.token, false, "WinT has no terminal with that id any more.");
       }
     }
     return;
@@ -1350,9 +1373,9 @@ async function executeWtRequest(request) {
   for (const action of request.actions || []) {
     if (action.kind === "help") {
       // `wt --help` is a question asked at a prompt, so it is answered there.
-      termNote("term:wt-help", "DevHQ handles wt tabs, splits, focus, movement, profiles, colors and window options.", 6000);
+      termNote("term:wt-help", "WinT handles wt tabs, splits, focus, movement, profiles, colors and window options.", 6000);
       reportWt(request.token, true,
-        "DevHQ runs wt commands in its own terminal panel: new-tab, split-pane, focus-tab,\n" +
+        "WinT runs wt commands in its own terminal panel: new-tab, split-pane, focus-tab,\n" +
         "move-focus, move-pane and swap-pane, with --profile, --startingDirectory, --title,\n" +
         "--tabColor, --colorScheme, --horizontal/--vertical, --size and the window options.");
       return;
@@ -1406,11 +1429,11 @@ async function executeWtRequest(request) {
     activeId = info.id;
     const known = terms.known.get(info.id);
     if (known) { known.tabColor = action.tabColor || ""; known.colorScheme = action.colorScheme || ""; }
-    if (action.colorScheme && window.devhqTermTheme) {
+    if (action.colorScheme && window.wintTermTheme) {
       const wanted = action.colorScheme.toLowerCase();
-      const preset = window.devhqTermTheme.presets.find((item) =>
+      const preset = window.wintTermTheme.presets.find((item) =>
         item.id.toLowerCase() === wanted || item.label.toLowerCase() === wanted);
-      if (preset) window.devhqTermTheme.usePreset(preset.id);
+      if (preset) window.wintTermTheme.usePreset(preset.id);
     }
     renderTabs();
     if (targetNewWindow) await popOutTerminal(info.id, undefined, undefined, request);
@@ -1438,12 +1461,12 @@ term_dock_listen("term:docked", async (event) => {
   } catch {}
 });
 
-/** Recreates the shells that were open when DevHQ last closed. Processes do
+/** Recreates the shells that were open when WinT last closed. Processes do
  *  not survive app shutdown; the replacement sessions start in the same
  *  folders and retain their tab order. */
 async function restoreTerminals() {
   const specs = terms.restoreSpecs;
-  // Streams nobody is going to open again - a terminal closed while DevHQ was
+  // Streams nobody is going to open again - a terminal closed while WinT was
   // not running, or one lost with a crash - are dropped before anything else
   // touches them.
   term_dock_invoke("term_prune_history", {
@@ -1458,7 +1481,7 @@ async function restoreTerminals() {
     const key = `term:restore:${i}`;
     terms.pending.set(key, { label: spec.projectName || "shell", pane: spec.pane === 1 ? 1 : 0 });
     renderTabs();
-    window.devhqWork?.beginWork(key, `Restoring terminal in ${spec.projectName || spec.projectPath}`);
+    window.wintWork?.beginWork(key, `Restoring terminal in ${spec.projectName || spec.projectPath}`);
     try {
       // The shell is new; the scrollback is not. `term_open` replays this
       // terminal's kept stream into the parser before the shell starts, so
@@ -1483,7 +1506,7 @@ async function restoreTerminals() {
       terms.pending.delete(key);
       renderTabs();
     } finally {
-      window.devhqWork?.endWork(key);
+      window.wintWork?.endWork(key);
     }
   }
   terms.restoring = false;
@@ -1505,6 +1528,7 @@ window.termsState = terms;
 
 function shellProfileFromCommand(command) {
   const value = String(command || "").toLowerCase();
+  if (/claude\.(exe|cmd|bat)/.test(value)) return "claude";
   if (value.includes("git\\bin\\bash.exe")) return "git-bash";
   if (value.includes("7-preview\\pwsh.exe")) return "pwsh-preview";
   if (value.includes("pwsh.exe")) return "pwsh";
@@ -1515,7 +1539,7 @@ function shellProfileFromCommand(command) {
   return "auto";
 }
 
-window.devhqTerminalSettings = {
+window.wintTerminalSettings = {
   profiles: TERM_SHELLS,
   getDefault: () => terms.defaultShell,
   scan: loadShellAvailability,
@@ -1588,7 +1612,7 @@ term_dock_listen("shells:download-progress", async (event) => {
     await loadShellDownloads();
     await loadShellAvailability();
   }
-  window.devhqShellDownloadProgress?.(event.payload);
+  window.wintShellDownloadProgress?.(event.payload);
 });
 
 restoreTerminals();

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Cuts the Material Symbols icon font down to the glyphs DevHQ actually names.
+// Cuts the Material Symbols icon font down to the glyphs WinT actually names.
 //
 //   npm install            # once, pulls harfbuzzjs and wawoff2
 //   npm run icon-font      # rewrite src/fonts/material-symbols-rounded.woff2
@@ -10,7 +10,7 @@
 // `font-display:block`, so no icon paints until the whole file is decoded.
 // Isolated tools each get their own WebView2 data directory, so they each have
 // their own cache and each pay that cost on first open. The full upstream font
-// is ~5.2 MB; DevHQ names a few hundred glyphs.
+// is ~5.2 MB; WinT names a few hundred glyphs.
 //
 // Files:
 //   scripts/fonts/material-symbols-rounded-full.woff2   source, never bundled
@@ -193,8 +193,8 @@ async function verifyShaping(ttf, names) {
  * came out as the wrong outline, which shaping alone cannot tell you. */
 function verifyRendering(fullTtf, subsetTtf, names) {
   const { createCanvas, GlobalFonts } = require("@napi-rs/canvas");
-  GlobalFonts.register(fullTtf, "DevHQIconsFull");
-  GlobalFonts.register(subsetTtf, "DevHQIconsSubset");
+  GlobalFonts.register(fullTtf, "WinTIconsFull");
+  GlobalFonts.register(subsetTtf, "WinTIconsSubset");
   const size = 48;
   const draw = (family, name) => {
     const canvas = createCanvas(size, size);
@@ -207,8 +207,8 @@ function verifyRendering(fullTtf, subsetTtf, names) {
   };
   const broken = [];
   for (const name of names) {
-    const before = Buffer.from(draw("DevHQIconsFull", name));
-    const after = Buffer.from(draw("DevHQIconsSubset", name));
+    const before = Buffer.from(draw("WinTIconsFull", name));
+    const after = Buffer.from(draw("WinTIconsSubset", name));
     if (before.every((byte) => byte === 0)) {
       broken.push(`${name}: draws nothing even in the full font`);
     } else if (!before.equals(after)) {

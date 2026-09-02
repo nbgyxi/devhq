@@ -11,19 +11,19 @@ const term_listen = window.__TAURI__.event.listen;
 // A terminal's colours live as CSS variables on the document rather than being
 // baked into the cells, so changing a scheme recolours every line already on
 // screen without repainting a single row. Both windows that host a terminal -
-// the DevHQ panel and a popped-out one - load this file, and a change in one
+// the WinT panel and a popped-out one - load this file, and a change in one
 // is broadcast to the other.
 
-const TERM_THEME_KEY = "devhq.termtheme.v1";
+const TERM_THEME_KEY = "wint.termtheme.v1";
 
 const TERM_PRESETS = [
   {
-    id: "devhq-dark", label: "DevHQ Dark", bg: "#0a0b0f", fg: "#d7dbe6",
+    id: "wint-dark", label: "WinT Dark", bg: "#0a0b0f", fg: "#d7dbe6",
     ansi: ["#1c1f26", "#e05561", "#8cc265", "#d5a458", "#4d9df5", "#c162de", "#42b3c2", "#c8ccd4",
            "#5c6370", "#ff6b78", "#a5e075", "#e6c07b", "#61afef", "#d55fde", "#56b6c2", "#ffffff"],
   },
   {
-    id: "devhq-light", label: "DevHQ Light", bg: "#fbfbfd", fg: "#1c1f26",
+    id: "wint-light", label: "WinT Light", bg: "#fbfbfd", fg: "#1c1f26",
     ansi: ["#383a42", "#e45649", "#50a14f", "#c18401", "#0184bc", "#a626a4", "#0997b3", "#a0a1a7",
            "#4f525e", "#d13c33", "#3f8a3e", "#a06d00", "#0165a0", "#8b1f8b", "#077f97", "#0a0b0f"],
   },
@@ -137,7 +137,7 @@ function applyTermTheme() {
 }
 
 function saveTermTheme() {
-  if (window.devhqResetting) return;
+  if (window.wintResetting) return;
   try {
     localStorage.setItem(TERM_THEME_KEY, JSON.stringify({
       preset: termTheme.preset,
@@ -194,7 +194,7 @@ function adoptTermTheme(next, { broadcast = false, defer = false } = {}) {
   }
 }
 
-window.devhqTermTheme = {
+window.wintTermTheme = {
   presets: TERM_PRESETS.map(({ id, label }) => ({ id, label })),
   colorNames: TERM_COLOR_NAMES,
   /** The preset in use, or "custom" once any colour has been changed. */
@@ -228,7 +228,7 @@ term_listen("term:theme", (event) => {
   if (next.preset === termTheme.preset
     && JSON.stringify(next.custom ?? null) === JSON.stringify(termTheme.custom)) return;
   adoptTermTheme(next);
-  window.devhqOnTermThemeChanged?.();
+  window.wintOnTermThemeChanged?.();
 });
 
 const DEFAULT_COLOR = 4294967295;
@@ -320,16 +320,16 @@ function linkEnd(text, start, end) {
   return end;
 }
 
-/** Hands a link to the browser, through the same opener the rest of DevHQ
+/** Hands a link to the browser, through the same opener the rest of WinT
  *  uses. Only http and https ever get here: a scheme a program invented is not
  *  something to pass to Windows on the strength of it appearing in output. */
 function openTerminalLink(url) {
   if (!/^https?:\/\//i.test(url)) return;
   const key = `term-link:${Date.now()}`;
-  window.devhqWork?.beginWork(key, "Opening your browser");
+  window.wintWork?.beginWork(key, "Opening your browser");
   term_invoke("plugin:opener|open_url", { url })
     .catch(() => {})
-    .finally(() => window.devhqWork?.endWork(key));
+    .finally(() => window.wintWork?.endWork(key));
 }
 
 /** The column a word step lands on, going `dir` from `col` in `text`.
@@ -438,11 +438,11 @@ function keySequence(e) {
   return null;
 }
 
-const TERM_PREFS_KEY = "devhq.terminals.v1";
+const TERM_PREFS_KEY = "wint.terminals.v1";
 
-// 0.35.3 stopped maintaining a DevHQ-owned command log. Remove the old index
+// 0.35.3 stopped maintaining a WinT-owned command log. Remove the old index
 // rather than leaving commands behind after the feature that wrote it is gone.
-try { localStorage.removeItem("devhq.command-history.v1"); } catch {}
+try { localStorage.removeItem("wint.command-history.v1"); } catch {}
 
 function enhancedHistoryEnabled() {
   try {
@@ -657,7 +657,7 @@ class TermView {
         e.stopPropagation();
         return;
       }
-      // Ctrl+` belongs to DevHQ, for toggling the panel from inside a terminal.
+      // Ctrl+` belongs to WinT, for toggling the panel from inside a terminal.
       if (e.ctrlKey && e.key === "`") return;
       // Selecting with the keyboard, the way any text editor does it: Shift
       // with a movement key extends the selection instead of reaching the
@@ -827,7 +827,7 @@ class TermView {
     return true;
   }
 
-  /** Finds the first editable column for the prompt formats used by DevHQ's
+  /** Finds the first editable column for the prompt formats used by WinT's
    * shell profiles. Anchoring the patterns keeps `>` and `$` inside commands
    * from being mistaken for a second prompt. */
   commandStart(text, cursor) {

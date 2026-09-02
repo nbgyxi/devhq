@@ -41,6 +41,14 @@ fn shell_command(profile: &str) -> Result<String, String> {
             .map(|path| format!(r#""{}""#, path.display()))
             .unwrap_or_else(|| "nu.exe".into())),
         "wsl" => Ok("wsl.exe --exec bash --login".into()),
+        // The one profile that opens on a machine that does not have it. There
+        // is no useful dead end here: the pane itself is where the CLI gets
+        // installed and signed in, so a missing Claude Code opens the
+        // walkthrough instead of an error dialog.
+        "claude" => match claude_path() {
+            Some(path) => Ok(program_command(&path)),
+            None => claude_setup_command(),
+        },
         "git-bash" => {
             let Some(bash) = git_bash_path() else {
                 return Err(
@@ -62,9 +70,37 @@ fn find_command(name: &str) -> Option<PathBuf> {
     })
 }
 
+/// The first of several names to turn up on PATH. A CLI installed by npm is a
+/// `.cmd` shim beside an `.exe` that may not exist, and which of the two is
+/// there is not something to guess at.
+fn find_program(names: &[&str]) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+            .find(|path| path.is_file())
+    })
+}
+
+/// A command line that starts `path`, whatever kind of file it is.
+///
+/// `CreateProcess` starts images, not scripts: a `.cmd` or `.bat` shim — which
+/// is how npm puts a CLI on PATH — has to be handed to an interpreter, and an
+/// `.exe` must not be, because that would leave a `cmd.exe` sitting between the
+/// pane and the process whose console it actually is.
+fn program_command(path: &Path) -> String {
+    let script = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"));
+    if script {
+        format!(r#"cmd.exe /d /c ""{}"""#, path.display())
+    } else {
+        format!(r#""{}""#, path.display())
+    }
+}
+
 /// Where a shell is looked for, in order: what the user put on PATH, what an
-/// installer put in Program Files, and only then the copy DevHQ downloaded for
-/// them. A real installation always wins - DevHQ's copy is the backstop for a
+/// installer put in Program Files, and only then the copy WinT downloaded for
+/// them. A real installation always wins - WinT's copy is the backstop for a
 /// machine that has none, never a replacement for one that has.
 fn pwsh_path(preview: bool) -> Option<PathBuf> {
     if !preview {
@@ -84,6 +120,128 @@ fn nu_path() -> Option<PathBuf> {
     find_command("nu.exe").or_else(|| crate::shells::managed_exe("nu"))
 }
 
+/// The walkthrough a Claude Code pane opens into when the CLI is not on this
+/// computer yet: what it is, who it signs in as, and the one keystroke that
+/// installs it. It ends by starting Claude, so a machine that had nothing is
+/// looking at a signed-in chat without leaving the pane.
+///
+/// It installs nothing on its own. Nothing is fetched, and no browser opens,
+/// until the person reading it picks a numbered option - which is why this can
+/// be the *default* behaviour of opening the profile.
+const CLAUDE_SETUP_PS1: &str = r##"
+function Line($text, $color) {
+  if ($color) { Write-Host $text -ForegroundColor $color } else { Write-Host $text }
+}
+
+Line 'Claude Code' 'Cyan'
+Line '-----------' 'DarkGray'
+Line ''
+Line 'This pane runs Anthropic''s Claude Code CLI, in this project''s folder.'
+Line 'It is not installed on this computer yet.'
+Line ''
+Line 'WinT does not ship it and holds no key for it. You install the CLI and sign'
+Line 'in as yourself; WinT only gives it a terminal to run in.' 'DarkGray'
+Line ''
+
+$npm = Get-Command npm -ErrorAction SilentlyContinue
+
+Line 'How would you like to install it?' 'White'
+if ($npm) {
+  Line '  [1] npm install -g @anthropic-ai/claude-code'
+} else {
+  Line '  [1] npm - unavailable, Node.js is not installed' 'DarkGray'
+}
+Line '  [2] Open the install instructions in your browser'
+Line '  [Enter] Not now - leave me at a PowerShell prompt'
+Line ''
+$choice = (Read-Host 'Choice').Trim()
+Line ''
+
+if ($choice -eq '2') {
+  Start-Process 'https://docs.claude.com/en/docs/claude-code/setup'
+  Line 'Opened the install page. Open a Claude Code terminal again once it is installed.' 'DarkGray'
+  return
+}
+
+if ($choice -ne '1') {
+  Line 'Nothing was installed. This pane is an ordinary PowerShell prompt.' 'DarkGray'
+  return
+}
+
+if (-not $npm) {
+  Line 'Node.js is not installed, so npm cannot run.' 'Yellow'
+  Line 'Install Node.js from https://nodejs.org and open this terminal again, or pick [2].' 'DarkGray'
+  return
+}
+
+Line 'Installing Claude Code. npm''s output follows.' 'White'
+Line ''
+npm install -g '@anthropic-ai/claude-code'
+Line ''
+if ($LASTEXITCODE -ne 0) {
+  Line 'The install did not finish - npm''s output above says why.' 'Red'
+  return
+}
+
+# npm put the shim somewhere this process has never looked. Re-reading PATH from
+# the registry is what a brand new terminal would have done anyway.
+$machine = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+$user = [Environment]::GetEnvironmentVariable('PATH', 'User')
+$env:PATH = "$machine;$user;" + (Join-Path $env:APPDATA 'npm')
+
+$claude = Get-Command claude -ErrorAction SilentlyContinue
+if (-not $claude) {
+  Line 'Claude Code installed, but is not on PATH in this pane yet.' 'Yellow'
+  Line 'Close this terminal and open a Claude Code one again.' 'DarkGray'
+  return
+}
+
+Line 'Installed. Starting Claude Code - it asks you to sign in the first time.' 'Green'
+Line ''
+& $claude.Source
+"##;
+
+/// Writes the walkthrough out fresh and returns the command line that runs it.
+///
+/// Fresh every time on purpose: the script is WinT's, not the user's, and a
+/// stale copy left by an older version would be the one thing here nobody
+/// thinks to look at. `-NoExit` is what keeps the pane usable after the script
+/// ends, however it ended.
+fn claude_setup_command() -> Result<String, String> {
+    let dir = crate::shells::runtime_root();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not prepare the setup script: {e}"))?;
+    let script = dir.join("claude-setup.ps1");
+    std::fs::write(&script, CLAUDE_SETUP_PS1)
+        .map_err(|e| format!("Could not write the setup script: {e}"))?;
+    Ok(format!(
+        r#"powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -NoExit -File "{}""#,
+        script.display()
+    ))
+}
+
+/// Where the Claude Code CLI is looked for: PATH first, then the two places its
+/// own installers put it.
+///
+/// Unlike every other profile here this is never something WinT provides. The
+/// CLI is the user's own install, signed in as them, and WinT only starts it in
+/// a pane — no key is read, stored or passed. A machine without it gets a
+/// disabled entry saying so, not a download.
+fn claude_path() -> Option<PathBuf> {
+    find_program(&["claude.exe", "claude.cmd", "claude.bat"])
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .map(PathBuf::from)
+                .map(|home| home.join(".local").join("bin").join("claude.exe"))
+                .filter(|path| path.is_file())
+        })
+        .or_else(|| {
+            std::env::var_os("APPDATA")
+                .map(PathBuf::from)
+                .map(|roaming| roaming.join("npm").join("claude.cmd"))
+                .filter(|path| path.is_file())
+        })
+}
+
 /// The program a pane was asked to run, against what this computer has.
 ///
 /// `wt split-pane … pwsh -NoExit -Command …` is what these lines look like
@@ -101,7 +259,7 @@ fn resolve_pane_command(command: &str) -> (String, Option<String>) {
     let (first, rest) = trimmed
         .split_once(char::is_whitespace)
         .unwrap_or((trimmed, ""));
-    // NuShell gets the same treatment for the same reason: DevHQ may hold the
+    // NuShell gets the same treatment for the same reason: WinT may hold the
     // only copy on the machine, and `nu` alone would not find it. `bash` is
     // deliberately not in this list - it means Git Bash to one person and WSL
     // to the next, and picking one of those is guessing.
@@ -122,14 +280,14 @@ fn resolve_pane_command(command: &str) -> (String, Option<String>) {
         return (command.to_string(), None);
     }
     // There is a PowerShell 7 here, it is just not something `CreateProcess`
-    // can find by name - an install that never joined PATH, or the copy DevHQ
+    // can find by name - an install that never joined PATH, or the copy WinT
     // downloaded. Naming the file is the difference between the pane running
     // what was asked for and not opening at all.
     if let Some(path) = pwsh_path(false) {
         let managed = crate::shells::managed_exe("pwsh").is_some_and(|copy| copy == path);
         return (
             format!("\"{}\" {rest}", path.display()),
-            managed.then(|| "This pane is the PowerShell 7 DevHQ downloaded.".to_string()),
+            managed.then(|| "This pane is the PowerShell 7 WinT downloaded.".to_string()),
         );
     }
     let Some(installed) = find_command("powershell.exe") else {
@@ -215,7 +373,7 @@ fn same_file(source: &Path, installed: &Path) -> bool {
 }
 
 /// Replaces the proxy, including while a copy of it is running - which is the
-/// normal case now that `wt` waits at the prompt for DevHQ's answer. A running
+/// normal case now that `wt` waits at the prompt for WinT's answer. A running
 /// image cannot be written over, but Windows will happily rename one, so the
 /// old file is moved aside and left for whoever is still in it.
 fn install_wt_proxy(source: &Path, installed: &Path) -> Result<(), String> {
@@ -249,7 +407,7 @@ fn sweep_replaced_proxies(root: &Path) {
 }
 
 /// Installs a tiny `wt` compatibility command in an app-owned runtime folder.
-/// Its directory is prepended only to shells hosted by DevHQ, so normal
+/// Its directory is prepended only to shells hosted by WinT, so normal
 /// Windows Terminal use elsewhere is unaffected.
 fn wt_compat_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let root = crate::shells::runtime_root();
@@ -257,15 +415,15 @@ fn wt_compat_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("Could not create the terminal runtime folder: {e}"))?;
     let mut candidates = Vec::new();
     if let Ok(resources) = app.path().resource_dir() {
-        candidates.push(resources.join("devhq-cli.exe"));
-        candidates.push(resources.join("resources").join("devhq-cli.exe"));
+        candidates.push(resources.join("wint-cli.exe"));
+        candidates.push(resources.join("resources").join("wint-cli.exe"));
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(directory) = exe.parent() {
-            candidates.push(directory.join("devhq-cli.exe"));
+            candidates.push(directory.join("wint-cli.exe"));
             if let Some(target) = directory.parent() {
-                candidates.push(target.join("debug").join("devhq-cli.exe"));
-                candidates.push(target.join("release").join("devhq-cli.exe"));
+                candidates.push(target.join("debug").join("wint-cli.exe"));
+                candidates.push(target.join("release").join("wint-cli.exe"));
             }
         }
     }
@@ -281,12 +439,12 @@ fn wt_compat_dir(app: &AppHandle) -> Result<PathBuf, String> {
                 // a shell because the spare copy could not be refreshed helps
                 // nobody: the terminal is the point, the shim is a convenience.
                 if !installed.is_file() {
-                    return Err(format!("Could not install DevHQ's wt compatibility proxy: {error}"));
+                    return Err(format!("Could not install WinT's wt compatibility proxy: {error}"));
                 }
             }
         }
         None if !installed.is_file() => {
-            return Err("This build does not contain the DevHQ CLI used by terminal compatibility. Run npm run cli:build and restart DevHQ.".to_string());
+            return Err("This build does not contain the WinT CLI used by terminal compatibility. Run npm run cli:build and restart WinT.".to_string());
         }
         _ => {}
     }
@@ -405,6 +563,10 @@ pub struct ShellAvailability {
     profile: &'static str,
     available: bool,
     reason: Option<&'static str>,
+    /// The profile opens, but into a pane that installs the thing first. Only
+    /// Claude Code does this: every other profile either starts a shell that is
+    /// already on the machine or is honestly unavailable.
+    setup: bool,
 }
 
 /// The character under the cursor, for a block cursor to draw over.
@@ -490,7 +652,7 @@ mod history_tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// `DEVHQ_TERM_LOG` is process-wide, so the tests that move it take turns.
+    /// `WINT_TERM_LOG` is process-wide, so the tests that move it take turns.
     static ENV: Mutex<()> = Mutex::new(());
 
     /// A failing test must not take the rest down with it: the guard is only
@@ -500,7 +662,7 @@ mod history_tests {
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("devhq-history-{name}"));
+        let dir = std::env::temp_dir().join(format!("wint-history-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -532,7 +694,7 @@ mod history_tests {
     fn a_replayed_stream_is_the_session_it_came_from() {
         let _guard = serial();
         let dir = scratch("replay");
-        std::env::set_var("DEVHQ_TERM_LOG", &dir);
+        std::env::set_var("WINT_TERM_LOG", &dir);
 
         // Green text, then a prompt the shell is standing on - exactly the
         // shape that used to come back grey, and one line too far down.
@@ -568,7 +730,7 @@ mod history_tests {
         assert_eq!(line(&replayed, 0), "");
         assert_eq!((replayed.cx, replayed.cy), (0, 0));
 
-        std::env::remove_var("DEVHQ_TERM_LOG");
+        std::env::remove_var("WINT_TERM_LOG");
     }
 
     /// A stream that outgrows its cap loses its front at a mark, and what is
@@ -577,7 +739,7 @@ mod history_tests {
     fn a_trimmed_stream_still_reads_from_the_front() {
         let _guard = serial();
         let dir = scratch("trim");
-        std::env::set_var("DEVHQ_TERM_LOG", &dir);
+        std::env::set_var("WINT_TERM_LOG", &dir);
 
         let mut log = HistoryLog::open("session-b", 40, 6).unwrap();
         // Past the cap, in chunks that each end on a line boundary.
@@ -604,7 +766,7 @@ mod history_tests {
             .iter()
             .all(|row| row.iter().all(|c| c.ch == 'x' || c.ch == ' ')));
 
-        std::env::remove_var("DEVHQ_TERM_LOG");
+        std::env::remove_var("WINT_TERM_LOG");
     }
 
     /// Closing a terminal is the one thing that ends its history.
@@ -612,7 +774,7 @@ mod history_tests {
     fn forgetting_a_terminal_drops_its_stream() {
         let _guard = serial();
         let dir = scratch("forget");
-        std::env::set_var("DEVHQ_TERM_LOG", &dir);
+        std::env::set_var("WINT_TERM_LOG", &dir);
 
         let mut log = HistoryLog::open("session-c", 40, 6).unwrap();
         log.append(b"something\r\n", true);
@@ -624,7 +786,7 @@ mod history_tests {
         assert!(!bin.exists() && !meta.exists());
         assert_eq!(replay_history("session-c", 40, 6).scrollback.len(), 0);
 
-        std::env::remove_var("DEVHQ_TERM_LOG");
+        std::env::remove_var("WINT_TERM_LOG");
     }
 
     /// A key becomes a file name, so it is checked rather than trusted.
@@ -632,7 +794,7 @@ mod history_tests {
     fn a_key_cannot_leave_its_folder() {
         let _guard = serial();
         let dir = scratch("keys");
-        std::env::set_var("DEVHQ_TERM_LOG", &dir);
+        std::env::set_var("WINT_TERM_LOG", &dir);
 
         assert!(history_paths("../../etc/passwd").is_none());
         assert!(history_paths("has space").is_none());
@@ -640,7 +802,7 @@ mod history_tests {
         assert!(history_paths(&"x".repeat(65)).is_none());
         assert!(history_paths("2f8a1c-4b_9").is_some());
 
-        std::env::remove_var("DEVHQ_TERM_LOG");
+        std::env::remove_var("WINT_TERM_LOG");
     }
 }
 
@@ -761,6 +923,7 @@ pub async fn term_shell_availability() -> Vec<ShellAvailability> {
             profile: "auto",
             available: true,
             reason: None,
+            setup: false,
         }];
         found.extend(candidates.into_iter().map(|(profile, path, reason)| {
             let available = path.is_some();
@@ -768,8 +931,21 @@ pub async fn term_shell_availability() -> Vec<ShellAvailability> {
                 profile,
                 available,
                 reason: if available { None } else { Some(reason) },
+                setup: false,
             }
         }));
+        // Claude Code is never reported unavailable. A machine without it opens
+        // the pane anyway and gets the setup walkthrough, because "unavailable"
+        // is a dead end for the one profile where the way out is three
+        // keystrokes inside the pane itself.
+        let installed = claude_path().is_some();
+        found.push(ShellAvailability {
+            profile: "claude",
+            available: true,
+            reason: (!installed)
+                .then_some("Not installed yet — opening it walks you through installing and signing in."),
+            setup: !installed,
+        });
         found
     })
     .await
@@ -808,8 +984,8 @@ fn term_open_sync(app: AppHandle, args: OpenArgs) -> Result<TermInfo, String> {
     let inherited_path = std::env::var("PATH").unwrap_or_default();
     let app_exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let environment = [
-        ("DEVHQ_TERM_ID", id.clone()),
-        ("DEVHQ_APP", app_exe.to_string_lossy().into_owned()),
+        ("WINT_TERM_ID", id.clone()),
+        ("WINT_APP", app_exe.to_string_lossy().into_owned()),
         ("PATH", format!("{};{inherited_path}", compat.display())),
     ];
     let spawn =
@@ -834,7 +1010,7 @@ fn term_open_sync(app: AppHandle, args: OpenArgs) -> Result<TermInfo, String> {
     // where whoever reads the output is looking. It is part of the terminal's
     // stream from then on and scrolls away with everything else.
     if let Some(text) = notice {
-        grid.feed(format!("\u{1b}[33mDevHQ: {text}\u{1b}[0m\r\n").as_bytes());
+        grid.feed(format!("\u{1b}[33mWinT: {text}\u{1b}[0m\r\n").as_bytes());
     }
 
     let (jobs, inbox) = channel::<Job>();
@@ -906,13 +1082,13 @@ const HISTORY_COMPACT_AT: u64 = HISTORY_KEEP_BYTES + HISTORY_KEEP_BYTES / 2;
 /// enough that the sidecar stays a handful of lines.
 const HISTORY_MARK_EVERY: u64 = 64 * 1024;
 
-/// Where the streams live. `DEVHQ_TERM_LOG` moves them, which is how a session
+/// Where the streams live. `WINT_TERM_LOG` moves them, which is how a session
 /// can be recorded somewhere a bug report can pick it up.
 fn history_dir() -> Option<PathBuf> {
-    let dir = match std::env::var_os("DEVHQ_TERM_LOG") {
+    let dir = match std::env::var_os("WINT_TERM_LOG") {
         Some(dir) => PathBuf::from(dir),
         None => PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
-            .join("DevHQ")
+            .join("WinT")
             .join("sessions"),
     };
     std::fs::create_dir_all(&dir).ok()?;

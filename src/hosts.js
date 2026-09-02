@@ -75,25 +75,25 @@ const hosts = {
 /* ------------------------------------------------------------- the shell */
 
 function hIcon(name) {
-  return window.devhqShell?.icon(name) ?? `<span class="ms" aria-hidden="true">${name}</span>`;
+  return window.wintShell?.icon(name) ?? `<span class="ms" aria-hidden="true">${name}</span>`;
 }
 
 function hEsc(value) {
-  return window.devhqShell?.esc(value) ?? String(value ?? "");
+  return window.wintShell?.esc(value) ?? String(value ?? "");
 }
 
 /** The hosts list is on two pages: this one, and the override banner DNS puts
  *  above its answers. Both are redrawn whenever the file changes. */
 function hDirty() {
-  window.devhqShell?.markDirty("hosts", "dns");
+  window.wintShell?.markDirty("hosts", "dns");
 }
 
 function hWork(key, label, detail) {
-  window.devhqWork?.beginWork(key, label, detail);
+  window.wintWork?.beginWork(key, label, detail);
 }
 
 function hDone(key) {
-  window.devhqWork?.endWork(key);
+  window.wintWork?.endWork(key);
 }
 
 /** Says something on the page itself for a moment, next to the button that
@@ -116,7 +116,7 @@ function mount(host) {
         <strong>Hosts file</strong>
         <small>point a name at your own machine — it beats every DNS server</small>
       </span>
-      ${window.devhqMaturity?.badge("hosts") ?? ""}
+      ${window.wintMaturity?.badge("hosts") ?? ""}
       <button class="tool-popout" type="button" data-popout-tool="hosts"></button>
       <button class="tool-pin" id="tool-pin-hosts" type="button" data-pin-tool="hosts"></button>
       <button class="tool-close" type="button" data-open-tool="overview"
@@ -185,11 +185,11 @@ function wire() {
   hosts.host.onclick = (event) => {
     // The pin and the way out mean the same thing here as in the dock.
     const pop = event.target.closest("[data-popout-tool]");
-    if (pop) return window.devhqShell?.popOutTool?.(pop.dataset.popoutTool);
+    if (pop) return window.wintShell?.popOutTool?.(pop.dataset.popoutTool);
     const pin = event.target.closest("[data-pin-tool]");
-    if (pin) return window.devhqShell?.toggleToolPin(pin.dataset.pinTool);
+    if (pin) return window.wintShell?.toggleToolPin(pin.dataset.pinTool);
     const go = event.target.closest("[data-open-tool]");
-    if (go) return window.devhqShell?.openTool(go.dataset.openTool);
+    if (go) return window.wintShell?.openTool(go.dataset.openTool);
 
     const act = event.target.closest("[data-hosts]");
     // The shaded backdrop closes the explainer, but interacting with the card
@@ -246,8 +246,8 @@ function opened() {
 /** Hand a name over to DNS rather than resolving it here — one tool asks the
  *  questions, this one answers them locally. */
 function lookUp(name) {
-  window.devhqShell?.openTool("dns");
-  window.devhqDns?.lookFor?.(name);
+  window.wintShell?.openTool("dns");
+  window.wintDns?.lookFor?.(name);
 }
 
 /* -------------------------------------------------------------- the file */
@@ -447,7 +447,7 @@ function stagedText() {
   // A file that does not end in a newline would otherwise glue the first added
   // line onto its last one.
   while (out.length && out[out.length - 1].trim() === "") out.pop();
-  for (const entry of hosts.added) out.push(lineText(entry.ip, entry.names, "added by DevHQ", true));
+  for (const entry of hosts.added) out.push(lineText(entry.ip, entry.names, "added by WinT", true));
   return out.join(eol) + eol;
 }
 
@@ -478,7 +478,7 @@ function apply() {
           "good"
         );
         // Whatever DNS has on screen was answered before this file changed.
-        window.devhqDns?.recheck?.();
+        window.wintDns?.recheck?.();
       } else {
         hSay(result.error, "bad");
       }
@@ -565,7 +565,7 @@ function entries() {
 
 /** DNS sends the user here to look at one line. */
 function reveal(index) {
-  window.devhqShell?.openTool("hosts");
+  window.wintShell?.openTool("hosts");
   ensureLoaded();
   highlight(Number(index));
 }
@@ -574,7 +574,7 @@ function reveal(index) {
  *  staged, not written — Apply is still the only thing that touches disk. */
 function pinLocal(name) {
   const clean = String(name || "").trim();
-  window.devhqShell?.openTool("hosts");
+  window.wintShell?.openTool("hosts");
   ensureLoaded();
   if (!clean) return;
   hosts.added.push({ ip: "127.0.0.1", names: [clean] });
@@ -757,7 +757,7 @@ function renderFoot() {
   // What the file means for this machine, said plainly, under the list.
   const active = hostLines().filter((line) => lineEnabled(line) && !hosts.removed.has(line.index));
   const overriding = active.filter((line) => effective(line).names.some((name) => !isLocalName(name)));
-  // Writable outright, or writable because DevHQ happens to be elevated.
+  // Writable outright, or writable because WinT happens to be elevated.
   const writable = hosts.file?.writable || hosts.file?.elevated;
   safety.innerHTML = `${hIcon(overriding.length ? "warning" : "verified_user")}
     <span class="dns-safety-text">
@@ -820,7 +820,7 @@ function renderDialog() {
         <li>${hIcon("computer")}<span>It only affects <b>this machine</b>. Nobody else on the
           network, and no other device, sees any of it.</span></li>
         <li>${hIcon("shield_person")}<span>It lives in Windows, so writing it needs
-          administrator rights. DevHQ takes a copy first and asks only when it must.</span></li>
+          administrator rights. WinT takes a copy first and asks only when it must.</span></li>
         <li>${hIcon("lan")}<span>It maps names to <b>addresses only</b> — never to a port.
           <code>dev.yourproduct.com</code> still reaches your server on whatever port it is
           listening on.</span></li>
@@ -832,7 +832,7 @@ function renderDialog() {
   </div>`;
 }
 
-window.devhqHosts = {
+window.wintHosts = {
   mount,
   render,
   opened,

@@ -1,13 +1,13 @@
 // The popped-out terminal window. It attaches to a session that already exists
 // in Rust, so nothing restarts when a terminal moves between here and the
-// DevHQ panel — a running build keeps running.
+// WinT panel — a running build keeps running.
 //
 // It splits the way the panel does: up to two panes, side by side or stacked,
 // each with its own tab saying which shell it is, a divider that can be
 // dragged, and a cross that closes one pane without taking the window with it.
 
 (async () => {
-  window.devhqTrackPageView?.("/terminal");
+  window.wintTrackPageView?.("/terminal");
   const invoke = window.__TAURI__.core.invoke;
   const emit = window.__TAURI__.event.emit;
   const listen = window.__TAURI__.event.listen;
@@ -19,10 +19,10 @@
   const divider = document.querySelector(".pop-divider");
   const subtitle = document.getElementById("pop-title");
 
-  // Docking is the mirror of popping out: tell DevHQ to take the session back
+  // Docking is the mirror of popping out: tell WinT to take the session back
   // into its panel, and this window's job is done.
   //
-  // It must be said exactly once. DevHQ answers "docked" by closing this
+  // It must be said exactly once. WinT answers "docked" by closing this
   // window, and a close handled as a close request would announce a dock of its
   // own - two windows telling each other to dock, round and round, with this
   // one too busy to repaint. The flag closes that loop, and `destroy` leaves
@@ -49,7 +49,7 @@
 
   // Closing is not docking. The cross ends the shell immediately, the way the
   // cross on a tab in the panel does — no Ctrl+C wait dialog. Only the dock
-  // button and a drag onto the panel hand the session back. DevHQ is told so
+  // button and a drag onto the panel hand the session back. WinT is told so
   // it can forget the terminal instead of reopening it on the next launch.
   const finishClose = async () => {
     if (handedOver || closed) return;
@@ -101,16 +101,17 @@
 
   /* ------------------------------------------------------ shell identity */
 
-  const SHELL_CODES = { auto: "SH", pwsh: "PW7", "pwsh-preview": "PWP", powershell: "PS", cmd: "CMD", "git-bash": "GIT", wsl: "WSL", nu: "NU" };
-  const SHELL_LABELS = { auto: "Terminal", pwsh: "PowerShell 7", "pwsh-preview": "PowerShell Preview", powershell: "Windows PowerShell", cmd: "Command Prompt", "git-bash": "Git Bash", wsl: "WSL Bash", nu: "NuShell" };
-  const SHELL_COLORS = { auto: "#42b3c2", pwsh: "#4d9df5", "pwsh-preview": "#c162de", powershell: "#61afef", cmd: "#8cc265", "git-bash": "#e05561", wsl: "#d5a458", nu: "#c162de" };
+  const SHELL_CODES = { auto: "SH", pwsh: "PW7", "pwsh-preview": "PWP", powershell: "PS", cmd: "CMD", "git-bash": "GIT", wsl: "WSL", nu: "NU", claude: "CC" };
+  const SHELL_LABELS = { auto: "Terminal", pwsh: "PowerShell 7", "pwsh-preview": "PowerShell Preview", powershell: "Windows PowerShell", cmd: "Command Prompt", "git-bash": "Git Bash", wsl: "WSL Bash", nu: "NuShell", claude: "Claude Code" };
+  const SHELL_COLORS = { auto: "#42b3c2", pwsh: "#4d9df5", "pwsh-preview": "#c162de", powershell: "#61afef", cmd: "#8cc265", "git-bash": "#e05561", wsl: "#d5a458", nu: "#c162de", claude: "#d97757" };
 
   /** Which shell a session is running, read from the command line it was
-   *  started with. A shell DevHQ downloaded itself lives under its own profile
+   *  started with. A shell WinT downloaded itself lives under its own profile
    *  folder, which is what tells the two PowerShells apart when neither is the
    *  one in Program Files. */
   const shellProfileFromCommand = (command) => {
     const value = String(command || "").toLowerCase();
+    if (/claude\.(exe|cmd|bat)/.test(value)) return "claude";
     if (value.includes("git\\bin\\bash.exe") || value.includes("shells\\git-bash\\")) return "git-bash";
     if (value.includes("7-preview\\pwsh.exe") || value.includes("shells\\pwsh-preview\\")) return "pwsh-preview";
     if (value.includes("pwsh.exe")) return "pwsh";
@@ -312,7 +313,7 @@
   }
 
   try {
-    const prefs = JSON.parse(localStorage.getItem("devhq.terminals.v1") || "{}");
+    const prefs = JSON.parse(localStorage.getItem("wint.terminals.v1") || "{}");
     applyMarkers({ style: prefs.shellMarkerStyle, colors: prefs.shellColors });
   } catch {
     applyMarkers({ style: "code", colors: {} });
@@ -587,7 +588,7 @@
   // was pinned, docked and popped out again comes back pinned. The list is
   // this window's own key, so writing it can never tread on the settings the
   // main window keeps in its own.
-  const ONTOP_KEY = "devhq.terminals.ontop.v1";
+  const ONTOP_KEY = "wint.terminals.ontop.v1";
   const readPinned = () => {
     try {
       const list = JSON.parse(localStorage.getItem(ONTOP_KEY) || "[]");
@@ -610,7 +611,7 @@
     ontopButton.classList.toggle("on", onTop);
     ontopButton.setAttribute("aria-pressed", String(onTop));
     ontopButton.title = onTop ? "Stop keeping this window on top" : "Keep this window on top";
-    window.devhqI18n?.refresh(ontopButton);
+    window.wintI18n?.refresh(ontopButton);
     await win.setAlwaysOnTop(onTop).catch(() => {});
   };
   ontopButton.onclick = async () => {
@@ -633,7 +634,7 @@
     .catch(() => {});
 
   // Dragging the titlebar moves the window and nothing else. Releasing it over
-  // DevHQ's terminal area used to dock the terminal back in, which was never
+  // WinT's terminal area used to dock the terminal back in, which was never
   // reliable enough to aim at; the dock button beside it always was.
   document.querySelector(".titlebar .drag").addEventListener("pointerdown", async (e) => {
     if (e.button !== 0) return;

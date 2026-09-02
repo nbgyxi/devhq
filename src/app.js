@@ -1,4 +1,4 @@
-// DevHQ - front end.
+// WinT - front end.
 //
 // Two rules shape this file (see CLAUDE.md):
 //
@@ -17,11 +17,11 @@ const listen = window.__TAURI__.event.listen;
 const emit = window.__TAURI__.event.emit;
 const appWindow = window.__TAURI__.window.getCurrentWindow();
 
-const PREFS_KEY = "devhq.prefs.v1";
+const PREFS_KEY = "wint.prefs.v1";
 /** Present only while a remembered destination is being restored. If the
  * renderer dies before it can clear this flag, the next launch ignores that
  * destination and opens the overview instead of repeating the crash forever. */
-const STARTUP_RESTORE_KEY = "devhq.startupRestore.v1";
+const STARTUP_RESTORE_KEY = "wint.startupRestore.v1";
 let toolRecoveryTimer = 0;
 
 /** Arm a dead-man switch before entering tool code. Exceptions can be caught,
@@ -39,7 +39,7 @@ function armToolRecovery(view, tool = "") {
   }, 4000);
 }
 /** Last finished scan, kept so a restart within a few minutes can skip the disk. */
-const SCAN_CACHE_KEY = "devhq.scanCache.v1";
+const SCAN_CACHE_KEY = "wint.scanCache.v1";
 const SCAN_CACHE_TTL_MS = 5 * 60 * 1000;
 
 /** Set once a reset is under way, so nothing writes remembered state back
@@ -72,7 +72,7 @@ const state = {
   analyticsChosen: false,
   theme: "dark",
   compactTechOverview: true,
-  /** Whether the optional title-bar control that hides DevHQ to the tray is visible. */
+  /** Whether the optional title-bar control that hides WinT to the tray is visible. */
   minimizeToTrayButton: false,
   viewMode: "cards",
   tableSortKey: "project",
@@ -161,7 +161,7 @@ const state = {
   appBuildChecksum: "",
 };
 
-window.devhqPortsState = {
+window.wintPortsState = {
   exportState() { return { search:state.portSearch, tab:state.portTab, sortKey:state.portSortKey, sortDirection:state.portSortDirection, selected:state.portSelected, live:state.portLive }; },
   importState(saved) { if(!saved)return;state.portSearch=saved.search||"";state.portTab=saved.tab||state.portTab;state.portSortKey=saved.sortKey||state.portSortKey;state.portSortDirection=saved.sortDirection===1?1:-1;state.portSelected=saved.selected||null;state.portLive=saved.live!==false;markDirty("ports"); },
 };
@@ -267,7 +267,7 @@ function showNextConfirm() {
   requestAnimationFrame(() => layer.querySelector('[data-confirm="cancel"]')?.focus());
 }
 
-window.devhqConfirm = appConfirm;
+window.wintConfirm = appConfirm;
 
 /** Shows a label for as long as `promise` runs, whatever the outcome. */
 function trackWork(key, label, promise) {
@@ -277,11 +277,11 @@ function trackWork(key, label, promise) {
 
 // A popped-out terminal can change the scheme too; if the settings page is
 // open here, its controls have to follow.
-window.devhqOnTermThemeChanged = () => {
+window.wintOnTermThemeChanged = () => {
   if (state.activeView === "settings") syncTermThemeControls();
 };
 
-window.addEventListener("devhq:time-tracker-always-changed", (event) => {
+window.addEventListener("wint:time-tracker-always-changed", (event) => {
   const control = el["settings-host"]?.querySelector("#setting-time-tracker");
   if (control) control.checked = event.detail?.enabled === true;
 });
@@ -347,10 +347,10 @@ function loadPrefs() {
     // build. Shared tool hosts also need their concrete child id; otherwise a
     // removed tool falls back to that host's stable default.
     if (MAIN_VIEWS.includes(p.activeView)) state.activeView = p.activeView;
-    if (typeof p.utilToolId === "string" && window.devhqUtilTools?.byId?.(p.utilToolId)) {
+    if (typeof p.utilToolId === "string" && window.wintUtilTools?.byId?.(p.utilToolId)) {
       state.utilToolId = p.utilToolId;
     }
-    if (typeof p.windowsToolId === "string" && window.devhqWindowsTools?.catalog?.().some((tool) => tool.id === p.windowsToolId)) {
+    if (typeof p.windowsToolId === "string" && window.wintWindowsTools?.catalog?.().some((tool) => tool.id === p.windowsToolId)) {
       state.windowsToolId = p.windowsToolId;
     }
     if (typeof p.isolatedToolId === "string" && TOOLS.some((tool) => tool.id === p.isolatedToolId)) {
@@ -412,14 +412,14 @@ function savePrefs() {
 
 /** Hands the answer to the tracker, which sends nothing until it has one. */
 function applyAnalytics() {
-  window.devhqAnalyticsConsent?.(state.analyticsChosen && state.analytics);
+  window.wintAnalyticsConsent?.(state.analyticsChosen && state.analytics);
 }
 
 function applyLanguage() {
   document.documentElement.lang = state.language === "system"
     ? (navigator.language || "en")
     : state.language;
-  window.devhqI18n?.setLanguage(state.language);
+  window.wintI18n?.setLanguage(state.language);
 }
 
 function applyTheme() {
@@ -441,7 +441,7 @@ function applyTheme() {
   button.setAttribute("aria-pressed", String(light));
   button.title = light ? "Use dark mode" : "Use light mode";
   button.setAttribute("aria-label", button.title);
-  window.devhqI18n?.refresh(button);
+  window.wintI18n?.refresh(button);
 }
 
 const FIRST_RUN_COPY = {
@@ -467,7 +467,7 @@ function firstRunLanguage() {
   const overlay = document.createElement("div");
   overlay.className = "language-first-run";
   overlay.innerHTML = `<section class="language-dialog" role="dialog" aria-modal="true" aria-labelledby="language-title">
-    <img src="devhq-icon.png" alt="" />
+    <img src="wint-icon.png" alt="" />
     <h1 id="language-title">Choose your language</h1>
     <p>Which language would you like to use? Choose your Windows language, English, or another language.</p>
     ${translatedQuestion ? `<p class="translated" lang="${esc(systemCode)}" dir="auto">${esc(translatedQuestion)}</p>` : ""}
@@ -505,7 +505,7 @@ function firstRunLanguage() {
       state.language = language;
       state.languageChosen = true;
       savePrefs();
-      await window.devhqI18n?.setLanguage(language);
+      await window.wintI18n?.setLanguage(language);
       overlay.remove();
       resolve();
     };
@@ -522,9 +522,9 @@ function firstRunFolders() {
   overlay.className = "language-first-run";
   overlay.innerHTML = `<section class="language-dialog folder-dialog" role="dialog" aria-modal="true"
       aria-labelledby="folder-title">
-    <img src="devhq-icon.png" alt="" />
+    <img src="wint-icon.png" alt="" />
     <h1 id="folder-title">Which folder holds your projects?</h1>
-    <p>DevHQ reads every project inside the folder you choose. Type the path or browse for it - you can add more folders now, or change them later.</p>
+    <p>WinT reads every project inside the folder you choose. Type the path or browse for it - you can add more folders now, or change them later.</p>
     <div class="rootpop-list first-run-roots"></div>
     <p class="first-run-error" hidden></p>
     <div class="first-run-foot">
@@ -631,8 +631,8 @@ function firstRunUsageData() {
   overlay.className = "language-first-run";
   overlay.innerHTML = `<section class="language-dialog" role="dialog" aria-modal="true"
       aria-labelledby="usage-title">
-    <img src="devhq-icon.png" alt="" />
-    <h1 id="usage-title">We would love to know someone new is using DevHQ</h1>
+    <img src="wint-icon.png" alt="" />
+    <h1 id="usage-title">We would love to know someone new is using WinT</h1>
     <p>May we send that to PageRain Analytics? It is completely anonymous - a random number and the name of the screen you opened, nothing else. Never a project, never a folder, never your code. The few lines that do it are open source, so you can read exactly what leaves your machine.</p>
     <p class="usage-source"><button class="linklike" type="button" data-usage="source">Read the code that sends it</button></p>
     <div class="language-choices">
@@ -656,7 +656,7 @@ function firstRunUsageData() {
       applyAnalytics();
       // Counted from here rather than at startup: the screen behind the
       // question is the first one this install has actually shown.
-      window.devhqTrackPageView?.(currentPath());
+      window.wintTrackPageView?.(currentPath());
       overlay.remove();
       resolve();
     };
@@ -1438,7 +1438,7 @@ function toggleTodoSource(file, line) {
 function openDetail(project) {
   if (state.activeView === "settings") switchMainView("overview");
   state.selectedPath = project.path;
-  window.devhqTrackPageView?.("/project");
+  window.wintTrackPageView?.("/project");
   clearDetailData();
   markDirty("detail");
   if (project.git) loadDiff(project);
@@ -1447,7 +1447,7 @@ function openDetail(project) {
 
 function closeDetail(nextPath = "/overview") {
   state.selectedPath = null;
-  window.devhqTrackPageView?.(nextPath);
+  window.wintTrackPageView?.(nextPath);
   clearDetailData();
   markDirty("detail");
 }
@@ -1476,14 +1476,14 @@ function switchMainView(view) {
   // host hidden: the next click should recover without requiring a restart.
   if (state.activeView === view) {
     syncMainView();
-    if (view === "github") window.devhqGithub?.opened();
-    if (view === "git") { syncGitRepositories(); window.devhqGit?.opened(); }
+    if (view === "github") window.wintGithub?.opened();
+    if (view === "git") { syncGitRepositories(); window.wintGit?.opened(); }
     return;
   }
   // Isolated tools never get a vote on shell navigation. The entire point of
   // this boundary is that Back/Home/Close still work when their renderer does not.
   if (state.activeView === "disk-space") {
-    const permission = window.devhqDiskSpace?.confirmLeave?.();
+    const permission = window.wintDiskSpace?.confirmLeave?.();
     if (permission && typeof permission.then === "function") {
       permission.then((leave) => { if (leave) switchMainView(view); });
       return;
@@ -1496,23 +1496,23 @@ function switchMainView(view) {
   clearDetailData();
   syncSettingsButton();
   syncMainView();
-  window.devhqTrackPageView?.(
+  window.wintTrackPageView?.(
     view === "tools" ? `/tools/${state.utilToolId}` : `/${view}`
   );
   if (view === "ports" && !state.ports.length) loadPorts();
-  if (view === "dns") window.devhqDns?.opened();
-  if (view === "hosts") window.devhqHosts?.opened();
-  if (view === "network") window.devhqNetwork?.opened();
-  if (view === "path-ping") window.devhqPathPing?.opened();
-  if (view === "disk-space") window.devhqDiskSpace?.opened();
-  if (view === "github") window.devhqGithub?.opened();
-  if (view === "git") { syncGitRepositories(); window.devhqGit?.opened(); }
-  if (view === "tools") window.devhqUtilTools?.opened();
-  if (view === "windows-tools") window.devhqWindowsTools?.opened();
+  if (view === "dns") window.wintDns?.opened();
+  if (view === "hosts") window.wintHosts?.opened();
+  if (view === "network") window.wintNetwork?.opened();
+  if (view === "path-ping") window.wintPathPing?.opened();
+  if (view === "disk-space") window.wintDiskSpace?.opened();
+  if (view === "github") window.wintGithub?.opened();
+  if (view === "git") { syncGitRepositories(); window.wintGit?.opened(); }
+  if (view === "tools") window.wintUtilTools?.opened();
+  if (view === "windows-tools") window.wintWindowsTools?.opened();
 }
 
 function syncGitRepositories() {
-  window.devhqGit?.setRepositories(state.projects.filter((p) => !p.pending && p.git).map((p) => ({
+  window.wintGit?.setRepositories(state.projects.filter((p) => !p.pending && p.git).map((p) => ({
     name: p.name, path: p.path, branch: p.git.branch, dirty: p.git.dirty,
     changed: p.git.changedTotal || p.git.changed?.length || 0,
     ahead: p.git.ahead, behind: p.git.behind,
@@ -1522,27 +1522,27 @@ function syncGitRepositories() {
 /** Open one of the shared util tools. They all share `#tools-host`; only the
  *  catalog id changes, so switching Base64 → JWT does not rebuild the page. */
 function openUtilTool(id) {
-  const entry = window.devhqUtilTools?.byId?.(id);
+  const entry = window.wintUtilTools?.byId?.(id);
   if (!entry) return;
   const same = state.activeView === "tools" && state.utilToolId === id;
   state.utilToolId = id;
   savePrefs();
   rememberToolUse(id);
-  window.devhqUtilTools?.open(id);
+  window.wintUtilTools?.open(id);
   if (state.activeView !== "tools") {
     switchMainView("tools");
     return;
   }
   if (same) return;
-  window.devhqTrackPageView?.(`/tools/${id}`);
+  window.wintTrackPageView?.(`/tools/${id}`);
   markDirty("tools", "toolbar", "pins");
 }
 
 function openWindowsTool(id) {
-  const entry = window.devhqWindowsTools?.catalog?.().find((tool) => tool.id === id);
+  const entry = window.wintWindowsTools?.catalog?.().find((tool) => tool.id === id);
   if (!entry) return;
   if (state.activeView === "windows-tools" && state.windowsToolId === "time-tracker" && id !== "time-tracker") {
-    const permission = window.devhqTimeTracker?.confirmLeave?.();
+    const permission = window.wintTimeTracker?.confirmLeave?.();
     if (permission && typeof permission.then === "function") {
       permission.then((leave) => { if (leave) openWindowsTool(id); });
       return;
@@ -1555,9 +1555,9 @@ function openWindowsTool(id) {
   rememberToolUse(id);
   // The tracker is the first tool hosted in a native child webview. Do not run
   // its open/render path in the shell renderer as well.
-  if (id !== "time-tracker") window.devhqWindowsTools?.open(id);
+  if (id !== "time-tracker") window.wintWindowsTools?.open(id);
   if (state.activeView !== "windows-tools") return switchMainView("windows-tools");
-  if (!same) window.devhqTrackPageView?.(`/tools/${id}`);
+  if (!same) window.wintTrackPageView?.(`/tools/${id}`);
   syncEmbeddedTool();
   markDirty("toolbar", "pins");
 }
@@ -1815,15 +1815,15 @@ window.addEventListener("resize", () => {
   syncEmbeddedTool();
 });
 
-window.addEventListener("devhq:open-tool", (event) => {
+window.addEventListener("wint:open-tool", (event) => {
   const id = event.detail?.id;
   if (id) {
     openTool(id);
-    if (event.detail?.input) window.devhqUtilTools?.setInput?.(id, event.detail.input);
+    if (event.detail?.input) window.wintUtilTools?.setInput?.(id, event.detail.input);
   }
 });
 
-window.addEventListener("devhq:git-close", () => switchMainView("overview"));
+window.addEventListener("wint:git-close", () => switchMainView("overview"));
 function projectForGithubRepo(repo) {
   const wanted = String(repo || "").replace(/\/?\.git\/?$/i, "").toLowerCase();
   return state.projects.find((project) => {
@@ -1832,11 +1832,11 @@ function projectForGithubRepo(repo) {
   });
 }
 
-window.addEventListener("devhq:open-git-repo", (event) => {
+window.addEventListener("wint:open-git-repo", (event) => {
   const local = projectForGithubRepo(event.detail?.repo);
   if (local) projectAction("git", local);
 });
-window.addEventListener("devhq:open-github-project", (event) => {
+window.addEventListener("wint:open-github-project", (event) => {
   const local = projectForGithubRepo(event.detail?.repo);
   if (!local) return;
   switchMainView("overview");
@@ -1879,22 +1879,22 @@ function syncMainView() {
  * this pass does the same work a deliberate click would normally trigger. */
 function openRestoredView() {
   if (state.activeView === "ports" && !state.ports.length) loadPorts();
-  if (state.activeView === "dns") window.devhqDns?.opened();
-  if (state.activeView === "hosts") window.devhqHosts?.opened();
-  if (state.activeView === "network") window.devhqNetwork?.opened();
-  if (state.activeView === "path-ping") window.devhqPathPing?.opened();
-  if (state.activeView === "disk-space") window.devhqDiskSpace?.opened();
-  if (state.activeView === "github") window.devhqGithub?.opened();
-  if (state.activeView === "git") { syncGitRepositories(); window.devhqGit?.opened(); }
+  if (state.activeView === "dns") window.wintDns?.opened();
+  if (state.activeView === "hosts") window.wintHosts?.opened();
+  if (state.activeView === "network") window.wintNetwork?.opened();
+  if (state.activeView === "path-ping") window.wintPathPing?.opened();
+  if (state.activeView === "disk-space") window.wintDiskSpace?.opened();
+  if (state.activeView === "github") window.wintGithub?.opened();
+  if (state.activeView === "git") { syncGitRepositories(); window.wintGit?.opened(); }
   if (state.activeView === "tools") {
-    window.devhqUtilTools?.open(state.utilToolId);
-    window.devhqUtilTools?.opened();
+    window.wintUtilTools?.open(state.utilToolId);
+    window.wintUtilTools?.opened();
   }
   if (state.activeView === "windows-tools") {
     if (state.windowsToolId === "time-tracker") syncEmbeddedTool();
     else {
-      window.devhqWindowsTools?.open(state.windowsToolId);
-      window.devhqWindowsTools?.opened();
+      window.wintWindowsTools?.open(state.windowsToolId);
+      window.wintWindowsTools?.opened();
     }
   }
   if (state.activeView === "isolated-tool") {
@@ -2728,13 +2728,13 @@ function releaseHtml(release) {
 /** The list is the same every time it opens, so it is built once and then only
  *  shown and hidden - opening it never costs a frame. */
 function buildChangelog() {
-  const log = window.devhqChangelog;
+  const log = window.wintChangelog;
   const built = `${log?.current}/${state.appVersion}/${state.appBuildChecksum}`;
   if (!log || el["changelog-pop"].dataset.built === built) return;
   el["changelog-pop"].innerHTML = `
     <div class="changelog-head">
       <span class="changelog-title">What's new</span>
-      <span class="changelog-now">DevHQ ${esc(state.appVersion || log.current)}</span>
+      <span class="changelog-now">WinT ${esc(state.appVersion || log.current)}</span>
       <button class="win-btn" data-changelog-act="close" title="Close">${icon("close")}</button>
     </div>
     <div class="changelog-list">${log.releases.map(releaseHtml).join("")}</div>`;
@@ -2794,7 +2794,7 @@ function openChangelog() {
     beginWork("changelog-open-fail", "Could not open What's new", String(error));
     setTimeout(() => endWork("changelog-open-fail"), 5000);
   });
-  window.devhqTrackPageView?.("/changelog");
+  window.wintTrackPageView?.("/changelog");
 }
 
 function closeChangelog() {
@@ -2809,7 +2809,7 @@ function syncSettingsButton() {
   button.setAttribute("aria-pressed", String(active));
   button.title = active ? "Back to overview" : "Settings";
   button.setAttribute("aria-label", button.title);
-  window.devhqI18n?.refresh(button);
+  window.wintI18n?.refresh(button);
 }
 
 /** Bumping the token is what makes the reads still in flight harmless. */
@@ -2849,14 +2849,14 @@ function projectAction(action, p, button = null) {
       break;
     case "git":
       if (!p.git) return;
-      window.devhqGit?.open(p.path, p.name);
+      window.wintGit?.open(p.path, p.name);
       if (state.activeView !== "git") switchMainView("git");
       break;
     case "external":
       openIn(p.path, "terminal");
       break;
     case "copy":
-      window.devhqCopy.copy(p.path, button, "Path copied").catch(() => {});
+      window.wintCopy.copy(p.path, button, "Path copied").catch(() => {});
       break;
     case "favorite":
       toggleFavorite(p.path);
@@ -3048,7 +3048,7 @@ const TOOLS = [
     active: () => state.activeView === "disk-space",
   },
   // Encode / hash / JWT / time / format tools: one shared host, many pins.
-  ...((window.devhqUtilTools?.catalog?.() || []).map((tool) => ({
+  ...((window.wintUtilTools?.catalog?.() || []).map((tool) => ({
     id: tool.id,
     name: tool.name,
     icon: tool.icon,
@@ -3057,7 +3057,7 @@ const TOOLS = [
     open: () => openUtilTool(tool.id),
     active: () => state.activeView === "tools" && state.utilToolId === tool.id,
   }))),
-  ...((window.devhqWindowsTools?.catalog?.() || []).map((tool) => ({
+  ...((window.wintWindowsTools?.catalog?.() || []).map((tool) => ({
     id: tool.id,
     name: tool.name,
     icon: tool.icon,
@@ -3237,7 +3237,7 @@ function openIsolatedTool(id) {
   syncSettingsButton();
   renderIsolatedToolChrome(tool);
   syncMainView();
-  window.devhqTrackPageView?.(`/tools/${id}`);
+  window.wintTrackPageView?.(`/tools/${id}`);
 }
 
 function renderIsolatedToolChrome(tool = toolById(state.isolatedToolId)) {
@@ -3306,9 +3306,9 @@ async function completeToolPopout(tool, screenX, screenY) {
       if (event.payload?.id === id) readyResolve(true);
     });
     if (leaving) {
-      if (id === "disk-space") window.devhqDiskSpace?.preparePopout?.();
+      if (id === "disk-space") window.wintDiskSpace?.preparePopout?.();
       if (state.activeView === "isolated-tool") await flushIsolatedToolState();
-      else await window.devhqToolState?.send?.(id);
+      else await window.wintToolState?.send?.(id);
     }
     // The tool is moving into a window of its own. Its embedded copy must go
     // rather than linger in the cache, or docking back would restore a stale
@@ -3829,7 +3829,7 @@ function renderHotkeys(host) {
       const keys = binding ? binding.split("+").map((part) => `<kbd>${esc(part)}</kbd>`).join("") : "Unbound";
       const global = state.hotkeyGlobals.has(command.id);
       const error = globalHotkeyErrors.get(command.id);
-      return `<div class="hotkey-row${conflicts.has(command.id) || error ? " conflict" : ""}"><span class="hotkey-command">${icon(command.icon)}<span><strong>${esc(command.name)}</strong><small>${esc(error || command.hint)}</small></span></span><span class="hotkey-scope">${command.kind === "tool" ? "Tool" : "Action"}</span><button type="button" class="hotkey-binding${recording ? " recording" : ""}" data-hotkey-record="${esc(command.id)}">${recording ? "Press a shortcut…" : keys}</button><label class="hotkey-global" title="Make this shortcut work while DevHQ is unfocused"><input type="checkbox" data-hotkey-global="${esc(command.id)}"${global ? " checked" : ""}${binding ? "" : " disabled"}><span>Global</span></label><button type="button" class="hotkey-clear" data-hotkey-clear="${esc(command.id)}" title="Clear binding" ${binding ? "" : "disabled"}>${icon("backspace")}</button></div>`;
+      return `<div class="hotkey-row${conflicts.has(command.id) || error ? " conflict" : ""}"><span class="hotkey-command">${icon(command.icon)}<span><strong>${esc(command.name)}</strong><small>${esc(error || command.hint)}</small></span></span><span class="hotkey-scope">${command.kind === "tool" ? "Tool" : "Action"}</span><button type="button" class="hotkey-binding${recording ? " recording" : ""}" data-hotkey-record="${esc(command.id)}">${recording ? "Press a shortcut…" : keys}</button><label class="hotkey-global" title="Make this shortcut work while WinT is unfocused"><input type="checkbox" data-hotkey-global="${esc(command.id)}"${global ? " checked" : ""}${binding ? "" : " disabled"}><span>Global</span></label><button type="button" class="hotkey-clear" data-hotkey-clear="${esc(command.id)}" title="Clear binding" ${binding ? "" : "disabled"}>${icon("backspace")}</button></div>`;
     }).join("") : `<div class="hotkey-empty">${icon("search_off")}Nothing matches this view.</div>`}</div>`;
 }
 
@@ -4514,13 +4514,13 @@ function flushRender() {
   if (regions.has("detail")) renderDetail();
   if (regions.has("settings")) renderSettings();
   if (regions.has("ports")) renderPorts();
-  if (regions.has("dns")) window.devhqDns?.render();
-  if (regions.has("hosts")) window.devhqHosts?.render();
-  if (regions.has("network")) window.devhqNetwork?.render();
-  if (regions.has("path-ping")) window.devhqPathPing?.render();
-  if (regions.has("disk-space")) window.devhqDiskSpace?.render();
+  if (regions.has("dns")) window.wintDns?.render();
+  if (regions.has("hosts")) window.wintHosts?.render();
+  if (regions.has("network")) window.wintNetwork?.render();
+  if (regions.has("path-ping")) window.wintPathPing?.render();
+  if (regions.has("disk-space")) window.wintDiskSpace?.render();
   if (regions.has("tools")) {
-    window.devhqUtilTools?.render();
+    window.wintUtilTools?.render();
     syncToolHeads();
   }
   if (regions.has("pins")) renderPins();
@@ -4533,7 +4533,7 @@ function mountShell() {
     <div class="titlebar">
       <div class="loading" id="loadbar" hidden><i></i></div>
       <div class="drag">
-        <div class="brand"><img src="devhq-icon.png" alt="" /><span>DevHQ</span>
+        <div class="brand"><img src="wint-icon.png" alt="" /><span>WinT</span>
           <span class="sub" id="brand-sub"></span></div>
       </div>
       <button class="title-home" id="title-home" type="button"
@@ -4617,7 +4617,7 @@ function mountShell() {
           <strong>Process Explorer</strong>
           <small>ports, PIDs, what is holding :3000, and kill</small>
         </span>
-        ${window.devhqMaturity?.badge("ports") ?? ""}
+        ${window.wintMaturity?.badge("ports") ?? ""}
         <button class="tool-popout" type="button" data-popout-tool="ports"></button>
         <button class="tool-pin" id="tool-pin-ports" type="button" data-pin-tool="ports"></button>
         <button class="tool-close" type="button" data-open-tool="overview"
@@ -4687,7 +4687,7 @@ function mountShell() {
     <div class="statusbar">
       <div class="activity" id="activity"></div>
       <div class="status-version-wrap" id="status-version-wrap">
-        <button class="status-btn status-version" id="status-version" title="What's new in DevHQ"
+        <button class="status-btn status-version" id="status-version" title="What's new in WinT"
                 aria-haspopup="dialog" aria-expanded="false"></button>
         <div class="changelog-pop" id="changelog-pop" role="dialog" aria-label="What's new" hidden></div>
       </div>
@@ -4726,33 +4726,33 @@ function mountShell() {
   // OS window, so observe the slot itself and mirror every resulting rectangle.
   new ResizeObserver(() => syncEmbeddedTool()).observe(el["isolated-tool-slot"]);
 
-  window.devhqAssistant?.mount(document.getElementById("assistant-host"), document.getElementById("toggle-assistant"));
+  window.wintAssistant?.mount(document.getElementById("assistant-host"), document.getElementById("toggle-assistant"));
 
   // Tools that live in a file of their own build their own DOM, once, into the
   // host the shell has just made for them - before anything is drawn, so the
   // pin in their header is found by the same pass as every other one. A tool
   // that throws while mounting must not leave the window buttons unwired.
   try {
-    window.devhqDns?.mount(el["dns-host"]);
+    window.wintDns?.mount(el["dns-host"]);
   } catch (err) {
     console.error("DNS tool failed to mount", err);
   }
   try {
-    window.devhqHosts?.mount(el["hosts-host"]);
+    window.wintHosts?.mount(el["hosts-host"]);
   } catch (err) {
     console.error("Hosts file tool failed to mount", err);
   }
   try {
-    window.devhqNetwork?.mount(el["network-host"]);
+    window.wintNetwork?.mount(el["network-host"]);
   } catch (err) {
     console.error("Network tool failed to mount", err);
   }
-  try { window.devhqPathPing?.mount(el["path-ping-host"]); } catch (err) { console.error("Path Ping failed to mount", err); }
-  try { window.devhqDiskSpace?.mount(el["disk-space-host"]); } catch (err) { console.error("Disk Space Usage failed to mount", err); }
-  try { window.devhqGithub?.mount(el["github-host"]); } catch (err) { console.error("GitHub failed to mount", err); }
-  try { window.devhqGit?.mount(el["git-host"]); } catch (err) { console.error("Git failed to mount", err); }
-  try { window.devhqUtilTools?.mount(el["tools-host"]); } catch (err) { console.error("Util tools failed to mount", err); }
-  try { window.devhqWindowsTools?.mount(el["windows-tools-host"]); } catch (err) { console.error("Windows tools failed to mount", err); }
+  try { window.wintPathPing?.mount(el["path-ping-host"]); } catch (err) { console.error("Path Ping failed to mount", err); }
+  try { window.wintDiskSpace?.mount(el["disk-space-host"]); } catch (err) { console.error("Disk Space Usage failed to mount", err); }
+  try { window.wintGithub?.mount(el["github-host"]); } catch (err) { console.error("GitHub failed to mount", err); }
+  try { window.wintGit?.mount(el["git-host"]); } catch (err) { console.error("Git failed to mount", err); }
+  try { window.wintUtilTools?.mount(el["tools-host"]); } catch (err) { console.error("Util tools failed to mount", err); }
+  try { window.wintWindowsTools?.mount(el["windows-tools-host"]); } catch (err) { console.error("Windows tools failed to mount", err); }
 
   el["search-input"].value = state.search;
   renderVersionButton();
@@ -5152,7 +5152,7 @@ async function refreshCliSetting(status = null) {
     button.classList.toggle("primary", !enabled);
     button.disabled = false;
     label.innerHTML = enabled
-      ? `<code>devhq</code> is available in new terminals. Installed at <code>${esc(status.path)}</code>.`
+      ? `<code>wint</code> is available in new terminals. Installed at <code>${esc(status.path)}</code>.`
       : `Install the CLI and add it to your user PATH. No administrator access is needed.`;
   } catch (error) {
     button.disabled = true;
@@ -5182,7 +5182,7 @@ function renderSettings() {
         <section class="settings-group" data-section="general">
           <h3>General</h3>
           <label class="settings-row" for="setting-language">
-            <span><strong>Language</strong><small>Choose the language DevHQ uses.</small></span>
+            <span><strong>Language</strong><small>Choose the language WinT uses.</small></span>
             <select class="sort setting-control" id="setting-language">
               <option value="system">Windows default</option>
               <option value="en">English</option>
@@ -5213,25 +5213,25 @@ function renderSettings() {
             <input class="setting-check" id="setting-pins-panel" type="checkbox" />
           </label>
           <label class="settings-row" for="setting-minimize-to-tray">
-            <span><strong>Show minimize-to-tray button</strong><small>Add a title-bar button that keeps DevHQ running in the notification area. Click the tray icon to bring it back.</small></span>
+            <span><strong>Show minimize-to-tray button</strong><small>Add a title-bar button that keeps WinT running in the notification area. Click the tray icon to bring it back.</small></span>
             <input class="setting-check" id="setting-minimize-to-tray" type="checkbox" />
           </label>
           <label class="settings-row" for="setting-analytics">
-            <span><strong>Send anonymous usage data</strong><small>Let us know you're using DevHQ, via PageRain. It's a random number and the screen you opened - never your projects.</small>
+            <span><strong>Send anonymous usage data</strong><small>Let us know you're using WinT, via PageRain. It's a random number and the screen you opened - never your projects.</small>
               <button class="linklike" type="button" id="setting-analytics-source">Read the code that sends it</button>
             </span>
             <input class="setting-check" id="setting-analytics" type="checkbox" />
           </label>
           <label class="settings-row" for="setting-time-tracker">
-            <span><strong>Always track active-window usage</strong><small>Record application and window-title time while DevHQ is open, including when it is minimized or unfocused. Nothing is sent anywhere.</small></span>
+            <span><strong>Always track active-window usage</strong><small>Record application and window-title time while WinT is open, including when it is minimized or unfocused. Nothing is sent anywhere.</small></span>
             <input class="setting-check" id="setting-time-tracker" type="checkbox" />
           </label>
           <div class="settings-row">
-            <span><strong>DevHQ command-line interface</strong><small id="setting-cli-status">Checking whether <code>devhq</code> is available in new terminals…</small></span>
+            <span><strong>WinT command-line interface</strong><small id="setting-cli-status">Checking whether <code>wint</code> is available in new terminals…</small></span>
             <button class="btn setting-control" id="setting-cli-toggle" type="button" disabled>Checking…</button>
           </div>
           <div class="settings-row danger-row">
-            <span><strong>Reset DevHQ</strong><small>Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.</small></span>
+            <span><strong>Reset WinT</strong><small>Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.</small></span>
             <button class="btn danger setting-control" id="setting-reset" type="button">Reset</button>
           </div>
         </section>
@@ -5242,7 +5242,7 @@ function renderSettings() {
             <button class="btn setting-control" id="setting-assistant-models" type="button">${icon("neurology")}Manage models</button>
           </div>
           <label class="settings-row" for="setting-assistant-tool-cap">
-            <span><strong>Tool-call limit</strong><small>Maximum tools an answer may call before DevHQ stops it. Applies to local models, Claude, Codex, GPT, and Cursor.</small></span>
+            <span><strong>Tool-call limit</strong><small>Maximum tools an answer may call before WinT stops it. Applies to local models, Claude, Codex, GPT, and Cursor.</small></span>
             <input class="sort setting-control setting-number" id="setting-assistant-tool-cap" type="number" min="1" max="100" step="1" />
           </label>
         </section>
@@ -5256,7 +5256,7 @@ function renderSettings() {
             </div>
           </div>
           <div class="settings-row shell-downloads-row">
-            <span><strong>Get a shell</strong><small>DevHQ can fetch these itself, straight from the project that publishes them, and keep them to itself. A shell you install yourself is always used first.</small></span>
+            <span><strong>Get a shell</strong><small>WinT can fetch these itself, straight from the project that publishes them, and keep them to itself. A shell you install yourself is always used first.</small></span>
             <div class="shell-downloads" id="setting-shell-downloads"></div>
           </div>
           <label class="settings-row" for="setting-terminal-history">
@@ -5264,7 +5264,7 @@ function renderSettings() {
             <input class="setting-check" id="setting-terminal-history" type="checkbox" />
           </label>
           <label class="settings-row" for="setting-terminal-history-search">
-            <span><strong>Enhanced Ctrl+R history search</strong><small>Search commands from all DevHQ terminals with recency and usage ranking. Turn it off to use your shell's built-in Ctrl+R.</small></span>
+            <span><strong>Enhanced Ctrl+R history search</strong><small>Search commands from all WinT terminals with recency and usage ranking. Turn it off to use your shell's built-in Ctrl+R.</small></span>
             <input class="setting-check" id="setting-terminal-history-search" type="checkbox" />
           </label>
           <div class="settings-row terminal-type-colors-row">
@@ -5287,7 +5287,7 @@ function renderSettings() {
             <span><strong>Colors</strong><small>Change any color to build a scheme of your own.</small></span>
             <div class="term-theme-edit">
               <div class="term-theme-preview" aria-hidden="true">
-                <div><span style="color:var(--term-c2)">you</span><span style="color:var(--term-c8)">@</span><span style="color:var(--term-c6)">devhq</span> <span style="color:var(--term-c4)">c:\\code\\devhq</span> <span style="color:var(--term-c13)">(main)</span></div>
+                <div><span style="color:var(--term-c2)">you</span><span style="color:var(--term-c8)">@</span><span style="color:var(--term-c6)">wint</span> <span style="color:var(--term-c4)">c:\\code\\wint</span> <span style="color:var(--term-c13)">(main)</span></div>
                 <div>&gt; npm run <span style="color:var(--term-c14)">dev</span></div>
                 <div><span style="color:var(--term-c3)">warn</span> 2 outdated packages</div>
                 <div><span style="color:var(--term-c1)">error</span> port 5173 busy</div>
@@ -5311,10 +5311,10 @@ function renderSettings() {
   host.querySelector("#setting-pins-panel").checked = state.pinsPanel;
   host.querySelector("#setting-minimize-to-tray").checked = state.minimizeToTrayButton;
   host.querySelector("#setting-analytics").checked = state.analyticsChosen && state.analytics;
-  host.querySelector("#setting-time-tracker").checked = window.devhqTimeTracker?.getAlways() === true;
-  host.querySelector("#setting-assistant-tool-cap").value = window.devhqAssistant?.getToolCallCap?.() || 20;
+  host.querySelector("#setting-time-tracker").checked = window.wintTimeTracker?.getAlways() === true;
+  host.querySelector("#setting-assistant-tool-cap").value = window.wintAssistant?.getToolCallCap?.() || 20;
   refreshCliSetting();
-  const shellSetting = window.devhqTerminalSettings;
+  const shellSetting = window.wintTerminalSettings;
   const shellSelect = host.querySelector("#setting-terminal-shell");
   shellSelect.innerHTML = shellSetting.profiles
     .map((profile) => `<option value="${profile.value}"${profile.available === false ? " disabled" : ""}>${profile.label}${profile.available === false ? " · unavailable" : ""}</option>`)
@@ -5339,7 +5339,7 @@ function renderSettings() {
 }
 
 function buildShellColorControls(host) {
-  const shellSetting = window.devhqTerminalSettings;
+  const shellSetting = window.wintTerminalSettings;
   const colors = shellSetting.shellColors();
   host.querySelector("#setting-shell-colors").innerHTML = shellSetting.profiles
     .filter((profile) => profile.value !== "auto")
@@ -5354,16 +5354,16 @@ function shellMegabytes(bytes) {
   return `${Math.round(Number(bytes || 0) / 1e6)} MB`;
 }
 
-/** The shells DevHQ can fetch, each with the state of this computer's copy.
+/** The shells WinT can fetch, each with the state of this computer's copy.
  *
  *  Built once per Settings render and then only ever updated in place: a row
  *  is rebuilt underneath a download in progress would restart its bar. */
 function buildShellDownloadControls(host) {
-  const shellSetting = window.devhqTerminalSettings;
+  const shellSetting = window.wintTerminalSettings;
   const rows = shellSetting.downloads?.() || [];
   const list = host.querySelector("#setting-shell-downloads");
   if (!rows.length) {
-    list.innerHTML = `<p class="shell-downloads-empty">Nothing to fetch — every shell DevHQ can download is already on this computer.</p>`;
+    list.innerHTML = `<p class="shell-downloads-empty">Nothing to fetch — every shell WinT can download is already on this computer.</p>`;
     return;
   }
   list.innerHTML = rows.map((row) => {
@@ -5378,12 +5378,12 @@ function buildShellDownloadControls(host) {
 }
 
 /** What this computer has, said plainly. A shell can be present twice - the
- *  user's own installation and DevHQ's copy - and the user's is the one that
+ *  user's own installation and WinT's copy - and the user's is the one that
  *  runs, so that is the one the row leads with. */
 function shellDownloadState(row, installed) {
   if (installed && !row.managed) return "Installed on this computer";
-  if (installed && row.managed) return `Installed on this computer · DevHQ also has a copy (${shellMegabytes(row.installedBytes)})`;
-  if (row.managed) return `Downloaded by DevHQ · ${shellMegabytes(row.installedBytes)}`;
+  if (installed && row.managed) return `Installed on this computer · WinT also has a copy (${shellMegabytes(row.installedBytes)})`;
+  if (row.managed) return `Downloaded by WinT · ${shellMegabytes(row.installedBytes)}`;
   return `Not installed · ${shellMegabytes(row.downloadBytes)} from ${esc(row.source)}`;
 }
 
@@ -5405,10 +5405,10 @@ function refreshShellDownloads() {
 /** Progress for one shell, reported from Rust. The status bar hears about it
  *  whether or not Settings is open, because a 106 MB download is exactly the
  *  kind of work that must never happen invisibly. */
-window.devhqShellDownloadProgress = (progress) => {
+window.wintShellDownloadProgress = (progress) => {
   if (!progress) return;
   const key = `shell-download-${progress.profile}`;
-  const label = window.devhqTerminalSettings?.downloads?.()
+  const label = window.wintTerminalSettings?.downloads?.()
     .find((row) => row.profile === progress.profile)?.label || "a shell";
   const row = el["settings-host"]?.querySelector(`[data-shell-download="${progress.profile}"]`);
   if (!work.has(key)) beginWork(key, `Downloading ${label}`);
@@ -5454,7 +5454,7 @@ window.devhqShellDownloadProgress = (progress) => {
 
 /** Settings, open on the shell downloads, with the one that was asked for
  *  marked so it can be found without reading the whole list. */
-window.devhqOpenShellDownloads = (shell) => {
+window.wintOpenShellDownloads = (shell) => {
   state.settingsSection = "terminal";
   if (state.activeView !== "settings") openSettings();
   else showSettingsSection("terminal");
@@ -5498,14 +5498,14 @@ function armReset(button) {
  *  a reset install is still the same install. */
 async function resetApp() {
   resetting = true;
-  window.devhqResetting = true;
-  beginWork("reset", "Resetting DevHQ");
+  window.wintResetting = true;
+  beginWork("reset", "Resetting WinT");
   for (const id of [...(window.termsState?.known.keys() || [])]) {
     await invoke("term_close", { id }).catch(() => {});
   }
   try {
     for (const key of Object.keys(localStorage)) {
-      if (key.startsWith("devhq.") && key !== "devhq.analytics.visitor.v1") localStorage.removeItem(key);
+      if (key.startsWith("wint.") && key !== "wint.analytics.visitor.v1") localStorage.removeItem(key);
     }
   } catch {
     /* storage disabled - there was nothing remembered to drop */
@@ -5535,7 +5535,7 @@ function showSettingsSection(id) {
  *  render. Later changes only write values back into these inputs - rebuilding
  *  them would close the colour picker the user is standing in. */
 function buildTermThemeControls(host) {
-  const theme = window.devhqTermTheme;
+  const theme = window.wintTermTheme;
   const themeSelect = host.querySelector("#setting-term-theme");
   themeSelect.innerHTML = theme.presets
     .map((preset) => `<option value="${esc(preset.id)}">${esc(preset.label)}</option>`)
@@ -5560,7 +5560,7 @@ function syncTermThemeControls() {
   const host = el["settings-host"];
   const themeSelect = host?.querySelector("#setting-term-theme");
   if (!themeSelect) return;
-  const theme = window.devhqTermTheme;
+  const theme = window.wintTermTheme;
   const palette = theme.palette();
   const custom = theme.selection() === "custom";
   themeSelect.value = custom ? "custom" : theme.selection();
@@ -6005,7 +6005,7 @@ function wireShell() {
     }
     const copy = e.target.closest("[data-port-copy]");
     if (copy) {
-      window.devhqCopy.copy(copy.dataset.portCopy, copy).catch(() => {});
+      window.wintCopy.copy(copy.dataset.portCopy, copy).catch(() => {});
       return;
     }
     const terminal = e.target.closest("[data-port-terminal]");
@@ -6083,7 +6083,7 @@ function wireShell() {
     // terminal scroller; an ordinary resize must not. Wait past the window
     // resize listener's fit so its hold does not land after this settle.
     if (wasMaximized && !maxed) {
-      setTimeout(() => window.devhqTerminalSettings?.settleVisible?.(), 100);
+      setTimeout(() => window.wintTerminalSettings?.settleVisible?.(), 100);
     }
     wasMaximized = maxed;
     maxButton.innerHTML = icon(maxed ? "filter_none" : "crop_square");
@@ -6163,7 +6163,7 @@ function wireShell() {
       openUrl(ANALYTICS_SOURCE_URL);
     } else if (e.target.closest('[data-settings="close"]')) closeSettings();
     else if (navItem) showSettingsSection(navItem.dataset.settingsSection);
-    else if (e.target.closest("#setting-assistant-models")) window.devhqAssistant?.openModels?.();
+    else if (e.target.closest("#setting-assistant-models")) window.wintAssistant?.openModels?.();
     else if (e.target.closest("[data-hotkey-filter]")) {
       state.hotkeyFilter = e.target.closest("[data-hotkey-filter]").dataset.hotkeyFilter;
       renderHotkeys(el["settings-host"]);
@@ -6211,7 +6211,7 @@ function wireShell() {
       savePrefs();
     } else if (e.target.closest("[data-terminal-marker]")) {
       const button = e.target.closest("[data-terminal-marker]");
-      window.devhqTerminalSettings.setShellMarkerStyle(button.dataset.terminalMarker);
+      window.wintTerminalSettings.setShellMarkerStyle(button.dataset.terminalMarker);
       for (const choice of el["settings-host"].querySelectorAll("[data-terminal-marker]")) {
         const active = choice === button;
         choice.classList.toggle("on", active);
@@ -6219,14 +6219,14 @@ function wireShell() {
       }
     }
     else if (e.target.closest("#setting-term-reset")) {
-      window.devhqTermTheme.resetToPreset();
+      window.wintTermTheme.resetToPreset();
       syncTermThemeControls();
     } else if (e.target.closest("#setting-shell-colors-reset")) {
-      window.devhqTerminalSettings.resetShellColors();
+      window.wintTerminalSettings.resetShellColors();
       buildShellColorControls(el["settings-host"]);
     } else if (e.target.closest("[data-shell-get],[data-shell-remove]")) {
       const button = e.target.closest("[data-shell-get],[data-shell-remove]");
-      const shellSetting = window.devhqTerminalSettings;
+      const shellSetting = window.wintTerminalSettings;
       // The same button becomes Cancel while its download runs, so a second
       // click stops what the first one started rather than queueing another.
       if (button.dataset.shellCancel) {
@@ -6253,9 +6253,9 @@ function wireShell() {
       button.disabled = true;
       button.classList.add("spinning");
       try {
-        await window.devhqTerminalSettings.scan();
+        await window.wintTerminalSettings.scan();
         const select = el["settings-host"].querySelector("#setting-terminal-shell");
-        const shellSetting = window.devhqTerminalSettings;
+        const shellSetting = window.wintTerminalSettings;
         select.innerHTML = shellSetting.profiles
           .map((profile) => `<option value="${profile.value}"${profile.available === false ? " disabled" : ""}>${profile.label}${profile.available === false ? " · unavailable" : ""}</option>`)
           .join("");
@@ -6280,12 +6280,12 @@ function wireShell() {
       return;
     }
     if (e.target.dataset.shellColor !== undefined) {
-      window.devhqTerminalSettings.setShellColor(e.target.dataset.shellColor, e.target.value);
+      window.wintTerminalSettings.setShellColor(e.target.dataset.shellColor, e.target.value);
       return;
     }
     if (e.target.dataset.termColor === undefined) return;
     const key = e.target.dataset.termColor;
-    window.devhqTermTheme.setColor(key === "bg" || key === "fg" ? key : Number(key), e.target.value);
+    window.wintTermTheme.setColor(key === "bg" || key === "fg" ? key : Number(key), e.target.value);
     syncTermThemeControls();
   };
   el["settings-host"].onchange = (e) => {
@@ -6318,20 +6318,20 @@ function wireShell() {
       applyAnalytics();
       // Switching it on counts the screen it was switched on from, so the
       // setting has an immediate, visible effect rather than a silent one.
-      window.devhqTrackPageView?.(currentPath());
+      window.wintTrackPageView?.(currentPath());
     } else if (e.target.id === "setting-time-tracker") {
-      window.devhqTimeTracker?.setAlways(e.target.checked);
+      window.wintTimeTracker?.setAlways(e.target.checked);
     } else if (e.target.id === "setting-assistant-tool-cap") {
-      e.target.value = window.devhqAssistant?.setToolCallCap?.(e.target.value) || 20;
+      e.target.value = window.wintAssistant?.setToolCallCap?.(e.target.value) || 20;
     } else if (e.target.id === "setting-terminal-shell") {
-      window.devhqTerminalSettings.setDefault(e.target.value);
+      window.wintTerminalSettings.setDefault(e.target.value);
     } else if (e.target.id === "setting-terminal-history") {
-      window.devhqTerminalSettings.setSaveHistory(e.target.checked);
+      window.wintTerminalSettings.setSaveHistory(e.target.checked);
     } else if (e.target.id === "setting-terminal-history-search") {
-      window.devhqTerminalSettings.setEnhancedHistorySearch(e.target.checked);
+      window.wintTerminalSettings.setEnhancedHistorySearch(e.target.checked);
     } else if (e.target.id === "setting-term-theme") {
       if (e.target.value === "custom") return syncTermThemeControls();
-      window.devhqTermTheme.usePreset(e.target.value);
+      window.wintTermTheme.usePreset(e.target.value);
       syncTermThemeControls();
     }
   };
@@ -6429,7 +6429,7 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-window.devhqWork = { beginWork, updateWork, endWork };
+window.wintWork = { beginWork, updateWork, endWork };
 
 async function wireToolPopoutEvents() {
   await listen("search:ready", activateNativeSearch);
@@ -6559,7 +6559,7 @@ async function wireToolPopoutEvents() {
 /** The pieces of the shell a tool living in its own file needs: the same
  *  escaping, the same icons and the same render batch, so a tool can never
  *  paint outside the frame or invent a second way to draw an icon. */
-window.devhqShell = {
+window.wintShell = {
   icon,
   esc,
   markDirty,
@@ -6608,7 +6608,7 @@ window.devhqShell = {
   mountShell();
   await wireToolPopoutEvents();
   syncRecentTrayTools();
-  window.devhqTrackPageView?.(currentPath());
+  window.wintTrackPageView?.(currentPath());
   // A restored tool is optional startup work. Its own loader must never be
   // able to prevent the already-mounted shell from opening.
   try {
@@ -6624,7 +6624,7 @@ window.devhqShell = {
   // next launch; a healthy tool remains the remembered destination.
   syncGlobalHotkeys();
   loadAppVersion();
-  window.devhqI18n?.init(state.language);
+  window.wintI18n?.init(state.language);
   markDirty("toolbar", "filters", "summary", "grid");
   invoke("take_startup_tool").then((id) => {
     if (typeof id === "string" && id) openTool(id);
@@ -6660,14 +6660,14 @@ window.devhqShell = {
 })();
 
 /** The folder a terminal opened from nowhere in particular should start in. */
-window.devhqPrimaryRoot = () => state.roots[0] || "";
+window.wintPrimaryRoot = () => state.roots[0] || "";
 
 /** A deliberately bounded, read-only snapshot for the local assistant. The
- * model receives facts already present in DevHQ, never direct filesystem or
+ * model receives facts already present in WinT, never direct filesystem or
  * command access. Prefer the open project; otherwise include the first few
  * projects from the current scan so questions such as "this setup" have real
  * context instead of inviting a generic guess. */
-window.devhqAssistantContext = () => {
+window.wintAssistantContext = () => {
   const selected = state.selectedPath ? state.byPath.get(state.selectedPath) : null;
   const projects = (selected ? [selected] : state.projects.slice(0, 12)).map((project) => ({
     name: project.name,
@@ -6684,8 +6684,8 @@ window.devhqAssistantContext = () => {
   }));
   return JSON.stringify({ roots: state.roots, selectedProject: selected?.name || "", projects });
 };
-window.devhqAssistantRoots = () => [...state.roots];
-window.addEventListener("devhq:assistant-tool-cap-changed", (event) => {
+window.wintAssistantRoots = () => [...state.roots];
+window.addEventListener("wint:assistant-tool-cap-changed", (event) => {
   const input = document.getElementById("setting-assistant-tool-cap");
   if (input) input.value = event.detail?.value || 20;
 });

@@ -43,14 +43,14 @@
     return `<section class="release"><div class="release-head"><span class="release-ver">${esc(release.version)}</span><span class="release-title">${esc(release.title)}</span><time class="release-date" datetime="${esc(release.date)}">${esc(date(release.date))}</time></div>${build}<ul class="release-changes">${changes}</ul></section>`;
   };
   async function render() {
-    const log = window.devhqChangelog;
+    const log = window.wintChangelog;
     if (!log) return;
     const appVersion = String(await invoke("app_version").catch(() => log.current));
     let currentChecksum = "";
     if (await invoke("app_is_official_build").catch(() => false)) {
       currentChecksum = String(await invoke("app_build_checksum").catch(() => ""));
     }
-    versionLabel.textContent = `DevHQ ${appVersion}`;
+    versionLabel.textContent = `WinT ${appVersion}`;
     const groups = new Map();
     for (const release of log.releases) {
       const [major, minor] = release.version.split(".");

@@ -15,7 +15,7 @@ pub struct CliStatus {
 fn install_dir() -> Result<PathBuf, String> {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
-        .map(|root| root.join("DevHQ").join("bin"))
+        .map(|root| root.join("WinT").join("bin"))
         .ok_or("Windows did not provide LOCALAPPDATA.".into())
 }
 
@@ -50,7 +50,7 @@ fn same_path(left: &str, right: &Path) -> bool {
 
 pub fn status() -> Result<CliStatus, String> {
     let dir = install_dir()?;
-    let exe = dir.join("devhq.exe");
+    let exe = dir.join("wint.exe");
     let on_path = user_path()?.split(';').any(|entry| same_path(entry, &dir));
     let installed = exe.is_file();
     Ok(CliStatus {
@@ -58,9 +58,9 @@ pub fn status() -> Result<CliStatus, String> {
         on_path,
         path: exe.to_string_lossy().into_owned(),
         message: if installed && on_path {
-            "Available as devhq in new terminals.".into()
+            "Available as wint in new terminals.".into()
         } else {
-            "The DevHQ CLI is not registered.".into()
+            "The WinT CLI is not registered.".into()
         },
     })
 }
@@ -68,19 +68,19 @@ pub fn status() -> Result<CliStatus, String> {
 fn bundled_cli(app: &AppHandle) -> Result<PathBuf, String> {
     let mut candidates = Vec::new();
     if let Ok(dir) = app.path().resource_dir() {
-        candidates.push(dir.join("devhq-cli.exe"));
-        candidates.push(dir.join("resources").join("devhq-cli.exe"));
+        candidates.push(dir.join("wint-cli.exe"));
+        candidates.push(dir.join("resources").join("wint-cli.exe"));
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("devhq-cli.exe"));
+            candidates.push(dir.join("wint-cli.exe"));
             if let Some(target) = dir.parent() {
-                candidates.push(target.join("release").join("devhq-cli.exe"));
+                candidates.push(target.join("release").join("wint-cli.exe"));
             }
         }
     }
     candidates.into_iter().find(|path| path.is_file()).ok_or_else(||
-        "This build does not contain the CLI. Build it with `npm run cli:build`, then restart DevHQ.".into()
+        "This build does not contain the CLI. Build it with `npm run cli:build`, then restart WinT.".into()
     )
 }
 
@@ -97,11 +97,11 @@ fn set_user_path(dir: &Path, add: bool) -> Result<(), String> {
     }
     let next = entries.join(";");
     let mut command = Command::new("powershell");
-    command.env("DEVHQ_USER_PATH", &next).args([
+    command.env("WINT_USER_PATH", &next).args([
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        "[Environment]::SetEnvironmentVariable('Path',$env:DEVHQ_USER_PATH,'User')",
+        "[Environment]::SetEnvironmentVariable('Path',$env:WINT_USER_PATH,'User')",
     ]);
     #[cfg(windows)]
     {
@@ -124,7 +124,7 @@ pub fn install(app: AppHandle) -> Result<CliStatus, String> {
     let dir = install_dir()?;
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
-    std::fs::copy(&source, dir.join("devhq.exe"))
+    std::fs::copy(&source, dir.join("wint.exe"))
         .map_err(|e| format!("Could not install the CLI: {e}"))?;
     set_user_path(&dir, true)?;
     status()
@@ -133,7 +133,7 @@ pub fn install(app: AppHandle) -> Result<CliStatus, String> {
 pub fn uninstall() -> Result<CliStatus, String> {
     let dir = install_dir()?;
     set_user_path(&dir, false)?;
-    let exe = dir.join("devhq.exe");
+    let exe = dir.join("wint.exe");
     if exe.exists() {
         std::fs::remove_file(&exe)
             .map_err(|e| format!("Could not remove {}: {e}", exe.display()))?;

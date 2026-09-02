@@ -22,10 +22,10 @@ fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
 }
 
-/// Replace DevHQ's Windows taskbar Jump List with the same recent tools used
+/// Replace WinT's Windows taskbar Jump List with the same recent tools used
 /// by Ctrl+K and the tray. Each item launches the current executable with a
 /// tool argument; the single-instance plugin hands that argument to the open
-/// window when DevHQ is already running.
+/// window when WinT is already running.
 pub fn set_recent_tools(tools: &[TrayTool], packaged_icons: Option<PathBuf>) -> Result<(), String> {
     let tools = tools
         .iter()

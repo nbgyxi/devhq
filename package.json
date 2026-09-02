@@ -1,7 +1,7 @@
 {
-  "name": "devhq",
+  "name": "wint",
   "version": "0.1.0",
-  "description": "DevHQ - developer overview of every project in a folder (Tauri + Rust)",
+  "description": "WinT - developer overview of every project in a folder (Tauri + Rust)",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "scripts": {

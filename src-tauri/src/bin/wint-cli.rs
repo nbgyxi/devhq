@@ -7,18 +7,18 @@ fn run_as_wt_proxy() -> bool {
         .and_then(|path| path.file_stem().map(|name| name.to_string_lossy().into_owned()))
         .is_some_and(|name| name.eq_ignore_ascii_case("wt"));
     if !invoked_as_wt { return false; }
-    let term_id = std::env::var_os("DEVHQ_TERM_ID");
+    let term_id = std::env::var_os("WINT_TERM_ID");
     let Some(term_id) = term_id else {
-        eprintln!("wt: DevHQ terminal context is unavailable.");
+        eprintln!("wt: WinT terminal context is unavailable.");
         std::process::exit(2);
     };
     let Some(local) = std::env::var_os("LOCALAPPDATA") else {
         eprintln!("wt: the local application-data folder is unavailable.");
         std::process::exit(2);
     };
-    let queue = std::path::PathBuf::from(local).join("DevHQ").join("runtime").join("requests");
+    let queue = std::path::PathBuf::from(local).join("WinT").join("runtime").join("requests");
     if let Err(error) = std::fs::create_dir_all(&queue) {
-        eprintln!("wt: could not open DevHQ's request queue: {error}");
+        eprintln!("wt: could not open WinT's request queue: {error}");
         std::process::exit(2);
     }
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
@@ -26,7 +26,7 @@ fn run_as_wt_proxy() -> bool {
     let name = format!("wt-{}-{stamp}.json", std::process::id());
     let pending = queue.join(format!(".{name}.tmp"));
     let ready = queue.join(&name);
-    let mut forwarded = vec!["wt.exe".to_string(), format!("--devhq-wt={}", term_id.to_string_lossy())];
+    let mut forwarded = vec!["wt.exe".to_string(), format!("--wint-wt={}", term_id.to_string_lossy())];
     forwarded.extend(std::env::args().skip(1));
     let result = serde_json::to_vec(&forwarded)
         .map_err(|error| error.to_string())
@@ -34,10 +34,10 @@ fn run_as_wt_proxy() -> bool {
         .and_then(|_| std::fs::rename(&pending, &ready).map_err(|error| error.to_string()));
     if let Err(error) = result {
         let _ = std::fs::remove_file(&pending);
-        eprintln!("wt: could not send the command to DevHQ: {error}");
+        eprintln!("wt: could not send the command to WinT: {error}");
         std::process::exit(2);
     }
-    // `wt` holds the prompt until DevHQ says what happened. The pane opens in
+    // `wt` holds the prompt until WinT says what happened. The pane opens in
     // another process, so without this the shell gets its prompt straight back
     // and a pane that never started looks exactly like one that did.
     let replies = queue.with_file_name("replies");
@@ -54,29 +54,29 @@ fn run_as_wt_proxy() -> bool {
                 if !message.is_empty() { println!("{message}"); }
                 std::process::exit(0);
             }
-            eprintln!("wt: {}", if message.is_empty() { "DevHQ could not run this command." } else { message });
+            eprintln!("wt: {}", if message.is_empty() { "WinT could not run this command." } else { message });
             std::process::exit(1);
         }
         if !taken {
             taken = !ready.exists();
             if !taken && std::time::Instant::now() >= taken_by {
                 let _ = std::fs::remove_file(&ready);
-                eprintln!("wt: DevHQ did not take this command. Its terminal panel is not listening.");
+                eprintln!("wt: WinT did not take this command. Its terminal panel is not listening.");
                 std::process::exit(1);
             }
         } else if std::time::Instant::now() >= answer_by {
             // Taken, but no window owned up to it: the terminal this was typed
-            // in is no longer one DevHQ is showing.
-            eprintln!("wt: DevHQ took this command but never reported what happened to it.");
+            // in is no longer one WinT is showing.
+            eprintln!("wt: WinT took this command but never reported what happened to it.");
             std::process::exit(1);
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
 
-const HELP: &str = r#"DevHQ CLI
+const HELP: &str = r#"WinT CLI
 
-Usage: devhq <command> [arguments]
+Usage: wint <command> [arguments]
 
 Project
   scan [ROOT]                         Scan projects (default: detected code root)
@@ -123,17 +123,17 @@ GitHub and app
   github api METHOD ENDPOINT [JSON]   Call an allow-listed GitHub API endpoint
   root                                Print the default code root
   version                             Print the CLI version
-  app                                 Launch the DevHQ desktop app
+  app                                 Launch the WinT desktop app
 
 Output is JSON except for help, version, git diff, and app. Pass --pretty to
 pretty-print JSON. Every path may be absolute, so this command works from any
-directory. Run `devhq help <area>` for the same command overview.
+directory. Run `wint help <area>` for the same command overview.
 "#;
 
 fn need(args: &[String], index: usize, name: &str) -> Result<String, String> {
     args.get(index)
         .cloned()
-        .ok_or_else(|| format!("Missing {name}. Run `devhq help`."))
+        .ok_or_else(|| format!("Missing {name}. Run `wint help`."))
 }
 
 fn number<T: std::str::FromStr>(value: String, name: &str) -> Result<T, String> {
@@ -170,23 +170,23 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
             println!("{}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        "root" => emit(json!({ "root": devhq_lib::default_root_sync() }), pretty),
+        "root" => emit(json!({ "root": wint_lib::default_root_sync() }), pretty),
         "scan" => {
             let root = args
                 .get(1)
                 .cloned()
-                .unwrap_or_else(devhq_lib::default_root_sync);
-            emit(devhq_lib::scan_root(root), pretty)
+                .unwrap_or_else(wint_lib::default_root_sync);
+            emit(wint_lib::scan_root(root), pretty)
         }
         "git" => match need(&args, 1, "git action")?.as_str() {
             "status" => {
                 let path = need(&args, 2, "path")?;
-                let info = devhq_lib::git::read(Path::new(&path))
+                let info = wint_lib::git::read(Path::new(&path))
                     .ok_or("Not a Git repository or Git is unavailable.")?;
                 emit(info, pretty)
             }
             "diff" => {
-                let diff = devhq_lib::git_diff_sync(need(&args, 2, "path")?)?;
+                let diff = wint_lib::git_diff_sync(need(&args, 2, "path")?)?;
                 if pretty {
                     emit(diff, true)
                 } else {
@@ -195,7 +195,7 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
                 }
             }
             "pull" => emit(
-                devhq_lib::git_pull_sync(
+                wint_lib::git_pull_sync(
                     need(&args, 2, "path")?,
                     args.get(3).cloned().unwrap_or_default(),
                 )?,
@@ -205,11 +205,11 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
         },
         "todo" => match need(&args, 1, "todo action")?.as_str() {
             "scan" => emit(
-                devhq_lib::todo::scan(Path::new(&need(&args, 2, "path")?)),
+                wint_lib::todo::scan(Path::new(&need(&args, 2, "path")?)),
                 pretty,
             ),
             "excerpt" => emit(
-                devhq_lib::todo::excerpt(
+                wint_lib::todo::excerpt(
                     Path::new(&need(&args, 2, "path")?),
                     &need(&args, 3, "file")?,
                     number(need(&args, 4, "line")?, "line")?,
@@ -219,13 +219,13 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
             other => Err(format!("Unknown todo action: {other}")),
         },
         "open" => {
-            devhq_lib::open_in_sync(need(&args, 1, "path")?, need(&args, 2, "target")?)?;
+            wint_lib::open_in_sync(need(&args, 1, "path")?, need(&args, 2, "target")?)?;
             emit(json!({"ok": true}), pretty)
         }
         "ports" => match need(&args, 1, "ports action")?.as_str() {
-            "list" => emit(devhq_lib::procs::port_list(), pretty),
+            "list" => emit(wint_lib::procs::port_list(), pretty),
             "sample" => emit(
-                devhq_lib::procs::sample(
+                wint_lib::procs::sample(
                     args[2..]
                         .iter()
                         .map(|v| number(v.clone(), "PID"))
@@ -238,25 +238,25 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
                 let exe = need(&args, 3, "executable path")?;
                 let process = need(&args, 4, "process name")?;
                 if args.iter().any(|a| a == "--tree") {
-                    devhq_lib::procs::kill_tree(pid, &exe, &process)?
+                    wint_lib::procs::kill_tree(pid, &exe, &process)?
                 } else {
-                    devhq_lib::procs::kill(pid, &exe, &process)?
+                    wint_lib::procs::kill(pid, &exe, &process)?
                 }
                 emit(json!({"ok": true, "pid": pid}), pretty)
             }
             other => Err(format!("Unknown ports action: {other}")),
         },
         "disk" => match need(&args, 1, "disk action")?.as_str() {
-            "drives" => emit(devhq_lib::disk_space::drives()?, pretty),
+            "drives" => emit(wint_lib::disk_space::drives()?, pretty),
             "scan" => emit(
-                devhq_lib::disk_space::scan(need(&args, 2, "path")?)?,
+                wint_lib::disk_space::scan(need(&args, 2, "path")?)?,
                 pretty,
             ),
             other => Err(format!("Unknown disk action: {other}")),
         },
         "dns" => match need(&args, 1, "DNS action")?.as_str() {
             "lookup" => emit(
-                devhq_lib::dns::lookup(
+                wint_lib::dns::lookup(
                     &need(&args, 2, "name")?,
                     args.get(3).map(String::as_str).unwrap_or(""),
                     &args.get(4..).unwrap_or(&[]).to_vec(),
@@ -264,31 +264,31 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
                 pretty,
             ),
             "compare" => emit(
-                devhq_lib::dns::compare(
+                wint_lib::dns::compare(
                     &need(&args, 2, "name")?,
                     args.get(3).map(String::as_str).unwrap_or("A"),
                 ),
                 pretty,
             ),
-            "reverse" => emit(devhq_lib::dns::reverse(&need(&args, 2, "address")?), pretty),
-            "flush" => emit(json!({"result": devhq_lib::dns::flush_cache()}), pretty),
+            "reverse" => emit(wint_lib::dns::reverse(&need(&args, 2, "address")?), pretty),
+            "flush" => emit(json!({"result": wint_lib::dns::flush_cache()}), pretty),
             "hosts" => emit(
-                json!({"file": devhq_lib::dns::hosts_read(), "backups": devhq_lib::dns::backups()}),
+                json!({"file": wint_lib::dns::hosts_read(), "backups": wint_lib::dns::backups()}),
                 pretty,
             ),
             "hosts-write" => emit(
-                devhq_lib::dns::hosts_write(parsed(need(&args, 2, "request")?, "request")?),
+                wint_lib::dns::hosts_write(parsed(need(&args, 2, "request")?, "request")?),
                 pretty,
             ),
             other => Err(format!("Unknown DNS action: {other}")),
         },
         "system" => match need(&args, 1, "system action")?.as_str() {
-            "report" => emit(devhq_lib::windows_tools::system_report()?, pretty),
-            "active-window" => emit(devhq_lib::windows_tools::active_window()?, pretty),
+            "report" => emit(wint_lib::windows_tools::system_report()?, pretty),
+            "active-window" => emit(wint_lib::windows_tools::active_window()?, pretty),
             "keep-awake" => {
                 let on = need(&args, 2, "on or off")? == "on";
                 emit(
-                    devhq_lib::windows_tools::keep_awake_set(
+                    wint_lib::windows_tools::keep_awake_set(
                         on,
                         on && args.iter().any(|a| a == "--display"),
                         on && args.iter().any(|a| a == "--away"),
@@ -299,16 +299,16 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
             other => Err(format!("Unknown system action: {other}")),
         },
         "event-log" => emit(
-            devhq_lib::windows_tools::event_query(parsed(need(&args, 1, "query")?, "query")?)?,
+            wint_lib::windows_tools::event_query(parsed(need(&args, 1, "query")?, "query")?)?,
             pretty,
         ),
         "registry" => match need(&args, 1, "registry action")?.as_str() {
             "list" => emit(
-                devhq_lib::windows_tools::registry_list(&need(&args, 2, "path")?)?,
+                wint_lib::windows_tools::registry_list(&need(&args, 2, "path")?)?,
                 pretty,
             ),
             "change" => emit(
-                devhq_lib::windows_tools::registry_change(parsed(
+                wint_lib::windows_tools::registry_change(parsed(
                     need(&args, 2, "change")?,
                     "change",
                 )?),
@@ -317,7 +317,7 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
             other => Err(format!("Unknown registry action: {other}")),
         },
         "log" if need(&args, 1, "log action")? == "tail" => emit(
-            devhq_lib::windows_tools::log_tail(
+            wint_lib::windows_tools::log_tail(
                 &need(&args, 2, "path")?,
                 number(
                     args.get(3).cloned().unwrap_or_else(|| "200".into()),
@@ -327,29 +327,29 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
             pretty,
         ),
         "lock" if need(&args, 1, "lock action")? == "inspect" => emit(
-            devhq_lib::windows_tools::lock_inspect(&need(&args, 2, "path")?)?,
+            wint_lib::windows_tools::lock_inspect(&need(&args, 2, "path")?)?,
             pretty,
         ),
         "audio" => match need(&args, 1, "audio action")?.as_str() {
-            "list" => emit(devhq_lib::windows_tools::audio_devices()?, pretty),
+            "list" => emit(wint_lib::windows_tools::audio_devices()?, pretty),
             "default" => emit(
-                devhq_lib::windows_tools::audio_set_default(&need(&args, 2, "device ID")?),
+                wint_lib::windows_tools::audio_set_default(&need(&args, 2, "device ID")?),
                 pretty,
             ),
             other => Err(format!("Unknown audio action: {other}")),
         },
         "repair" => match need(&args, 1, "repair action")?.as_str() {
             "list" => emit(
-                devhq_lib::windows_tools::repair_targets(&need(&args, 2, "repair ID")?)?,
+                wint_lib::windows_tools::repair_targets(&need(&args, 2, "repair ID")?)?,
                 pretty,
             ),
             "run" => {
                 let id = need(&args, 2, "repair ID")?;
                 emit(
                     if let Some(target) = args.get(3) {
-                        devhq_lib::windows_tools::repair_target_run(&id, target)
+                        wint_lib::windows_tools::repair_target_run(&id, target)
                     } else {
-                        devhq_lib::windows_tools::repair_run(&id)
+                        wint_lib::windows_tools::repair_run(&id)
                     },
                     pretty,
                 )
@@ -357,30 +357,30 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
             other => Err(format!("Unknown repair action: {other}")),
         },
         "net" => match need(&args, 1, "network action")?.as_str() {
-            "capability" => emit(devhq_lib::network::capability(), pretty),
-            "components" => emit(devhq_lib::network::components()?, pretty),
-            "rate" => emit(devhq_lib::network::rate(), pretty),
+            "capability" => emit(wint_lib::network::capability(), pretty),
+            "components" => emit(wint_lib::network::components()?, pretty),
+            "rate" => emit(wint_lib::network::rate(), pretty),
             "backlog" => emit(
-                devhq_lib::network::backlog(number(
+                wint_lib::network::backlog(number(
                     args.get(2).cloned().unwrap_or_else(|| "500".into()),
                     "limit",
                 )?),
                 pretty,
             ),
-            "stop" => emit(json!({"result": devhq_lib::network::stop()?}), pretty),
+            "stop" => emit(json!({"result": wint_lib::network::stop()?}), pretty),
             "clear" => {
-                devhq_lib::network::clear();
+                wint_lib::network::clear();
                 emit(json!({"ok": true}), pretty)
             }
-            "export" => emit(devhq_lib::network::export(args.get(2).cloned())?, pretty),
+            "export" => emit(wint_lib::network::export(args.get(2).cloned())?, pretty),
             other => Err(format!("Unknown network action: {other}")),
         },
         "github" => match need(&args, 1, "GitHub action")?.as_str() {
-            "status" => emit(devhq_lib::github::github_status(), pretty),
+            "status" => emit(wint_lib::github::github_status(), pretty),
             "api" => {
                 let body: Option<Value> =
                     args.get(4).map(|v| parsed(v.clone(), "body")).transpose()?;
-                let value = tauri::async_runtime::block_on(devhq_lib::github::github_api(
+                let value = tauri::async_runtime::block_on(wint_lib::github::github_api(
                     need(&args, 2, "method")?,
                     need(&args, 3, "endpoint")?,
                     body,
@@ -390,29 +390,29 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
             other => Err(format!("Unknown GitHub action: {other}")),
         },
         "app" => {
-            let app = std::env::var_os("DEVHQ_APP")
+            let app = std::env::var_os("WINT_APP")
                 .map(std::path::PathBuf::from)
                 .unwrap_or(
                     std::env::current_exe()
                         .map_err(|e| e.to_string())?
-                        .with_file_name("devhq-desktop.exe"),
+                        .with_file_name("wint-desktop.exe"),
                 );
             if !app.is_file() {
-                return Err("The desktop executable was not found. Build DevHQ before installing the CLI, or set DEVHQ_APP to its absolute path.".into());
+                return Err("The desktop executable was not found. Build WinT before installing the CLI, or set WINT_APP to its absolute path.".into());
             }
             std::process::Command::new(&app)
                 .spawn()
                 .map_err(|e| format!("Could not launch {}: {e}", app.display()))?;
             Ok(())
         }
-        other => Err(format!("Unknown command: {other}. Run `devhq help`.")),
+        other => Err(format!("Unknown command: {other}. Run `wint help`.")),
     }
 }
 
 fn main() {
     if run_as_wt_proxy() { return; }
     if let Err(error) = run(std::env::args().skip(1).collect()) {
-        eprintln!("devhq: {error}");
+        eprintln!("wint: {error}");
         std::process::exit(2);
     }
 }

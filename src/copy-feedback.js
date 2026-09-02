@@ -34,5 +34,5 @@
     }
   }
 
-  window.devhqCopy = { copy, feedback };
+  window.wintCopy = { copy, feedback };
 })();

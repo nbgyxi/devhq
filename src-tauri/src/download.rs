@@ -1,4 +1,4 @@
-//! One verified download, shared by everything DevHQ fetches on demand.
+//! One verified download, shared by everything WinT fetches on demand.
 //!
 //! Models, the local AI runtime and the shells in [`crate::shells`] all want
 //! the same thing: stream a pinned URL to disk, say how far along it is, refuse
@@ -36,7 +36,7 @@ pub fn fetch(
         fs::create_dir_all(parent).map_err(|e| e.to_string())?
     }
     let mut response = reqwest::blocking::Client::builder()
-        .user_agent("DevHQ")
+        .user_agent("WinT")
         .build()
         .map_err(|e| e.to_string())?
         .get(url)

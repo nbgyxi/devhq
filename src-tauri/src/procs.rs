@@ -225,7 +225,7 @@ fn probe_browser_url(port: u16) -> Option<(String, u16)> {
 
 pub fn kill(pid: u32, expected_executable: &str, expected_process: &str) -> Result<(), String> {
     if pid <= 4 || pid == std::process::id() {
-        return Err("DevHQ will not terminate this protected process.".into());
+        return Err("WinT will not terminate this protected process.".into());
     }
     let processes = list_processes();
     let current = processes
@@ -280,7 +280,7 @@ const NOISE_NAMES: &[&str] = &[
     "git.exe",
     "ssh.exe",
     "claude.exe",
-    "devhq.exe",
+    "wint.exe",
     "scan_cli.exe",
     // Git-for-Windows ports of the usual shell utilities, which appear whenever
     // a terminal in the folder runs a pipeline.

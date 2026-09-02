@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Tool</title>
-<link rel="icon" type="image/png" href="devhq-icon.png" />
+<link rel="icon" type="image/png" href="wint-icon.png" />
 <script>
 /* Theme before first paint. Opener ?theme= wins; then prefs; else dark.
    Rust also stamps data-theme via initialization_script — this covers reload. */
@@ -14,7 +14,7 @@
     var q = new URLSearchParams(location.search).get("theme");
     if (q === "light" || q === "dark") theme = q;
     else {
-      var prefs = JSON.parse(localStorage.getItem("devhq.prefs.v1") || "{}");
+      var prefs = JSON.parse(localStorage.getItem("wint.prefs.v1") || "{}");
       if (prefs.theme === "light" || prefs.theme === "dark") theme = prefs.theme;
     }
   } catch (e) {}
@@ -69,14 +69,14 @@
 <div id="tool-shell">
   <div class="titlebar">
     <div class="drag" title="Drag to move this window">
-      <div class="brand"><img src="devhq-icon.png" alt="" />
+      <div class="brand"><img src="wint-icon.png" alt="" />
         <span id="pop-name">Tool</span>
         <span class="sub" id="pop-hint"></span>
       </div>
     </div>
     <div class="win-btns">
       <button type="button" class="win-btn" id="pop-ontop" title="Keep this window on top" aria-pressed="false"><span class="ms">keep</span></button>
-      <button type="button" class="win-btn" id="pop-dock" title="Dock back into DevHQ"><span class="ms">dock_to_bottom</span></button>
+      <button type="button" class="win-btn" id="pop-dock" title="Dock back into WinT"><span class="ms">dock_to_bottom</span></button>
       <button type="button" class="win-btn" data-win="min"><span class="ms">remove</span></button>
       <button type="button" class="win-btn" data-win="max"><span class="ms">crop_square</span></button>
       <button type="button" class="win-btn close" data-win="close" title="Close this window" aria-label="Close this window"><span class="ms">close</span></button>
@@ -100,7 +100,7 @@
   </div>
 </div>
 <script>
-// Say the tool's real name in the first frame. DevHQ put it in the URL exactly
+// Say the tool's real name in the first frame. WinT put it in the URL exactly
 // so this window need not wait for the tool catalog to load to know it, and so
 // the title bar never reads "Tool" or a bare id.
 (function () {
@@ -115,7 +115,7 @@
 <script src="analytics.js"></script>
 <script src="copy-feedback.js"></script>
 <script src="i18n.js"></script>
-<script>window.devhqI18n.init(window.devhqI18n.storedLanguage());</script>
+<script>window.wintI18n.init(window.wintI18n.storedLanguage());</script>
 <script src="maturity.js"></script>
 <script src="dns.js"></script>
 <script src="hosts.js"></script>

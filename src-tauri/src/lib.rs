@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 fn show_main_window(app: &AppHandle) {
-    if let Some(tray) = app.tray_by_id("devhq-tray") {
+    if let Some(tray) = app.tray_by_id("wint-tray") {
         let _ = tray.set_visible(false);
     }
     if let Some(window) = app.get_webview_window("main") {
@@ -52,7 +52,7 @@ fn show_main_window(app: &AppHandle) {
 
 #[tauri::command]
 fn minimize_to_tray(app: AppHandle) {
-    if let Some(tray) = app.tray_by_id("devhq-tray") {
+    if let Some(tray) = app.tray_by_id("wint-tray") {
         let _ = tray.set_visible(true);
     }
     if let Some(window) = app.get_webview_window("main") {
@@ -125,7 +125,7 @@ fn wt_request_is_stale(path: &Path) -> bool {
 fn start_wt_request_queue(app: AppHandle) {
     std::thread::spawn(move || {
         let Some(local) = std::env::var_os("LOCALAPPDATA") else { return };
-        let queue = PathBuf::from(local).join("DevHQ").join("runtime").join("requests");
+        let queue = PathBuf::from(local).join("WinT").join("runtime").join("requests");
         let _ = std::fs::create_dir_all(&queue);
         let mut reported = false;
         let mut passes: u32 = 0;
@@ -168,7 +168,7 @@ fn start_wt_request_queue(app: AppHandle) {
                 }
                 Err(error) => {
                     if !reported {
-                        eprintln!("DevHQ: the wt request queue at {} cannot be read: {error}", queue.display());
+                        eprintln!("WinT: the wt request queue at {} cannot be read: {error}", queue.display());
                         reported = true;
                     }
                 }
@@ -254,7 +254,7 @@ fn is_wt_action(value: &str) -> bool {
 fn wt_request_arg(args: &[String]) -> Option<WtRequest> {
     let term_id = args
         .iter()
-        .find_map(|arg| arg.strip_prefix("--devhq-wt="))?
+        .find_map(|arg| arg.strip_prefix("--wint-wt="))?
         .to_string();
     let mut request = WtRequest {
         term_id,
@@ -270,7 +270,7 @@ fn wt_request_arg(args: &[String]) -> Option<WtRequest> {
     let clean = args
         .iter()
         .skip(1)
-        .filter(|arg| !arg.starts_with("--devhq-wt="))
+        .filter(|arg| !arg.starts_with("--wint-wt="))
         .cloned()
         .collect::<Vec<_>>();
     let mut groups = Vec::<Vec<String>>::new();
@@ -430,7 +430,7 @@ fn wt_request_arg(args: &[String]) -> Option<WtRequest> {
 fn wt_reply_dir() -> Option<PathBuf> {
     Some(
         PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
-            .join("DevHQ")
+            .join("WinT")
             .join("runtime")
             .join("replies"),
     )
@@ -466,7 +466,7 @@ async fn wt_report(token: String, ok: bool, message: String) -> Result<(), Strin
 
 /// Answers nobody came back for - the shell was closed while `wt` waited, or
 /// the proxy was killed. They are worthless after a few seconds and must not
-/// pile up in a folder DevHQ reads on a timer.
+/// pile up in a folder WinT reads on a timer.
 fn sweep_wt_replies() {
     let Some(replies) = wt_reply_dir() else { return };
     let Ok(entries) = std::fs::read_dir(&replies) else { return };
@@ -485,8 +485,8 @@ mod wt_compat_tests {
     #[test]
     fn parses_the_existing_mock_server_split_command() {
         let args = [
-            "devhq-desktop.exe",
-            "--devhq-wt=t7",
+            "wint-desktop.exe",
+            "--wint-wt=t7",
             "--window",
             "0",
             "split-pane",
@@ -544,15 +544,15 @@ fn tray_set_recent_tools(app: AppHandle, tools: Vec<TrayTool>) -> Result<(), Str
         jump_list::set_recent_tools(&tools, packaged_icons)?;
     }
 
-    let mut menu = MenuBuilder::new(&app).text("tray-open", "Open DevHQ");
+    let mut menu = MenuBuilder::new(&app).text("tray-open", "Open WinT");
     for tool in tools.into_iter().take(6) {
         menu = menu.text(format!("tray-tool:{}", tool.id), tool.name);
     }
     menu = menu.separator().text("tray-quit", "Quit");
     let menu = menu.build().map_err(|error| error.to_string())?;
     let tray = app
-        .tray_by_id("devhq-tray")
-        .ok_or_else(|| "DevHQ tray icon is unavailable".to_string())?;
+        .tray_by_id("wint-tray")
+        .ok_or_else(|| "WinT tray icon is unavailable".to_string())?;
     tray.set_menu(Some(menu)).map_err(|error| error.to_string())
 }
 
@@ -756,7 +756,7 @@ fn assistant_chat(
         || model.starts_with("gpt:")
         || model.starts_with("cursor:")
     {
-        let cloud_prompt = format!("{}\n\nDevHQ project context:\n{}", prompt, project_context);
+        let cloud_prompt = format!("{}\n\nWinT project context:\n{}", prompt, project_context);
         return ai::cloud::chat(app, request_id, model, cloud_prompt, roots, tool_call_cap);
     }
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -895,11 +895,11 @@ fn app_version(app: AppHandle) -> String {
 }
 
 /// True only for binaries built by `package-msix.ps1`, which sets
-/// `DEVHQ_OFFICIAL_BUILD` for that compile. A `npm run dev` or plain release
+/// `WINT_OFFICIAL_BUILD` for that compile. A `npm run dev` or plain release
 /// build leaves it unset, so What's new never treats a local exe as a Store
 /// package.
 fn is_official_build() -> bool {
-    option_env!("DEVHQ_OFFICIAL_BUILD").is_some()
+    option_env!("WINT_OFFICIAL_BUILD").is_some()
 }
 
 #[tauri::command]
@@ -2215,11 +2215,11 @@ pub fn run() {
                 }
             }
 
-            let open = MenuItem::with_id(app, "tray-open", "Open DevHQ", true, None::<&str>)?;
+            let open = MenuItem::with_id(app, "tray-open", "Open WinT", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
-            let mut tray = TrayIconBuilder::with_id("devhq-tray")
-                .tooltip("DevHQ")
+            let mut tray = TrayIconBuilder::with_id("wint-tray")
+                .tooltip("WinT")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| {
@@ -2481,5 +2481,5 @@ pub fn run() {
 
     builder
         .run(tauri::generate_context!())
-        .expect("error while running DevHQ");
+        .expect("error while running WinT");
 }

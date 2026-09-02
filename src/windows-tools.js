@@ -2,10 +2,10 @@
   "use strict";
   const invoke = window.__TAURI__.core.invoke;
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-  const icon = (name) => window.devhqShell?.icon?.(name) || `<span class="ms" aria-hidden="true">${name}</span>`;
+  const icon = (name) => window.wintShell?.icon?.(name) || `<span class="ms" aria-hidden="true">${name}</span>`;
   const catalog = [
     { id: "help", name: "Help", icon: "help", hint: "project commands, application commands, and available tools", keywords: "help guide guides docs documentation manual readme ? about faq how to getting started what can commands run terminal pull code explorer tools shortcuts keyboard hotkeys" },
-    { id: "cli", name: "CLI", icon: "terminal", hint: "use every headless DevHQ command from any terminal", keywords: "cli command line commandline terminal console shell powershell pwsh cmd bash headless script scripting automation arguments flags json output scan git dns ports help docs devhq exe" },
+    { id: "cli", name: "CLI", icon: "terminal", hint: "use every headless WinT command from any terminal", keywords: "cli command line commandline terminal console shell powershell pwsh cmd bash headless script scripting automation arguments flags json output scan git dns ports help docs wint exe" },
     { id: "events", name: "Event Log Streamer", icon: "receipt_long", hint: "filter Windows events as they arrive", keywords: "event events viewer eventvwr log logs evtx application system security setup errors warnings critical crash audit login source id level filter regex stream live follow windows log" },
     { id: "registry", name: "Registry", icon: "database", hint: "browse and carefully edit registry values", keywords: "registry regedit reg hive hkey hkcu hklm hkcr hkey_current_user hkey keys value values dword qword string expand binary edit browse search environment run startup uninstall" },
     { id: "system", name: "System", icon: "tune", hint: "audit PATH and environment variables", keywords: "system path %path% environment variable variables env envvar user machine system-wide missing broken duplicate order folders directories not recognized command not found diagnostics audit" },
@@ -58,20 +58,20 @@
   let eventRows = [];
   let eventSelected = 0;
   let eventDetailTab = "message";
-  const EVENT_TRANSFER_KEY = "devhq.windows-tools.events.popout.v1";
+  const EVENT_TRANSFER_KEY = "wint.windows-tools.events.popout.v1";
   let systemMode = "environment";
   let systemScope = "user";
   let systemReport = { paths: [], variables: [] };
   let systemSelected = "Path";
-  const CLIPBOARD_DB = "devhq-clipboard";
+  const CLIPBOARD_DB = "wint-clipboard";
   let clipboardKind = "all";
   let clipboardPinnedOnly = false;
   let clipboardSelected = "";
   let clipboardTimer = 0;
   let clipboardRows = [];
   let clipboardDb = null;
-  const TRACKER_DB = "devhq-time-tracker";
-  const TRACKER_ALWAYS_KEY = "devhq-time-tracker-always";
+  const TRACKER_DB = "wint-time-tracker";
+  const TRACKER_ALWAYS_KEY = "wint-time-tracker-always";
   const TRACKER_IDLE_MS = 5 * 60 * 1000;
   const TRACKER_SAMPLE_MS = 5000;
   let trackerDb = null;
@@ -164,25 +164,25 @@
     trackerEnabled = enabled;
     clearInterval(trackerTimer); trackerTimer = 0;
     if (enabled && trackerCanSample) { sampleActiveWindow(); trackerTimer = setInterval(sampleActiveWindow, TRACKER_SAMPLE_MS); }
-    window.dispatchEvent(new CustomEvent("devhq:time-tracker-changed", { detail: { enabled } }));
+    window.dispatchEvent(new CustomEvent("wint:time-tracker-changed", { detail: { enabled } }));
   }
   function setTrackerAlways(enabled) {
     trackerAlways = enabled === true;
     localStorage.setItem(TRACKER_ALWAYS_KEY, String(trackerAlways));
     if (trackerAlways) setTrackerEnabled(true);
-    window.dispatchEvent(new CustomEvent("devhq:time-tracker-always-changed", { detail: { enabled: trackerAlways } }));
+    window.dispatchEvent(new CustomEvent("wint:time-tracker-always-changed", { detail: { enabled: trackerAlways } }));
   }
 
-  window.devhqTimeTracker = {
+  window.wintTimeTracker = {
     getEnabled: () => trackerEnabled,
     setEnabled: (enabled) => setTrackerEnabled(enabled === true),
     getAlways: () => trackerAlways,
     setAlways: (enabled) => setTrackerAlways(enabled),
     async confirmLeave() {
       if (active !== "time-tracker" || !trackerEnabled || trackerAlways) return true;
-      const answer = await window.devhqConfirm?.({
+      const answer = await window.wintConfirm?.({
         title: "Keep tracking active-window usage?",
-        message: "Tracking is running, but Always track is off. What should DevHQ do after you leave this tool?",
+        message: "Tracking is running, but Always track is off. What should WinT do after you leave this tool?",
         cancelLabel: "Cancel",
         confirmLabel: "Stop tracking",
         alternateLabel: "Continue tracking while tool is closed",
@@ -194,7 +194,7 @@
       return true;
     },
   };
-  function updateTrackerLive(idleMs = 0) { const node = host?.querySelector("[data-tracker-live]"); if (node) node.textContent = idleMs >= TRACKER_IDLE_MS ? `Idle for ${duration(idleMs)} · not recording` : trackerEnabled ? "Recording locally while DevHQ is open" : "Tracking is paused"; }
+  function updateTrackerLive(idleMs = 0) { const node = host?.querySelector("[data-tracker-live]"); if (node) node.textContent = idleMs >= TRACKER_IDLE_MS ? `Idle for ${duration(idleMs)} · not recording` : trackerEnabled ? "Recording locally while WinT is open" : "Tracking is paused"; }
 
   function readClips() {
     return clipboardRows.filter((row) => row && (typeof row.text === "string" || typeof row.dataUrl === "string")).slice(0, 250);
@@ -250,20 +250,20 @@
     // Embedded tools get universal navigation chrome from the parent shell.
     // Only their body belongs in this renderer; actions such as Refresh stay
     // inside the failure boundary and can never masquerade as shell controls.
-    if (window.devhqExternalToolChrome === true || window.devhqEmbeddedTool === true) {
+    if (window.wintExternalToolChrome === true || window.wintEmbeddedTool === true) {
       return `<div class="win-tool-body">${contextActions(tool)}${body}</div>`;
     }
-    const pinned = window.devhqShell?.isToolPinned?.(tool.id) || false;
-    const popped = window.devhqShell?.isToolPopped?.(tool.id) || false;
-    return `<header class="tool-head"><button class="btn back tool-back" type="button" data-close-win title="Back to the overview">${icon("arrow_back")}Back</button><span class="tool-plate">${icon(tool.icon)}</span><span class="tool-title"><strong>${esc(tool.name)}</strong><small>${esc(tool.hint)}</small></span>${window.devhqMaturity?.badge(tool.id) ?? ""}<button class="tool-popout${popped ? " on" : ""}" data-popout-tool="${esc(tool.id)}">${icon("open_in_new")}${popped ? "Show window" : "Pop out"}</button><button class="tool-pin${pinned ? " on" : ""}" data-win-pin="${esc(tool.id)}">${icon("push_pin")}${pinned ? "Pinned" : "Pin"}</button><button class="tool-close" data-close-win title="Back to overview">${icon("close")}</button></header><div class="win-tool-body">${contextActions(tool)}${body}</div>`;
+    const pinned = window.wintShell?.isToolPinned?.(tool.id) || false;
+    const popped = window.wintShell?.isToolPopped?.(tool.id) || false;
+    return `<header class="tool-head"><button class="btn back tool-back" type="button" data-close-win title="Back to the overview">${icon("arrow_back")}Back</button><span class="tool-plate">${icon(tool.icon)}</span><span class="tool-title"><strong>${esc(tool.name)}</strong><small>${esc(tool.hint)}</small></span>${window.wintMaturity?.badge(tool.id) ?? ""}<button class="tool-popout${popped ? " on" : ""}" data-popout-tool="${esc(tool.id)}">${icon("open_in_new")}${popped ? "Show window" : "Pop out"}</button><button class="tool-pin${pinned ? " on" : ""}" data-win-pin="${esc(tool.id)}">${icon("push_pin")}${pinned ? "Pinned" : "Pin"}</button><button class="tool-close" data-close-win title="Back to overview">${icon("close")}</button></header><div class="win-tool-body">${contextActions(tool)}${body}</div>`;
   }
   function status(message, tone = "") {
     const node = host?.querySelector("[data-win-status]");
     if (node) { node.textContent = message; node.dataset.tone = tone; }
   }
   function work(key, label, promise) {
-    window.devhqWork?.beginWork(key, label);
-    return promise.finally(() => window.devhqWork?.endWork(key));
+    window.wintWork?.beginWork(key, label);
+    return promise.finally(() => window.wintWork?.endWork(key));
   }
   function render() {
     if (!host) return;
@@ -287,94 +287,94 @@
 
   const cliGroups = [
     ["Projects and Git", [
-      ["devhq scan [ROOT] --pretty", "Scan a code root and return every project as JSON."],
-      ["devhq git status PATH --pretty", "Inspect branch, remote, changes, commits, and stashes."],
-      ["devhq git diff PATH", "Print the staged and unstaged patch."],
-      ["devhq git pull PATH", "Pull without interactive prompts, then inspect again."],
-      ["devhq todo scan PATH --pretty", "Find TODO and FIXME notes in project source."],
+      ["wint scan [ROOT] --pretty", "Scan a code root and return every project as JSON."],
+      ["wint git status PATH --pretty", "Inspect branch, remote, changes, commits, and stashes."],
+      ["wint git diff PATH", "Print the staged and unstaged patch."],
+      ["wint git pull PATH", "Pull without interactive prompts, then inspect again."],
+      ["wint todo scan PATH --pretty", "Find TODO and FIXME notes in project source."],
     ]],
     ["Processes and Windows", [
-      ["devhq ports list --pretty", "List listening processes, sockets, and browser URLs."],
-      ["devhq disk scan PATH --pretty", "Measure the direct children of a folder."],
-      ["devhq system report --pretty", "Audit PATH entries and environment variables."],
-      ["devhq log tail PATH [LINES]", "Read the newest lines of a local log."],
-      ["devhq lock inspect PATH", "Find processes holding a file or folder."],
+      ["wint ports list --pretty", "List listening processes, sockets, and browser URLs."],
+      ["wint disk scan PATH --pretty", "Measure the direct children of a folder."],
+      ["wint system report --pretty", "Audit PATH entries and environment variables."],
+      ["wint log tail PATH [LINES]", "Read the newest lines of a local log."],
+      ["wint lock inspect PATH", "Find processes holding a file or folder."],
     ]],
     ["DNS, network, and GitHub", [
-      ["devhq dns lookup NAME [SERVER] [TYPE…]", "Resolve one or more DNS record types."],
-      ["devhq dns compare NAME [TYPE]", "Compare the system and public resolvers."],
-      ["devhq net capability", "Inspect packet-capture support."],
-      ["devhq github status", "Check GitHub CLI installation and authentication."],
-      ["devhq github api METHOD ENDPOINT [JSON]", "Call an allow-listed GitHub API endpoint."],
+      ["wint dns lookup NAME [SERVER] [TYPE…]", "Resolve one or more DNS record types."],
+      ["wint dns compare NAME [TYPE]", "Compare the system and public resolvers."],
+      ["wint net capability", "Inspect packet-capture support."],
+      ["wint github status", "Check GitHub CLI installation and authentication."],
+      ["wint github api METHOD ENDPOINT [JSON]", "Call an allow-listed GitHub API endpoint."],
     ]],
   ];
 
   const completeCliGroups = [
     ["Basics", [
-      ["devhq help", "Print the complete terminal command overview."],
-      ["devhq version", "Print the CLI package version."],
-      ["devhq root", "Print DevHQ's detected default code root."],
-      ["devhq app", "Launch the bundled DevHQ desktop application."],
+      ["wint help", "Print the complete terminal command overview."],
+      ["wint version", "Print the CLI package version."],
+      ["wint root", "Print WinT's detected default code root."],
+      ["wint app", "Launch the bundled WinT desktop application."],
     ]],
     ["Projects", [
-      ["devhq scan [ROOT] --pretty", "Scan a code root; ROOT defaults to the detected code root."],
-      ["devhq open PATH TARGET", "TARGET is explorer, reveal, vscode, or terminal."],
-      ["devhq todo scan PATH --pretty", "Find TODO and FIXME notes in project source."],
-      ["devhq todo excerpt PATH FILE LINE", "Return source around one TODO or FIXME."],
+      ["wint scan [ROOT] --pretty", "Scan a code root; ROOT defaults to the detected code root."],
+      ["wint open PATH TARGET", "TARGET is explorer, reveal, vscode, or terminal."],
+      ["wint todo scan PATH --pretty", "Find TODO and FIXME notes in project source."],
+      ["wint todo excerpt PATH FILE LINE", "Return source around one TODO or FIXME."],
     ]],
     ["Git", [
-      ["devhq git status PATH --pretty", "Inspect branch, remote, changes, commits, and stashes."],
-      ["devhq git diff PATH", "Print staged and unstaged patches; --pretty returns structured JSON."],
-      ["devhq git pull PATH [GROUP]", "Pull without prompts and return the refreshed project."],
+      ["wint git status PATH --pretty", "Inspect branch, remote, changes, commits, and stashes."],
+      ["wint git diff PATH", "Print staged and unstaged patches; --pretty returns structured JSON."],
+      ["wint git pull PATH [GROUP]", "Pull without prompts and return the refreshed project."],
     ]],
     ["Processes and disks", [
-      ["devhq ports list --pretty", "List listening processes, sockets, and browser URLs."],
-      ["devhq ports sample PID...", "Sample CPU and memory for one or more process IDs."],
-      ["devhq ports kill PID EXE PROCESS [--tree]", "Kill only if the process identity still matches."],
-      ["devhq disk drives", "List local fixed and removable drives with free space."],
-      ["devhq disk scan PATH --pretty", "Measure the direct children of a folder."],
+      ["wint ports list --pretty", "List listening processes, sockets, and browser URLs."],
+      ["wint ports sample PID...", "Sample CPU and memory for one or more process IDs."],
+      ["wint ports kill PID EXE PROCESS [--tree]", "Kill only if the process identity still matches."],
+      ["wint disk drives", "List local fixed and removable drives with free space."],
+      ["wint disk scan PATH --pretty", "Measure the direct children of a folder."],
     ]],
     ["Windows diagnostics", [
-      ["devhq system report --pretty", "Audit PATH entries and environment variables."],
-      ["devhq system active-window", "Describe the foreground window and idle time."],
-      ["devhq system keep-awake on|off [--display] [--away]", "Control this process's Windows idle request."],
-      ["devhq event-log QUERY_JSON", "Query channels and levels with an optional text filter."],
-      ["devhq registry list PATH", "List subkeys and values beneath a registry path."],
-      ["devhq registry change CHANGE_JSON", "Create, edit, or delete a registry value."],
-      ["devhq log tail PATH [LINES]", "Read the newest lines; LINES defaults to 200."],
-      ["devhq lock inspect PATH", "Find processes holding a file or folder."],
+      ["wint system report --pretty", "Audit PATH entries and environment variables."],
+      ["wint system active-window", "Describe the foreground window and idle time."],
+      ["wint system keep-awake on|off [--display] [--away]", "Control this process's Windows idle request."],
+      ["wint event-log QUERY_JSON", "Query channels and levels with an optional text filter."],
+      ["wint registry list PATH", "List subkeys and values beneath a registry path."],
+      ["wint registry change CHANGE_JSON", "Create, edit, or delete a registry value."],
+      ["wint log tail PATH [LINES]", "Read the newest lines; LINES defaults to 200."],
+      ["wint lock inspect PATH", "Find processes holding a file or folder."],
     ]],
     ["Audio and repairs", [
-      ["devhq audio list", "List playback and recording endpoints."],
-      ["devhq audio default ID", "Set an endpoint as the Windows default for every role."],
-      ["devhq repair list ID", "Inspect targets available to one repair tool."],
-      ["devhq repair run ID [TARGET]", "Run a repair globally or against one selected target."],
+      ["wint audio list", "List playback and recording endpoints."],
+      ["wint audio default ID", "Set an endpoint as the Windows default for every role."],
+      ["wint repair list ID", "Inspect targets available to one repair tool."],
+      ["wint repair run ID [TARGET]", "Run a repair globally or against one selected target."],
     ]],
     ["DNS and hosts", [
-      ["devhq dns lookup NAME [SERVER] [TYPE...]", "Resolve record types; omit SERVER to use the system resolver."],
-      ["devhq dns compare NAME [TYPE]", "Compare resolvers; TYPE defaults to A."],
-      ["devhq dns reverse ADDRESS", "Perform a PTR lookup for an IPv4 or IPv6 address."],
-      ["devhq dns flush", "Flush the Windows DNS resolver cache."],
-      ["devhq dns hosts", "Read the hosts file and DevHQ backups."],
-      ["devhq dns hosts-write REQUEST_JSON", "Write if baseText still matches, taking a backup first."],
+      ["wint dns lookup NAME [SERVER] [TYPE...]", "Resolve record types; omit SERVER to use the system resolver."],
+      ["wint dns compare NAME [TYPE]", "Compare resolvers; TYPE defaults to A."],
+      ["wint dns reverse ADDRESS", "Perform a PTR lookup for an IPv4 or IPv6 address."],
+      ["wint dns flush", "Flush the Windows DNS resolver cache."],
+      ["wint dns hosts", "Read the hosts file and WinT backups."],
+      ["wint dns hosts-write REQUEST_JSON", "Write if baseText still matches, taking a backup first."],
     ]],
     ["Packet capture", [
-      ["devhq net capability", "Inspect pktmon availability and capture permissions."],
-      ["devhq net components", "List filterable network components."],
-      ["devhq net rate", "Read the current capture rate and totals."],
-      ["devhq net backlog [LIMIT]", "Read frames from the ring; LIMIT defaults to 500."],
-      ["devhq net stop", "Stop the current DevHQ packet capture."],
-      ["devhq net clear", "Clear captured frames from the ring."],
-      ["devhq net export [PATH]", "Export pcapng; omit PATH for the default capture folder."],
+      ["wint net capability", "Inspect pktmon availability and capture permissions."],
+      ["wint net components", "List filterable network components."],
+      ["wint net rate", "Read the current capture rate and totals."],
+      ["wint net backlog [LIMIT]", "Read frames from the ring; LIMIT defaults to 500."],
+      ["wint net stop", "Stop the current WinT packet capture."],
+      ["wint net clear", "Clear captured frames from the ring."],
+      ["wint net export [PATH]", "Export pcapng; omit PATH for the default capture folder."],
     ]],
     ["GitHub", [
-      ["devhq github status", "Check GitHub CLI installation and authentication."],
-      ["devhq github api METHOD ENDPOINT [JSON]", "Call an allow-listed endpoint with GET, POST, PUT, PATCH, or DELETE."],
+      ["wint github status", "Check GitHub CLI installation and authentication."],
+      ["wint github api METHOD ENDPOINT [JSON]", "Call an allow-listed endpoint with GET, POST, PUT, PATCH, or DELETE."],
     ]],
     ["Structured JSON arguments", [
-      ["event-log QUERY_JSON", "Fields: channels[], levels[], text, limit. Click to copy an example.", "devhq event-log '{\"channels\":[\"System\"],\"levels\":[\"Error\"],\"text\":\"\",\"limit\":100}'"],
-      ["registry change CHANGE_JSON", "Fields: path, name, kind, value, delete. Click to copy an example.", "devhq registry change '{\"path\":\"HKCU\\\\Environment\",\"name\":\"NAME\",\"kind\":\"REG_SZ\",\"value\":\"VALUE\",\"delete\":false}'"],
-      ["dns hosts-write REQUEST_JSON", "Fields: baseText and text. Click to copy an example.", "devhq dns hosts-write '{\"baseText\":\"...\",\"text\":\"...\"}'"],
+      ["event-log QUERY_JSON", "Fields: channels[], levels[], text, limit. Click to copy an example.", "wint event-log '{\"channels\":[\"System\"],\"levels\":[\"Error\"],\"text\":\"\",\"limit\":100}'"],
+      ["registry change CHANGE_JSON", "Fields: path, name, kind, value, delete. Click to copy an example.", "wint registry change '{\"path\":\"HKCU\\\\Environment\",\"name\":\"NAME\",\"kind\":\"REG_SZ\",\"value\":\"VALUE\",\"delete\":false}'"],
+      ["dns hosts-write REQUEST_JSON", "Fields: baseText and text. Click to copy an example.", "wint dns hosts-write '{\"baseText\":\"...\",\"text\":\"...\"}'"],
     ]],
   ];
 
@@ -382,9 +382,9 @@
     const groups = completeCliGroups.map(([name, commands]) => `<section class="help-panel"><header>${icon("terminal")}<strong>${esc(name)}</strong></header>${commands.map(([command, detail, copy = command]) => `<button class="help-command" type="button" data-cli-copy="${esc(copy)}" title="Copy command"><code>${esc(command)}</code><span>${esc(detail)}</span>${icon("content_copy")}</button>`).join("")}</section>`).join("");
     host.innerHTML = header(tool, `<div class="help-page cli-help-page">
       <div class="win-status" data-win-status>Checking CLI registration…</div>
-      <div class="cli-help-actions"><button class="btn primary" type="button" data-cli-toggle disabled>Checking…</button><button class="btn" type="button" data-cli-copy="devhq help">${icon("content_copy")}Copy <code>devhq help</code></button></div>
+      <div class="cli-help-actions"><button class="btn primary" type="button" data-cli-toggle disabled>Checking…</button><button class="btn" type="button" data-cli-copy="wint help">${icon("content_copy")}Copy <code>wint help</code></button></div>
       <div class="help-columns cli-help-columns">${groups}</div>
-      <section class="help-panel"><header>${icon("info")}<strong>Conventions and safety</strong></header><ul><li>Run <code>devhq help</code> for the complete command list.</li><li>Paths may be absolute, so the current terminal does not need to be inside DevHQ.</li><li>Errors go to stderr and return a non-zero exit code.</li><li>Process termination verifies PID, executable, and process name before acting.</li><li>Registry, repair, hosts-file, and process commands can change the machine; review arguments before running them.</li></ul></section>
+      <section class="help-panel"><header>${icon("info")}<strong>Conventions and safety</strong></header><ul><li>Run <code>wint help</code> for the complete command list.</li><li>Paths may be absolute, so the current terminal does not need to be inside WinT.</li><li>Errors go to stderr and return a non-zero exit code.</li><li>Process termination verifies PID, executable, and process name before acting.</li><li>Registry, repair, hosts-file, and process commands can change the machine; review arguments before running them.</li></ul></section>
     </div>`);
     host.querySelector("[data-win-status]")?.remove();
     await refreshCliPage();
@@ -421,7 +421,7 @@
   }
   /*
   function renderHelp(tool){
-    const utility=(window.devhqUtilTools?.catalog?.()||[]).map((item)=>({id:item.id,name:item.name,icon:item.icon,hint:item.hint}));
+    const utility=(window.wintUtilTools?.catalog?.()||[]).map((item)=>({id:item.id,name:item.name,icon:item.icon,hint:item.hint}));
     const byId=(id)=>catalog.find((item)=>item.id===id);
     const useful=[
       byId('time-tracker'),byId('clipboard'),
@@ -455,7 +455,7 @@
     const max = groups[0]?.ms || 1;
     const groupHtml = groups.map((group) => `<button type="button" class="tracker-app${selected === group.process ? " on" : ""}" data-tracker-app="${esc(group.process)}"><span class="tracker-dot"></span><span><strong>${esc(group.process)}</strong><small>${group.count} session${group.count === 1 ? "" : "s"}</small></span><b>${duration(group.ms)}</b><i style="--usage:${Math.max(2, group.ms / max * 100)}%"></i></button>`).join("") || '<div class="win-empty">No recorded activity in this range.</div>';
     const sessions = selectedRows.slice(0, 100).map((row) => `<div class="tracker-session"><time>${esc(new Date(row.start).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}))}–${esc(new Date(row.end).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}))}</time><b>${duration(row.end - row.start)}</b><span><strong>${esc(row.title)}</strong><small>${esc(row.process)}${row.path ? ` · ${esc(row.path)}` : ""}</small></span></div>`).join("") || '<div class="win-empty">Choose an application to see its sessions.</div>';
-    host.innerHTML = header(tool, `<div class="tracker-controls"><div class="tracker-ranges">${[["today","Today"],["week","7 days"],["month","30 days"]].map(([id,label]) => `<button class="${trackerRange === id ? "on" : ""}" data-tracker-range="${id}">${label}</button>`).join("")}</div><span class="tracker-privacy">${icon("lock")}Local only · idle after 5m</span><button class="btn" data-tracker-export>${icon("download")}Export CSV</button><button class="btn ${trackerEnabled ? "tracking-on" : "primary"}" data-tracker-toggle>${icon(trackerEnabled ? "pause" : "play_arrow")}${trackerEnabled ? "Tracking" : "Start tracking"}</button></div><div class="win-status" data-tracker-live>${trackerEnabled ? "Recording locally while DevHQ is open" : "Tracking is paused"}</div><div class="tracker-stats"><section><small>Tracked</small><strong>${duration(total)}</strong><span>${rows.length} sessions</span></section><section><small>Applications</small><strong>${groups.length}</strong><span>in this range</span></section><section><small>Longest session</small><strong>${longest ? duration(longest.end - longest.start) : "—"}</strong><span>${esc(longest?.process || "No activity yet")}</span></section></div><div class="tracker-workspace"><section class="tracker-apps"><header><strong>Applications</strong><small>active time</small></header><div>${groupHtml}</div></section><section class="tracker-history"><header><div><strong>${esc(selected || "Focus sessions")}</strong><small>${selectedRows.length} session${selectedRows.length === 1 ? "" : "s"}</small></div></header><div>${sessions}</div></section></div>`);
+    host.innerHTML = header(tool, `<div class="tracker-controls"><div class="tracker-ranges">${[["today","Today"],["week","7 days"],["month","30 days"]].map(([id,label]) => `<button class="${trackerRange === id ? "on" : ""}" data-tracker-range="${id}">${label}</button>`).join("")}</div><span class="tracker-privacy">${icon("lock")}Local only · idle after 5m</span><button class="btn" data-tracker-export>${icon("download")}Export CSV</button><button class="btn ${trackerEnabled ? "tracking-on" : "primary"}" data-tracker-toggle>${icon(trackerEnabled ? "pause" : "play_arrow")}${trackerEnabled ? "Tracking" : "Start tracking"}</button></div><div class="win-status" data-tracker-live>${trackerEnabled ? "Recording locally while WinT is open" : "Tracking is paused"}</div><div class="tracker-stats"><section><small>Tracked</small><strong>${duration(total)}</strong><span>${rows.length} sessions</span></section><section><small>Applications</small><strong>${groups.length}</strong><span>in this range</span></section><section><small>Longest session</small><strong>${longest ? duration(longest.end - longest.start) : "—"}</strong><span>${esc(longest?.process || "No activity yet")}</span></section></div><div class="tracker-workspace"><section class="tracker-apps"><header><strong>Applications</strong><small>active time</small></header><div>${groupHtml}</div></section><section class="tracker-history"><header><div><strong>${esc(selected || "Focus sessions")}</strong><small>${selectedRows.length} session${selectedRows.length === 1 ? "" : "s"}</small></div></header><div>${sessions}</div></section></div>`);
   }
 
   function awakeElapsed() {
@@ -509,7 +509,7 @@
     const quote = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
     const lines = [["start","end","duration_seconds","process","window_title","executable"], ...trackerVisibleRows().map((row) => [new Date(row.start).toISOString(), new Date(row.end).toISOString(), Math.round((row.end-row.start)/1000), row.process, row.title, row.path])];
     const blob = new Blob([lines.map((line) => line.map(quote).join(",")).join("\r\n")], { type: "text/csv" });
-    const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `devhq-time-${new Date().toISOString().slice(0,10)}.csv`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `wint-time-${new Date().toISOString().slice(0,10)}.csv`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   }
   function renderEventDetail(){const row=eventRows[eventSelected];if(!row)return '<div class="win-empty">Select an event to inspect its message and XML.</div>';return `<header><span class="event-level ${esc((row.level||'').toLowerCase())}">${esc(row.level||'Log')}</span><div><strong>${esc(row.provider)}</strong><small>${esc(row.channel)} · Event ${esc(row.id)} · ${esc(new Date(row.time).toLocaleString())}</small></div></header><div class="event-detail-tabs"><button class="${eventDetailTab==='message'?'on':''}" data-event-detail-tab="message">Message</button><button class="${eventDetailTab==='xml'?'on':''}" data-event-detail-tab="xml">XML</button></div><pre>${esc(eventDetailTab==='xml'?(row.xml||'XML unavailable'):(row.message||'No message'))}</pre>`;}
   async function loadEvents() {
@@ -526,7 +526,7 @@
     } catch (error) { status(String(error), "bad"); }
   }
   function renderHelp(tool){
-    const utility=(window.devhqUtilTools?.catalog?.()||[]).map((item)=>({id:item.id,name:item.name,icon:item.icon,hint:item.hint}));
+    const utility=(window.wintUtilTools?.catalog?.()||[]).map((item)=>({id:item.id,name:item.name,icon:item.icon,hint:item.hint}));
     const byId=(id)=>catalog.find((item)=>item.id===id);
     const core=[
       {id:'overview',name:'Overview',icon:'dashboard',hint:'projects, Git status, and technology at a glance'},
@@ -547,7 +547,7 @@
     const cards=(items)=>items.map((item)=>`<button type="button" class="help-tool" data-help-tool="${esc(item.id)}" title="Open ${esc(item.name)}">${icon(item.icon)}<span><strong>${esc(item.name)}</strong><small>${esc(item.hint)}</small></span>${icon('arrow_forward')}</button>`).join('');
     const rows=(items)=>items.map(([name,detail])=>`<div class="help-command"><code>${esc(name)}</code><span>${esc(detail)}</span></div>`).join('');
     const searchableCommands=rows([['<project>','Open that project'],['Run <project>','Run its detected start command; only offered when one is known'],['Terminal — <project>','Open a terminal in its folder'],['Pull <project>','Run git pull; only offered for Git projects'],['Rescan projects','Scan configured project folders again (F5)'],['Toggle terminal panel','Show or hide docked terminals (Ctrl+`)'],['Show / Remove <filter>','Turn a project filter on or off'],['Kill <process | PID | port>','Terminate a matching process']]);
-    const projectActions=rows([['Run','Run the detected project command'],['Code / VS Code','Open the project folder in VS Code'],['Terminal','Open a terminal in the project folder'],['Pull','Run git pull for a Git project'],['Explorer','Open the folder in Windows Explorer'],['External shell','Open the configured shell outside DevHQ'],['Copy path','Copy the project folder path']]);
+    const projectActions=rows([['Run','Run the detected project command'],['Code / VS Code','Open the project folder in VS Code'],['Terminal','Open a terminal in the project folder'],['Pull','Run git pull for a Git project'],['Explorer','Open the folder in Windows Explorer'],['External shell','Open the configured shell outside WinT'],['Copy path','Copy the project folder path']]);
     const total=core.length+useful.length+developer.length+technical.length+utility.length;
     host.innerHTML=header(tool,`<div class="help-page"><section class="help-lead"><span>${icon('search')}</span><div><h2>Search is how you get anywhere</h2><p>Press <kbd>Ctrl</kbd> + <kbd>K</kbd> from any screen, or type <kbd>&gt;</kbd> while you are not editing a field. Search for a tool, project, action, technology, port, or process.</p></div></section><div class="help-columns"><section class="help-panel"><header>${icon('bolt')}<strong>Available commands</strong></header>${searchableCommands}</section><section class="help-panel"><header>${icon('folder_open')}<strong>Actions on an open project</strong></header>${projectActions}</section></div><section class="help-tools"><header><div>${icon('handyman')}<strong>Available tools</strong></div><small>${total} tools</small></header><h3>Core</h3><div class="help-tool-grid">${cards(core)}</div><h3>Everyday utilities</h3><div class="help-tool-grid">${cards(useful)}</div><h3>Developer tools</h3><div class="help-tool-grid">${cards(developer)}</div><h3>Technical Windows tools and repairs</h3><div class="help-tool-grid">${cards(technical)}</div><h3>Encode, hash, time, and data formats</h3><div class="help-tool-grid">${cards(utility)}</div></section></div>`);
   }
@@ -656,7 +656,7 @@
     if (selected) clipboardSelected = selected.id;
     const count = (kind) => rows.filter((row) => kind === "all" || row.kind === kind).length;
     const kinds = [["all","All","select_all"],["text","Text","notes"],["links","Links","link"],["code","Code","code"],["images","Images","image"]];
-    host.innerHTML = header(tool, `<div class="clipboard-toolbar"><button class="btn primary" data-clip-capture>${icon("content_paste")}Capture current clipboard</button><span>Text copied while DevHQ is open can be added here. Pinned entries are kept until you forget them.</span></div><div class="clipboard-workspace">
+    host.innerHTML = header(tool, `<div class="clipboard-toolbar"><button class="btn primary" data-clip-capture>${icon("content_paste")}Capture current clipboard</button><span>Text copied while WinT is open can be added here. Pinned entries are kept until you forget them.</span></div><div class="clipboard-workspace">
       <aside class="clipboard-kinds"><h3>Kinds</h3>${kinds.map(([id,label,glyph])=>`<button class="${clipboardKind===id?'on':''}" data-clip-kind="${id}">${icon(glyph)}<strong>${label}</strong><small>${count(id)}</small></button>`).join("")}</aside>
       <section class="clipboard-list"><header><strong>${clipboardKind === 'all' ? 'All clips' : clipboardKind}</strong><button class="${clipboardPinnedOnly?'on':''}" data-clip-pinned>${icon("push_pin")}Pinned only</button><small>${visible.length} of ${rows.length} entries</small></header><div>${visible.length ? visible.map((row)=>`<button class="clipboard-row${row.id===clipboardSelected?' on':''}" data-clip-row="${esc(row.id)}">${row.kind === 'images' ? `<img src="${esc(row.dataUrl)}" alt="">` : icon(clipIcon(row.kind))}<span><strong>${row.kind === 'images' ? `${esc(row.width || '?')} × ${esc(row.height || '?')} ${esc(row.mime || 'image')}` : esc(row.text.replace(/\s+/g,' ').slice(0,160))}</strong><small>${esc(new Date(row.time).toLocaleString())} · ${row.kind === 'images' ? `${Math.round((row.size || 0) / 1024)} KB` : `${row.text.length} characters`}</small></span>${row.pinned?icon('push_pin'):''}</button>`).join('') : `<div class="win-empty">${rows.length ? 'No clips match this view.' : 'Capture the current clipboard to start a private local history.'}</div>`}</div></section>
       <aside class="clipboard-detail">${selected ? `<header>${icon(clipIcon(selected.kind))}<strong>Entry</strong><small>${esc(selected.kind)}</small></header>${selected.kind === 'images' ? `<div class="clipboard-image-preview"><img src="${esc(selected.dataUrl)}" alt="Clipboard image"></div>` : `<pre>${esc(selected.text)}</pre>`}<dl><dt>Captured</dt><dd>${esc(new Date(selected.time).toLocaleString())}</dd><dt>Size</dt><dd>${selected.kind === 'images' ? `${esc(selected.width)} × ${esc(selected.height)} · ${Math.round((selected.size || 0) / 1024)} KB` : `${selected.text.length} characters`}</dd><dt>Format</dt><dd>${esc(selected.mime || 'text/plain')}</dd><dt>Store</dt><dd>local · up to 250 entries</dd></dl><footer><button class="btn primary" data-clip-copy>${icon('content_copy')}Copy back</button><button class="btn" data-clip-pin>${icon('push_pin')}${selected.pinned?'Unpin':'Pin'}</button><button class="btn danger" data-clip-forget>${icon('delete')}Forget</button></footer>` : '<div class="win-empty">Select an entry to inspect it.</div>'}</aside>
@@ -694,7 +694,7 @@
       clipboardSelected = row.id;
       renderClipboard(catalog.find((item) => item.id === "clipboard"));
       if (!silent) status("Clipboard entry captured.", "ok");
-    } catch { if (!silent) status("Windows did not allow DevHQ to read the clipboard. Try pasting into the tool.", "bad"); }
+    } catch { if (!silent) status("Windows did not allow WinT to read the clipboard. Try pasting into the tool.", "bad"); }
   }
   function updateSelectedClip(action) {
     const rows = readClips();
@@ -709,22 +709,22 @@
   async function inspectLocks(){const path=host.querySelector("[data-lock-path]").value.trim();if(!path)return status("Enter a file or folder path.","warn");status("Asking Restart Manager…");
     try{const rows=await work("lock-inspect",`Inspecting locks on ${path}`,invoke("lock_inspect",{path}));host.querySelector("[data-lock-results]").innerHTML=rows.length?`<table class="win-table"><thead><tr><th>Process</th><th>PID</th><th>Service</th><th>Restartable</th></tr></thead><tbody>${rows.map((r)=>`<tr><td>${esc(r.name||"Unknown")}</td><td class="mono">${esc(r.pid)}</td><td>${esc(r.service||"—")}</td><td>${r.restartable?"yes":"no"}</td></tr>`).join("")}</tbody></table>`:`<div class="win-empty">Windows reports no process holding this path.</div>`;status(`${rows.length} locking process${rows.length===1?"":"es"}`,rows.length?"warn":"ok");}catch(error){status(String(error),"bad");}}
   function click(event) {
-    const helpTool=event.target.closest('[data-help-tool]');if(helpTool){window.devhqShell?.openTool(helpTool.dataset.helpTool);return;}
-    const cliCopy=event.target.closest('[data-cli-copy]');if(cliCopy){window.devhqCopy.copy(cliCopy.dataset.cliCopy,cliCopy).catch(()=>{});return;}
+    const helpTool=event.target.closest('[data-help-tool]');if(helpTool){window.wintShell?.openTool(helpTool.dataset.helpTool);return;}
+    const cliCopy=event.target.closest('[data-cli-copy]');if(cliCopy){window.wintCopy.copy(cliCopy.dataset.cliCopy,cliCopy).catch(()=>{});return;}
     const cliToggle=event.target.closest('[data-cli-toggle]');if(cliToggle){const installed=cliToggle.dataset.installed==='true';cliToggle.disabled=true;cliToggle.textContent=installed?'Removing…':'Installing…';invoke(installed?'cli_uninstall':'cli_install').then((result)=>{refreshCliPage(result);if(!installed)showCliPathSaved(result);}).catch(()=>{cliToggle.disabled=false;cliToggle.textContent=installed?'Remove CLI from PATH':'Install CLI';});return;}
-    if (event.target.closest("[data-close-win]")) return window.devhqShell?.openTool("overview");
+    if (event.target.closest("[data-close-win]")) return window.wintShell?.openTool("overview");
     const pop = event.target.closest("[data-popout-tool]");
-    if (pop) return window.devhqShell?.popOutTool?.(pop.dataset.popoutTool);
+    if (pop) return window.wintShell?.popOutTool?.(pop.dataset.popoutTool);
     const pin = event.target.closest("[data-win-pin]");
-    if (pin) { window.devhqShell?.toggleToolPin(pin.dataset.winPin); return render(); }
-    const related=event.target.closest("[data-related-tool]");if(related){window.devhqShell?.openTool(related.dataset.relatedTool);return;}
+    if (pin) { window.wintShell?.toggleToolPin(pin.dataset.winPin); return render(); }
+    const related=event.target.closest("[data-related-tool]");if(related){window.wintShell?.openTool(related.dataset.relatedTool);return;}
     if (event.target.closest("[data-win-refresh]")) return active === "events" ? loadEvents() : active === "registry" ? (regMode === "watch" ? pollRegistry() : loadRegistry()) : active === "system" ? (systemMode === "environment" ? loadSystem() : systemMode === "locks" ? inspectLocks() : loadLogTail()) : active === "log-tail" ? loadLogTail() : active === "lock-inspector" ? inspectLocks() : render();
     if (event.target.closest("[data-tracker-toggle]")) { setTrackerEnabled(!trackerEnabled); return renderTimeTracker(catalog.find((x) => x.id === "time-tracker")); }
     if (event.target.closest("[data-awake-toggle]")) return setKeepAwake(!awakeActive, awakeDuration);
     const awakeFlag=event.target.closest("[data-awake-flag]");if(awakeFlag&&!awakeActive){const id=awakeFlag.dataset.awakeFlag;if(id==="system"){awakeSystem=!awakeSystem;if(!awakeSystem)awakeAway=false;}if(id==="display")awakeDisplay=!awakeDisplay;if(id==="away"){awakeAway=!awakeAway;if(awakeAway)awakeSystem=true;}return renderKeepAwake(catalog.find((x)=>x.id===active));}
     const awakeDurationButton=event.target.closest("[data-awake-duration]");if(awakeDurationButton&&!awakeActive){awakeDuration=Number(awakeDurationButton.dataset.awakeDuration);return renderKeepAwake(catalog.find((x)=>x.id===active));}
     const awakePreset=event.target.closest("[data-awake-preset]");if(awakePreset){const name=awakePreset.dataset.awakePresetName;awakeSystem=true;awakeDisplay=name==="Presenting"||name==="Attached debugger";awakeAway=name==="Overnight transfer";return setKeepAwake(true,Number(awakePreset.dataset.awakePreset));}
-    const awakeCopy=event.target.closest("[data-awake-copy]");if(awakeCopy){const call=host.querySelector(".awake-call code")?.textContent||"";return window.devhqCopy.copy(call,awakeCopy).catch(()=>{});}
+    const awakeCopy=event.target.closest("[data-awake-copy]");if(awakeCopy){const call=host.querySelector(".awake-call code")?.textContent||"";return window.wintCopy.copy(call,awakeCopy).catch(()=>{});}
     if (event.target.closest("[data-tracker-export]")) return exportTrackerCsv();
     const trackerRangeButton=event.target.closest("[data-tracker-range]");if(trackerRangeButton){trackerRange=trackerRangeButton.dataset.trackerRange;trackerSelected="";return renderTimeTracker(catalog.find((x)=>x.id==="time-tracker"));}
     const trackerApp=event.target.closest("[data-tracker-app]");if(trackerApp){trackerSelected=trackerApp.dataset.trackerApp;return renderTimeTracker(catalog.find((x)=>x.id==="time-tracker"));}
@@ -732,7 +732,7 @@
     const clipKindButton=event.target.closest('[data-clip-kind]');if(clipKindButton){clipboardKind=clipKindButton.dataset.clipKind;return renderClipboard(catalog.find((item)=>item.id==='clipboard'));}
     if(event.target.closest('[data-clip-pinned]')){clipboardPinnedOnly=!clipboardPinnedOnly;return renderClipboard(catalog.find((item)=>item.id==='clipboard'));}
     const clipRow=event.target.closest('[data-clip-row]');if(clipRow){clipboardSelected=clipRow.dataset.clipRow;return renderClipboard(catalog.find((item)=>item.id==='clipboard'));}
-    const clipCopy=event.target.closest('[data-clip-copy]');if(clipCopy){const row=readClips().find((item)=>item.id===clipboardSelected);if(!row)return;if(row.kind==='images'){const blob=dataUrlBlob(row.dataUrl);navigator.clipboard.write([new ClipboardItem({[blob.type]:blob})]).then(()=>window.devhqCopy.feedback(clipCopy,true)).catch(()=>window.devhqCopy.feedback(clipCopy,false));}else window.devhqCopy.copy(row.text,clipCopy).catch(()=>{});return;}
+    const clipCopy=event.target.closest('[data-clip-copy]');if(clipCopy){const row=readClips().find((item)=>item.id===clipboardSelected);if(!row)return;if(row.kind==='images'){const blob=dataUrlBlob(row.dataUrl);navigator.clipboard.write([new ClipboardItem({[blob.type]:blob})]).then(()=>window.wintCopy.feedback(clipCopy,true)).catch(()=>window.wintCopy.feedback(clipCopy,false));}else window.wintCopy.copy(row.text,clipCopy).catch(()=>{});return;}
     if(event.target.closest('[data-clip-pin]'))return updateSelectedClip('pin');
     if(event.target.closest('[data-clip-forget]'))return updateSelectedClip('forget');
     if (event.target.closest("[data-event-stream]")) { const button=event.target.closest("[data-event-stream]"); if(timer){clearInterval(timer);timer=0;button.innerHTML=`${icon("play_arrow")} Start`;status("Stream paused.");}else{loadEvents();timer=setInterval(loadEvents,3000);button.innerHTML=`${icon("pause")} Pause`;} return; }
@@ -832,7 +832,7 @@
     handoffRunning=false;
     if(id==="keep-awake"&&awakeActive&&!awakeTimer)awakeTimer=setInterval(tickKeepAwake,1000);
   }
-  window.devhqWindowsTools = {
+  window.wintWindowsTools = {
     catalog: () => catalog.map((x) => ({ ...x })),
     mount(node) { host = node; host.onclick = click; host.oninput = (event) => { const slider=event.target.closest("[data-audio-volume]");if(slider)slider.closest(".audio-volume")?.querySelector("output")?.replaceChildren(`${slider.value}%`); }; host.onchange = (event) => { const slider=event.target.closest("[data-audio-volume]");if(slider)setAudioVolume(slider.dataset.audioVolume,Number(slider.value)); }; host.onkeydown = (e) => { if (e.key !== "Enter") return; if(e.target.matches("[data-event-text]"))loadEvents();else if(e.target.matches("[data-reg-path]"))loadRegistry();else if(e.target.matches("[data-log-path],[data-log-filter]"))loadLogTail();else if(e.target.matches("[data-lock-path]"))inspectLocks(); }; render(); },
     open(id) { if (!catalog.some((x) => x.id === id)) return; active = id; render(); if (id === "events") restoreEventPopout(); resumeHandoff(id); },

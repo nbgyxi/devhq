@@ -1,7 +1,7 @@
 // Runtime localization for the no-build frontend. Catalog keys are the English
 // source strings, which keeps the JSON files straightforward for translators.
 // Empty/missing values fall back to English.
-window.devhqI18n = (() => {
+window.wintI18n = (() => {
   let english = {};
   let active = {};
   let language = "en";
@@ -70,7 +70,7 @@ window.devhqI18n = (() => {
   }
 
   function storedLanguage() {
-    try { return JSON.parse(localStorage.getItem("devhq.prefs.v1") || "{}").language || "system"; }
+    try { return JSON.parse(localStorage.getItem("wint.prefs.v1") || "{}").language || "system"; }
     catch { return "system"; }
   }
 

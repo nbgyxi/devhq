@@ -18,7 +18,7 @@
   };
   const localProject = (repo = "") => {
     const wanted = String(repo).replace(/\/?\.git\/?$/i, "").toLowerCase();
-    return window.devhqShell?.projects?.().find(project => githubSlug(project.remote) === wanted) || null;
+    return window.wintShell?.projects?.().find(project => githubSlug(project.remote) === wanted) || null;
   };
 
   function mount(host) {
@@ -28,7 +28,7 @@
       <button class="btn back tool-back" type="button" data-open-tool="overview" title="Back to the overview">${icon("arrow_back")}Back</button>
       <span class="tool-plate">${icon("merge")}</span>
       <span class="tool-title"><strong>GitHub</strong><small>inbox, pull requests, issues, Actions and repositories</small></span>
-      ${window.devhqMaturity?.badge("github") ?? ""}
+      ${window.wintMaturity?.badge("github") ?? ""}
       <button class="tool-popout" type="button" data-popout-tool="github"></button>
       <button class="tool-pin" type="button" data-pin-tool="github"></button>
       <button class="tool-close" type="button" data-open-tool="overview" title="Back to the overview">${icon("close")}</button>
@@ -291,22 +291,22 @@
   }
 
   function onClick(e) {
-    const pop=e.target.closest("[data-popout-tool]"); if(pop){window.devhqShell?.popOutTool?.(pop.dataset.popoutTool);return;}
-    const pin=e.target.closest("[data-pin-tool]"); if(pin){window.devhqShell?.toggleToolPin?.(pin.dataset.pinTool);return;}
-    const go=e.target.closest("[data-open-tool]"); if(go){window.devhqShell?.openTool?.(go.dataset.openTool);return;}
+    const pop=e.target.closest("[data-popout-tool]"); if(pop){window.wintShell?.popOutTool?.(pop.dataset.popoutTool);return;}
+    const pin=e.target.closest("[data-pin-tool]"); if(pin){window.wintShell?.toggleToolPin?.(pin.dataset.pinTool);return;}
+    const go=e.target.closest("[data-open-tool]"); if(go){window.wintShell?.openTool?.(go.dataset.openTool);return;}
     const tab=e.target.closest("[data-gh-tab]"); if(tab){state.tab=tab.dataset.ghTab;load();return;}
     const item=e.target.closest("[data-gh-item]"); if(item){select(Number(item.dataset.ghItem));return;}
     if(e.target.closest("[data-gh-refresh]")){state.status?.authenticated?load():connect();return;}
     if(e.target.closest("[data-gh-connect]")){connect();return;}
-    const copy=e.target.closest("[data-gh-copy]"); if(copy){window.devhqCopy.copy(copy.dataset.ghCopy,copy).catch(()=>{});return;}
+    const copy=e.target.closest("[data-gh-copy]"); if(copy){window.wintCopy.copy(copy.dataset.ghCopy,copy).catch(()=>{});return;}
     if(e.target.closest("[data-gh-new]")){newIssue();return;}
     if(e.target.closest("[data-gh-read-all]")){mutate("notifications","PUT",null,"All notifications marked read");return;}
     if(e.target.closest("[data-gh-modal-close]")){state.host.querySelector("#gh-modal").innerHTML="";return;}
     const browser=e.target.closest("[data-gh-browser]"); if(browser){ghInvoke("plugin:opener|open_url",{url:browser.dataset.ghBrowser});return;}
-    const project=e.target.closest("[data-gh-project]"); if(project){window.dispatchEvent(new CustomEvent("devhq:open-github-project",{detail:{repo:project.dataset.ghProject}}));return;}
-    const git=e.target.closest("[data-gh-git]"); if(git){window.dispatchEvent(new CustomEvent("devhq:open-git-repo",{detail:{repo:git.dataset.ghGit}}));return;}
+    const project=e.target.closest("[data-gh-project]"); if(project){window.dispatchEvent(new CustomEvent("wint:open-github-project",{detail:{repo:project.dataset.ghProject}}));return;}
+    const git=e.target.closest("[data-gh-git]"); if(git){window.dispatchEvent(new CustomEvent("wint:open-git-repo",{detail:{repo:git.dataset.ghGit}}));return;}
     const d=state.detail, repo=repoName(d?.url);
-    const review=e.target.closest("[data-gh-review]"); if(review&&d) mutate(`repos/${repo}/pulls/${d.number}/reviews`,"POST",{event:review.dataset.ghReview,body:"Reviewed from DevHQ"},"Review submitted");
+    const review=e.target.closest("[data-gh-review]"); if(review&&d) mutate(`repos/${repo}/pulls/${d.number}/reviews`,"POST",{event:review.dataset.ghReview,body:"Reviewed from WinT"},"Review submitted");
     if(e.target.closest("[data-gh-merge]")&&d&&confirm(`Squash and merge #${d.number}?`)) mutate(`repos/${repo}/pulls/${d.number}/merge`,"PUT",{merge_method:"squash"},"Pull request merged");
     if(e.target.closest("[data-gh-rerun]")&&d) mutate(`repos/${state.items[state.selected]._repo}/actions/runs/${d.id}/rerun`,"POST",null,"Workflow rerun requested");
     if(e.target.closest("[data-gh-cancel-run]")&&d&&confirm(`Cancel workflow run ${d.id}?`)) mutate(`repos/${state.items[state.selected]._repo}/actions/runs/${d.id}/cancel`,"POST",null,"Workflow cancellation requested");
@@ -323,5 +323,5 @@
   function suspend() { clearInterval(state.timer); state.timer = 0; }
   async function resume() { await opened(); startPolling(); }
 
-  window.devhqGithub = { mount, opened, suspend, resume, exportState, importState };
+  window.wintGithub = { mount, opened, suspend, resume, exportState, importState };
 })();

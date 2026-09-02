@@ -22,7 +22,7 @@ const DNS_FLASH_MS = 1800;
  *  asks for them. `ALL` is a filter, not a type. */
 const DNS_TYPES = ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "SRV", "CAA"];
 
-const DNS_INTERESTS_KEY = "devhq.dns.interests.v1";
+const DNS_INTERESTS_KEY = "wint.dns.interests.v1";
 
 function loadInterestPrefs() {
   try {
@@ -68,23 +68,23 @@ const dns = {
 /* ------------------------------------------------------------ the shell */
 
 function dnsIcon(name) {
-  return window.devhqShell?.icon(name) ?? `<span class="ms" aria-hidden="true">${name}</span>`;
+  return window.wintShell?.icon(name) ?? `<span class="ms" aria-hidden="true">${name}</span>`;
 }
 
 function dnsEsc(value) {
-  return window.devhqShell?.esc(value) ?? String(value ?? "");
+  return window.wintShell?.esc(value) ?? String(value ?? "");
 }
 
 function dnsDirty() {
-  window.devhqShell?.markDirty("dns");
+  window.wintShell?.markDirty("dns");
 }
 
 function dnsWork(key, label, detail) {
-  window.devhqWork?.beginWork(key, label, detail);
+  window.wintWork?.beginWork(key, label, detail);
 }
 
 function dnsDone(key) {
-  window.devhqWork?.endWork(key);
+  window.wintWork?.endWork(key);
 }
 
 /** Says something in the tool itself for a moment. Anything worth keeping goes
@@ -108,7 +108,7 @@ function mount(host) {
         <strong>DNS</strong>
         <small>resolve a name, compare resolvers, see who really answers</small>
       </span>
-      ${window.devhqMaturity?.badge("dns") ?? ""}
+      ${window.wintMaturity?.badge("dns") ?? ""}
       <button class="tool-popout" type="button" data-popout-tool="dns"></button>
       <button class="tool-pin" id="tool-pin-dns" type="button" data-pin-tool="dns"></button>
       <button class="tool-close" type="button" data-open-tool="overview"
@@ -206,11 +206,11 @@ function wire() {
   dns.host.onclick = (event) => {
     // The pin and the way out mean the same thing here as in the dock.
     const pop = event.target.closest("[data-popout-tool]");
-    if (pop) return window.devhqShell?.popOutTool?.(pop.dataset.popoutTool);
+    if (pop) return window.wintShell?.popOutTool?.(pop.dataset.popoutTool);
     const pin = event.target.closest("[data-pin-tool]");
-    if (pin) return window.devhqShell?.toggleToolPin(pin.dataset.pinTool);
+    if (pin) return window.wintShell?.toggleToolPin(pin.dataset.pinTool);
     const go = event.target.closest("[data-open-tool]");
-    if (go) return window.devhqShell?.openTool(go.dataset.openTool);
+    if (go) return window.wintShell?.openTool(go.dataset.openTool);
 
     const act = event.target.closest("[data-dns]");
     if (act) return action(act.dataset.dns, act.dataset);
@@ -244,8 +244,8 @@ function action(name, data) {
   if (name === "domain-toggle") return toggleInterest(data.host);
   if (name === "lookup") return lookFor(data.host);
   // Both of these leave for the Hosts file tool, which owns every edit.
-  if (name === "show-host-line") return window.devhqHosts?.reveal(Number(data.line));
-  if (name === "pin-local") return window.devhqHosts?.pinLocal(dns.name);
+  if (name === "show-host-line") return window.wintHosts?.reveal(Number(data.line));
+  if (name === "pin-local") return window.wintHosts?.pinLocal(dns.name);
 }
 
 /** Opened from the dock, from search, or from a shortcut. Everything the tool
@@ -254,7 +254,7 @@ function opened() {
   if (!dns.domainsLoaded) loadDomains();
   // The hosts file decides some of these names, so it is read even though it
   // is edited elsewhere — the override banner is the whole reason.
-  window.devhqHosts?.ensureLoaded();
+  window.wintHosts?.ensureLoaded();
   const input = field("dns-query");
   if (input) {
     input.value = dns.query;
@@ -475,7 +475,7 @@ function toggleInterest(value) {
 }
 
 function loadDomains(again = false) {
-  const projects = window.devhqShell?.projects() || [];
+  const projects = window.wintShell?.projects() || [];
   if (!projects.length) {
     dns.domainsLoaded = true;
     return dnsDirty();
@@ -556,7 +556,7 @@ function domainList() {
   };
   for (const row of dns.domains) push(row.host, `${row.project} · ${row.note}`);
   for (const host of dns.addedDomains) push(host, "Added by you");
-  for (const line of window.devhqHosts?.entries() || []) {
+  for (const line of window.wintHosts?.entries() || []) {
     for (const name of line.names) {
       push(name, `hosts · ${line.enabled ? "on" : "off"} · ${line.ip}`);
     }
@@ -600,7 +600,7 @@ function renderDomains() {
  *  Hosts file tool, which this points at. */
 function renderOverride() {
   const host = field("dns-override");
-  const overrides = window.devhqHosts?.overridesFor(dns.name) || [];
+  const overrides = window.wintHosts?.overridesFor(dns.name) || [];
   if (!overrides.length) {
     host.innerHTML = "";
     return;
@@ -822,4 +822,4 @@ function exportState() {
     newDomain:dns.host?.querySelector?.("#dns-interest")?.value ?? dns.newDomain };
 }
 function importState(state) { if (!state) return; Object.assign(dns, state, { host:dns.host, built:dns.built }); if(dns.host) render(); }
-window.devhqDns = { mount, render, opened, lookFor, recheck, exportState, importState };
+window.wintDns = { mount, render, opened, lookFor, recheck, exportState, importState };
