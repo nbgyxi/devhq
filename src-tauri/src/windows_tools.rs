@@ -302,6 +302,12 @@ fn ps(script: &str, env: &[(&str, &str)]) -> Result<Output, String> {
     for (key, value) in env {
         command.env(key, value);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     command.output().map_err(|e| e.to_string())
 }
 
@@ -435,6 +441,12 @@ pub fn registry_change(change: RegistryChange) -> ToolResult {
         } else {
             command.arg("/ve");
         }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
         return output_result(command.output().map_err(|e| e.to_string()));
     }
     let kind = match change.kind.to_ascii_uppercase().as_str() {
@@ -467,6 +479,12 @@ pub fn registry_change(change: RegistryChange) -> ToolResult {
         command.args(["/v", name]);
     } else {
         command.arg("/ve");
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
     }
     output_result(command.output().map_err(|e| e.to_string()))
 }
@@ -852,8 +870,15 @@ fn wifi_reset(target: &str) -> ToolResult {
     ]
     .map(str::to_string);
     let run_plain = || {
-        Command::new("powershell.exe")
-            .args(&args)
+        let mut command = Command::new("powershell.exe");
+        command.args(&args);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        command
             .output()
             .map(|_| ())
             .map_err(|error| error.to_string())

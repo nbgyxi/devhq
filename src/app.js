@@ -1566,17 +1566,147 @@ let embeddedToolOpening = false;
 let embeddedToolResyncPending = false;
 let embeddedToolMountedId = "";
 
+const EMBEDDED_TOOL_WORK = "isolated-tool-open";
+// The tool that has already reported itself drawn. `ready` can land before the
+// invoke that created the webview has resolved, and without this a resize in
+// that gap would put the loading screen back over a tool that is already up.
+let embeddedToolReadyId = "";
+
+/* ---------- tools that stay alive after you navigate away ----------
+ * Leaving a tool used to destroy its webview, so coming back rebuilt it from
+ * nothing. Now the last few are only hidden, and returning to one is a show,
+ * not a cold start.
+ *
+ * Only the eight tools with a webview of their own can occupy a slot. The
+ * utilities and Windows tools are not candidates and do not need to be: they
+ * render into the main window's own DOM, so their code is loaded once and
+ * switching between them was never a reload.
+ *
+ * Three, not more. What is kept alive is not a DOM tree - each of these tools
+ * has its own WebView2 data directory, so it has its own browser process tree
+ * and costs tens of megabytes, not the little a cached tab would. People move
+ * between two or three tools, so past three the slots are paid for every
+ * minute and hit rarely. The current tool holds one, making this two warm
+ * spares. Raising it is this one number.
+ */
+const EMBEDDED_TOOL_RESIDENT_MAX = 3;
+
+/** Live webviews, least recently used first. */
+const embeddedToolResident = [];
+/** Which resident tools currently believe they are visible. */
+const embeddedToolAwakeIds = new Set();
+
+/** id -> the session its live webview was built with. The session is baked
+ *  into the webview's URL and its bridge filters on it, so it has to survive
+ *  for as long as that webview does - it can no longer be rolled per visit. */
+const embeddedToolSessions = new Map();
+
+function sessionForTool(id) {
+  let session = embeddedToolSessions.get(id);
+  if (!session) {
+    session = Array.from(
+      crypto.getRandomValues(new Uint8Array(18)),
+      (byte) => byte.toString(16).padStart(2, "0"),
+    ).join("");
+    embeddedToolSessions.set(id, session);
+  }
+  return session;
+}
+
+/** Which resident tool a bridge message came from. With more than one tool
+ *  alive, the current tool's session is no longer the only valid one. */
+function toolForSession(session) {
+  if (!session) return "";
+  for (const [id, value] of embeddedToolSessions) if (value === session) return id;
+  return "";
+}
+
+function touchResidentTool(id) {
+  const at = embeddedToolResident.indexOf(id);
+  if (at >= 0) embeddedToolResident.splice(at, 1);
+  embeddedToolResident.push(id);
+}
+
+/** Tell a hidden tool to stop working, or a shown one to pick up again.
+ *  Residency must not mean a tool polls forever behind your back: destroying
+ *  the webview used to stop its timers for free, and this replaces that. */
+function setEmbeddedToolAwake(id, awake) {
+  const session = embeddedToolSessions.get(id);
+  if (!session) return;
+  // Edge-triggered. syncEmbeddedTool runs on every resize frame, and this must
+  // not turn each of those into an event across the process boundary.
+  if (embeddedToolAwakeIds.has(id) === awake) return;
+  if (awake) embeddedToolAwakeIds.add(id);
+  else embeddedToolAwakeIds.delete(id);
+  emit("tool:bridge-command", {
+    session,
+    commandId: `${session}:awake:${Date.now()}`,
+    action: awake ? "resume" : "suspend",
+  }).catch(() => {});
+}
+
+/** Drop a tool out of memory for good, and forget its session with it. */
+async function evictEmbeddedTool(id) {
+  const at = embeddedToolResident.indexOf(id);
+  if (at >= 0) embeddedToolResident.splice(at, 1);
+  embeddedToolAwakeIds.delete(id);
+  embeddedToolSessions.delete(id);
+  if (embeddedToolMountedId === id) embeddedToolMountedId = "";
+  if (embeddedToolReadyId === id) embeddedToolReadyId = "";
+  await invoke("tool_embedded_destroy", { id }).catch(() => {});
+}
+
+/** Evict from the least recently used end until the budget is met. */
+async function trimResidentTools(keepId) {
+  while (embeddedToolResident.length > EMBEDDED_TOOL_RESIDENT_MAX) {
+    const oldest = embeddedToolResident.find((id) => id !== keepId);
+    if (!oldest) break;
+    await evictEmbeddedTool(oldest);
+  }
+}
+
+/** The named, shimmering stand-in that fills the slot from the click until the
+ *  tool has drawn itself. The child webview is a native sibling layered over
+ *  this slot, so this covers the part of the wait the webview cannot: the
+ *  hundreds of milliseconds Rust spends creating it, before it exists to paint
+ *  anything of its own. Its own copy of this screen takes over from there. */
+function showEmbeddedToolLoading(tool, phase) {
+  const panel = document.getElementById("isolated-tool-loading");
+  if (!panel) return;
+  panel.classList.remove("failed");
+  panel.querySelector("[data-loading-name]").textContent = tool?.name || "This tool";
+  panel.querySelector("[data-loading-phase]").textContent = phase;
+  panel.hidden = false;
+}
+
+function hideEmbeddedToolLoading() {
+  const panel = document.getElementById("isolated-tool-loading");
+  if (panel) panel.hidden = true;
+}
+
+function failEmbeddedToolLoading(tool, message) {
+  const panel = document.getElementById("isolated-tool-loading");
+  if (!panel) return;
+  panel.classList.add("failed");
+  panel.querySelector(".tool-loading-ring")?.remove();
+  panel.querySelector(".tool-loading-body")?.remove();
+  panel.querySelector("[data-loading-phase]").textContent = message;
+  panel.hidden = false;
+}
+
 /** Keep the isolated tracker exactly over the ordinary Windows-tools host.
  * Its child webview is a native sibling of the shell webview, not an iframe,
  * so a blocked tracker event loop cannot prevent the shell from responding. */
 function syncEmbeddedTool() {
   const id = state.isolatedToolId;
   const isolated = state.activeView === "isolated-tool" && Boolean(id);
-  if (isolated && !state.isolatedToolSession) {
-    state.isolatedToolSession = Array.from(crypto.getRandomValues(new Uint8Array(18)), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  }
+  // One session per live webview, reused for as long as that webview lives.
+  if (isolated) state.isolatedToolSession = sessionForTool(id);
   const host = el["isolated-tool-slot"];
   if (!isolated || !host || host.hidden) {
+    hideEmbeddedToolLoading();
+    endWork(EMBEDDED_TOOL_WORK);
+    embeddedToolReadyId = "";
     if (embeddedToolOpening) {
       embeddedToolResyncPending = true;
       return;
@@ -1585,7 +1715,10 @@ function syncEmbeddedTool() {
     if (mountedId) {
       embeddedToolMountedId = "";
       embeddedToolOpening = true;
-      invoke("tool_embedded_destroy", { id: mountedId }).catch(() => {}).finally(() => {
+      // Hidden, not destroyed: this is what makes coming back a show rather
+      // than a rebuild. Put it to sleep first so it stops working while away.
+      setEmbeddedToolAwake(mountedId, false);
+      invoke("tool_embedded_hide", { id: mountedId }).catch(() => {}).finally(() => {
         embeddedToolOpening = false;
         if (embeddedToolResyncPending) {
           embeddedToolResyncPending = false;
@@ -1599,6 +1732,12 @@ function syncEmbeddedTool() {
     embeddedToolResyncPending = true;
     return;
   }
+  const tool = toolById(id);
+  if (embeddedToolReadyId && embeddedToolReadyId !== id) embeddedToolReadyId = "";
+  if (embeddedToolMountedId !== id && embeddedToolReadyId !== id) {
+    showEmbeddedToolLoading(tool, `Opening ${tool?.name || id}…`);
+    beginWork(EMBEDDED_TOOL_WORK, `Opening ${tool?.name || id}`);
+  }
   requestAnimationFrame(async () => {
     const rect = host.getBoundingClientRect();
     if (state.activeView !== "isolated-tool" || state.isolatedToolId !== id) return;
@@ -1608,15 +1747,19 @@ function syncEmbeddedTool() {
       // WebView2 creation and destruction both touch the native window tree.
       // Never overlap them: switching tools used to race a close for the old
       // environment against creation of the next one and could freeze the
-      // entire main window.
+      // entire main window. Hiding touches the same tree, so it waits here too.
       if (embeddedToolMountedId && embeddedToolMountedId !== id) {
         const mountedId = embeddedToolMountedId;
         embeddedToolMountedId = "";
-        await invoke("tool_embedded_destroy", { id: mountedId });
+        setEmbeddedToolAwake(mountedId, false);
+        await invoke("tool_embedded_hide", { id: mountedId });
       }
+      const resident = embeddedToolResident.includes(id);
       await invoke("tool_embedded_show", {
         id,
-        session: state.isolatedToolSession,
+        // Carried into the page's URL so its own first paint can name it.
+        name: tool?.name || id,
+        session: sessionForTool(id),
         theme: state.theme === "light" ? "light" : "dark",
         pinned: isToolPinned(id),
         x: rect.left,
@@ -1624,19 +1767,35 @@ function syncEmbeddedTool() {
         width: rect.width,
         height: rect.height,
       });
+      // A webview that was just built boots awake. Record that before anything
+      // tries to put it to sleep, or the first suspend is swallowed as a no-op
+      // and the tool polls on in the background.
+      if (!resident) embeddedToolAwakeIds.add(id);
       // Navigation may have happened while Rust was creating WebView2.
       if (state.activeView !== "isolated-tool" || state.isolatedToolId !== id) {
-        await invoke("tool_embedded_destroy", { id }).catch(() => {});
+        setEmbeddedToolAwake(id, false);
+        await invoke("tool_embedded_hide", { id }).catch(() => {});
       } else {
         embeddedToolMountedId = id;
       }
+      touchResidentTool(id);
+      if (resident && embeddedToolMountedId === id) {
+        // It was still alive, so nothing reloaded and nothing will report
+        // ready. Wake it and clear the stand-in ourselves.
+        setEmbeddedToolAwake(id, true);
+        embeddedToolReadyId = id;
+        endWork(EMBEDDED_TOOL_WORK);
+        hideEmbeddedToolLoading();
+      }
+      await trimResidentTools(id);
     } catch (error) {
-      console.error("Could not show isolated Time Tracker", error);
-      state.activeView = "overview";
-      state.isolatedToolId = "";
-      savePrefs();
-      syncMainView();
-      beginWork("isolated-tool-fail", "Time Tracker could not open", String(error));
+      // Stay on the tool and say why it did not open. Bouncing back to the
+      // overview used to throw the reason away along with the view.
+      const label = tool?.name || id;
+      console.error(`Could not show the isolated ${label}`, error);
+      endWork(EMBEDDED_TOOL_WORK);
+      failEmbeddedToolLoading(tool, `${label} could not open. ${String(error)}`);
+      beginWork("isolated-tool-fail", `${label} could not open`, String(error));
       setTimeout(() => endWork("isolated-tool-fail"), 8000);
     } finally {
       embeddedToolOpening = false;
@@ -2821,7 +2980,7 @@ const TOOLS = [
   {
     id: "git", name: "Git", icon: "commit",
     hint: "changes, staging, commits, branches, remotes and history",
-    keywords: "git versions version history save saved record snapshot source control commit branch checkout stash fetch pull push upload download diff repository",
+    keywords: "git versions version history save saved record snapshot source control commit branch checkout switch stash fetch pull push upload download sync diff changes changed modified untracked staged unstaged uncommitted stage unstage discard revert reset amend merge rebase conflict clone remote origin upstream tag blame log repository repo working tree",
     open: () => switchMainView("git"), active: () => state.activeView === "git",
   },
   {
@@ -2829,7 +2988,7 @@ const TOOLS = [
     name: "GitHub",
     icon: "merge",
     hint: "inbox, pull requests, issues, Actions and repositories",
-    keywords: "github gh pull request review issue actions workflow repository notifications ci",
+    keywords: "github gh pull request pr merge request review approve comment issue ticket actions workflow run job build checks ci cd pipeline repository repo fork clone remote origin notifications inbox mentions assigned draft",
     open: () => switchMainView("github"),
     active: () => state.activeView === "github",
   },
@@ -2839,7 +2998,7 @@ const TOOLS = [
     icon: "lan",
     hint: "ports, PIDs, what is holding :3000, and kill",
     /** Extra words the tool should answer to that its name does not contain. */
-    keywords: "processes ports pid sockets listening kill free port task manager",
+    keywords: "processes process explorer ports port pid pids sockets socket listening listener bound bind in use taken occupied address already in use eaddrinuse conflict kill free release stop end terminate close task manager netstat lsof tcp udp localhost 3000 5173 8080 server daemon service node cpu memory ram usage resource what is using",
     open: () => switchMainView("ports"),
     active: () => state.activeView === "ports",
   },
@@ -2848,7 +3007,7 @@ const TOOLS = [
     name: "DNS",
     icon: "dns",
     hint: "resolve a name, compare resolvers, see who really answers",
-    keywords: "dns resolve lookup nslookup dig domain name record a aaaa cname mx txt ns soa ptr reverse flush cache resolver nameserver ip address localhost",
+    keywords: "dns resolve resolution lookup query nslookup dig host domain subdomain hostname name record records a aaaa cname mx txt ns soa srv ptr reverse rdns ttl propagation flush clear cache resolver nameserver doh 8.8.8.8 1.1.1.1 cloudflare google ip address localhost nxdomain not resolving cannot find",
     open: () => switchMainView("dns"),
     active: () => state.activeView === "dns",
   },
@@ -2857,7 +3016,7 @@ const TOOLS = [
     name: "Hosts file",
     icon: "edit_note",
     hint: "point a name at your own machine — it beats every DNS server",
-    keywords: "hosts file etc drivers hosts entry mapping override 127.0.0.1 localhost loopback dev domain redirect block site admin elevate backup",
+    keywords: "hosts hostfile hosts file etc drivers system32 entry alias mapping map point override shadow 127.0.0.1 ::1 localhost loopback dev local domain subdomain redirect block blocking ads site testing staging admin administrator elevate backup restore",
     open: () => switchMainView("hosts"),
     active: () => state.activeView === "hosts",
   },
@@ -2866,7 +3025,7 @@ const TOOLS = [
     name: "Network",
     icon: "network_check",
     hint: "watch the packets crossing the wire, live",
-    keywords: "network packet capture sniffer pktmon wireshark pcap pcapng traffic tcp udp tls http dns quic icmp arp frames wire monitor throughput adapter nic port ip",
+    keywords: "network networking packet packets capture sniff sniffer analyzer pktmon wireshark tcpdump pcap pcapng traffic tcp udp tls ssl https http dns quic icmp arp frames wire live monitor inspect throughput bandwidth speed connections sockets adapter interface nic ethernet port ip who is talking",
     open: () => switchMainView("network"),
     active: () => state.activeView === "network",
   },
@@ -2875,7 +3034,7 @@ const TOOLS = [
     name: "Path Ping",
     icon: "route",
     hint: "find latency and packet loss at every hop",
-    keywords: "pathping ping traceroute tracert route hops latency packet loss network diagnose",
+    keywords: "pathping ping traceroute tracert mtr route hops hop latency lag rtt jitter slow packet loss dropped timeout unreachable connectivity reachable network diagnose troubleshoot internet connection quality",
     open: () => switchMainView("path-ping"),
     active: () => state.activeView === "path-ping",
   },
@@ -2884,7 +3043,7 @@ const TOOLS = [
     name: "Disk Space Usage",
     icon: "hard_drive",
     hint: "see what fills a drive and drill into every folder",
-    keywords: "disk space usage storage drive size folder file treemap spacesniffer scanner reveal explorer",
+    keywords: "disk space usage storage capacity drive volume size big large biggest largest folder directory file files treemap spacesniffer windirstat treesize scan scanner full out of space free up cleanup clean delete reveal explorer what is filling",
     open: () => switchMainView("disk-space"),
     active: () => state.activeView === "disk-space",
   },
@@ -2917,7 +3076,7 @@ const PLACES = [
     name: "Overview",
     icon: "dashboard",
     hint: "projects, git status and tech at a glance",
-    keywords: "overview projects home dashboard repos",
+    keywords: "overview projects home start main dashboard repos repositories folders workspace list all everything front page",
     open: () => switchMainView("overview"),
     active: () => state.activeView === "overview",
   },
@@ -2926,7 +3085,7 @@ const PLACES = [
     name: "Settings",
     icon: "settings",
     hint: "folders to scan, theme, language and the terminal",
-    keywords: "settings preferences options theme language folders",
+    keywords: "settings preferences options config configuration setup customise customize theme dark light appearance language locale translation folders scan roots directories terminal startup defaults",
     open: () => switchMainView("settings"),
     active: () => state.activeView === "settings",
   },
@@ -3069,10 +3228,9 @@ function openIsolatedTool(id) {
   const tool = toolById(id);
   if (!tool) return;
   state.isolatedToolId = id;
-  state.isolatedToolSession = Array.from(
-    crypto.getRandomValues(new Uint8Array(18)),
-    (byte) => byte.toString(16).padStart(2, "0"),
-  ).join("");
+  // Reuses the session of a tool that is still resident, so its webview keeps
+  // answering the shell rather than being orphaned by a freshly rolled one.
+  state.isolatedToolSession = sessionForTool(id);
   state.activeView = "isolated-tool";
   state.selectedPath = null;
   savePrefs();
@@ -3152,6 +3310,10 @@ async function completeToolPopout(tool, screenX, screenY) {
       if (state.activeView === "isolated-tool") await flushIsolatedToolState();
       else await window.devhqToolState?.send?.(id);
     }
+    // The tool is moving into a window of its own. Its embedded copy must go
+    // rather than linger in the cache, or docking back would restore a stale
+    // one holding state from before the pop-out.
+    await evictEmbeddedTool(id);
     await invoke("tool_popout", {
       id,
       title: tool.name,
@@ -3279,8 +3441,8 @@ function availableSearchCommands(query = "") {
       kind: "GOTO", label: place.name, icon: place.icon, detail: place.hint,
       keywords: place.keywords, action: "tool", toolId: place.id,
     })),
-    { kind: "CMD", label: "Rescan projects", detail: "F5", action: "rescan" },
-    { kind: "TERM", label: "Toggle terminal panel", detail: "Ctrl+`", action: "terminal-panel" },
+    { kind: "CMD", label: "Rescan projects", detail: "F5", keywords: "rescan re-scan scan refresh reload reread update projects folders f5", action: "rescan" },
+    { kind: "TERM", label: "Toggle terminal panel", detail: "Ctrl+`", keywords: "terminal panel console shell prompt powershell cmd bash toggle show hide open command line", action: "terminal-panel" },
     ...Object.entries(FILTERS).map(([key, filter]) => ({
       kind: "VIEW",
       label: `${state.filters.has(key) ? "Remove" : "Show"} ${filter.label.toLowerCase()}`,
@@ -3294,15 +3456,16 @@ function availableSearchCommands(query = "") {
     const detail = [project.path, project.git?.branch].filter(Boolean).join(" · ");
     commands.push({ kind: "REPO", label: project.name, detail, action: "repo", project });
     if (project.runCmd) {
-      commands.push({ kind: "RUN", label: `Run ${project.name}`, detail: project.runCmd, action: "run", project });
+      commands.push({ kind: "RUN", label: `Run ${project.name}`, detail: project.runCmd, keywords: "run start launch serve dev server npm yarn pnpm cargo start up", action: "run", project });
     }
     commands.push({
       kind: "TERM", label: `Terminal — ${project.name}`, detail: project.path,
+      keywords: "terminal shell console prompt powershell cmd bash open here cd",
       action: "terminal", project,
     });
     if (project.git) {
       commands.push({
-        kind: "PULL", label: `Pull ${project.name}`,
+        kind: "PULL", label: `Pull ${project.name}`, keywords: "pull fetch update sync git download latest remote origin",
         detail: project.git.upstream || project.git.branch || "git pull",
         action: "pull", project,
       });
@@ -4501,7 +4664,23 @@ function mountShell() {
         <button class="tool-pin" type="button" data-pin-tool=""></button>
         <button class="tool-close" type="button" data-open-tool="overview" title="Back to the overview">${icon("close")}</button>
       </header>
-      <div class="isolated-tool-slot" id="isolated-tool-slot"></div>
+      <div class="isolated-tool-slot" id="isolated-tool-slot">
+        <div class="tool-loading" id="isolated-tool-loading" hidden>
+          <div class="tool-loading-head">
+            <span class="tool-loading-ring" aria-hidden="true"></span>
+            <span class="tool-loading-title">
+              <strong data-loading-name></strong>
+              <small data-loading-phase></small>
+            </span>
+          </div>
+          <div class="tool-loading-body" aria-hidden="true">
+            <div class="tool-loading-row"><span class="tool-loading-bar" style="max-width:190px"></span><span class="tool-loading-bar" style="max-width:96px"></span></div>
+            <div class="tool-loading-row"><span class="tool-loading-bar"></span></div>
+            <div class="tool-loading-row"><span class="tool-loading-bar" style="max-width:320px"></span></div>
+            <div class="tool-loading-row"><span class="tool-loading-bar" style="max-width:240px"></span></div>
+          </div>
+        </div>
+      </div>
     </main>
     <main class="settings-page" id="settings-host" hidden></main>
     <div class="pins-panel" id="pins-panel" hidden></div>
@@ -4524,6 +4703,7 @@ function mountShell() {
       <button class="status-btn" id="status-term" title="Open a terminal" aria-expanded="false">${icon(
         "terminal"
       )}<span class="label">Terminal</span><span class="term-count" hidden>0</span></button>
+      <button class="status-btn status-term-popout" id="status-term-popout" title="Open a terminal in its own window" aria-label="Open a terminal in its own window">${icon("open_in_new")}</button>
       <div class="act-bar" id="status-progress" hidden><i></i></div>
     </div>
     <div id="detail-host"></div>
@@ -4535,7 +4715,7 @@ function mountShell() {
     "rescan", "title-home", "search-input", "search-menu", "tech-picker", "tech-filter", "tech-filter-label",
     "tech-menu", "tech-menu-input", "tech-menu-list", "tech-clear", "sort-buttons", "view-buttons", "activity", "filters", "filter-chips",
     "banner-host", "summary", "summary-stats", "scroll", "grid", "ports-host", "dns-host", "hosts-host", "network-host", "path-ping-host", "disk-space-host", "github-host", "git-host", "tools-host", "windows-tools-host", "isolated-tool-host", "isolated-tool-slot", "port-filter-input", "port-pins", "port-tabs", "port-sort", "port-live", "ports-list", "ports-detail", "ports-dialogs", "detail-host", "settings-host", "open-settings", "toggle-theme",
-    "status-term", "status-progress", "status-version", "changelog-pop",
+    "status-term", "status-term-popout", "status-progress", "status-version", "changelog-pop",
     "status-pins-wrap", "status-pins", "pins-pop", "pins-panel",
   ]) {
     el[id] = document.getElementById(id);
@@ -5550,6 +5730,7 @@ function wireShell() {
   };
 
   el["status-term"].onclick = () => window.openTerminalPanel?.();
+  el["status-term-popout"].onclick = () => window.openTerminalWindow?.();
 
   el["sort-buttons"].onclick = (e) => {
     const button = e.target.closest("[data-sort]");
@@ -6272,7 +6453,11 @@ async function wireToolPopoutEvents() {
   });
   await listen("tool:bridge-request", async (event) => {
     const request = event.payload || {};
-    if (!request.session || request.session !== state.isolatedToolSession) return;
+    // Any resident tool may speak, not just the one on screen - a hidden one
+    // still saves its state. Which tool asked is now the session's job to say,
+    // because state.isolatedToolId only names the visible one.
+    const fromId = toolForSession(request.session);
+    if (!fromId) return;
     const reply = async (ok, value = null, error = "") => {
       if (!request.requestId) return;
       await emit("tool:bridge-response", {
@@ -6281,15 +6466,27 @@ async function wireToolPopoutEvents() {
     };
     try {
       if (request.action === "ready") {
+        // The tool has mounted and drawn. Both the slot's stand-in and the
+        // status line have been telling the truth until exactly now.
+        embeddedToolReadyId = fromId;
+        // Only the tool you are looking at owns the stand-in and the status
+        // line. A resident tool waking up in the background must not clear
+        // them out from under whatever is actually on screen.
+        if (fromId === state.isolatedToolId) {
+          endWork(EMBEDDED_TOOL_WORK);
+          const failure = request.value?.error;
+          if (failure) failEmbeddedToolLoading(toolById(fromId), String(failure));
+          else hideEmbeddedToolLoading();
+        }
         await reply(true, { accepted: true });
       } else if (request.action === "context") {
-        const tool = toolById(state.isolatedToolId);
+        const tool = toolById(fromId);
         await reply(true, {
           protocol: 1,
           tool: tool ? { id: tool.id, name: tool.name, icon: tool.icon, hint: tool.hint, keywords: tool.keywords } : null,
           theme: state.theme,
-          pinned: isToolPinned(state.isolatedToolId),
-          popped: isToolPopped(state.isolatedToolId),
+          pinned: isToolPinned(fromId),
+          popped: isToolPopped(fromId),
           projects: state.projects.map((project) => ({
             name: project.name, path: project.path, remote: project.git?.remote || "",
             branch: project.git?.branch || "", dirty: project.git?.dirty === true,
@@ -6299,16 +6496,16 @@ async function wireToolPopoutEvents() {
         });
       } else if (request.action === "navigate") {
         const destination = String(request.value || "overview");
-        // A navigation away from an isolated tool destroys the webview that
-        // sent this request. Acknowledge it before teardown so the child and
-        // Tauri event bridge cannot be left waiting on each other.
+        // A navigation away hides the webview that sent this request, and may
+        // evict it outright if the cache is full. Acknowledge it first so the
+        // child and the Tauri event bridge cannot be left waiting on each other.
         await reply(true);
         setTimeout(() => openTool(destination), 0);
       } else if (request.action === "toggle-pin") {
-        toggleToolPin(state.isolatedToolId);
-        await reply(true, { pinned: isToolPinned(state.isolatedToolId) });
+        toggleToolPin(fromId);
+        await reply(true, { pinned: isToolPinned(fromId) });
       } else if (request.action === "pop-out") {
-        popOutTool(state.isolatedToolId);
+        popOutTool(fromId);
         await reply(true);
       } else if (request.action === "confirm") {
         await reply(true, await appConfirm(request.value || {}));

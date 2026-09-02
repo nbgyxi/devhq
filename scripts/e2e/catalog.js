@@ -15,26 +15,41 @@ const vm = require("node:vm");
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const SRC = path.join(REPO_ROOT, "src");
 
-// Every id here corresponds 1:1 with an "<id>-host" element toggled by
-// switchMainView() in app.js (MAIN_VIEWS), minus "overview", "tools" and
-// "windows-tools" which are handled specially below.
-const BUILT_IN_VIEWS = [
-  { id: "ports", label: "Ports" },
+// ports/dns/hosts/network/path-ping/disk-space/github/git all live in
+// app.js's TOOLS array (not PLACES), each with an `open: () =>
+// switchMainView(id)` handler - but openTool() (what "devhq:open-tool"
+// dispatches into) never calls that handler for anything toolById() finds:
+// it always routes to openIsolatedTool() instead, same as every util-tool
+// and windows-tool. Those switchMainView handlers are dead code for this
+// dispatch path; the "<id>-host" elements they'd have shown/hidden are
+// never touched by real navigation anymore. Labels here are each tool's
+// exact `name` in TOOLS, since that's what gets stamped onto
+// #isolated-tool-host's [data-isolated-name] and is what isolatedToolCheck
+// (below) compares against - it is not always the same as the id.
+const ISOLATED_BUILT_IN_TOOLS = [
+  { id: "ports", label: "Process Explorer" },
   { id: "dns", label: "DNS" },
-  { id: "hosts", label: "Hosts" },
+  { id: "hosts", label: "Hosts file" },
   { id: "network", label: "Network" },
   { id: "path-ping", label: "Path Ping" },
   { id: "disk-space", label: "Disk Space Usage" },
   { id: "github", label: "GitHub" },
   { id: "git", label: "Git" },
-  { id: "settings", label: "Settings" },
 ];
 
+// "settings" is the one screen besides "overview" that's still in PLACES,
+// not TOOLS - openTool() really does call switchMainView("settings") for
+// it, so it's the one built-in entry that still uses the old #<id>-host
+// check below rather than isolatedToolCheck.
+const PLACE_VIEWS = [{ id: "settings", label: "Settings" }];
+
 // All host ids switchMainView() can show/hide, used to prove "overview" is
-// active by proving nothing else is.
+// active by proving nothing else is. "tools" and "windows-tools" are listed
+// even though openTool() no longer routes normal navigation into them (see
+// below) - they're harmless to keep checking as "must be hidden".
 const ALL_VIEW_HOST_IDS = [
   "ports", "dns", "hosts", "network", "path-ping", "disk-space",
-  "github", "git", "tools", "windows-tools", "settings",
+  "github", "git", "tools", "windows-tools", "isolated-tool", "settings",
 ];
 
 function loadUtilToolCatalog() {
@@ -96,6 +111,25 @@ function loadWindowsToolCatalog() {
   return api.catalog().map((tool) => ({ id: tool.id, label: tool.name }));
 }
 
+// openTool() (app.js) routes every TOOLS entry - the eight built-in views
+// above, every util-tool, every windows-tool - through openIsolatedTool(),
+// which mounts the tool in a genuinely separate child WebView2 surface
+// (src-tauri/src/tool_window.rs, add_child), not an in-page panel in this
+// document. The shell keeps owning the chrome around it
+// (#isolated-tool-host's header, with the tool's name stamped onto
+// [data-isolated-name] - see app.js's mountShell()), so that's what's
+// checkable from here. The tool's own rendered content lives in a
+// different document this suite has no WebDriver handle to, so unlike the
+// old in-page checks this replaced, this can only prove navigation reached
+// the right tool - not that the tool's own content rendered without error.
+// See README.md's "what this misses" section.
+function isolatedToolCheck(name) {
+  const host = document.getElementById("isolated-tool-host");
+  const nameEl = host ? host.querySelector("[data-isolated-name]") : null;
+  const active = !!host && !host.hidden && !!nameEl && nameEl.textContent.trim() === name;
+  return { active, errorText: null };
+}
+
 /**
  * Returns the ordered list of every entry to visit. Each entry knows how to
  * check, from outside the app, whether it is actually the thing on screen:
@@ -110,6 +144,7 @@ function buildCatalog() {
     id: "overview",
     kind: "view",
     label: "Overview",
+    isolated: false,
     checkFn: function (hostIds) {
       return {
         active: hostIds.every((id) => {
@@ -122,11 +157,23 @@ function buildCatalog() {
     checkArgs: [ALL_VIEW_HOST_IDS],
   });
 
-  for (const view of BUILT_IN_VIEWS) {
+  for (const view of ISOLATED_BUILT_IN_TOOLS) {
     entries.push({
       id: view.id,
       kind: "view",
       label: view.label,
+      isolated: true,
+      checkFn: isolatedToolCheck,
+      checkArgs: [view.label],
+    });
+  }
+
+  for (const view of PLACE_VIEWS) {
+    entries.push({
+      id: view.id,
+      kind: "view",
+      label: view.label,
+      isolated: false,
       checkFn: function (hostId) {
         const el = document.getElementById(hostId + "-host");
         return { active: !!el && !el.hidden, errorText: null };
@@ -140,13 +187,8 @@ function buildCatalog() {
       id: tool.id,
       kind: "util-tool",
       label: tool.label,
-      checkFn: function (name) {
-        const host = document.getElementById("tools-host");
-        const nameEl = document.getElementById("tools-name");
-        const active = !!host && !host.hidden && !!nameEl && nameEl.textContent.trim() === name;
-        const errEl = document.querySelector("#tools-output .tools-error");
-        return { active, errorText: errEl ? errEl.textContent.trim() : null };
-      },
+      isolated: true,
+      checkFn: isolatedToolCheck,
       checkArgs: [tool.label],
     });
   }
@@ -156,14 +198,8 @@ function buildCatalog() {
       id: tool.id,
       kind: "windows-tool",
       label: tool.label,
-      checkFn: function (name) {
-        const host = document.getElementById("windows-tools-host");
-        const titleEl = host ? host.querySelector(".tool-title strong") : null;
-        const active = !!host && !host.hidden && !!titleEl && titleEl.textContent.trim() === name;
-        const statusEl = host ? host.querySelector("[data-win-status]") : null;
-        const bad = !!(statusEl && statusEl.dataset && statusEl.dataset.tone === "bad");
-        return { active, errorText: bad ? statusEl.textContent.trim() : null };
-      },
+      isolated: true,
+      checkFn: isolatedToolCheck,
       checkArgs: [tool.label],
     });
   }

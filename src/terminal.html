@@ -9,7 +9,7 @@
 </head>
 <body class="popout">
 <div class="titlebar">
-  <div class="drag" title="Drag onto DevHQ's terminal area to dock">
+  <div class="drag">
     <div class="brand"><img src="devhq-icon.png" alt="" />
       <i class="shell-mark" id="pop-shell" hidden></i>
       <span id="pop-project">Terminal</span>
@@ -17,7 +17,7 @@
     </div>
   </div>
   <div class="win-btns">
-    <button class="win-btn" id="pop-split" title="Split this terminal" aria-haspopup="menu" aria-expanded="false"><span class="ms">splitscreen_right</span></button>
+    <button class="win-btn" id="pop-split" title="Split this terminal"><span class="ms">splitscreen_right</span></button>
     <button class="win-btn" id="pop-debug" title="Copy terminal debug report"><span class="ms">bug_report</span></button>
     <button class="win-btn" id="pop-ontop" title="Keep this window on top" aria-pressed="false"><span class="ms">keep</span></button>
     <button class="win-btn" id="pop-dock" title="Dock back into DevHQ"><span class="ms">dock_to_bottom</span></button>
@@ -26,7 +26,7 @@
     <button class="win-btn close" data-win="close" title="Close this terminal" aria-label="Close this terminal"><span class="ms">close</span></button>
   </div>
 </div>
-<div class="pop-split-menu" id="pop-split-menu" role="menu" hidden></div>
+<div class="pop-menu" id="pop-menu" role="menu" hidden></div>
 <div id="pop-term-layout">
   <div class="pop-pane" data-pane="0">
     <div class="pop-pane-tab">

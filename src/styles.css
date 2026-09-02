@@ -44,7 +44,7 @@
   font-style:normal;
   font-weight:400 700;
   font-display:block;
-  src:url('fonts/material-symbols-rounded.woff2?v=4') format('woff2');
+  src:url('fonts/material-symbols-rounded.woff2?v=5') format('woff2');
 }
 
 *{box-sizing:border-box;margin:0;padding:0}
@@ -1577,6 +1577,10 @@ body.popout .brand .shell-mark{margin-left:2px}
   font-variant-numeric:tabular-nums;
 }
 .term-count[hidden]{display:none}
+/* Sits flush against the Terminal button: same action, straight to a window. */
+.status-term-popout{padding:0 10px;border-left:0}
+html[dir="rtl"] .status-term-popout{border-right:0}
+.status-term-popout .ms{font-size:15px}
 .status-orphan-wrap{position:relative;display:flex;flex:0 0 auto}.status-orphan-wrap[hidden]{display:none}
 .status-orphan{color:var(--amber);padding:0 11px}.status-orphan b{font-size:11px;font-variant-numeric:tabular-nums}
 .orphan-pop{position:absolute;z-index:115;left:0;bottom:calc(100% + 7px);width:420px;max-width:calc(100vw - 24px);padding:8px;border:1px solid var(--line);border-radius:10px;background:var(--bg1);box-shadow:0 16px 44px rgba(0,0,0,.55)}
@@ -1771,22 +1775,24 @@ body.popout .pop-divider:hover{background:var(--accent)}
 body.popout .pop-divider[hidden]{display:none}
 body.popout #pop-term-layout.horizontal .pop-divider{cursor:ns-resize}
 
-/* The split menu hangs under the titlebar button that opens it. */
-body.popout .pop-split-menu{
-  position:fixed;z-index:60;top:34px;right:8px;min-width:216px;padding:5px;
+/* The shell menu opens where it was asked for, at the pointer. */
+body.popout .pop-menu{
+  position:fixed;z-index:60;min-width:224px;padding:5px;
   border:1px solid var(--line);border-radius:9px;background:var(--bg2);
   box-shadow:0 16px 40px rgba(0,0,0,.5);
 }
-body.popout .pop-split-menu[hidden]{display:none}
-body.popout .pop-split-menu button{
+body.popout .pop-menu[hidden]{display:none}
+body.popout .pop-menu button{
   width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;
   height:28px;padding:0 9px;border-radius:6px;background:transparent;
   color:var(--text);font-size:12px;text-align:left;
 }
-body.popout .pop-split-menu button:hover:not(:disabled){background:var(--bg3)}
-body.popout .pop-split-menu button:disabled{color:var(--dim);cursor:default}
-body.popout .pop-split-menu button span{color:var(--dim);font-size:10.5px}
+body.popout .pop-menu button:hover:not(:disabled){background:var(--bg3)}
+body.popout .pop-menu button:disabled{color:var(--dim);cursor:default}
+body.popout .pop-menu button span{color:var(--dim);font-size:10.5px}
 body.popout .pop-menu-label{padding:7px 9px 4px;color:var(--dim);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em}
+/* Right-clicking a pane tab is how its shell is changed, so it says so. */
+body.popout #pop-term-layout.split .pop-pane-tab{cursor:context-menu}
 
 /* ---------- what a card lets you do ---------- */
 .card-top{position:relative}
@@ -2077,28 +2083,6 @@ body.tool-popout .tool-pop-host{
   display:flex;
   flex-direction:column;
   background:var(--bg);
-}
-body.tool-popout .tool-boot{
-  position:absolute;
-  inset:var(--titlebar) 0 0 0;
-  z-index:15;
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  justify-content:center;
-  gap:14px;
-  background:var(--bg);
-  color:var(--dim);
-  font-size:13px;
-  font-weight:600;
-}
-body.tool-popout .tool-boot[hidden]{display:none}
-body.tool-popout .tool-boot-spinner{
-  width:28px;height:28px;
-  border:3px solid var(--line);
-  border-top-color:var(--accent);
-  border-radius:50%;
-  animation:spin .8s linear infinite;
 }
 body.tool-popout .tool-pop-host.tools-page,
 body.tool-popout .tool-pop-host.dns-page,
@@ -2727,6 +2711,37 @@ html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
 .windows-tools-page[hidden]{display:none}.windows-tools-page .win-refresh{height:29px;padding:0 10px;font-size:11.5px}
 .isolated-tool-page{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--bg);color:var(--text);overflow:hidden}
 .isolated-tool-page[hidden]{display:none}.isolated-tool-slot{flex:1;min-width:0;min-height:0;position:relative;background:var(--bg);overflow:hidden}
+
+/* ---------- a tool that has been asked for but has not drawn yet ----------
+   Two surfaces show this: the slot here, while Rust is still creating the
+   child webview, and that webview's own first paint. tool-embedded.html
+   repeats these rules inline with literal colours, because there it has to
+   paint before this stylesheet exists. Keep the two in step. */
+.tool-loading{
+  position:absolute;inset:0;z-index:20;
+  display:flex;flex-direction:column;justify-content:center;align-items:center;
+  gap:22px;padding:26px 30px;text-align:center;
+  background:var(--bg);color:var(--text);
+}
+.tool-loading[hidden]{display:none}
+.tool-loading-head{display:flex;align-items:center;justify-content:center;gap:13px}
+.tool-loading-ring{
+  flex:none;width:26px;height:26px;border-radius:50%;
+  border:3px solid var(--line);border-top-color:var(--accent);
+  animation:spin .8s linear infinite;
+}
+.tool-loading-title{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0}
+.tool-loading-title strong{font-size:14px;font-weight:650;letter-spacing:.1px}
+.tool-loading-title small{color:var(--dim2);font-size:11.5px}
+.tool-loading-body{display:flex;flex-direction:column;align-items:center;gap:11px;width:100%;max-width:420px}
+.tool-loading-row{display:flex;justify-content:center;gap:10px;width:100%}
+.tool-loading-bar{
+  height:11px;flex:1;border-radius:6px;
+  background:linear-gradient(90deg,var(--bg2) 25%,var(--bg3) 37%,var(--bg2) 63%);
+  background-size:400% 100%;animation:shimmer 1.4s ease infinite;
+}
+.tool-loading.failed .tool-loading-title small{color:var(--red)}
+@media(prefers-reduced-motion:reduce){.tool-loading-ring,.tool-loading-bar{animation:none}}
 .win-tool-body{flex:1;min-height:0;overflow:auto;padding:14px 16px 18px}
 /* Event Log: fill the pane with flex so the list scrolls inside — a fixed
    calc(100% - Npx) was always a few pixels short and left a phantom scrollbar. */

@@ -312,6 +312,7 @@ pub fn tool_bridge_state_take(id: String) -> Result<Option<serde_json::Value>, S
 pub async fn tool_embedded_show(
     app: AppHandle,
     id: String,
+    name: Option<String>,
     session: String,
     theme: Option<String>,
     pinned: bool,
@@ -363,9 +364,12 @@ pub async fn tool_embedded_show(
         .map_err(|e| e.to_string())?
         .join("isolated-webviews")
         .join(&id);
+    // The name travels in the URL so the page can say what it is loading in its
+    // very first paint, before styles.css, the bridge or the tool's own code.
     let page = format!(
-        "tool-embedded.html?id={}&theme={}&pinned={}&session={}",
+        "tool-embedded.html?id={}&name={}&theme={}&pinned={}&session={}",
         urlencoding_lite(&id),
+        urlencoding_lite(name.as_deref().unwrap_or(&id)),
         if light { "light" } else { "dark" },
         if pinned { "1" } else { "0" },
         urlencoding_lite(&session)
@@ -374,14 +378,35 @@ pub async fn tool_embedded_show(
         r#"document.documentElement.dataset.theme="{}";"#,
         if light { "light" } else { "dark" }
     );
-    let builder = WebviewBuilder::new(&label, WebviewUrl::App(page.into()))
-        .data_directory(data_directory)
-        .initialization_script(&init_theme)
-        .background_color(background);
-    window
-        .add_child(builder, position, size)
-        .map(|_| ())
-        .map_err(|e| format!("Could not create the isolated tool: {e}"))
+    let make_builder = || {
+        WebviewBuilder::new(&label, WebviewUrl::App(page.clone().into()))
+            .data_directory(data_directory.clone())
+            .initialization_script(&init_theme)
+            .background_color(background)
+    };
+    match window.add_child(make_builder(), position, size) {
+        Ok(_) => Ok(()),
+        Err(first_err) => {
+            // This tool's dedicated WebView2 environment can end up corrupted
+            // - e.g. left mid-creation by a killed process - and once it is,
+            // every future attempt to open this same tool fails identically
+            // forever: nothing before this ever cleared it, so the only way
+            // out was deleting the directory by hand. Wipe it and try once
+            // more with a clean slate - a real recreate-on-corruption
+            // recovery, not just reporting the failure and leaving the tool
+            // permanently broken.
+            let _ = std::fs::remove_dir_all(&data_directory);
+            window
+                .add_child(make_builder(), position, size)
+                .map(|_| ())
+                .map_err(|second_err| {
+                    format!(
+                        "Could not create the isolated tool: {first_err} \
+                         (also failed after clearing its cached environment: {second_err})"
+                    )
+                })
+        }
+    }
 }
 
 #[tauri::command]
@@ -446,16 +471,19 @@ pub async fn tool_popout(
         return Ok(());
     }
     let light = theme.as_deref() == Some("light");
-    let page = format!(
-        "tool.html?id={}&theme={}",
-        urlencoding_lite(&id),
-        if light { "light" } else { "dark" }
-    );
     let window_title = if title.trim().is_empty() {
         id.clone()
     } else {
         title
     };
+    // Same reason as the embedded page: the window must be able to name what it
+    // is opening in its first frame, with no script having run yet.
+    let page = format!(
+        "tool.html?id={}&name={}&theme={}",
+        urlencoding_lite(&id),
+        urlencoding_lite(&window_title),
+        if light { "light" } else { "dark" }
+    );
     // Match --bg in styles.css so the frame never flashes the wrong scheme.
     let background = if light {
         tauri::webview::Color(244, 245, 248, 255)

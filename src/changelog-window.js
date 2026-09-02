@@ -23,7 +23,12 @@
     clearTimeout(blurTimer);
     blurTimer = setTimeout(async () => {
       blurTimer = 0;
-      if (!await win.isFocused().catch(() => false)) close();
+      // Both checks, the way Search does it. A freshly foregrounded undecorated
+      // WebView2 window can report isFocused() false while its document really
+      // does have focus - trusting the native answer alone hides the window
+      // again in the same breath it was opened, which reads as never opening.
+      const nativeFocused = await win.isFocused().catch(() => false);
+      if (!nativeFocused && !document.hasFocus()) close();
     }, 180);
   };
   const activate = async () => {
@@ -68,6 +73,9 @@
   });
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
   window.addEventListener("focus", () => { releases.scrollTop = 0; });
+  // The same safety net Search carries: if the window is on screen but was
+  // never brought forward, ask for the foreground again rather than sit there.
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) activate(); });
   win.onFocusChanged(({ payload }) => {
     if (payload) {
       clearTimeout(blurTimer);

@@ -61,23 +61,29 @@
   };
   const revealFallback = setTimeout(() => { reveal(); }, 2000);
 
-  // Show a boot spinner only if opening is still going after a beat — a tool
-  // that mounts in the same frame never flashes one.
-  const boot = document.getElementById("tool-boot");
-  const bootLabel = document.getElementById("tool-boot-label");
-  let bootTimer = 0;
-  const showBoot = (label) => {
-    if (bootLabel && label) bootLabel.textContent = label;
-    clearTimeout(bootTimer);
-    bootTimer = setTimeout(() => {
-      if (boot) boot.hidden = false;
-    }, 120);
+  // The loading screen is painted by tool.html and is already naming the tool
+  // from the URL. From here it only ever gets a truer phase, or goes away.
+  const boot = document.getElementById("tool-loading");
+  const bootName = document.getElementById("tool-loading-name");
+  const bootPhase = document.getElementById("tool-loading-phase");
+  const showBoot = (name, phase) => {
+    if (!boot) return;
+    if (name && bootName) bootName.textContent = name;
+    if (phase && bootPhase) bootPhase.textContent = phase;
+    boot.hidden = false;
   };
   const hideBoot = () => {
-    clearTimeout(bootTimer);
     if (boot) boot.hidden = true;
   };
-  showBoot("Opening…");
+  /** A window that cannot mount its tool keeps this screen and says why, so
+   *  the reason is never traded for an empty page. */
+  const failBoot = (message) => {
+    if (!boot) return;
+    boot.querySelector(".tool-loading-ring")?.remove();
+    boot.querySelector(".tool-loading-body")?.remove();
+    if (bootPhase) bootPhase.textContent = message;
+    boot.hidden = false;
+  };
 
   const icon = (name) => `<span class="ms" aria-hidden="true">${name}</span>`;
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => (
@@ -167,9 +173,12 @@
     await finishClose();
   });
 
+  // The name DevHQ put in the URL. It is the display name, never the id, and
+  // it is all this window has to go on until the tool catalog has loaded.
+  const openedAs = new URLSearchParams(location.search).get("name") || "";
+
   if (!id) {
-    hideBoot();
-    host.textContent = "No tool id.";
+    failBoot("This window was opened without a tool.");
     clearTimeout(revealFallback);
     await reveal();
     return;
@@ -177,8 +186,7 @@
 
   const meta = catalogEntry();
   if (!meta) {
-    hideBoot();
-    host.textContent = `Unknown tool: ${id}`;
+    failBoot(`${openedAs || "That tool"} is not a tool this version knows how to open.`);
     clearTimeout(revealFallback);
     await reveal();
     return;
@@ -207,8 +215,8 @@
   // beside it the Alpha/Beta mark that used to sit in the page header. The hint
   // sentence stays out — it crowds the bar and reads as centered noise.
   document.getElementById("pop-hint").innerHTML = window.devhqMaturity?.badge(id) ?? "";
-  showBoot(`Opening ${meta.name}…`);
-  // Show themed chrome (and spinner if mount is slow) — never the blank flash.
+  showBoot(meta.name, `Starting ${meta.name}…`);
+  // Show themed chrome and the named loading screen — never the blank flash.
   clearTimeout(revealFallback);
   await reveal();
 
@@ -289,6 +297,7 @@
   window.devhqExternalToolChrome = true;
   document.body.classList.add("tool-popout-chrome");
 
+  let mounted = false;
   try {
     await window.devhqToolState?.receive?.(id);
     if (id === "ports") {
@@ -334,11 +343,14 @@
       window.devhqWindowsTools.open(id);
       window.devhqWindowsTools.opened();
     } else {
-      host.textContent = `Could not mount ${meta.name}.`;
+      failBoot(`${meta.name} could not be mounted in its own window.`);
       return;
     }
+    mounted = true;
   } finally {
-    hideBoot();
+    // Only a tool that actually drew gets the screen taken away. A failure
+    // keeps it, because it is now the thing carrying the explanation.
+    if (mounted) hideBoot();
   }
   // The main shell keeps its current tool covered until this exact point: the
   // pop-out exists, its tool has mounted, and it is safe to release the source.

@@ -7,8 +7,10 @@
   "scripts": {
     "icons": "node scripts/normalize-app-icon.js && node scripts/tauri-with-cargo-path.js icon app-icon.png",
     "tool-icons": "node scripts/make-tool-icons.js",
+    "icon-font": "node scripts/subset-icon-font.js",
+    "icon-font:check": "node scripts/subset-icon-font.js --check",
     "dev": "node scripts/tauri-with-cargo-path.js dev",
-    "prebuild": "node scripts/check-version.js && powershell -ExecutionPolicy Bypass -File ./scripts/install-cli.ps1 -BuildOnly",
+    "prebuild": "node scripts/check-version.js && node scripts/subset-icon-font.js --check && powershell -ExecutionPolicy Bypass -File ./scripts/install-cli.ps1 -BuildOnly",
     "build": "node scripts/tauri-with-cargo-path.js build",
     "cli:build": "powershell -ExecutionPolicy Bypass -File ./scripts/install-cli.ps1 -BuildOnly",
     "cli:install": "powershell -ExecutionPolicy Bypass -File ./scripts/install-cli.ps1",
@@ -22,6 +24,7 @@
   "devDependencies": {
     "@napi-rs/canvas": "^0.1.67",
     "@tauri-apps/cli": "^2",
+    "harfbuzzjs": "^1.6.1",
     "playwright": "^1",
     "selenium-webdriver": "^4",
     "wawoff2": "^2.0.1"

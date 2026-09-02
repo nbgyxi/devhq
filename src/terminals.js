@@ -472,6 +472,65 @@ function openTerminalPanel() {
   else openNewTerminal();
 }
 
+/** Opens a shell straight into its own window.
+ *
+ *  The panel is never involved: the session is started, remembered as a popped
+ *  one and handed to `term_popout`, which only needs the shell to exist. Going
+ *  through the dock - mounting a view, then disposing it a moment later - would
+ *  flick the bottom panel open and shut for a terminal that was never going to
+ *  live there. */
+async function openTerminalWindow(shell = terms.defaultShell) {
+  const target = newTerminalTarget();
+  if (!target.path) {
+    termNote("term:noroot", "Nowhere to open a shell - add a folder to scan first.", 4000);
+    return;
+  }
+  if (terms.shellAvailability.get(shell)?.available === false) {
+    showShellError(shell);
+    return;
+  }
+  const key = `term:window:${target.path}:${Date.now()}`;
+  window.devhqWork?.beginWork(key, `Opening a shell in ${target.name} in its own window`);
+  let opened = null;
+  try {
+    const historyKey = historyKeyForOpen();
+    const info = await term_dock_invoke("term_open", {
+      args: {
+        projectPath: target.path,
+        projectName: target.name,
+        shell: shell || terms.defaultShell,
+        ...(historyKey ? { historyKey } : {}),
+      },
+    });
+    opened = info;
+    terms.known.set(info.id, {
+      projectPath: info.projectPath,
+      projectName: info.projectName || "shell",
+      popped: true,
+      key: terms.saveHistory ? historyKey || "" : "",
+      shell: shellProfileFromCommand(info.command),
+      pane: 0,
+    });
+    await term_dock_invoke("term_popout", {
+      id: info.id, x: null, y: null, position: null, dimensions: null,
+      maximized: false, fullscreen: false, focus: true,
+    });
+    termsSavePrefs();
+  } catch (e) {
+    terms.lastOpenError = String(e);
+    if (opened) {
+      // The shell is up; only the window failed. Leaving it running with
+      // nothing showing it would strand it, so it comes into the panel instead.
+      termNote("popout", `Could not open the terminal window: ${e}`, 5000);
+      await mountSession(opened.id).catch(() => {});
+      setDockOpen(true);
+    } else if (shell !== "auto") showShellError(shell, String(e));
+    else termNote(`${key}:err`, `Could not open a shell in ${target.name}: ${e}`, 5000);
+  } finally {
+    window.devhqWork?.endWork(key);
+  }
+}
+
 function syncTerminalButton() {
   const button = document.getElementById("status-term");
   if (!button) return;
@@ -1437,24 +1496,9 @@ async function restoreTerminals() {
 
 // A pop-out reports where its title-bar drag ended. Only accept the handoff
 // when that point is over the visible terminal area in this window.
-term_dock_listen("term:drop", async (event) => {
-  const { id, x, y } = event.payload;
-  const dock = dockEl().getBoundingClientRect();
-  const scale = window.devicePixelRatio || 1;
-  const main = window.__TAURI__.window.getCurrentWindow();
-  const pos = await main.innerPosition();
-  const inside = x >= pos.x + dock.left * scale && x <= pos.x + dock.right * scale &&
-    y >= pos.y + dock.top * scale && y <= pos.y + dock.bottom * scale;
-  if (!terms.open || !inside) return;
-  await term_dock_invoke("term_dock", { id }).catch(() => {});
-  try {
-    await mountSession(id);
-    setDockOpen(true);
-  } catch {}
-});
-
 window.openTerminal = openTerminal;
 window.openTerminalPanel = openTerminalPanel;
+window.openTerminalWindow = openTerminalWindow;
 window.setDockOpen = setDockOpen;
 window.syncTerminalButton = syncTerminalButton;
 window.termsState = terms;

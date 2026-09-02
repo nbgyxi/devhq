@@ -5,19 +5,94 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <script>
 (function () {
-  var theme = new URLSearchParams(location.search).get("theme") === "light" ? "light" : "dark";
+  var query = new URLSearchParams(location.search);
+  var theme = query.get("theme") === "light" ? "light" : "dark";
   document.documentElement.dataset.theme = theme;
   window.devhqEmbeddedTool = true;
   window.devhqExternalToolChrome = true;
 })();
 </script>
-<style>html,body,#tool-host{width:100%;height:100%;margin:0;overflow:hidden;background:#0c0d11}html[data-theme="light"],html[data-theme="light"] body,html[data-theme="light"] #tool-host{background:#f4f5f8}.embedded-tool .tool-head{display:none!important}.embedded-tool .tool-popout{display:none}</style>
-<link rel="stylesheet" href="styles.css?v=0.43.30" />
+<style>
+html,body,#tool-host{width:100%;height:100%;margin:0;overflow:hidden;background:#0c0d11}
+html[data-theme="light"],html[data-theme="light"] body,html[data-theme="light"] #tool-host{background:#f4f5f8}
+.embedded-tool .tool-head{display:none!important}.embedded-tool .tool-popout{display:none}
+
+/* The loading state is written out in full here rather than in styles.css.
+   This page is the first thing a new webview paints, and it must be able to
+   name what it is opening before a stylesheet, the bridge or the tool's own
+   code has loaded. Literal colours for the same reason - var() would resolve
+   to nothing until styles.css arrives. No icon glyph either: the icon font is
+   font-display:block, so a glyph here would be a hole for as long as it takes
+   to arrive, which is exactly the wait this screen exists to cover. */
+#tool-loading{
+  position:absolute;inset:0;z-index:20;
+  display:flex;flex-direction:column;justify-content:center;align-items:center;
+  gap:22px;padding:26px 30px;text-align:center;
+  background:#0c0d11;color:#e8eaf0;
+  font:14px/1.5 system-ui,'Segoe UI',sans-serif;
+}
+#tool-loading[hidden]{display:none}
+.tool-loading-head{display:flex;align-items:center;justify-content:center;gap:13px}
+.tool-loading-ring{
+  flex:none;width:26px;height:26px;border-radius:50%;
+  border:3px solid #272b38;border-top-color:#6d8bff;
+  animation:tool-loading-spin .8s linear infinite;
+}
+.tool-loading-title{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0}
+.tool-loading-title strong{font-size:14px;font-weight:650;letter-spacing:.1px}
+.tool-loading-title small{color:#6b7285;font-size:11.5px}
+.tool-loading-body{display:flex;flex-direction:column;align-items:center;gap:11px;width:100%;max-width:420px}
+.tool-loading-row{display:flex;justify-content:center;gap:10px;width:100%}
+.tool-loading-bar{
+  height:11px;flex:1;border-radius:6px;
+  background:linear-gradient(90deg,#171922 25%,#1e212c 37%,#171922 63%);
+  background-size:400% 100%;
+  animation:tool-loading-shimmer 1.4s ease infinite;
+}
+@keyframes tool-loading-spin{to{transform:rotate(360deg)}}
+@keyframes tool-loading-shimmer{0%{background-position:100% 0}100%{background-position:0 0}}
+@media(prefers-reduced-motion:reduce){
+  .tool-loading-ring,.tool-loading-bar{animation:none}
+}
+html[data-theme="light"] #tool-loading{background:#f4f5f8;color:#1a1c24}
+html[data-theme="light"] .tool-loading-ring{border-color:#d5d9e2;border-top-color:#4868df}
+html[data-theme="light"] .tool-loading-title small{color:#7a8292}
+html[data-theme="light"] .tool-loading-bar{
+  background:linear-gradient(90deg,#f0f1f5 25%,#e4e7ed 37%,#f0f1f5 63%);
+  background-size:400% 100%;
+}
+</style>
+<link rel="stylesheet" href="styles.css?v=0.53.1" />
 </head>
 <body class="embedded-tool">
 <main id="tool-host" class="windows-tools-page"></main>
+<div id="tool-loading">
+  <div class="tool-loading-head">
+    <span class="tool-loading-ring" aria-hidden="true"></span>
+    <span class="tool-loading-title">
+      <strong id="tool-loading-name">This tool</strong>
+      <small id="tool-loading-phase">Loading…</small>
+    </span>
+  </div>
+  <div class="tool-loading-body" aria-hidden="true">
+    <div class="tool-loading-row"><span class="tool-loading-bar" style="max-width:190px"></span><span class="tool-loading-bar" style="max-width:96px"></span></div>
+    <div class="tool-loading-row"><span class="tool-loading-bar"></span></div>
+    <div class="tool-loading-row"><span class="tool-loading-bar" style="max-width:320px"></span></div>
+    <div class="tool-loading-row"><span class="tool-loading-bar" style="max-width:240px"></span></div>
+  </div>
+</div>
+<script>
+// Name the tool in the first paint. The shell put it in the URL precisely so
+// this needs nothing else to have loaded.
+(function () {
+  var name = new URLSearchParams(location.search).get("name");
+  if (!name) return;
+  document.getElementById("tool-loading-name").textContent = name;
+  document.getElementById("tool-loading-phase").textContent = "Loading " + name + "…";
+})();
+</script>
 <script src="maturity.js"></script>
-<script src="tool-bridge.js?v=1"></script>
+<script src="tool-bridge.js?v=2"></script>
 <script src="tool-embedded.js"></script>
 </body>
 </html>

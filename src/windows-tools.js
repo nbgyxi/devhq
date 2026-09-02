@@ -4,16 +4,16 @@
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const icon = (name) => window.devhqShell?.icon?.(name) || `<span class="ms" aria-hidden="true">${name}</span>`;
   const catalog = [
-    { id: "help", name: "Help", icon: "help", hint: "project commands, application commands, and available tools", keywords: "help guide docs manual ? commands run terminal pull code explorer tools" },
-    { id: "cli", name: "CLI", icon: "terminal", hint: "use every headless DevHQ command from any terminal", keywords: "cli command line terminal shell powershell automation json scan git dns ports help docs" },
-    { id: "events", name: "Event Log Streamer", icon: "receipt_long", hint: "filter Windows events as they arrive", keywords: "event viewer logs application system security errors warnings regex" },
-    { id: "registry", name: "Registry", icon: "database", hint: "browse and carefully edit registry values", keywords: "regedit hkey hkcu hklm keys values environment run startup" },
-    { id: "system", name: "System", icon: "tune", hint: "audit PATH and environment variables", keywords: "path environment variables missing duplicate folders diagnostics" },
-    { id: "log-tail", name: "Log Tail", icon: "subject", hint: "follow the newest lines in any local log file", keywords: "tail follow log file live stream grep filter" },
-    { id: "lock-inspector", name: "Lock Inspector", icon: "lock_open", hint: "find processes holding a file or folder", keywords: "locked file folder handle process delete rename restart manager" },
-    { id: "clipboard", name: "Clipboard History", icon: "content_paste", hint: "search, pin, restore and forget copied text", keywords: "clipboard history clips copy paste text links code pin" },
-    { id: "keep-awake", name: "Keep Awake", icon: "coffee", hint: "keep Windows and the display awake for as long as you need", keywords: "awake sleep power display caffeine presentation build transfer insomnia" },
-    { id: "time-tracker", name: "Active Window Time Tracker", icon: "schedule", hint: "local time by application and window title", keywords: "time tracker activity active window productivity apps usage focus idle local" },
+    { id: "help", name: "Help", icon: "help", hint: "project commands, application commands, and available tools", keywords: "help guide guides docs documentation manual readme ? about faq how to getting started what can commands run terminal pull code explorer tools shortcuts keyboard hotkeys" },
+    { id: "cli", name: "CLI", icon: "terminal", hint: "use every headless DevHQ command from any terminal", keywords: "cli command line commandline terminal console shell powershell pwsh cmd bash headless script scripting automation arguments flags json output scan git dns ports help docs devhq exe" },
+    { id: "events", name: "Event Log Streamer", icon: "receipt_long", hint: "filter Windows events as they arrive", keywords: "event events viewer eventvwr log logs evtx application system security setup errors warnings critical crash audit login source id level filter regex stream live follow windows log" },
+    { id: "registry", name: "Registry", icon: "database", hint: "browse and carefully edit registry values", keywords: "registry regedit reg hive hkey hkcu hklm hkcr hkey_current_user hkey keys value values dword qword string expand binary edit browse search environment run startup uninstall" },
+    { id: "system", name: "System", icon: "tune", hint: "audit PATH and environment variables", keywords: "system path %path% environment variable variables env envvar user machine system-wide missing broken duplicate order folders directories not recognized command not found diagnostics audit" },
+    { id: "log-tail", name: "Log Tail", icon: "subject", hint: "follow the newest lines in any local log file", keywords: "log tail logs follow file live stream watch monitor grep filter search lines output text last newest realtime" },
+    { id: "lock-inspector", name: "Lock Inspector", icon: "lock_open", hint: "find processes holding a file or folder", keywords: "lock locked file folder handle handles process who holds using delete remove rename move in use cannot access being used by another sharing violation access denied unlock close restart manager" },
+    { id: "clipboard", name: "Clipboard History", icon: "content_paste", hint: "search, pin, restore and forget copied text", keywords: "clipboard clip clips history copied copy cut paste buffer text links urls code snippets search restore pin forget clear earlier" },
+    { id: "keep-awake", name: "Keep Awake", icon: "coffee", hint: "keep Windows and the display awake for as long as you need", keywords: "keep awake stay awake sleep no sleep power display screen monitor timeout screensaver lock idle prevent caffeine caffeinate insomnia presentation meeting build download transfer render" },
+    { id: "time-tracker", name: "Active Window Time Tracker", icon: "schedule", hint: "local time by application and window title", keywords: "time tracker tracking activity active window title productivity apps applications usage screen time hours focus idle away log history what did i do local private" },
   ];
   const repairTools = [
     ["audio", "Audio Subsystem Bouncer", "graphic_eq", "Restarts Windows Audio and its endpoint builder.", "Restart audio"],
@@ -27,9 +27,23 @@
     ["shell", "Clean Shell & Cache Purger", "desktop_windows", "Restarts Explorer and removes icon and thumbnail caches.", "Restart shell"],
     ["spooler", "Print Spooler Jam Clearer", "print", "Stops the spooler, removes queued jobs, and starts it again.", "Clear print queue"],
   ];
+  /** What each repair answers to besides its name - mostly the symptom that
+   *  sends you looking for it, since nobody searches for "bouncer". */
+  const repairKeywords = {
+    audio: "audio sound no sound silent silence speakers headphones headset mute crackling stutter distorted playback device audiosrv endpoint builder restart bounce",
+    swap: "sound device switcher swap change default playback recording output input speakers headphones headset microphone mic monitor hdmi console multimedia communications",
+    gpu: "gpu graphics display driver reset restart screen frozen freeze black blank flicker artefacts artifacts glitch stuck monitor nvidia amd intel recover",
+    bounds: "window bounds offscreen off-screen off screen lost missing window disappeared outside monitor second screen move back recover reposition restore",
+    net: "network stack purge reset flush dns winsock arp dhcp renew release ipconfig internet connection no internet cannot connect broken networking repair",
+    wifi: "wifi wi-fi wireless internet connection dropout drops intermittent offline no internet dhcp dns resolver adapter reconnect reset bounce nameserver hotspot",
+    radio: "adapter bluetooth radio power cycle restart disable enable nic wireless ethernet device pair pairing not connecting airplane mode",
+    usb: "usb hub port device not recognized unknown device reconnect replug plug and play re-enumerate restart peripheral mouse keyboard drive dock",
+    shell: "explorer shell restart taskbar desktop frozen hung not responding refresh icon cache thumbnail cache broken icons blank icons start menu",
+    spooler: "print spooler printer printing queue stuck jam jammed jobs clear cancel not printing restart service",
+  };
   for (const [id, name, glyph, detail] of repairTools) catalog.push({
     id: `repair-${id}`, name, icon: glyph, hint: detail,
-    keywords: `repair reset tool tools windows ${id} audio sound display network device explorer print${id === "wifi" ? " wifi wi-fi internet connection dropout intermittent offline dhcp dns resolver adapter reconnect nameserver" : ""}`, repairId: id,
+    keywords: `repair reset restart fix broken tool tools windows ${id} ${repairKeywords[id] || ""}`, repairId: id,
   });
   let host = null;
   let active = "events";

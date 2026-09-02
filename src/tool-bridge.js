@@ -9,7 +9,7 @@
   const id = query.get("id") || "";
   const session = query.get("session") || "";
   const pending = new Map();
-  let sequence = 0, context = null, api = null, persistTimer = 0;
+  let sequence = 0, context = null, api = null, persistTimer = 0, awake = true, persistLoop = 0;
   const responseListening = listen("tool:bridge-response", (event) => {
     const response = event.payload || {};
     if (response.session !== session) return;
@@ -24,6 +24,13 @@
     let ok = true, error = "";
     try {
       if (command.action === "persist") await persist();
+      // The shell now keeps the last few tools alive after you leave them, so
+      // a tool can be running with nothing on screen. Suspend is what stops
+      // that being a tool polling forever behind your back - destroying the
+      // webview used to do it for free. Anything the user explicitly started,
+      // like a packet capture or a log tail, is left to keep running.
+      else if (command.action === "suspend") setAwake(false);
+      else if (command.action === "resume") setAwake(true);
       else throw new Error(`Unknown shell command: ${command.action}`);
     } catch (caught) { ok = false; error = String(caught); }
     await emit("tool:bridge-command-result", { session, commandId: command.commandId, ok, error }).catch(() => {});
@@ -45,6 +52,22 @@
     if (state !== undefined) await invoke("tool_bridge_state_put", { id, state }).catch(() => {});
   }
   function schedulePersist() { clearTimeout(persistTimer); persistTimer = setTimeout(persist, 250); }
+  /** Awake means visible. Asleep, the tool stops its own automatic polling and
+   *  the bridge stops its save timer; one last save happens on the way down so
+   *  nothing is lost if the shell evicts it while it sleeps. */
+  function setAwake(next) {
+    if (awake === next) return;
+    awake = next;
+    if (awake) {
+      persistLoop = setInterval(() => { persist().catch(() => {}); }, 2000);
+      api?.resume?.(id);
+    } else {
+      clearInterval(persistLoop);
+      persistLoop = 0;
+      api?.suspend?.(id);
+      persist().catch(() => {});
+    }
+  }
   window.devhqToolBridge = {
     protocol: 1, id, session, ready, request, context: () => context,
     attach(nextApi) { api = nextApi; }, persist,
@@ -71,6 +94,6 @@
     event.preventDefault();
     request("search", commandSearch ? { initialQuery: "> " } : null).catch(() => {});
   });
-  setInterval(() => { persist().catch(() => {}); }, 2000);
+  persistLoop = setInterval(() => { persist().catch(() => {}); }, 2000);
   window.addEventListener("pagehide", () => { persist().catch(() => {}); });
 })();

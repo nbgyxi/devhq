@@ -233,10 +233,27 @@ pub struct ActionResult {
     pub output: String,
 }
 
+/// A path saved from an earlier session can point somewhere no longer
+/// reachable - a disconnected network drive, an unmounted volume, a VPN-only
+/// share. `Path::exists()` has no timeout of its own, and on an unreachable
+/// network path can block for the OS's own connection timeout (commonly
+/// ~10s on Windows for an unreachable SMB share) before it even gets to
+/// report "not found". Every workspace lookup starts here, so a stale saved
+/// path would silently stall the whole "Opening Git" state for that long.
+/// Bounding it in its own thread lets an unreachable path fail fast instead.
+fn path_reachable_within(path: &Path, timeout: std::time::Duration) -> bool {
+    let path = path.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(path.exists());
+    });
+    rx.recv_timeout(timeout).unwrap_or(false)
+}
+
 fn repo(path: &str) -> Result<std::path::PathBuf, String> {
     let dir = std::path::PathBuf::from(path);
-    if !dir.join(".git").exists() {
-        return Err("Not a Git repository.".into());
+    if !path_reachable_within(&dir.join(".git"), std::time::Duration::from_secs(2)) {
+        return Err("Not a Git repository, or its location could not be reached.".into());
     }
     Ok(dir)
 }

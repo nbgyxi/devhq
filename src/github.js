@@ -66,8 +66,14 @@
     </div><div id="gh-modal"></div>`;
     host.addEventListener("click", onClick);
     host.querySelector("#gh-search").addEventListener("input", e => { state.query = e.target.value; renderList(); });
+    startPolling();
+  }
+
+  // Reads state.host rather than closing over one, so suspend can stop the
+  // poll and resume can start a fresh one without remounting the page.
+  function startPolling() {
     state.timer ||= setInterval(async () => {
-      if (host.hidden || !state.status?.authenticated || state.loading || state.tab !== "inbox") return;
+      if (state.host?.hidden || !state.status?.authenticated || state.loading || state.tab !== "inbox") return;
       try { state.items = await api("notifications?all=false&participating=false&per_page=100"); state.notice = "Polled just now"; render(); } catch (_) {}
     }, 60_000);
   }
@@ -312,5 +318,10 @@
 
   function exportState(){const {host,timer,...rest}=state;return rest;}
   function importState(saved){if(!saved)return;Object.assign(state,saved,{host:state.host,timer:state.timer});if(state.host){const q=state.host.querySelector("#gh-search");if(q)q.value=state.query||"";render();}}
-  window.devhqGithub = { mount, opened, exportState, importState };
+  // Kept alive but off screen: stop polling GitHub for notifications. The
+  // timer is recreated by mount(), so resume goes back through opened().
+  function suspend() { clearInterval(state.timer); state.timer = 0; }
+  async function resume() { await opened(); startPolling(); }
+
+  window.devhqGithub = { mount, opened, suspend, resume, exportState, importState };
 })();

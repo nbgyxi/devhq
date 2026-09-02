@@ -41,6 +41,21 @@ is happening and **how far along** it is:
 - Actions that leave the app (VS Code, Explorer, a new shell) show their own
   transient line until they return.
 
+## Icons are subset into the app
+
+`src/fonts/material-symbols-rounded.woff2` is **generated**, not the upstream
+font. The full 5.2 MB Material Symbols lives in `scripts/fonts/` and is never
+bundled; `scripts/subset-icon-font.js` cuts it down to the glyphs this repo
+names — every window loads `styles.css`, and each isolated tool webview has its
+own cache, so the full font was paid for again on every tool's first open.
+
+**Using an icon that has never been used before means running
+`npm run icon-font` and committing `src/fonts/`.** The scan is deliberately
+blunt — every lowercase word in every source file that happens to be a real
+glyph name is kept — so an icon named in a ternary, a locale string or a value
+from Rust is still picked up. `npm run build` runs `--check` first and refuses
+to build a release whose bundled font is missing a glyph the sources reference.
+
 ## Every change ships as a version
 
 The status bar carries the app's version, and clicking it opens the list of
@@ -71,5 +86,5 @@ sending input to the window. The user runs and tests the app themselves.
 
 Verify changes without it: `cargo check` / `cargo clippy` for the Rust side,
 `cargo run --example scan_cli` for the scan itself, and `node --check` for the
-front-end files. If something can only be confirmed by looking at the running
+front-end files. If something can only be confirmed by looking at the runningT
 window, say so and hand it over rather than launching it.

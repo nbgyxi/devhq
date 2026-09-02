@@ -26,8 +26,44 @@
   html,body{margin:0;background:#0c0d11;color:#e8eaf0}
   html[data-theme="light"],html[data-theme="light"] body{background:#f4f5f8;color:#1a1c24}
   #tool-shell{position:fixed;inset:0;background:inherit}
+  /* The loading screen, repeated here in literal colours for the same reason
+     as the background above: it is what this window shows first, and it must
+     not wait on styles.css. Kept in step with .tool-loading in styles.css. */
+  #tool-loading{
+    position:absolute;inset:34px 0 0 0;z-index:20;
+    display:flex;flex-direction:column;justify-content:center;align-items:center;
+    gap:22px;padding:26px 30px;text-align:center;background:#0c0d11;color:#e8eaf0;
+    font:14px/1.5 system-ui,'Segoe UI',sans-serif;
+  }
+  #tool-loading[hidden]{display:none}
+  .tool-loading-head{display:flex;align-items:center;justify-content:center;gap:13px}
+  .tool-loading-ring{
+    flex:none;width:26px;height:26px;border-radius:50%;
+    border:3px solid #272b38;border-top-color:#6d8bff;
+    animation:tool-loading-spin .8s linear infinite;
+  }
+  .tool-loading-title{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0}
+  .tool-loading-title strong{font-size:14px;font-weight:650;letter-spacing:.1px}
+  .tool-loading-title small{color:#6b7285;font-size:11.5px}
+  .tool-loading-body{display:flex;flex-direction:column;align-items:center;gap:11px;width:100%;max-width:420px}
+  .tool-loading-row{display:flex;justify-content:center;gap:10px;width:100%}
+  .tool-loading-bar{
+    height:11px;flex:1;border-radius:6px;
+    background:linear-gradient(90deg,#171922 25%,#1e212c 37%,#171922 63%);
+    background-size:400% 100%;animation:tool-loading-shimmer 1.4s ease infinite;
+  }
+  @keyframes tool-loading-spin{to{transform:rotate(360deg)}}
+  @keyframes tool-loading-shimmer{0%{background-position:100% 0}100%{background-position:0 0}}
+  @media(prefers-reduced-motion:reduce){.tool-loading-ring,.tool-loading-bar{animation:none}}
+  html[data-theme="light"] #tool-loading{background:#f4f5f8;color:#1a1c24}
+  html[data-theme="light"] .tool-loading-ring{border-color:#d5d9e2;border-top-color:#4868df}
+  html[data-theme="light"] .tool-loading-title small{color:#7a8292}
+  html[data-theme="light"] .tool-loading-bar{
+    background:linear-gradient(90deg,#f0f1f5 25%,#e4e7ed 37%,#f0f1f5 63%);
+    background-size:400% 100%;
+  }
 </style>
-<link rel="stylesheet" href="styles.css?v=0.43.30" />
+<link rel="stylesheet" href="styles.css?v=0.53.1" />
 </head>
 <body class="popout tool-popout">
 <div id="tool-shell">
@@ -47,11 +83,35 @@
     </div>
   </div>
   <main id="tool-host" class="tool-pop-host"></main>
-  <div class="tool-boot" id="tool-boot" hidden>
-    <span class="tool-boot-spinner" aria-hidden="true"></span>
-    <span id="tool-boot-label">Opening…</span>
+  <div id="tool-loading">
+    <div class="tool-loading-head">
+      <span class="tool-loading-ring" aria-hidden="true"></span>
+      <span class="tool-loading-title">
+        <strong id="tool-loading-name">This tool</strong>
+        <small id="tool-loading-phase">Opening…</small>
+      </span>
+    </div>
+    <div class="tool-loading-body" aria-hidden="true">
+      <div class="tool-loading-row"><span class="tool-loading-bar" style="max-width:190px"></span><span class="tool-loading-bar" style="max-width:96px"></span></div>
+      <div class="tool-loading-row"><span class="tool-loading-bar"></span></div>
+      <div class="tool-loading-row"><span class="tool-loading-bar" style="max-width:320px"></span></div>
+      <div class="tool-loading-row"><span class="tool-loading-bar" style="max-width:240px"></span></div>
+    </div>
   </div>
 </div>
+<script>
+// Say the tool's real name in the first frame. DevHQ put it in the URL exactly
+// so this window need not wait for the tool catalog to load to know it, and so
+// the title bar never reads "Tool" or a bare id.
+(function () {
+  var name = new URLSearchParams(location.search).get("name");
+  if (!name) return;
+  document.title = name;
+  document.getElementById("pop-name").textContent = name;
+  document.getElementById("tool-loading-name").textContent = name;
+  document.getElementById("tool-loading-phase").textContent = "Opening " + name + "…";
+})();
+</script>
 <script src="analytics.js"></script>
 <script src="copy-feedback.js"></script>
 <script src="i18n.js"></script>

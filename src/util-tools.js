@@ -270,14 +270,14 @@ const dateRows = (d) => {
 
 const UTIL_TOOLS = [
   { id: "base64", cat: "Encode & decode", name: "Base64", icon: "swap_horiz", tag: "RFC 4648", hint: "text ⇄ base64, URL-safe too",
-    keywords: "base64 encode decode b64 url-safe rfc4648",
+    keywords: "base64 base 64 encode encoding decode decoding b64 atob btoa url-safe urlsafe rfc4648 padding data uri blob binary text convert",
     desc: "Round-trips UTF-8 text through base64. URL-safe swaps +/ for -_ and drops padding.",
     modes: ["Encode", "Decode"], flags: [{ id: "url", label: "URL-safe" }],
     run: (i, m, f) => { if (!i) return { text: "" };
       if (m === "Encode") { let s = b64(bytes(i)); if (f.url) s = s.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); return { text: s }; }
       return { text: utf8(f.url ? fromB64Url(i.trim()) : atob(b64pad(i.trim().replace(/\s+/g, "")))) }; } },
   { id: "url", cat: "Encode & decode", name: "URL encode / decode", icon: "link", tag: "percent", hint: "component or whole URL",
-    keywords: "url encode decode percent uri component querystring",
+    keywords: "url urlencode urldecode encode decode percent escape unescape uri component querystring query string parameter param link address plus space %20",
     desc: "encodeURIComponent for values, encodeURI for whole URLs. Decoding shows the query broken apart.",
     modes: ["Encode", "Decode"], flags: [{ id: "whole", label: "Whole URL" }],
     run: (i, m, f) => { if (!i) return { text: "" };
@@ -287,12 +287,12 @@ const UTIL_TOOLS = [
         u.searchParams.forEach((v, k) => rows.push({ k: "?" + k, v })); if (u.hash) rows.push({ k: "#hash", v: u.hash }); return { rows }; }
       catch (e) { return { text: dec }; } } },
   { id: "html", cat: "Encode & decode", name: "HTML entities", icon: "code_blocks", tag: "entities", hint: "escape and unescape < > &",
-    keywords: "html entities escape unescape amp lt gt",
+    keywords: "html entities entity escape unescape encode decode amp lt gt quot nbsp ampersand angle brackets markup xss sanitise sanitize",
     desc: "Escapes the five XML-significant characters; the aggressive flag also numerics everything above ASCII.",
     modes: ["Encode", "Decode"], flags: [{ id: "all", label: "Non-ASCII too" }],
     run: (i, m, f) => ({ text: i ? (m === "Encode" ? htmlEnc(i, f.all) : htmlDec(i)) : "" }) },
   { id: "hex", cat: "Encode & decode", name: "Hex", icon: "tag", tag: "base 16", hint: "text ⇄ hex bytes",
-    keywords: "hex hexadecimal bytes dump",
+    keywords: "hex hexadecimal base16 base 16 0x bytes byte dump hexdump ascii text convert encode decode",
     desc: "UTF-8 bytes as hexadecimal. Grouping inserts a space every byte for the hexdump look.",
     modes: ["To hex", "From hex"], flags: [{ id: "space", label: "Spaced" }, { id: "upper", label: "Uppercase" }],
     run: (i, m, f) => { if (!i) return { text: "" };
@@ -302,7 +302,7 @@ const UTIL_TOOLS = [
       if (/[^0-9a-f]/i.test(clean)) throw new Error("Not hexadecimal: " + clean.match(/[^0-9a-f]/i)[0]);
       return { text: TD.decode(Uint8Array.from(clean.match(/../g) || [], (h) => parseInt(h, 16))) }; } },
   { id: "binary", cat: "Encode & decode", name: "Binary", icon: "memory", tag: "base 2", hint: "text ⇄ 01000100",
-    keywords: "binary bits bytes 01",
+    keywords: "binary base2 base 2 bits bit bytes 01 ones zeroes zeros convert encode decode text",
     desc: "Eight bits per UTF-8 byte. Decoding tolerates any whitespace grouping.",
     modes: ["To binary", "From binary"], flags: [{ id: "space", label: "Spaced" }],
     run: (i, m, f) => { if (!i) return { text: "" };
@@ -317,26 +317,26 @@ const UTIL_TOOLS = [
       return { text: TD.decode(Uint8Array.from(clean.match(/.{8}/g) || [], (b) => parseInt(b, 2))) }; } },
 
   { id: "sha256", cat: "Hash & sign", name: "SHA-256", icon: "fingerprint", tag: "WebCrypto", hint: "256-bit digest of the input",
-    keywords: "sha256 sha-256 hash digest checksum webcrypto",
+    keywords: "sha256 sha-256 sha 256 hash hashing digest checksum sum fingerprint signature integrity verify compare webcrypto",
     desc: "Digest of the raw UTF-8 bytes, exactly what sha256sum would print for the same content.",
     modes: ["Hex", "Base64"], flags: [{ id: "upper", label: "Uppercase" }],
     run: async (i, m, f) => { const d = await digest("SHA-256", i); return { rows: [{ k: m === "Hex" ? "SHA-256" : "SHA-256 (b64)", v: m === "Hex" ? hex(d, f.upper) : b64(d), tone: "color:#3ad6c8" }, { k: "Length", v: `${i.length} chars · ${bytes(i).length} bytes in` }] }; } },
   { id: "sha512", cat: "Hash & sign", name: "SHA-512", icon: "fingerprint", tag: "WebCrypto", hint: "512-bit digest, plus SHA-384",
-    keywords: "sha512 sha384 sha1 hash digest checksum",
+    keywords: "sha512 sha-512 sha384 sha-384 sha1 sha-1 sha hash hashing digest checksum sum fingerprint verify",
     desc: "The wide SHA-2. SHA-384 is the same construction truncated, shown alongside for convenience.",
     modes: ["Hex", "Base64"], flags: [{ id: "upper", label: "Uppercase" }],
     run: async (i, m, f) => { const [a, b] = await Promise.all([digest("SHA-512", i), digest("SHA-384", i)]);
       const out = (d) => m === "Hex" ? hex(d, f.upper) : b64(d);
       return { rows: [{ k: "SHA-512", v: out(a), tone: "color:#3ad6c8" }, { k: "SHA-384", v: out(b) }, { k: "SHA-1 (legacy)", v: hex(await digest("SHA-1", i), f.upper), tone: "color:#f2b544" }] }; } },
   { id: "md5", cat: "Hash & sign", name: "MD5", icon: "fingerprint", tag: "broken, still needed", hint: "for checksums, never for secrets",
-    keywords: "md5 hash checksum digest",
+    keywords: "md5 md-5 hash checksum sum digest fingerprint file verify legacy",
     desc: "Collision-broken since 2004 — fine for cache keys and file checksums, wrong for anything security-shaped.",
     modes: ["Hex", "Base64"], flags: [{ id: "upper", label: "Uppercase" }],
     run: (i, m, f) => { const h = md5(i);
       const v = m === "Hex" ? (f.upper ? h.toUpperCase() : h) : b64(Uint8Array.from(h.match(/../g).map((x) => parseInt(x, 16))));
       return { rows: [{ k: "MD5", v, tone: "color:#3ad6c8" }, { k: "Short (8)", v: h.slice(0, 8) }, { k: "Warning", v: "Do not use for passwords, signatures, or dedupe of untrusted files.", tone: "color:#f2b544" }] }; } },
   { id: "hmac", cat: "Hash & sign", name: "HMAC", icon: "key", tag: "keyed", hint: "sign a payload with a shared key",
-    keywords: "hmac signature keyed hash webhook secret",
+    keywords: "hmac signature sign signing verify keyed hash mac webhook secret key shared secret sha256 authentication stripe github signature header",
     desc: "Keyed hash over the input. Same construction webhooks use to prove a request came from the sender.",
     modes: ["SHA-256", "SHA-512", "SHA-1"], flags: [{ id: "upper", label: "Uppercase" }],
     keyField: "signing key",
@@ -346,7 +346,7 @@ const UTIL_TOOLS = [
       return { rows: [{ k: `HMAC-${m}`, v: hex(sig, f.upper), tone: "color:#3ad6c8" }, { k: "Base64", v: b64(sig) }, { k: "Header form", v: `X-Signature: ${m.toLowerCase().replace("-", "")}=${hex(sig)}` }] }; } },
 
   { id: "jwt", cat: "Identity & tokens", name: "JWT decode", icon: "badge", tag: "RFC 7519", hint: "header, claims, expiry check",
-    keywords: "jwt json web token decode claims header payload expiry",
+    keywords: "jwt json web token decode inspect parse read claims header payload signature expiry exp iat iss aud sub bearer auth authorization oauth oidc openid access token id token refresh token expired",
     desc: "Splits and decodes the token, pretty-prints both JSON parts and resolves the time claims. No signature verification — that needs the key.",
     run: (i) => { const t = i.trim(); if (!t) return { blocks: [] };
       const p = t.split("."); if (p.length !== 3) throw new Error(`A JWT has 3 dot-separated parts — this has ${p.length}.`);
@@ -364,7 +364,7 @@ const UTIL_TOOLS = [
         { title: "Time claims", note: expired ? "EXPIRED" : "within validity", text: times || "no time claims", headStyle: expired ? "background:rgba(242,84,91,.14);color:#f2545b" : "background:rgba(63,202,127,.12);color:#3fca7f", bodyStyle: "color:#9aa1b4" },
       ] }; } },
   { id: "uuid", cat: "Identity & tokens", name: "UUID generator", icon: "casino", tag: "v4 / v7", hint: "fresh identifiers on demand",
-    keywords: "uuid guid v4 v7 generate random",
+    keywords: "uuid guid v4 v7 uuidv4 uuidv7 generate generator new create random unique id identifier key bulk",
     desc: "v4 is pure random. v7 puts a millisecond timestamp in the high bits so ids sort chronologically — much kinder to database indexes. Type how many you want in the input.",
     modes: ["v4", "v7", "Nil / Max"], placeholder: "how many — e.g. 100",
     action: { label: "Regenerate", icon: "refresh" }, flags: [{ id: "upper", label: "Uppercase" }],
@@ -385,7 +385,7 @@ const UTIL_TOOLS = [
       return { text: list.join("\n") };
     } },
   { id: "guid", cat: "Identity & tokens", name: "GUID formats", icon: "transform", tag: "every dialect", hint: "braces, C#, byte array, base64",
-    keywords: "guid uuid formats csharp sql braced urn",
+    keywords: "guid uuid formats format convert csharp c# dotnet .net sql server braced brackets urn byte array base64 uppercase lowercase no dashes hyphens",
     desc: "One UUID, spelled the eleven different ways Windows, .NET, SQL Server and the web each insist on.",
     run: (i) => { const s = i.trim().replace(/^urn:uuid:/i, "").replace(/[{}()]/g, "").replace(/-/g, "");
       if (!i.trim()) return { rows: [] };
@@ -410,7 +410,7 @@ const UTIL_TOOLS = [
       ] }; } },
 
   { id: "unix", cat: "Time", name: "Unix timestamp", icon: "schedule", tag: "epoch", hint: "seconds, millis or a date string",
-    keywords: "unix timestamp epoch seconds millis date time",
+    keywords: "unix timestamp epoch unixtime seconds millis milliseconds ms date time datetime convert now today human readable iso 8601 utc local timezone age relative when",
     desc: "Paste a number in any epoch unit or a human date; every other representation falls out. Empty means now.",
     action: { label: "Now", icon: "bolt" },
     run: (i) => { const t = i.trim(); let d;
@@ -421,7 +421,7 @@ const UTIL_TOOLS = [
       const unit = !t ? "now" : /^-?\d{1,11}$/.test(t) ? "read as seconds" : /^-?\d{12,14}$/.test(t) ? "read as milliseconds" : /^-?\d+$/.test(t) ? "read as microseconds" : "parsed as a date string";
       return { rows: [{ k: "Interpreted", v: unit, tone: "color:#6b7285" }, ...dateRows(d)] }; } },
   { id: "filetime", cat: "Time", name: "Windows FILETIME", icon: "hourglass", tag: "1601 epoch", hint: "100ns ticks since 1601-01-01",
-    keywords: "windows filetime ticks 1601 epoch ntfs",
+    keywords: "windows filetime file time ticks 100ns 1601 epoch ntfs dotnet .net datetime ldap active directory timestamp convert date",
     desc: "The unit every Win32 API and event log speaks: 100-nanosecond intervals since 1 January 1601 UTC. Decimal or 0x hex both work.",
     run: (i) => { const t = i.trim().replace(/[\s,]/g, ""); if (!t) return { rows: dateRows(new Date()) };
       let ticks;
@@ -435,7 +435,7 @@ const UTIL_TOOLS = [
       return { rows: [{ k: "FILETIME", v: ticks.toString(), tone: "color:#3ad6c8" }, { k: "dwHighDateTime", v: `0x${hi.toString(16).toUpperCase().padStart(8, "0")}  (${hi})` }, { k: "dwLowDateTime", v: `0x${lo.toString(16).toUpperCase().padStart(8, "0")}  (${lo})` }, ...dateRows(d)] }; } },
 
   { id: "json", cat: "Data formats", name: "JSON", icon: "data_object", tag: "parse & shape", hint: "format, minify, sort, typify",
-    keywords: "json format minify pretty typescript type sort keys repair",
+    keywords: "json format formatter pretty prettify beautify indent minify compact validate validator lint parse check broken repair fix escape unescape stringify sort keys typescript types interface schema viewer",
     desc: "Strict parse with a readable error position, then reprint it however you need — including as a TypeScript type.",
     modes: ["Format", "Minify", "Sort keys", "→ TS type"], flags: [{ id: "tabs", label: "Tabs" }],
     run: (i, m, f) => { if (!i.trim()) return { text: "" };
@@ -459,7 +459,7 @@ const UTIL_TOOLS = [
       if (m === "Sort keys") { const sort = (x) => Array.isArray(x) ? x.map(sort) : x && typeof x === "object" ? Object.fromEntries(Object.keys(x).sort().map(k => [k, sort(x[k])])) : x; return { text: JSON.stringify(sort(v), null, ind) }; }
       return { text: JSON.stringify(v, null, ind) }; } },
   { id: "xml", cat: "Data formats", name: "XML ⇄ JSON", icon: "code", tag: "DOM parse", hint: "attributes become @keys",
-    keywords: "xml json convert attributes",
+    keywords: "xml json convert conversion parse format attributes nodes soap rss atom xsd xaml config plist",
     desc: "Attributes map to @-prefixed keys, repeated elements collapse into arrays, text nodes become #text when they share space with children.",
     modes: ["XML → JSON", "JSON → XML"],
     run: (i, m) => { if (!i.trim()) return { text: "" };
@@ -470,14 +470,14 @@ const UTIL_TOOLS = [
       const root = ks.length === 1 ? ks[0] : "root", body = ks.length === 1 ? v[ks[0]] : v;
       return { text: '<?xml version="1.0" encoding="UTF-8"?>\n' + objToXml(body, root, 0) }; } },
   { id: "yaml", cat: "Data formats", name: "YAML ⇄ JSON", icon: "list_alt", tag: "common subset", hint: "for the docker-compose moments",
-    keywords: "yaml yml json docker compose kubernetes",
+    keywords: "yaml yml json convert conversion parse format docker compose kubernetes k8s helm manifest workflow pipeline config front matter openapi swagger",
     desc: "Maps, sequences and scalars — enough for compose files, CI configs and k8s manifests. Anchors and multi-doc streams are not handled.",
     modes: ["YAML → JSON", "JSON → YAML"],
     run: (i, m) => { if (!i.trim()) return { text: "" };
       if (m === "YAML → JSON") return { text: JSON.stringify(fromYaml(i), null, 2) };
       return { text: toYaml(JSON.parse(i), 0).replace(/^\n/, "") }; } },
   { id: "markup", cat: "Data formats", name: "HTML repair", icon: "healing", tag: "tolerant", hint: "fixes the tag soup, then tidies it",
-    keywords: "html repair tidy minify fix tags soup",
+    keywords: "html repair fix tidy clean format prettify beautify minify broken tags unclosed nesting tag soup markup email scrape",
     desc: "Broken markup is the normal case. This parses it the way a browser would — closing what you left open, re-nesting what you got wrong — and prints back something well-formed.",
     modes: ["Tidy & fix", "Minify", "→ JSON"],
     run: (i, m) => { if (!i.trim()) return { text: "" };
@@ -490,7 +490,7 @@ const UTIL_TOOLS = [
         { title: m === "Minify" ? "Minified" : "Well-formed", note: "browser-equivalent parse", text: body, headStyle: "background:rgba(109,139,255,.14);color:#6d8bff", bodyStyle: "color:#e8eaf0" },
       ] }; } },
   { id: "csv", cat: "Data formats", name: "CSV ⇄ JSON", icon: "table", tag: "RFC 4180", hint: "quoted fields handled properly",
-    keywords: "csv tsv table json spreadsheet",
+    keywords: "csv tsv table tabular json convert columns rows header delimiter comma tab quoted spreadsheet excel sheet import export data",
     desc: "Quoted commas, escaped quotes and embedded newlines all survive. Row-objects out, header union in.",
     modes: ["CSV → JSON", "JSON → CSV", "CSV → table"], flags: [{ id: "raw", label: "No header row" }],
     run: (i, m, f) => { if (!i.trim()) return { text: "" };
@@ -506,7 +506,7 @@ const UTIL_TOOLS = [
 
 UTIL_TOOLS.unshift({
   id: "any", cat: "Start here", name: "Anything", icon: "content_paste_search", tag: "paste and see", hint: "paste it, I work out what it is",
-    keywords: "anything paste detect sniff identify auto jwt guid timestamp json html xml base64",
+    keywords: "anything any everything paste detect detector sniff identify identifier recognise recognize what is this unknown magic auto automatic smart guess decode jwt guid uuid timestamp epoch json html xml base64 binary hex hash blob string",
   desc: "The catch-all. Drop in whatever you found in a log, a header or a database column — this works out what it is and runs the right tool on it.",
   run: async (i) => {
     const t = (i || "").trim();

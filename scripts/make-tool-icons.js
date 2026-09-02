@@ -22,8 +22,8 @@ const { createCanvas, GlobalFonts } = require("@napi-rs/canvas");
 const wawoff2 = require("wawoff2");
 
 const ROOT = path.join(__dirname, "..");
-const FONT_WOFF2 = path.join(ROOT, "src", "fonts", "material-symbols-rounded.woff2");
-const FONT_CACHE = path.join(__dirname, ".cache", "MaterialSymbolsRounded.woff");
+const FONT_WOFF2 = path.join(__dirname, "fonts", "material-symbols-rounded-full.woff2");
+const FONT_CACHE = path.join(__dirname, ".cache", "MaterialSymbolsRoundedFull.woff");
 const OUT_TAURI = path.join(ROOT, "src-tauri", "icons", "tools");
 const OUT_UI = path.join(ROOT, "src", "tool-icons");
 

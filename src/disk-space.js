@@ -229,6 +229,9 @@ function mount(host) {
 }
 
 function exportState(){return {drives:ds.drives,drive:ds.drive,path:ds.path,items:ds.items,scanning:ds.scanning,scanId:ds.scanId,scanToken:ds.scanToken,history:ds.history,skipped:ds.skipped,error:ds.error};}
-function importState(state){if(!state)return;Object.assign(ds,state,{host:ds.host,wired:ds.wired,loadingDrives:false});if(ds.host)render();}
+// `scanning` joins `loadingDrives` here for the same reason: it describes a
+// scan running in a webview that has gone, whose progress events can never
+// arrive, so restoring it true shows a scan that will never finish.
+function importState(state){if(!state)return;Object.assign(ds,state,{host:ds.host,wired:ds.wired,loadingDrives:false,scanning:false});if(ds.host)render();}
 window.devhqDiskSpace = { mount, render, opened, confirmLeave, preparePopout, exportState, importState };
 })();

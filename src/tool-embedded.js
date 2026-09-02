@@ -3,9 +3,32 @@
 (async () => {
   "use strict";
   const bridge = window.devhqToolBridge;
-  const context = await bridge.ready;
+  const loading = document.getElementById("tool-loading");
+  const phase = document.getElementById("tool-loading-phase");
+  // The loading screen names the real phase rather than saying "Loading…" at
+  // everything, so a tool that stalls says where it stalled.
+  const sayPhase = (text) => { if (phase) phase.textContent = text; };
   const id = bridge.id;
   const host = document.getElementById("tool-host");
+  const queryName = new URLSearchParams(location.search).get("name") || id;
+  const stall = (text) => {
+    if (!loading) return;
+    loading.querySelector(".tool-loading-ring")?.remove();
+    loading.querySelector(".tool-loading-body")?.remove();
+    sayPhase(text);
+  };
+  // The bridge answers over Tauri events and gives up after 15s. Waiting on it
+  // outside the try would leave this screen spinning forever on a shell that
+  // never replied, which is the one thing a loading screen must not do.
+  sayPhase(`Connecting ${queryName}…`);
+  let context;
+  try {
+    context = await bridge.ready;
+  } catch (error) {
+    stall(`${queryName} could not reach DevHQ. ${String(error)}`);
+    return;
+  }
+  const label = context?.tool?.name || queryName;
   const modules = {
     ports: "ports-tool.js", dns: "dns.js", hosts: "hosts.js", network: "network.js", "path-ping": "path-ping.js",
     "disk-space": "disk-space.js", github: "github.js", git: "git-client.js",
@@ -19,6 +42,7 @@
   });
   try {
     let api;
+    sayPhase(`Loading ${label}…`);
     if (modules[id]) {
       await load(modules[id]);
       api = { ports: window.devhqPortsTool, dns: window.devhqDns, hosts: window.devhqHosts, network: window.devhqNetwork,
@@ -44,12 +68,19 @@
       : `${id}-page`;
     host.className = `tool-isolated-body ${family}`;
     if (id === "git") api.setRepositories?.(context.projects || []);
+    sayPhase(`Starting ${label}…`);
     api.mount?.(host);
     if (utilFamily || windowsFamily) api.open?.(id);
     await api.opened?.();
+    // Uncover only once the tool has drawn itself, so the hand-off is a swap
+    // rather than a flash of empty background.
+    if (loading) loading.hidden = true;
     await bridge.reportReady();
   } catch (error) {
-    host.innerHTML = `<div class="win-empty">${window.devhqShell.esc(String(error))}</div>`;
+    // A tool that cannot open keeps the loading screen and says so there -
+    // better than a spinner that never stops over an empty page.
+    if (loading) stall(`${label} could not open. ${String(error)}`);
+    else host.innerHTML = `<div class="win-empty">${window.devhqShell.esc(String(error))}</div>`;
     await bridge.request("ready", { error: String(error) }).catch(() => {});
   }
 })();

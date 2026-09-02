@@ -16,6 +16,94 @@
 window.devhqChangelog = (() => {
   const releases = [
     {
+      version: "0.53.5",
+      date: "2026-09-02",
+      title: "A tool that failed to open once now recovers",
+      changes: [
+        ["fix", "A tool's own isolated window could end up with a corrupted environment - most often from being interrupted mid-creation - and once it did, every future attempt to open that same tool failed the same way for good, with no visible way to recover. It now clears that environment and tries once more automatically the next time you open it."],
+      ],
+    },
+    {
+      version: "0.53.4",
+      date: "2026-09-02",
+      title: "Fewer flashes, fewer stalls",
+      changes: [
+        ["fix", "Windows tools (registry, lock inspector, audio, event log, repair targets, and the CLI's PATH check) no longer flash a console window every time they read from PowerShell."],
+        ["fix", "Git could stall on \"Opening Git\" for several seconds if its last-opened repository sat somewhere no longer reachable - a disconnected network drive, an unmounted volume. It now gives up on an unreachable path quickly instead of waiting on it."],
+      ],
+    },
+    {
+      version: "0.53.3",
+      date: "2026-09-02",
+      title: "Search finds the tool you meant",
+      changes: [
+        ["better", "Search now answers to the words you would actually type. Every tool carries far more of them - the symptom (\"port already in use\", \"no sound\", \"window off screen\", \"cannot delete file\"), the other name for the thing (regedit, netstat, hexdump, caffeine, prettify, epoch), and the neighbouring spellings (sha-256, wi-fi, uuidv4, c#)."],
+        ["better", "The Windows repairs are found by what is broken rather than by their names - \"printer stuck\", \"bluetooth\", \"taskbar frozen\", \"flush dns\" and \"usb not recognized\" all land on the right one."],
+        ["better", "Rescan, the terminal panel and the per-project Run, Terminal and Pull rows match their common names too, so \"refresh\", \"console\" and \"fetch\" find them."],
+      ],
+    },
+    {
+      version: "0.53.2",
+      date: "2026-09-02",
+      title: "Git opens again",
+      changes: [
+        ["fix", "Git could stick on \"Opening version history…\" and stay there for good. If it was saved while still reading a repository it recorded that a read was under way, then on the way back waited for a read that had died with the old window - and saved the same flag again. It no longer remembers being mid-read, so it simply reads again."],
+        ["fix", "Disk Space Usage could come back showing a scan that was already gone, and could never finish it."],
+      ],
+    },
+    {
+      version: "0.53.1",
+      date: "2026-09-02",
+      title: "A terminal straight into its own window",
+      changes: [
+        ["new", "A small pop-out button sits next to Terminal in the status bar. It opens a new shell straight in its own window - the bottom panel is never opened on the way and does not flicker, whether it was open or closed."],
+      ],
+    },
+    {
+      version: "0.53.0",
+      date: "2026-09-02",
+      title: "Going back to a tool stops rebuilding it",
+      changes: [
+        ["new", "The three most recently used tools stay in memory. Leaving one now hides it instead of throwing it away, so going back to it appears at once, still scrolled where you left it and still holding what you had typed - no reload, no loading screen."],
+        ["better", "A tool kept in the background stops working while it is there. Process Explorer stops sampling the process table every two seconds and GitHub stops polling for notifications, and both pick up again when you return. Anything you started yourself - a packet capture, a log tail - keeps running."],
+        ["better", "Three, not more: each of these tools runs in its own browser process, so a spare costs real memory. The utilities and Windows tools were never affected - they live in the main window and have always stayed loaded."],
+        ["fix", "Popping a tool out of its own window now clears the copy held in memory, so docking it back no longer restores the state it had before it was popped out."],
+      ],
+    },
+    {
+      version: "0.52.0",
+      date: "2026-09-02",
+      title: "A tool says what it is while it opens",
+      changes: [
+        ["new", "Opening a tool no longer shows a blank grey panel while it starts. It shows the tool - by its real name, Process Explorer rather than ports - with a spinner and a shimmering outline of the page that is coming, centred in the space it will fill."],
+        ["better", "A popped-out tool window carries its name in the title bar and on the taskbar from the very first frame, instead of reading \"Tool\" until the tool had loaded."],
+        ["better", "The line along the bottom now says which tool is opening, and stops saying it the moment that tool has drawn itself."],
+        ["better", "The loading line names the step it is really on - reaching DevHQ, loading the tool, starting it - so a tool that stalls says where."],
+        ["fix", "A tool that fails to open now says so on that screen, with the reason. It used to throw you back to the overview and take the explanation with it."],
+        ["fix", "Clicking the version in the status bar opens this list again. The window was being brought to the front and then hiding itself in the same breath, because it trusted Windows' answer about whether it had focus - Search already asked the second question that gets this right."],
+      ],
+    },
+    {
+      version: "0.51.1",
+      date: "2026-09-02",
+      title: "Tool windows open sooner",
+      changes: [
+        ["better", "Tools open faster, especially the first time. Every window carried the whole Material Symbols icon set - 5.2 MB - and no icon could appear until all of it had been read. Each tool keeps its own cache, so each one paid that toll on its first open. DevHQ now ships only the icons it actually draws: 465 KB, about a ninth of the size."],
+        ["fix", "Every icon in the smaller set was checked against the original, one by one, so none of them changed shape or went missing."],
+      ],
+    },
+    {
+      version: "0.51.0",
+      date: "2026-09-01",
+      title: "Split first, choose the shell after",
+      changes: [
+        ["better", "The split button in a popped-out terminal just splits: side by side, running the same shell as the pane it came from, with nothing to answer first. Click it again to fold the second pane away."],
+        ["new", "Right-click a pane tab to restart that pane on a different shell - PowerShell 7, Windows PowerShell, Command Prompt, Git Bash, WSL or NuShell - in the same folder and the same place on screen. With one terminal and no tab to aim at, the window title does the same thing."],
+        ["better", "The shell menu marks the one the pane is already running and greys out the ones this computer does not have, saying why on hover."],
+        ["better", "Dragging a popped-out terminal by its titlebar now only moves the window. Dropping it onto the terminal area was meant to dock it and never landed reliably; the dock button next to it always did."],
+      ],
+    },
+    {
       version: "0.50.1",
       date: "2026-09-01",
       title: "Room for the shell list",

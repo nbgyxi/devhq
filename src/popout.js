@@ -332,73 +332,128 @@
   /* ---------------------------------------------------------- splitting */
 
   const splitButton = document.getElementById("pop-split");
-  const splitMenu = document.getElementById("pop-split-menu");
+  const paneMenu = document.getElementById("pop-menu");
   let shellProfiles = [];
+  let menuPane = 0;
 
-  const closeSplitMenu = () => {
-    splitMenu.hidden = true;
-    splitButton.setAttribute("aria-expanded", "false");
+  const closePaneMenu = () => {
+    paneMenu.hidden = true;
   };
 
-  /** The same list the panel's shell menu offers, with what this computer does
-   *  not have greyed out rather than hidden - a shell that is missing is worth
-   *  knowing about. */
-  async function renderSplitMenu() {
-    if (!shellProfiles.length) {
-      shellProfiles = await invoke("term_shell_availability").catch(() => []);
-    }
-    const rows = shellProfiles
-      .filter((profile) => profile.profile !== "auto")
-      .map((profile) => `<button role="menuitem" data-split-shell="${profile.profile}"${profile.available === false ? " disabled" : ""}${profile.reason ? ` title="${profile.reason.replace(/"/g, "&quot;")}"` : ""}>${SHELL_LABELS[profile.profile] || profile.profile}${profile.available === false ? "<span>Unavailable</span>" : ""}</button>`)
-      .join("");
-    splitMenu.innerHTML = `<div class="pop-menu-label">Split with</div>
-      <button role="menuitem" data-split-shell="">Same shell as this pane</button>
-      ${rows}
-      <div class="pop-menu-label">Direction</div>
-      <button role="menuitem" data-split-direction="vertical">Side by side</button>
-      <button role="menuitem" data-split-direction="horizontal">Stacked</button>`;
-  }
-
+  /** Splitting is one click and no questions: side by side, running the same
+   *  shell as the pane it came from. The shell is the pane's own business, and
+   *  right-clicking its tab is where that is changed. */
   splitButton.onclick = async () => {
     if (panes.length > 1) {
       // Already split: the button folds it back up, which is the only other
       // thing it could sensibly mean.
       return closePane(1);
     }
-    if (!splitMenu.hidden) return closeSplitMenu();
-    await renderSplitMenu();
-    splitMenu.hidden = false;
-    splitButton.setAttribute("aria-expanded", "true");
-  };
-
-  splitMenu.onclick = async (e) => {
-    const direction = e.target.closest("[data-split-direction]");
-    if (direction) {
-      splitDirection = direction.dataset.splitDirection;
-      renderPanes();
-      for (const pane of panes) pane.view.fit();
-      return;
-    }
-    const choice = e.target.closest("[data-split-shell]");
-    if (!choice || choice.disabled) return;
-    closeSplitMenu();
-    const wanted = choice.dataset.splitShell;
     try {
-      await openCompanion({
-        shell: wanted || current()?.profile || "",
-        direction: splitDirection,
-      });
+      await openCompanion({ shell: current()?.profile || "auto", direction: "vertical" });
     } catch (error) {
       sayInTitle(String(error));
     }
   };
 
+  /** The shells this computer has, asked for once. What is missing is greyed
+   *  out rather than left out: a shell that is not installed is worth knowing
+   *  about, and it says why on hover. */
+  async function renderPaneMenu(index) {
+    if (!shellProfiles.length) {
+      shellProfiles = await invoke("term_shell_availability").catch(() => []);
+    }
+    const running = panes[index]?.profile;
+    const rows = shellProfiles
+      .filter((profile) => profile.profile !== "auto")
+      .map((profile) => {
+        const on = profile.profile === running;
+        const note = on ? "<span>Running</span>" : profile.available === false ? "<span>Unavailable</span>" : "";
+        return `<button role="menuitem" data-pane-shell="${profile.profile}"${profile.available === false || on ? " disabled" : ""}${profile.reason ? ` title="${profile.reason.replace(/"/g, "&quot;")}"` : ""}>${SHELL_LABELS[profile.profile] || profile.profile}${note}</button>`;
+      })
+      .join("");
+    paneMenu.innerHTML = `<div class="pop-menu-label">Restart this pane with</div>${rows}`;
+  }
+
+  /** Opens the shell menu at the pointer, kept inside the window so a tab near
+   *  the right edge does not put half of it off screen. */
+  async function openPaneMenu(index, x, y) {
+    if (!panes[index]) return;
+    menuPane = index;
+    await renderPaneMenu(index);
+    paneMenu.hidden = false;
+    const box = paneMenu.getBoundingClientRect();
+    paneMenu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - box.width - 4))}px`;
+    paneMenu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - box.height - 4))}px`;
+  }
+
+  paneMenu.onclick = async (e) => {
+    const choice = e.target.closest("[data-pane-shell]");
+    if (!choice || choice.disabled) return;
+    closePaneMenu();
+    await changePaneShell(menuPane, choice.dataset.paneShell);
+  };
+
+  // The pane tab when there is one, the window's own title when there is not:
+  // a single terminal has no tab to right-click, and its titlebar is the same
+  // thing by another name.
+  document.addEventListener("contextmenu", (e) => {
+    const tab = e.target.closest(".pop-pane-tab");
+    const brand = e.target.closest(".titlebar .brand");
+    if (!tab && !brand) return;
+    e.preventDefault();
+    const index = tab ? panes.findIndex((pane) => pane.el.contains(tab)) : activePane;
+    openPaneMenu(index < 0 ? 0 : index, e.clientX, e.clientY);
+  });
+
   document.addEventListener("pointerdown", (e) => {
-    if (!splitMenu.hidden && !e.target.closest("#pop-split-menu,#pop-split")) closeSplitMenu();
+    if (!paneMenu.hidden && !e.target.closest("#pop-menu")) closePaneMenu();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeSplitMenu();
+    if (e.key === "Escape") closePaneMenu();
   });
+
+  /** Restarts one pane on a different shell, in the same folder and the same
+   *  place on screen. The session behind it is a new one - a running shell
+   *  cannot become another kind - so the old one is ended once the new one is
+   *  attached, never before. */
+  async function changePaneShell(index, shell) {
+    const pane = panes[index];
+    if (!pane || !shell || pane.profile === shell) return;
+    const label = SHELL_LABELS[shell] || shell;
+    let replacement = null;
+    try {
+      replacement = await invoke("term_open", { args: {
+        projectPath: pane.info.projectPath,
+        projectName: pane.info.projectName || "Terminal",
+        shell,
+      }});
+      const previousId = pane.id;
+      pane.view.dispose();
+      pane.host.innerHTML = "";
+      pane.id = replacement.id;
+      pane.exited = false;
+      pane.title = "";
+      pane.view = new TermView(pane.host, replacement.id);
+      pane.view.onTitle = (text) => { pane.title = text; renderPanes(); };
+      pane.view.onExit = () => { pane.exited = true; renderPanes(); };
+      pane.info = await pane.view.attach();
+      pane.profile = shellProfileFromCommand(pane.info.command);
+      await emit("term:popped-created", { info: pane.info }).catch(() => {});
+      await emit("term:close-watch", { id: previousId }).catch(() => {});
+      await emit("term:closed", { id: previousId }).catch(() => {});
+      renderPanes();
+      pane.view.fit();
+      pane.view.focus();
+    } catch (error) {
+      // The half-opened session must not be left running with nothing showing
+      // it, and the pane says what went wrong where it was asked for.
+      if (replacement?.id && panes.every((item) => item.id !== replacement.id)) {
+        await emit("term:closed", { id: replacement.id }).catch(() => {});
+      }
+      sayInTitle(`${label} couldn't start: ${error}`);
+    }
+  }
 
   /** Drag the divider to give one pane more room. Fitting both shells is left
    *  until the drag ends: a pseudoconsole resize per pointer move would be one
@@ -577,22 +632,12 @@
     })
     .catch(() => {});
 
-  // Native window dragging keeps movement smooth. Once Windows releases the
-  // drag, report the pointer's physical screen position; DevHQ accepts it only
-  // when it lands on the terminal dock.
+  // Dragging the titlebar moves the window and nothing else. Releasing it over
+  // DevHQ's terminal area used to dock the terminal back in, which was never
+  // reliable enough to aim at; the dock button beside it always was.
   document.querySelector(".titlebar .drag").addEventListener("pointerdown", async (e) => {
     if (e.button !== 0) return;
-    const grabX = e.clientX;
-    const grabY = e.clientY;
     await win.startDragging();
-    if (handedOver) return;
-    const pos = await win.outerPosition();
-    const scale = window.devicePixelRatio || 1;
-    await emit("term:drop", {
-      id: panes[0]?.id || id,
-      x: pos.x + grabX * scale,
-      y: pos.y + grabY * scale,
-    });
   });
 
   let pending;

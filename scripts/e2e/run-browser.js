@@ -199,6 +199,60 @@ function printReport(results) {
   }
 }
 
+const ONBOARDING_TIMEOUT_MS = 15000;
+
+/** browser.newPage() opens an isolated context with blank localStorage, so
+ *  app.js treats it as a fresh install every time and runs its onboarding
+ *  sequence (firstRunLanguage -> firstRunFolders -> firstRunUsageData, all
+ *  in app.js) - each a full-window modal (.language-first-run) that nothing
+ *  in this suite's navigation-only dispatching clicks through on its own.
+ *  Click through all three, the same way a real first-time user would, so
+ *  the modal isn't still sitting over everything for the rest of the run.
+ *  See run.js's dismissFirstRunOnboarding() for the same logic against the
+ *  real app - kept as a separate copy since one drives via WebDriver's
+ *  executeAsyncScript and the other via a plain Promise page.evaluate can
+ *  await, not because the sequence itself differs. */
+async function dismissFirstRunOnboarding(page) {
+  const result = await withTimeout(
+    page.evaluate(
+      ({ fallbackRoot, timeoutMs }) => new Promise((resolve) => {
+        const deadline = Date.now() + timeoutMs;
+        let steps = 0;
+        function tick() {
+          if (Date.now() > deadline) return resolve({ timedOut: true, steps });
+          const langBtn = document.querySelector('.language-first-run [data-language="system"]');
+          if (langBtn) { langBtn.click(); steps++; return setTimeout(tick, 300); }
+          const startBtn = document.querySelector('.language-first-run [data-first-run="start"]');
+          if (startBtn) {
+            if (startBtn.disabled) {
+              const input = document.querySelector('.language-first-run .first-run-roots input');
+              if (input && !input.value) {
+                input.value = fallbackRoot;
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+              }
+              return setTimeout(tick, 300);
+            }
+            startBtn.click();
+            steps++;
+            return setTimeout(tick, 300);
+          }
+          const noThanksBtn = document.querySelector('.language-first-run [data-usage="no"]');
+          if (noThanksBtn) { noThanksBtn.click(); steps++; return setTimeout(tick, 300); }
+          if (document.querySelector(".language-first-run")) return setTimeout(tick, 300);
+          resolve({ timedOut: false, steps });
+        }
+        tick();
+      }),
+      { fallbackRoot: SRC_DIR, timeoutMs: ONBOARDING_TIMEOUT_MS },
+    ),
+    ONBOARDING_TIMEOUT_MS + 3000,
+    "onboarding dismissal did not resolve in time",
+  ).catch((err) => ({ timedOut: true, steps: 0, error: err.message }));
+  if (result.steps > 0) {
+    console.log(`Dismissed ${result.steps} first-run onboarding step(s)${result.timedOut ? " (timed out waiting for more)" : ""}.`);
+  }
+}
+
 /** Opens a fresh page against the served front end, with the Tauri stub and
  *  console/error capture wired in. Used both for the initial page and to
  *  recover after a renderer crash mid-run. */
@@ -212,6 +266,7 @@ async function openSession(browser, site, consoleErrors) {
   // Give the shell's initial mount (mountShell in app.js) a moment to run
   // before the very first navigation is dispatched against it.
   await page.waitForSelector("#search-input", { timeout: 10000 }).catch(() => {});
+  await dismissFirstRunOnboarding(page);
   return { page };
 }
 

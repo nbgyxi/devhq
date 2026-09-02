@@ -93,7 +93,12 @@
   function commitClick(e){const file=e.target.closest("[data-git-file]");if(file)S.filesScroll=file.closest(".sp-files")?.scrollTop||0;if(e.target.closest("[data-git-close-commit]")){S.commitView=null;render();return}const button=e.target.closest("[data-git-see]");if(button)showCommit(button.dataset.gitSee)}
   function branchClick(e){const remove=e.target.closest("[data-git-delete]");if(remove){const name=remove.dataset.gitDelete;if(confirm(S.technical?`Delete branch ${name}? Unmerged commits may be lost.`:`Delete ${name} folder? Versions that exist only there may be lost.`))act("delete_branch",name);return}const toggle=e.target.closest("[data-git-branches]");if(toggle){S.branchMenu=!S.branchMenu;render();return}const branch=e.target.closest("[data-git-checkout]");if(!branch)return;const name=branch.dataset.gitCheckout;S.branchMenu=false;if(name===S.data?.info?.branch){render();return}act("checkout",name)}
   function submit(e){if(e.target.matches(".git-new-branch")){e.preventDefault();const form=new FormData(e.target),name=String(form.get("branch")||"").trim(),source=String(form.get("source")||"");if(name)act("create_branch_from",`${name}\n${source}`);return}if(!e.target.matches(".sp-save"))return;e.preventDefault();savePoint(new FormData(e.target).get("message"))}
-  function exportState(){return {path:S.path,name:S.name,repositories:S.repositories,data:S.data,busy:S.busy,error:S.error,notice:S.notice,selected:S.selected,excluded:[...S.excluded],openPoint:S.openPoint,technical:S.technical};}
-  function importState(state){if(!state)return;Object.assign(S,state,{excluded:new Set(state.excluded||[]),root:S.root,body:S.body});remember();render();}
+  // `busy` is never saved. It describes a git_workspace call that was in
+  // flight in a webview that no longer exists, and opened() skips its load
+  // while it is set - so a save that happened mid-load stranded the tool on
+  // "Opening version history…" forever, and the next save wrote the same flag
+  // straight back. Restoring it false makes the load happen again instead.
+  function exportState(){return {path:S.path,name:S.name,repositories:S.repositories,data:S.data,error:S.error,notice:S.notice,selected:S.selected,excluded:[...S.excluded],openPoint:S.openPoint,technical:S.technical};}
+  function importState(state){if(!state)return;Object.assign(S,state,{busy:false,excluded:new Set(state.excluded||[]),root:S.root,body:S.body});remember();render();}
   window.devhqGit={mount,opened,open,refresh:load,setRepositories,exportState,importState};
 })();

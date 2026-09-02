@@ -37,7 +37,10 @@
   async function kill(pid){const row=s.rows.find((item)=>item.pid===pid);if(!row)return;const yes=await window.devhqConfirm?.({title:`Kill ${processName(row)}?`,message:`PID ${pid} will be terminated immediately.`,confirmLabel:"Kill process",tone:"danger",icon:"stop_circle"});if(!yes)return;await invoke("port_kill",{pid,expectedExecutable:row.executablePath||"",expectedProcess:row.process||"",tree:true});await load()}
   function mount(host){s.host=host;host.onclick=(event)=>{const tab=event.target.closest("[data-port-tab]");if(tab){s.tab=tab.dataset.portTab;s.selected="";host.innerHTML=body();return render()}if(event.target.closest("[data-ports-refresh]"))return load();const pick=event.target.closest("[data-port-select]");if(pick){s.selected=pick.dataset.portSelect;return render()}const open=event.target.closest("[data-port-open]");if(open)return invoke("plugin:opener|open_url",{url:open.dataset.portOpen});const copy=event.target.closest("[data-port-copy]");if(copy)return navigator.clipboard.writeText(copy.dataset.portCopy);const stop=event.target.closest("[data-port-kill]");if(stop)return kill(Number(stop.dataset.portKill))};host.oninput=(event)=>{if(event.target.matches("[data-port-filter]")){s.search=event.target.value;renderList();renderDetail()}};host.innerHTML=body();render()}
   async function opened(){await load();clearInterval(s.timer);clearInterval(s.sampleTimer);s.timer=setInterval(load,30000);s.sampleTimer=setInterval(sample,2000)}
+  // Kept alive but off screen: stop sampling the process table every 2s.
+  function suspend(){clearInterval(s.timer);clearInterval(s.sampleTimer);s.timer=0;s.sampleTimer=0}
+  async function resume(){await opened()}
   function exportState(){return {search:s.search,tab:s.tab,selected:s.selected}}
   function importState(saved){if(!saved)return;s.search=saved.search||"";s.tab=saved.tab==="all"?"all":"listen";s.selected=saved.selected||""}
-  window.devhqPortsTool={mount,opened,render,exportState,importState};
+  window.devhqPortsTool={mount,opened,render,suspend,resume,exportState,importState};
 })();

@@ -5,6 +5,7 @@ dist/
 src-tauri/target//
 src-tauri/gen/schemas/
 scripts/e2e/last-run-report.json
+scripts/e2e/last-run.log
 assistant panel.zip
 .gitignore
 git client.zip

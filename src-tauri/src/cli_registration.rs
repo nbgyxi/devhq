@@ -20,13 +20,20 @@ fn install_dir() -> Result<PathBuf, String> {
 }
 
 fn user_path() -> Result<String, String> {
-    let out = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "[Environment]::GetEnvironmentVariable('Path','User')",
-        ])
+    let mut command = Command::new("powershell");
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "[Environment]::GetEnvironmentVariable('Path','User')",
+    ]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = command
         .output()
         .map_err(|e| format!("Could not read the user PATH: {e}"))?;
     if !out.status.success() {
@@ -89,14 +96,20 @@ fn set_user_path(dir: &Path, add: bool) -> Result<(), String> {
         entries.push(dir.to_string_lossy().into_owned());
     }
     let next = entries.join(";");
-    let out = Command::new("powershell")
-        .env("DEVHQ_USER_PATH", &next)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "[Environment]::SetEnvironmentVariable('Path',$env:DEVHQ_USER_PATH,'User')",
-        ])
+    let mut command = Command::new("powershell");
+    command.env("DEVHQ_USER_PATH", &next).args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "[Environment]::SetEnvironmentVariable('Path',$env:DEVHQ_USER_PATH,'User')",
+    ]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = command
         .output()
         .map_err(|e| format!("Could not update the user PATH: {e}"))?;
     if out.status.success() {
