@@ -16,6 +16,16 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.61.0",
+      date: "2026-09-03",
+      title: "One conversation, two ways to see it",
+      changes: [
+        ["new", "The Claude chat and Claude's own interface are now the same conversation. Open it in a terminal from the chat header, do whatever the chat cannot - approve a command Claude wants to run, use a slash command, sign in - then close the terminal and carry on in the chat with all of it in the history."],
+        ["new", "When a turn ends badly the chat says what probably happened and offers the way through. In chat mode Claude reads and edits freely, but anything it would normally ask you about it simply declines, because there is nobody to ask."],
+        ["better", "That terminal opens over the whole window rather than in a pane. Claude's interface is a full-screen program, and cramming it into a narrow column is the thing this panel was built to stop. Escape closes it."],
+      ],
+    },
+    {
       version: "0.60.1",
       date: "2026-09-03",
       title: "A tool that fails to open offers you another go",
