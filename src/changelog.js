@@ -16,6 +16,16 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.56.2",
+      date: "2026-09-03",
+      title: "The dev box opens",
+      changes: [
+        ["fix", "The dev box window came up stuck on \"Opening the dev box\" and ignored every click, including its own close button. The window was never granted permission to talk to WinT, so the first thing its page did failed and took the rest of the page with it."],
+        ["fix", "The dev box title bar drags the window again, and double-clicking it maximises."],
+        ["better", "A dev box that cannot start now says so on its status line instead of sitting there silently. It has no native frame, so a page that dies quietly is a window you cannot even close."],
+      ],
+    },
+    {
       version: "0.56.1",
       date: "2026-09-03",
       title: "The dev box has a button",

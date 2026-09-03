@@ -291,6 +291,15 @@
 
   /* --------------------------------------------------------- window chrome */
 
+  // The window has no native frame, so the title bar has to move it itself.
+  document.querySelector(".titlebar .drag")?.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.target.closest("button")) return;
+    win.startDragging().catch(() => {});
+  });
+  document.querySelector(".titlebar .drag")?.addEventListener("dblclick", async () => {
+    (await win.isMaximized()) ? win.unmaximize() : win.maximize();
+  });
+
   document.querySelectorAll("[data-win]").forEach((button) => {
     button.addEventListener("click", async () => {
       const action = button.dataset.win;
@@ -597,14 +606,26 @@
   defineTerminal("terminal", { label: "Terminal", icon: "terminal", shell: "", hint: "Terminal ready" });
   defineTerminal("chat", { label: "Claude", icon: "forum", shell: "claude", hint: "Claude is starting" });
 
-  // The one line of terminal output the rest of the window acts on.
-  await listen("term:serving", ({ payload }) => {
-    if (!sessions.has(payload.id)) return;
-    goTo(payload.url, `${sessions.get(payload.id).label} is serving ${payload.url}`);
-  });
-
   /* ----------------------------------------------------------------- go */
 
+  // Drawn before anything is subscribed to or awaited. This window has no
+  // native frame, so a page that dies on the way up is a window with no title
+  // bar buttons and no way to close it - the layout goes up first, and
+  // everything that can fail comes after it.
   render();
+
+  // The one line of terminal output the rest of the window acts on. A
+  // subscription that cannot be set up costs the browser panel its automatic
+  // address and nothing else, so it is not allowed to take the window with it.
+  listen("term:serving", ({ payload }) => {
+    if (!sessions.has(payload.id)) return;
+    goTo(payload.url, `${sessions.get(payload.id).label} is serving ${payload.url}`);
+  }).catch((err) => say(`Cannot watch the terminals for a dev server: ${err}`));
+
   window.wintTrackPageView?.("/devbox");
-})();
+})().catch((err) => {
+  // Nothing below the title bar is trustworthy at this point, so the report
+  // goes somewhere that needs no state: the status line, which is in the HTML.
+  const status = document.getElementById("db-status");
+  if (status) status.textContent = `The dev box could not start: ${err}`;
+});

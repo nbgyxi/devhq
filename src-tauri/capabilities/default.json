@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the DevHQ window and any popped-out terminal or tool",
-  "windows": ["main", "term-*", "tool-*", "global-search", "version-history"],
+  "description": "Capabilities for the WinT window and any popped-out terminal, tool or dev box. A window label absent from this list gets no core permissions at all - not even event listening - so its page dies on its first call.",
+  "windows": ["main", "term-*", "tool-*", "devbox-*", "global-search", "version-history"],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",
