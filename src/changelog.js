@@ -16,6 +16,16 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.57.1",
+      date: "2026-09-03",
+      title: "Workspace dividers move",
+      changes: [
+        ["fix", "Dragging a divider in a workspace did nothing at all. The new size was being written where the stylesheet's own value overrode it, so every drag was thrown away."],
+        ["better", "The dividers are easier to grab - the line stays thin, the target either side of it is not."],
+        ["better", "The save-and-upload panel now starts small. It is a message box and three buttons, so the file list above it gets most of the column."],
+      ],
+    },
+    {
       version: "0.57.0",
       date: "2026-09-03",
       title: "Workspaces",
@@ -25,6 +35,7 @@ window.wintChangelog = (() => {
         ["fix", "The workspace stopped responding shortly after it finished loading. A terminal announcing a dev server held a lock while telling the rest of the app about it, and the question \"what is this terminal serving?\" was being answered on the thread that draws the window - so the two met and the window stopped."],
         ["fix", "A dev server address printed right at the end of a chunk of terminal output could stop that terminal from printing anything further."],
         ["better", "The save-and-upload panel is just a message box and its buttons now. The file list above it does the listing, and it can be filtered down to only the files you have changed."],
+        ["fix", "The Store version of WinT could not open a terminal - it reported that the build does not contain the WinT CLI. The Store package was being assembled without that CLI, and without the tool icons the taskbar jump list uses."],
       ],
     },
     {

@@ -55,11 +55,15 @@
   /* --------------------------------------------------------------- layout */
 
   const SLOTS = ["left-top", "left-bottom", "center", "right", "bottom"];
-  const KEY = `wint.workspace.v1:${projectPath.toLowerCase()}`;
+  // v2: the default split changed, and a saved v1 layout would keep handing the
+  // save-and-upload panel half the column it no longer needs.
+  const KEY = `wint.workspace.v2:${projectPath.toLowerCase()}`;
   const DEFAULT_LAYOUT = {
     slots: { "left-top": "files", "left-bottom": "git", center: "browser", right: "chat", bottom: "terminal" },
     hidden: {},
-    size: { left: 280, right: 420, bottom: 260, leftSplit: 0.5 },
+    // The save-and-upload panel is a message box and three buttons, so it gets
+    // what that needs and the file list gets the rest of the column.
+    size: { left: 280, right: 420, bottom: 260, leftSplit: 0.78 },
   };
 
   const layout = (() => {
@@ -139,7 +143,11 @@
   };
 
   const applySizes = () => {
-    const root = document.documentElement.style;
+    // On `body`, not on `:root`. The defaults are declared in the stylesheet on
+    // `body.workspace` itself, and an element's own declaration beats the value
+    // it would otherwise inherit - so a size written to the root element is
+    // shadowed here and every divider drag is silently a no-op.
+    const root = document.body.style;
     const shown = (slot) => Boolean(layout.slots[slot]) && !layout.hidden[slot];
     const leftShown = shown("left-top") || shown("left-bottom");
     root.setProperty("--ws-left", leftShown ? `${layout.size.left}px` : "0px");
