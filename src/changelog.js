@@ -16,6 +16,16 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.60.0",
+      date: "2026-09-03",
+      title: "Claude is a chat, not a terminal",
+      changes: [
+        ["new", "The workspace Claude panel is a real conversation now - your message, Claude's answer as it is written, and a line for each file it reads or edits. It was running the CLI's own full-screen interface in a narrow pane, which is why it opened onto theme pickers, boxes and wrapped ASCII art."],
+        ["new", "Not installed? The panel says so and installs it for you, with npm's output in the panel rather than a terminal you have to answer. Not signed in? It says that too, and opens a terminal for the one step that genuinely needs one."],
+        ["better", "Still your Claude Code, still your account. WinT asks for no API key, stores no credentials and reads none - it starts the CLI you installed and shows what it says."],
+      ],
+    },
+    {
       version: "0.59.0",
       date: "2026-09-03",
       title: "The workspace browser finds your dev server",

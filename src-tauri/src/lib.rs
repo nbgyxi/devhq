@@ -21,6 +21,7 @@ pub mod procs;
 mod shells;
 mod tech;
 #[cfg(windows)]
+mod claude;
 mod workspace;
 mod term;
 pub mod todo;
@@ -2314,6 +2315,10 @@ pub fn run() {
             term::term_attach,
             term::term_serving,
             workspace::workspace_open,
+            claude::claude_status,
+            claude::claude_send,
+            claude::claude_cancel,
+            claude::claude_install,
             workspace::workspace_browser_show,
             workspace::workspace_browser_hide,
             workspace::workspace_browser_navigate,
@@ -2489,6 +2494,10 @@ pub fn run() {
         ,search_global_binding_set
         ,term::term_serving
         ,workspace::workspace_open
+        ,claude::claude_status
+        ,claude::claude_send
+        ,claude::claude_cancel
+        ,claude::claude_install
         ,workspace::workspace_browser_show
         ,workspace::workspace_browser_hide
         ,workspace::workspace_browser_navigate

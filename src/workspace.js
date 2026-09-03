@@ -752,7 +752,280 @@
   // An empty string is not a profile it knows, and asking for one is how this
   // panel used to open onto "Unknown terminal shell."
   defineTerminal("terminal", { label: "Terminal", icon: "terminal", shell: "auto", hint: "Terminal ready" });
-  defineTerminal("chat", { label: "Claude", icon: "forum", shell: "claude", hint: "Claude is starting" });
+  /* ------------------------------------------------------- panel: Claude */
+
+  // A chat, not a terminal. The CLI has a machine-readable mode - one JSON
+  // object per line - so the conversation is rendered here rather than folding
+  // a full-screen terminal program into a narrow pane, which is how this panel
+  // used to open onto theme pickers and wrapped ASCII art.
+  //
+  // The schema is Anthropic's and it grows. Every line is matched on the few
+  // fields this needs and anything else is ignored rather than dropped, so a
+  // newer CLI adding an event type cannot break the panel.
+  definePanel("chat", {
+    label: "Claude",
+    icon: "forum",
+    mount(body, panel) {
+      panel.session = "";
+      panel.turns = [];
+      panel.streaming = null;
+      body.className += " ws-chat";
+      body.innerHTML = `<div class="ws-chat-log"></div>
+        <form class="ws-chat-ask" hidden>
+          <textarea rows="1" placeholder="Ask Claude about this project…" spellcheck="false"></textarea>
+          <button type="submit" class="ws-chat-send" title="Send (Enter)">${icon("send")}</button>
+          <button type="button" class="ws-chat-stop" title="Stop" hidden>${icon("stop_circle")}</button>
+        </form>`;
+      panel.log = body.querySelector(".ws-chat-log");
+      panel.ask = body.querySelector(".ws-chat-ask");
+      panel.input = panel.ask.querySelector("textarea");
+      panel.tools.innerHTML = `<button class="ws-mini" data-chat="new" type="button" title="Start a new conversation">${icon("refresh")}</button>`;
+      panel.tools.addEventListener("click", (e) => {
+        if (!e.target.closest("[data-chat=new]")) return;
+        panel.session = "";
+        panel.turns = [];
+        renderChat(panel);
+        say("Started a new conversation");
+      });
+
+      // Enter sends, Shift+Enter is a newline - the same bargain every chat
+      // makes, and the one people's hands already expect.
+      panel.input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); panel.ask.requestSubmit(); }
+      });
+      panel.input.addEventListener("input", () => {
+        panel.input.style.height = "auto";
+        panel.input.style.height = `${Math.min(160, panel.input.scrollHeight)}px`;
+      });
+      panel.ask.addEventListener("submit", (e) => { e.preventDefault(); sendToClaude(panel); });
+      panel.ask.querySelector(".ws-chat-stop").addEventListener("click", () => {
+        invoke("claude_cancel", { window: label }).catch(() => {});
+        say("Stopped");
+      });
+      body.addEventListener("click", (e) => {
+        const action = e.target.closest("[data-chat]")?.dataset.chat;
+        if (action === "install") installClaude(panel);
+        if (action === "signin") signInToClaude(panel);
+        if (action === "recheck") checkClaude(panel);
+      });
+      checkClaude(panel);
+    },
+  });
+
+  async function checkClaude(panel) {
+    panel.status = await invoke("claude_status").catch(() => ({ installed: false }));
+    renderChat(panel);
+  }
+
+  /** The whole panel: the install card, the sign-in card, or the conversation.
+   *  One function so the panel can never show two of those at once. */
+  function renderChat(panel) {
+    const busy = Boolean(panel.streaming);
+    panel.ask.hidden = !panel.status?.installed;
+    panel.ask.querySelector(".ws-chat-send").hidden = busy;
+    panel.ask.querySelector(".ws-chat-stop").hidden = !busy;
+
+    if (!panel.status?.installed) {
+      panel.log.innerHTML = `<div class="ws-chat-card">${icon("forum")}
+        <strong>Claude Code isn't installed</strong>
+        <p>WinT doesn't ship it and holds no key for it. You install Anthropic's CLI and sign in as
+           yourself; this panel gives it somewhere to talk.</p>
+        <div class="ws-chat-card-actions">
+          <button class="ws-btn primary" data-chat="install" type="button">${icon("download")}Install with npm</button>
+          <button class="ws-btn" data-chat="recheck" type="button">${icon("refresh")}Check again</button>
+        </div>
+        <pre class="ws-chat-install" hidden></pre></div>`;
+      return;
+    }
+    if (panel.needsSignIn) {
+      panel.log.innerHTML = `<div class="ws-chat-card">${icon("account_circle")}
+        <strong>Sign in to Claude Code</strong>
+        <p>The CLI is installed but not signed in. Signing in happens in a terminal, once —
+           it opens your browser and the account it signs in as is yours, not WinT's.</p>
+        <div class="ws-chat-card-actions">
+          <button class="ws-btn primary" data-chat="signin" type="button">${icon("terminal")}Open a terminal to sign in</button>
+          <button class="ws-btn" data-chat="recheck" type="button">${icon("refresh")}I've signed in</button>
+        </div></div>`;
+      return;
+    }
+    if (!panel.turns.length) {
+      panel.log.innerHTML = `<div class="ws-chat-card quiet">${icon("forum")}
+        <strong>Claude Code ${esc(panel.status.version || "")}</strong>
+        <p>Working in <code>${esc(projectName)}</code>. Ask it anything about this project.</p></div>`;
+      return;
+    }
+    panel.log.innerHTML = panel.turns.map(turnHtml).join("");
+    panel.log.scrollTop = panel.log.scrollHeight;
+  }
+
+  const turnHtml = (turn) => {
+    if (turn.role === "you") {
+      return `<div class="ws-turn you"><div class="ws-turn-body">${esc(turn.text)}</div></div>`;
+    }
+    if (turn.role === "tool") {
+      return `<div class="ws-turn tool">${icon(turn.icon || "build")}<span>${esc(turn.text)}</span></div>`;
+    }
+    if (turn.role === "error") {
+      return `<div class="ws-turn error">${icon("error")}<span>${esc(turn.text)}</span></div>`;
+    }
+    return `<div class="ws-turn claude"><div class="ws-turn-body">${markdown(turn.text)}</div></div>`;
+  };
+
+  /** Enough markdown for what a chat answer actually contains: fenced code,
+   *  inline code, bold, and paragraphs. Everything is escaped first, so this
+   *  can only ever add the tags it puts in itself. */
+  function markdown(text) {
+    const fences = [];
+    let out = esc(text).replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+      fences.push(`<pre class="ws-code"${lang ? ` data-lang="${esc(lang)}"` : ""}><code>${code.replace(/\n$/, "")}</code></pre>`);
+      return `\u0000${fences.length - 1}\u0000`;
+    });
+    out = out
+      .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/^### (.+)$/gm, "<strong>$1</strong>")
+      .replace(/\n{2,}/g, "</p><p>")
+      .replace(/\n/g, "<br>");
+    return `<p>${out}</p>`.replace(/\u0000(\d+)\u0000/g, (_, i) => fences[Number(i)]);
+  }
+
+  async function sendToClaude(panel) {
+    const text = panel.input.value.trim();
+    if (!text || panel.streaming) return;
+    panel.input.value = "";
+    panel.input.style.height = "auto";
+    panel.turns.push({ role: "you", text });
+    panel.streaming = { role: "claude", text: "" };
+    panel.turns.push(panel.streaming);
+    renderChat(panel);
+    try {
+      await invoke("claude_send", {
+        window: label,
+        prompt: text,
+        cwd: projectPath,
+        session: panel.session || null,
+        // Edits land without a prompt; anything else Claude Code would have
+        // asked about, it still asks about - and in this mode there is nobody
+        // to ask, so it declines and says so in the conversation.
+        permissionMode: "acceptEdits",
+      });
+      say("Claude is working");
+    } catch (err) {
+      panel.streaming = null;
+      panel.turns.push({ role: "error", text: String(err) });
+      renderChat(panel);
+      say(String(err));
+    }
+  }
+
+  async function installClaude(panel) {
+    const pre = panel.log.querySelector(".ws-chat-install");
+    if (pre) { pre.hidden = false; pre.textContent = "Installing…\n"; }
+    try {
+      await busy("Installing Claude Code", () => invoke("claude_install", { window: label }));
+    } catch (err) {
+      if (pre) pre.textContent += `\n${err}`;
+      say(String(err));
+    }
+  }
+
+  /** Signing in needs a real terminal - it is an interactive prompt and a
+   *  browser round trip - so it borrows the terminal panel rather than
+   *  pretending this one can do it. */
+  async function signInToClaude(panel) {
+    const terminal = panels.get("terminal");
+    const slot = slotOf("terminal");
+    if (slot) layout.hidden[slot] = false;
+    render();
+    try {
+      await invoke("term_write", { id: terminal?.info?.id, data: "claude\r" });
+      say("Sign in to Claude in the terminal below");
+    } catch {
+      say("Run `claude` in the terminal below to sign in");
+    }
+  }
+
+  await listen("claude:install", ({ payload }) => {
+    if (payload.window !== label) return;
+    const panel = panels.get("chat");
+    const pre = panel?.log?.querySelector(".ws-chat-install");
+    if (pre && payload.line) { pre.textContent += `${payload.line}\n`; pre.scrollTop = pre.scrollHeight; }
+    if (!payload.done) return;
+    say(payload.ok ? "Claude Code installed" : "The install did not finish");
+    if (payload.ok) checkClaude(panel);
+  }).catch(() => {});
+
+  // One line of the CLI's stream. Matched on the few fields the panel needs;
+  // anything else is ignored rather than treated as an error.
+  await listen("claude:line", ({ payload }) => {
+    if (payload.window !== label) return;
+    const panel = panels.get("chat");
+    if (!panel) return;
+    let msg;
+    try { msg = JSON.parse(payload.line); } catch { return; }
+
+    if (msg.session_id) panel.session = msg.session_id;
+
+    if (msg.type === "stream_event" && msg.event?.delta?.type === "text_delta") {
+      if (!panel.streaming) { panel.streaming = { role: "claude", text: "" }; panel.turns.push(panel.streaming); }
+      panel.streaming.text += msg.event.delta.text || "";
+      return markChatDirty(panel);
+    }
+    if (msg.type === "assistant") {
+      for (const block of msg.message?.content || []) {
+        if (block.type !== "tool_use") continue;
+        panel.turns.push({ role: "tool", icon: TOOL_ICONS[block.name] || "build", text: toolLine(block) });
+      }
+      return markChatDirty(panel);
+    }
+    if (msg.type === "result") {
+      panel.streaming = null;
+      // A run that could not authenticate reports it as the result rather than
+      // as a failure, so the text is what says whether to offer signing in.
+      const text = String(msg.result || "");
+      if (msg.is_error || msg.subtype === "error_during_execution") {
+        panel.turns.push({ role: "error", text: text || "That turn did not finish." });
+      }
+      if (/log ?in|sign ?in|not authenticated|invalid api key|credit balance/i.test(text)) {
+        panel.needsSignIn = true;
+      }
+      renderChat(panel);
+      say(msg.is_error ? "Claude reported a problem" : "Claude answered");
+    }
+  }).catch(() => {});
+
+  await listen("claude:end", ({ payload }) => {
+    if (payload.window !== label) return;
+    const panel = panels.get("chat");
+    if (!panel) return;
+    panel.streaming = null;
+    if (payload.code !== 0 && payload.error) {
+      panel.turns.push({ role: "error", text: payload.error.trim() });
+    }
+    renderChat(panel);
+  }).catch(() => {});
+
+  /** Streaming text arrives a token at a time; the log is redrawn on a frame
+   *  rather than per token, the way everything else in this window paints. */
+  let chatDirty = false;
+  function markChatDirty(panel) {
+    if (chatDirty) return;
+    chatDirty = true;
+    requestAnimationFrame(() => { chatDirty = false; renderChat(panel); });
+  }
+
+  const TOOL_ICONS = {
+    Read: "description", Edit: "edit", Write: "note_add", Bash: "terminal",
+    Glob: "search", Grep: "search", WebFetch: "public", WebSearch: "travel_explore",
+    Task: "account_tree", TodoWrite: "checklist",
+  };
+
+  const toolLine = (block) => {
+    const input = block.input || {};
+    const what = input.file_path || input.path || input.pattern || input.command || input.url || input.description || "";
+    const short = String(what).replace(projectPath, "").replace(/^[\\/]/, "");
+    return short ? `${block.name} · ${short.slice(0, 120)}` : block.name;
+  };
 
   /* ----------------------------------------------------------------- go */
 

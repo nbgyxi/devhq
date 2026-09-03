@@ -3355,3 +3355,53 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-status.busy::after{content:""; width:60px; height:2px; border-radius:2px; flex:0 0 auto;
   background:linear-gradient(90deg,transparent,var(--accent),transparent); animation:ws-busy 1.1s linear infinite}
 @keyframes ws-busy{from{transform:translateX(-40px)}to{transform:translateX(40px)}}
+
+/* ------------------------------------------------------ workspace: Claude */
+/* A chat, not a terminal. The CLI's own interface is a full-screen terminal
+   program; folded into a narrow pane it is theme pickers and wrapped ASCII.
+   This renders the conversation from the CLI's JSON stream instead. */
+
+.ws-chat{display:flex; flex-direction:column; overflow:hidden}
+.ws-chat-log{flex:1; min-height:0; overflow-y:auto; padding:10px 12px; display:flex; flex-direction:column; gap:10px}
+
+.ws-chat-card{display:flex; flex-direction:column; align-items:flex-start; gap:8px; padding:16px;
+  border:1px solid var(--line); border-radius:10px; background:var(--bg2)}
+.ws-chat-card.quiet{border-style:dashed; background:none; color:var(--dim)}
+.ws-chat-card>.ms{font-size:26px; color:var(--dim2)}
+.ws-chat-card strong{font-size:13px}
+.ws-chat-card p{margin:0; font-size:12px; line-height:1.55; color:var(--dim)}
+.ws-chat-card code{padding:1px 5px; border-radius:4px; background:var(--bg3); font-size:11px}
+.ws-chat-card-actions{display:flex; gap:6px; flex-wrap:wrap; margin-top:2px}
+.ws-chat-install{width:100%; max-height:180px; overflow:auto; margin:6px 0 0; padding:8px 10px;
+  border-radius:7px; background:var(--bg); color:var(--dim); font-size:11px; line-height:1.45;
+  white-space:pre-wrap; word-break:break-word}
+
+.ws-turn{max-width:100%; font-size:12.5px; line-height:1.6}
+.ws-turn-body{overflow-wrap:anywhere}
+.ws-turn.you{align-self:flex-end; max-width:88%; padding:7px 11px; border-radius:11px 11px 3px 11px;
+  background:var(--accent); color:#fff; white-space:pre-wrap}
+.ws-turn.claude .ws-turn-body>p{margin:0 0 9px}
+.ws-turn.claude .ws-turn-body>p:last-child{margin-bottom:0}
+.ws-turn.claude code{padding:1px 4px; border-radius:4px; background:var(--bg3); font-size:11.5px;
+  font-family:ui-monospace,Consolas,monospace}
+.ws-turn.tool,.ws-turn.error{display:flex; align-items:center; gap:6px; font-size:11px; color:var(--dim2)}
+.ws-turn.tool .ms,.ws-turn.error .ms{font-size:14px; flex:0 0 auto}
+.ws-turn.tool span,.ws-turn.error span{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.ws-turn.error{color:var(--red)}
+.ws-turn.error span{white-space:pre-wrap}
+.ws-code{margin:8px 0; padding:9px 11px; border:1px solid var(--line); border-radius:8px;
+  background:var(--term-bg); overflow-x:auto; font-size:11.5px; line-height:1.5}
+.ws-code code{background:none!important; padding:0!important; font-family:ui-monospace,Consolas,monospace}
+
+.ws-chat-ask{flex:0 0 auto; display:flex; align-items:flex-end; gap:6px; padding:8px 10px;
+  border-top:1px solid var(--line); background:var(--bg2)}
+.ws-chat-ask[hidden]{display:none}
+.ws-chat-ask textarea{flex:1; min-width:0; resize:none; max-height:160px; padding:7px 10px;
+  border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text);
+  font:inherit; font-size:12.5px; line-height:1.5}
+.ws-chat-ask textarea:focus{outline:none; border-color:var(--accent)}
+.ws-chat-send,.ws-chat-stop{flex:0 0 auto; display:grid; place-items:center; width:30px; height:30px;
+  border:0; border-radius:8px; cursor:pointer; background:var(--accent); color:#fff}
+.ws-chat-stop{background:var(--bg3); color:var(--text)}
+.ws-chat-send[hidden],.ws-chat-stop[hidden]{display:none}
+.ws-chat-send .ms,.ws-chat-stop .ms{font-size:17px}

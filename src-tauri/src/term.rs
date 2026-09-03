@@ -45,7 +45,7 @@ fn shell_command(profile: &str) -> Result<String, String> {
         // is no useful dead end here: the pane itself is where the CLI gets
         // installed and signed in, so a missing Claude Code opens the
         // walkthrough instead of an error dialog.
-        "claude" => match claude_path() {
+        "claude" => match claude_program() {
             Some(path) => Ok(program_command(&path)),
             None => claude_setup_command(),
         },
@@ -73,7 +73,7 @@ fn find_command(name: &str) -> Option<PathBuf> {
 /// The first of several names to turn up on PATH. A CLI installed by npm is a
 /// `.cmd` shim beside an `.exe` that may not exist, and which of the two is
 /// there is not something to guess at.
-fn find_program(names: &[&str]) -> Option<PathBuf> {
+pub fn find_program_on_path(names: &[&str]) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)
             .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
@@ -226,8 +226,8 @@ fn claude_setup_command() -> Result<String, String> {
 /// CLI is the user's own install, signed in as them, and WinT only starts it in
 /// a pane — no key is read, stored or passed. A machine without it gets a
 /// disabled entry saying so, not a download.
-fn claude_path() -> Option<PathBuf> {
-    find_program(&["claude.exe", "claude.cmd", "claude.bat"])
+pub fn claude_program() -> Option<PathBuf> {
+    find_program_on_path(&["claude.exe", "claude.cmd", "claude.bat"])
         .or_else(|| {
             std::env::var_os("USERPROFILE")
                 .map(PathBuf::from)
@@ -942,7 +942,7 @@ pub async fn term_shell_availability() -> Vec<ShellAvailability> {
         // the pane anyway and gets the setup walkthrough, because "unavailable"
         // is a dead end for the one profile where the way out is three
         // keystrokes inside the pane itself.
-        let installed = claude_path().is_some();
+        let installed = claude_program().is_some();
         found.push(ShellAvailability {
             profile: "claude",
             available: true,
