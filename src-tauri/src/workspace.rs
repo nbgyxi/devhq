@@ -1,4 +1,4 @@
-//! The dev box: one window per project, holding everything that project needs
+//! The workspace: one window per project, holding everything that project needs
 //! at once — its files, its git history, a terminal, an AI chat and a browser
 //! pointed at whatever the terminal just started serving.
 //!
@@ -23,7 +23,7 @@ use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, Webvie
 
 use crate::off_thread;
 
-/// One dev box per project path, so asking twice focuses the window that is
+/// One workspace per project path, so asking twice focuses the window that is
 /// already open rather than opening a second view of the same folder.
 fn window_label(path: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -31,7 +31,7 @@ fn window_label(path: &str) -> String {
         hash ^= byte as u64;
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    format!("devbox-{hash:016x}")
+    format!("workspace-{hash:016x}")
 }
 
 fn browser_label(window: &str) -> String {
@@ -39,7 +39,7 @@ fn browser_label(window: &str) -> String {
 }
 
 #[tauri::command]
-pub async fn devbox_open(
+pub async fn workspace_open(
     app: AppHandle,
     path: String,
     name: Option<String>,
@@ -60,7 +60,7 @@ pub async fn devbox_open(
             .unwrap_or_else(|| path.clone())
     });
     let page = format!(
-        "devbox.html?path={}&name={}",
+        "workspace.html?path={}&name={}",
         urlencode(&path),
         urlencode(&title)
     );
@@ -70,7 +70,7 @@ pub async fn devbox_open(
     // loads, and this command would never answer.
     off_thread(move || {
         WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(page.into()))
-            .title(format!("{title} — dev box"))
+            .title(format!("{title} — workspace"))
             .inner_size(1440.0, 900.0)
             .min_inner_size(760.0, 480.0)
             .decorations(false)
@@ -79,10 +79,10 @@ pub async fn devbox_open(
             .map(|window| {
                 let _ = window.set_focus();
             })
-            .map_err(|e| format!("Could not open the dev box: {e}"))
+            .map_err(|e| format!("Could not open the workspace: {e}"))
     })
     .await
-    .unwrap_or_else(|| Err("Could not open the dev box.".to_string()))?;
+    .unwrap_or_else(|| Err("Could not open the workspace.".to_string()))?;
     Ok(opened)
 }
 
@@ -100,12 +100,12 @@ fn urlencode(value: &str) -> String {
 
 // ---- the browser panel -------------------------------------------------
 
-/// Creates the browser webview inside a dev box window, or moves the one that
+/// Creates the browser webview inside a workspace window, or moves the one that
 /// is already there. The front end calls this whenever the slot holding the
 /// browser changes size, which is often, so an existing webview is repositioned
 /// rather than rebuilt - rebuilding would throw away the page being looked at.
 #[tauri::command]
-pub async fn devbox_browser_show(
+pub async fn workspace_browser_show(
     app: AppHandle,
     window: String,
     url: String,
@@ -127,7 +127,7 @@ pub async fn devbox_browser_show(
     // the two are different handles for the same frame, and only the window can
     // hold more than one.
     let Some(host) = app.get_window(&window) else {
-        return Err("That dev box is not open.".into());
+        return Err("That workspace is not open.".into());
     };
     let target = url
         .parse::<tauri::Url>()
@@ -152,7 +152,7 @@ pub async fn devbox_browser_show(
 /// divider is being pulled through where the browser sits — so those moments
 /// hide it and put it back afterwards.
 #[tauri::command]
-pub fn devbox_browser_hide(app: AppHandle, window: String) -> Result<(), String> {
+pub async fn workspace_browser_hide(app: AppHandle, window: String) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&browser_label(&window)) {
         webview.hide().map_err(|e| e.to_string())?;
     }
@@ -160,7 +160,7 @@ pub fn devbox_browser_hide(app: AppHandle, window: String) -> Result<(), String>
 }
 
 #[tauri::command]
-pub fn devbox_browser_navigate(app: AppHandle, window: String, url: String) -> Result<(), String> {
+pub async fn workspace_browser_navigate(app: AppHandle, window: String, url: String) -> Result<(), String> {
     let Some(webview) = app.get_webview(&browser_label(&window)) else {
         return Err("The browser panel is not open.".into());
     };
@@ -171,7 +171,7 @@ pub fn devbox_browser_navigate(app: AppHandle, window: String, url: String) -> R
 }
 
 #[tauri::command]
-pub fn devbox_browser_reload(app: AppHandle, window: String) -> Result<(), String> {
+pub async fn workspace_browser_reload(app: AppHandle, window: String) -> Result<(), String> {
     let Some(webview) = app.get_webview(&browser_label(&window)) else {
         return Ok(());
     };
@@ -181,7 +181,7 @@ pub fn devbox_browser_reload(app: AppHandle, window: String) -> Result<(), Strin
 }
 
 #[tauri::command]
-pub fn devbox_browser_close(app: AppHandle, window: String) -> Result<(), String> {
+pub async fn workspace_browser_close(app: AppHandle, window: String) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&browser_label(&window)) {
         webview.close().map_err(|e| e.to_string())?;
     }
@@ -200,7 +200,7 @@ pub struct DirEntry {
 }
 
 /// Folders WinT does not expand on its own. They are the ones that are always
-/// enormous and never what someone opened a dev box to look at; a file list
+/// enormous and never what someone opened a workspace to look at; a file list
 /// that spends two seconds counting `node_modules` is a file list nobody waits
 /// for. They are still listed - just never walked into by the "reveal" path.
 const NOISE: &[&str] = &[
@@ -224,7 +224,7 @@ fn is_noise(name: &str) -> bool {
 /// nobody opened costs nothing, and no single call can walk into something the
 /// size of `node_modules`.
 #[tauri::command]
-pub async fn devbox_list_dir(path: String) -> Result<Vec<DirEntry>, String> {
+pub async fn workspace_list_dir(path: String) -> Result<Vec<DirEntry>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let dir = Path::new(&path);
         if !dir.is_dir() {
@@ -260,18 +260,18 @@ pub async fn devbox_list_dir(path: String) -> Result<Vec<DirEntry>, String> {
 
 /// The text of a file, for the preview a click in the file list opens.
 ///
-/// Capped, and only for files that are actually text: a dev box is not an
+/// Capped, and only for files that are actually text: a workspace is not an
 /// editor, and reading a 400 MB database dump into a webview to show the first
 /// screen of it is not a thing to do by accident.
 #[tauri::command]
-pub async fn devbox_read_file(path: String) -> Result<String, String> {
+pub async fn workspace_read_file(path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         const CAP: u64 = 2 * 1024 * 1024;
         let file = Path::new(&path);
         let meta = std::fs::metadata(file).map_err(|e| format!("Could not open the file: {e}"))?;
         if meta.len() > CAP {
             return Err(format!(
-                "That file is {} MB. The dev box previews files up to 2 MB.",
+                "That file is {} MB. The workspace previews files up to 2 MB.",
                 meta.len() / 1_000_000
             ));
         }

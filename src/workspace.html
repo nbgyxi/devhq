@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Workspace</title>
+<link rel="icon" type="image/png" href="wint-icon.png" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body class="popout workspace">
+<div class="titlebar">
+  <div class="drag">
+    <div class="brand"><img src="wint-icon.png" alt="" />
+      <span id="ws-project">Workspace</span>
+      <span class="sub" id="ws-subtitle"></span>
+    </div>
+  </div>
+  <div class="ws-toggles" id="ws-toggles" role="group" aria-label="Show or hide panels"></div>
+  <div class="win-btns">
+    <button class="win-btn" data-win="min"><span class="ms">remove</span></button>
+    <button class="win-btn" data-win="max"><span class="ms">crop_square</span></button>
+    <button class="win-btn close" data-win="close" title="Close this workspace" aria-label="Close this workspace"><span class="ms">close</span></button>
+  </div>
+</div>
+
+<div id="ws-grid">
+  <div class="ws-col ws-left">
+    <section class="ws-slot" data-slot="left-top"></section>
+    <div class="ws-grip ws-grip-h" data-grip="leftSplit" role="separator" aria-label="Resize the left panels"></div>
+    <section class="ws-slot" data-slot="left-bottom"></section>
+  </div>
+  <div class="ws-grip ws-grip-v" data-grip="left" role="separator" aria-label="Resize the left column"></div>
+  <div class="ws-center-col" id="ws-center-col">
+    <section class="ws-slot ws-center" data-slot="center"></section>
+  </div>
+  <div class="ws-grip ws-grip-v" data-grip="right" role="separator" aria-label="Resize the right column"></div>
+  <section class="ws-slot ws-right" data-slot="right"></section>
+</div>
+<!-- The bottom panel and its divider move together, between the center column
+     and the foot of the window. It sits under the center panel where there is
+     one, and only spreads across everything when there is not. -->
+<div id="ws-bottom-dock">
+  <div class="ws-grip ws-grip-h ws-grip-bottom" data-grip="bottom" role="separator" aria-label="Resize the bottom panel"></div>
+  <section class="ws-slot ws-bottom" data-slot="bottom"></section>
+</div>
+
+<div class="ws-drop" id="ws-drop" hidden></div>
+<div class="ws-status" id="ws-status">Ready</div>
+
+<script src="analytics.js"></script>
+<script src="i18n.js"></script>
+<script>window.wintI18n.init(window.wintI18n.storedLanguage());</script>
+<script src="terminal.js"></script>
+<script src="workspace.js"></script>
+</body>
+</html>

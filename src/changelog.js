@@ -16,41 +16,53 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.57.0",
+      date: "2026-09-03",
+      title: "Workspaces",
+      changes: [
+        ["new", "The dev box is now called the workspace - on the project card, in the command palette and in the window title."],
+        ["fix", "The workspace terminal opened onto \"Unknown terminal shell.\" instead of a shell. It was asking for a profile by a name that does not exist rather than for whichever shell this computer has."],
+        ["fix", "The workspace stopped responding shortly after it finished loading. A terminal announcing a dev server held a lock while telling the rest of the app about it, and the question \"what is this terminal serving?\" was being answered on the thread that draws the window - so the two met and the window stopped."],
+        ["fix", "A dev server address printed right at the end of a chunk of terminal output could stop that terminal from printing anything further."],
+        ["better", "The save-and-upload panel is just a message box and its buttons now. The file list above it does the listing, and it can be filtered down to only the files you have changed."],
+      ],
+    },
+    {
       version: "0.56.3",
       date: "2026-09-03",
-      title: "The dev box terminal sits under the browser",
+      title: "The workspace terminal sits under the browser",
       changes: [
-        ["better", "The bottom panel no longer runs the full width of the dev box. It sits under the center panel, where the terminal belongs to the browser above it rather than reading as a fourth unrelated strip - and the file list and the chat now run the full height of the window."],
+        ["better", "The bottom panel no longer runs the full width of the workspace. It sits under the center panel, where the terminal belongs to the browser above it rather than reading as a fourth unrelated strip - and the file list and the chat now run the full height of the window."],
         ["better", "Hide the center panel and the bottom one spreads across the window again, because there is nothing left for it to sit under."],
       ],
     },
     {
       version: "0.56.2",
       date: "2026-09-03",
-      title: "The dev box opens",
+      title: "The workspace opens",
       changes: [
-        ["fix", "The dev box window came up stuck on \"Opening the dev box\" and ignored every click, including its own close button. The window was never granted permission to talk to WinT, so the first thing its page did failed and took the rest of the page with it."],
-        ["fix", "The dev box title bar drags the window again, and double-clicking it maximises."],
-        ["better", "A dev box that cannot start now says so on its status line instead of sitting there silently. It has no native frame, so a page that dies quietly is a window you cannot even close."],
+        ["fix", "The workspace window came up stuck on \"Opening the workspace\" and ignored every click, including its own close button. The window was never granted permission to talk to WinT, so the first thing its page did failed and took the rest of the page with it."],
+        ["fix", "The workspace title bar drags the window again, and double-clicking it maximises."],
+        ["better", "A workspace that cannot start now says so on its status line instead of sitting there silently. It has no native frame, so a page that dies quietly is a window you cannot even close."],
       ],
     },
     {
       version: "0.56.1",
       date: "2026-09-03",
-      title: "The dev box has a button",
+      title: "The workspace has a button",
       changes: [
-        ["fix", "The dev box could only be reached by binding a hotkey to it. Every project card now has a Dev box button next to Code and Terminal, and typing a project name into the command palette offers it too."],
+        ["fix", "The workspace could only be reached by binding a hotkey to it. Every project card now has a Workspace button next to Code and Terminal, and typing a project name into the command palette offers it too."],
       ],
     },
     {
       version: "0.56.0",
       date: "2026-09-03",
-      title: "Dev boxes",
+      title: "Workspaces",
       changes: [
-        ["new", "Every project can now open a dev box: one window holding the files, a save-and-upload panel, a terminal, a Claude chat and a browser, all pointed at that project. Find it in the command palette as \"Open dev box\"."],
-        ["new", "The browser panel fills itself in. Start a dev server in the dev box terminal and the moment it prints a localhost address, the browser opens it - no copying the port across."],
+        ["new", "Every project can now open a workspace: one window holding the files, a save-and-upload panel, a terminal, a Claude chat and a browser, all pointed at that project. Find it in the command palette as \"Open workspace\"."],
+        ["new", "The browser panel fills itself in. Start a dev server in the workspace terminal and the moment it prints a localhost address, the browser opens it - no copying the port across."],
         ["new", "Panels go where you want them. Drag a panel by its title bar onto another to swap the two, drag the dividers to resize, and use the row of icons in the title bar to hide and show any of them. The arrangement is remembered per project."],
-        ["new", "The terminal and the Claude chat belong to the dev box but not to its window: close it and reopen it, and whatever was running is still running."],
+        ["new", "The terminal and the Claude chat belong to the workspace but not to its window: close it and reopen it, and whatever was running is still running."],
       ],
     },
     {

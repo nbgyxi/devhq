@@ -2825,11 +2825,11 @@ function clearDetailData() {
   state.todoSource = new Map();
 }
 
-/** Opens the project's dev box - its files, git, terminal, AI chat and a
+/** Opens the project's workspace - its files, git, terminal, AI chat and a
  *  browser, all in one window of its own. The window is keyed by the project
  *  path in Rust, so asking twice focuses the one already open. */
-function openDevBox(p) {
-  trackWork("devbox:open", `Opening the ${p.name} dev box`, invoke("devbox_open", { path: p.path, name: p.name }))
+function openWorkspace(p) {
+  trackWork("workspace:open", `Opening the ${p.name} workspace`, invoke("workspace_open", { path: p.path, name: p.name }))
     .catch((err) => {
       state.error = `${p.name}: ${String(err)}`;
       markDirty("banner");
@@ -2863,8 +2863,8 @@ function projectAction(action, p, button = null) {
       window.wintGit?.open(p.path, p.name);
       if (state.activeView !== "git") switchMainView("git");
       break;
-    case "devbox":
-      openDevBox(p);
+    case "workspace":
+      openWorkspace(p);
       break;
     case "external":
       openIn(p.path, "terminal");
@@ -3474,9 +3474,9 @@ function availableSearchCommands(query = "") {
       commands.push({ kind: "RUN", label: `Run ${project.name}`, detail: project.runCmd, keywords: "run start launch serve dev server npm yarn pnpm cargo start up", action: "run", project });
     }
     commands.push({
-      kind: "BOX", label: `Dev box — ${project.name}`, detail: project.path,
-      keywords: "dev box devbox workspace window files browser preview terminal claude chat panel",
-      action: "devbox", project,
+      kind: "BOX", label: `Workspace — ${project.name}`, detail: project.path,
+      keywords: "workspace dev box devbox window files browser preview terminal claude chat panel",
+      action: "workspace", project,
     });
     commands.push({
       kind: "TERM", label: `Terminal — ${project.name}`, detail: project.path,
@@ -3687,7 +3687,7 @@ function runSearchCommand(index) {
     openDetail(command.project);
   }
   else if (command.action === "run") projectAction("run", command.project);
-  else if (command.action === "devbox") projectAction("devbox", command.project);
+  else if (command.action === "workspace") projectAction("workspace", command.project);
   else if (command.action === "terminal") projectAction("terminal", command.project);
   else if (command.action === "pull") projectAction("pull", command.project);
   else if (command.action === "kill-process") {
@@ -3723,7 +3723,7 @@ function hotkeyCatalog() {
     add("vscode", "Open in VS Code —", "code", project.path);
     add("terminal", "Open terminal —", "terminal", project.path);
     add("explorer", "Open in Explorer —", "folder_open", project.path);
-    add("devbox", "Open dev box —", "dashboard", project.path);
+    add("workspace", "Open workspace —", "dashboard", project.path);
     add("external", "Open external shell —", "open_in_new", project.path);
     add("copy", "Copy path —", "content_copy", project.path);
     add(
@@ -3904,9 +3904,9 @@ function cardActions(p) {
       )}Pull</button>`
     : "";
   return `<div class="card-actions">${run}
-    <button class="cact" data-act="devbox" title="Open this project's dev box">${icon(
+    <button class="cact" data-act="workspace" title="Open this project's workspace">${icon(
       "dashboard"
-    )}Dev box</button>
+    )}Workspace</button>
     <button class="cact" data-act="vscode" title="Open in VS Code">${icon("code")}Code</button>
     <button class="cact" data-act="terminal" title="Open a terminal here">${icon(
       "terminal"

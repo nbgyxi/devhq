@@ -6,7 +6,7 @@
 .DESCRIPTION
   Tauri cannot emit MSIX directly, so this script:
     1. Runs `tauri build` to produce the release exe (frontend is embedded).
-    2. Stages the exe + generated logo assets into a layout folder.
+    2. Stages the exe, the wint CLI and generated logo assets into a layout folder.
     3. Renders AppxManifest.xml from the template (token substitution).
     4. Packs it into an .msix with makeappx.exe (Windows SDK).
     5. (Optional) signs it with a self-signed cert for local install testing.
@@ -176,6 +176,23 @@ $exeSource = Join-Path $tauriRoot "target/release/wint.exe"
 if (-not (Test-Path $exeSource)) {
     throw "Release exe not found at $exeSource. Run without -SkipBuild first."
 }
+
+# The MSIX layout is assembled by hand below, so nothing Tauri lists under
+# `bundle.resources` arrives on its own - that list is only read by Tauri's own
+# MSI/NSIS bundlers, which this script skips. Every resource the app looks for
+# next to its exe has to be staged here as well, or the Store build ships
+# without it and the app reports the file as missing at runtime.
+$cliSource = Join-Path $tauriRoot "target/release/wint-cli.exe"
+if (-not (Test-Path $cliSource)) {
+    if ($SkipBuild) {
+        Write-Host "==> wint-cli.exe missing; building it (npm run cli:build)..." -ForegroundColor Cyan
+        & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "install-cli.ps1") -BuildOnly
+        if ($LASTEXITCODE -ne 0) { throw "The WinT CLI build failed." }
+    }
+    if (-not (Test-Path $cliSource)) {
+        throw "WinT CLI not found at $cliSource. Run 'npm run cli:build' first - without it the packaged app cannot open a terminal."
+    }
+}
 $exeChecksum = (Get-FileHash -Path $exeSource -Algorithm SHA256).Hash.ToLowerInvariant()
 
 function Set-ChangelogBuildChecksum([string]$version, [string]$checksum) {
@@ -220,6 +237,18 @@ if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Force -Path (Join-Path $stage "Assets") | Out-Null
 
 Copy-Item $exeSource (Join-Path $stage "WinT.exe") -Force
+
+# The CLI sits beside the exe, which is the first place both the "wt"
+# compatibility proxy and "Register the wint command" look for it.
+Copy-Item $cliSource (Join-Path $stage "wint-cli.exe") -Force
+
+# The taskbar jump list reads its tool icons from a tool-icons folder beside the exe.
+$toolIconSource = Join-Path $tauriRoot "icons/tools/dark"
+if (Test-Path $toolIconSource) {
+    $toolIconStage = Join-Path $stage "tool-icons"
+    New-Item -ItemType Directory -Force -Path $toolIconStage | Out-Null
+    Copy-Item (Join-Path $toolIconSource "*.ico") $toolIconStage -Force
+}
 
 # --- 4. Generate logo assets from icon.png --------------------------------
 Add-Type -AssemblyName System.Drawing

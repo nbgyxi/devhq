@@ -1,4 +1,4 @@
-// The dev box: one window per project, holding the four things that project
+// The workspace: one window per project, holding the four things that project
 // needs open at once.
 //
 // The window owns a layout, not the panels. Five named slots — left-top,
@@ -24,9 +24,9 @@
   const projectPath = params.get("path") || "";
   const projectName = params.get("name") || projectPath.split(/[\\/]/).filter(Boolean).pop() || "Project";
 
-  document.getElementById("db-project").textContent = projectName;
-  document.getElementById("db-subtitle").textContent = projectPath;
-  document.title = `${projectName} — dev box`;
+  document.getElementById("ws-project").textContent = projectName;
+  document.getElementById("ws-subtitle").textContent = projectPath;
+  document.title = `${projectName} — workspace`;
 
   const esc = (v = "") => String(v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const icon = (name) => `<span class="ms" aria-hidden="true">${name}</span>`;
@@ -34,9 +34,9 @@
   /* ------------------------------------------------------------ status bar */
 
   // Never empty, the way the main window's is never empty: with nothing in
-  // flight it says what the dev box last did, because a line that comes and
+  // flight it says what the workspace last did, because a line that comes and
   // goes cannot be glanced at.
-  const statusEl = document.getElementById("db-status");
+  const statusEl = document.getElementById("ws-status");
   let busyCount = 0;
   const say = (text) => { statusEl.firstChild ? (statusEl.firstChild.nodeValue = text) : (statusEl.textContent = text); };
   const busy = async (text, work) => {
@@ -50,12 +50,12 @@
       if (busyCount === 0) statusEl.classList.remove("busy");
     }
   };
-  say("Opening the dev box");
+  say("Opening the workspace");
 
   /* --------------------------------------------------------------- layout */
 
   const SLOTS = ["left-top", "left-bottom", "center", "right", "bottom"];
-  const KEY = `wint.devbox.v1:${projectPath.toLowerCase()}`;
+  const KEY = `wint.workspace.v1:${projectPath.toLowerCase()}`;
   const DEFAULT_LAYOUT = {
     slots: { "left-top": "files", "left-bottom": "git", center: "browser", right: "chat", bottom: "terminal" },
     hidden: {},
@@ -95,19 +95,19 @@
   const panelEl = (panel) => {
     if (panel.el) return panel.el;
     const el = document.createElement("div");
-    el.className = `db-panel db-panel-${panel.id}`;
+    el.className = `ws-panel ws-panel-${panel.id}`;
     el.dataset.panel = panel.id;
-    el.innerHTML = `<header class="db-head" draggable="true">
-        <span class="db-head-grip">${icon("drag_indicator")}</span>
+    el.innerHTML = `<header class="ws-head" draggable="true">
+        <span class="ws-head-grip">${icon("drag_indicator")}</span>
         ${icon(panel.icon)}<strong>${esc(panel.label)}</strong>
-        <span class="db-head-tools"></span>
-        <button class="db-head-hide" type="button" title="Hide this panel" aria-label="Hide this panel">${icon("close")}</button>
+        <span class="ws-head-tools"></span>
+        <button class="ws-head-hide" type="button" title="Hide this panel" aria-label="Hide this panel">${icon("close")}</button>
       </header>
-      <div class="db-panel-body"></div>`;
+      <div class="ws-panel-body"></div>`;
     panel.el = el;
-    panel.body = el.querySelector(".db-panel-body");
-    panel.tools = el.querySelector(".db-head-tools");
-    el.querySelector(".db-head-hide").addEventListener("click", () => {
+    panel.body = el.querySelector(".ws-panel-body");
+    panel.tools = el.querySelector(".ws-head-tools");
+    el.querySelector(".ws-head-hide").addEventListener("click", () => {
       const slot = slotOf(panel.id);
       if (slot) { layout.hidden[slot] = true; render(); }
     });
@@ -117,12 +117,12 @@
 
   /* ------------------------------------------------------------- the grid */
 
-  const grid = document.getElementById("db-grid");
+  const grid = document.getElementById("ws-grid");
   const slotEls = new Map(SLOTS.map((slot) => [slot, document.querySelector(`[data-slot="${slot}"]`)]));
   const gripEls = [...document.querySelectorAll("[data-grip]")];
-  const togglesEl = document.getElementById("db-toggles");
-  const centerColEl = document.getElementById("db-center-col");
-  const bottomDock = document.getElementById("db-bottom-dock");
+  const togglesEl = document.getElementById("ws-toggles");
+  const centerColEl = document.getElementById("ws-center-col");
+  const bottomDock = document.getElementById("ws-bottom-dock");
 
   /** Where the bottom panel hangs from.
    *
@@ -142,14 +142,14 @@
     const root = document.documentElement.style;
     const shown = (slot) => Boolean(layout.slots[slot]) && !layout.hidden[slot];
     const leftShown = shown("left-top") || shown("left-bottom");
-    root.setProperty("--db-left", leftShown ? `${layout.size.left}px` : "0px");
-    root.setProperty("--db-right", shown("right") ? `${layout.size.right}px` : "0px");
-    root.setProperty("--db-bottom", shown("bottom") ? `${layout.size.bottom}px` : "0px");
+    root.setProperty("--ws-left", leftShown ? `${layout.size.left}px` : "0px");
+    root.setProperty("--ws-right", shown("right") ? `${layout.size.right}px` : "0px");
+    root.setProperty("--ws-bottom", shown("bottom") ? `${layout.size.bottom}px` : "0px");
     // With one of the two left panels hidden the other takes the whole column,
     // rather than the survivor keeping half and leaving a gap.
     const split = shown("left-top") && shown("left-bottom") ? layout.size.leftSplit : shown("left-top") ? 1 : 0;
-    root.setProperty("--db-left-split", `${split * 100}%`);
-    document.body.classList.toggle("db-no-left", !leftShown);
+    root.setProperty("--ws-left-split", `${split * 100}%`);
+    document.body.classList.toggle("ws-no-left", !leftShown);
     for (const [slot, el] of slotEls) el.hidden = !shown(slot);
     bottomDock.hidden = !shown("bottom");
     dockBottom();
@@ -194,7 +194,7 @@
       const panel = panels.get(layout.slots[slot]);
       if (!panel) return "";
       const on = !layout.hidden[slot];
-      return `<button class="db-toggle${on ? " on" : ""}" data-toggle="${slot}" type="button" aria-pressed="${on}" title="${esc(panel.label)}">${icon(panel.icon)}</button>`;
+      return `<button class="ws-toggle${on ? " on" : ""}" data-toggle="${slot}" type="button" aria-pressed="${on}" title="${esc(panel.label)}">${icon(panel.icon)}</button>`;
     }).join("");
   };
 
@@ -214,15 +214,15 @@
   // not a free-form tree: there is no arrangement you can drag it into that
   // leaves a hole or loses a panel.
   let dragging = "";
-  const dropEl = document.getElementById("db-drop");
+  const dropEl = document.getElementById("ws-drop");
 
   grid.addEventListener("dragstart", (e) => {
-    const head = e.target.closest(".db-head");
+    const head = e.target.closest(".ws-head");
     if (!head) return;
-    dragging = head.closest(".db-panel").dataset.panel;
+    dragging = head.closest(".ws-panel").dataset.panel;
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData("text/plain", dragging);
-    document.body.classList.add("db-dragging");
+    document.body.classList.add("ws-dragging");
     // The browser webview is drawn over the page, so during a drag it would
     // swallow every drop target underneath it.
     hideBrowser();
@@ -230,9 +230,9 @@
 
   const endDrag = () => {
     dragging = "";
-    document.body.classList.remove("db-dragging");
+    document.body.classList.remove("ws-dragging");
     dropEl.hidden = true;
-    for (const el of slotEls.values()) el.classList.remove("db-over");
+    for (const el of slotEls.values()) el.classList.remove("ws-over");
     syncBrowser();
   };
   document.addEventListener("dragend", endDrag);
@@ -242,9 +242,9 @@
       if (!dragging || layout.slots[slot] === dragging) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
-      el.classList.add("db-over");
+      el.classList.add("ws-over");
     });
-    el.addEventListener("dragleave", () => el.classList.remove("db-over"));
+    el.addEventListener("dragleave", () => el.classList.remove("ws-over"));
     el.addEventListener("drop", (e) => {
       if (!dragging) return;
       e.preventDefault();
@@ -274,7 +274,7 @@
       // a drag that crosses it would simply stop. Hiding it for the duration is
       // what keeps the divider following the pointer all the way across.
       hideBrowser();
-      document.body.classList.add("db-resizing");
+      document.body.classList.add("ws-resizing");
 
       const move = (ev) => {
         const dx = ev.clientX - start.x;
@@ -299,7 +299,7 @@
       const up = () => {
         grip.removeEventListener("pointermove", move);
         grip.removeEventListener("pointerup", up);
-        document.body.classList.remove("db-resizing");
+        document.body.classList.remove("ws-resizing");
         saveLayout();
         for (const panel of panels.values()) if (visible(panel.id)) panel.resized();
         syncBrowser();
@@ -333,7 +333,7 @@
       if (action === "max") return (await win.isMaximized()) ? win.unmaximize() : win.maximize();
       // The child webview is not destroyed with the page, so it is closed
       // explicitly rather than left behind holding a page open.
-      await invoke("devbox_browser_close", { window: label }).catch(() => {});
+      await invoke("workspace_browser_close", { window: label }).catch(() => {});
       return win.close();
     });
   });
@@ -356,7 +356,7 @@
   const hideBrowser = () => {
     if (!browserShown) return;
     browserShown = false;
-    invoke("devbox_browser_hide", { window: label }).catch(() => {});
+    invoke("workspace_browser_hide", { window: label }).catch(() => {});
   };
 
   /** Puts the webview exactly over the hole, creating it the first time. */
@@ -364,7 +364,7 @@
     const rect = browserRect();
     if (!rect || !browserUrl || panels.get("browser")?.previewOpen) return hideBrowser();
     browserShown = true;
-    invoke("devbox_browser_show", {
+    invoke("workspace_browser_show", {
       window: label,
       url: browserUrl,
       x: rect.left,
@@ -388,7 +388,7 @@
     if (panel?.empty) panel.empty.hidden = true;
     // An address arriving while the browser is hidden is still worth having:
     // it loads as soon as the panel is shown again.
-    if (!first && browserShown) invoke("devbox_browser_navigate", { window: label, url: target }).catch(() => {});
+    if (!first && browserShown) invoke("workspace_browser_navigate", { window: label, url: target }).catch(() => {});
     else syncBrowser();
     say(reason || `Browsing ${target}`);
   };
@@ -398,22 +398,22 @@
     icon: "public",
     mount(body, panel) {
       panel.tools.innerHTML = `
-        <button class="db-mini" data-browser="reload" type="button" title="Reload">${icon("refresh")}</button>
-        <input class="db-address" data-browser="address" placeholder="localhost:3000" spellcheck="false" />
-        <button class="db-mini" data-browser="external" type="button" title="Open in your real browser">${icon("open_in_new")}</button>`;
+        <button class="ws-mini" data-browser="reload" type="button" title="Reload">${icon("refresh")}</button>
+        <input class="ws-address" data-browser="address" placeholder="localhost:3000" spellcheck="false" />
+        <button class="ws-mini" data-browser="external" type="button" title="Open in your real browser">${icon("open_in_new")}</button>`;
       panel.address = panel.tools.querySelector("[data-browser=address]");
-      body.innerHTML = `<div class="db-browser-hole"></div>
-        <div class="db-browser-empty">${icon("public")}<strong>Nothing to show yet</strong>
+      body.innerHTML = `<div class="ws-browser-hole"></div>
+        <div class="ws-browser-empty">${icon("public")}<strong>Nothing to show yet</strong>
           <p>Start a dev server in the terminal below. The moment it prints a localhost address, this panel opens it.</p></div>
-        <div class="db-preview" hidden><header><strong></strong><button type="button" class="db-mini">${icon("close")}</button></header><pre></pre></div>`;
-      panel.hole = body.querySelector(".db-browser-hole");
-      panel.empty = body.querySelector(".db-browser-empty");
-      panel.preview = body.querySelector(".db-preview");
+        <div class="ws-preview" hidden><header><strong></strong><button type="button" class="ws-mini">${icon("close")}</button></header><pre></pre></div>`;
+      panel.hole = body.querySelector(".ws-browser-hole");
+      panel.empty = body.querySelector(".ws-browser-empty");
+      panel.preview = body.querySelector(".ws-preview");
       panel.previewOpen = false;
 
       panel.tools.addEventListener("click", (e) => {
         const action = e.target.closest("[data-browser]")?.dataset.browser;
-        if (action === "reload" && browserUrl) invoke("devbox_browser_reload", { window: label }).catch(() => {});
+        if (action === "reload" && browserUrl) invoke("workspace_browser_reload", { window: label }).catch(() => {});
         if (action === "external" && browserUrl) invoke("plugin:opener|open_url", { url: browserUrl }).catch(() => {});
       });
       panel.address.addEventListener("keydown", (e) => {
@@ -446,7 +446,7 @@
     panel.preview.querySelector("pre").textContent = "Reading…";
     hideBrowser();
     try {
-      const text = await busy(`Reading ${name}`, () => invoke("devbox_read_file", { path }));
+      const text = await busy(`Reading ${name}`, () => invoke("workspace_read_file", { path }));
       panel.preview.querySelector("pre").textContent = text;
       say(`Showing ${name}`);
     } catch (err) {
@@ -457,23 +457,59 @@
 
   /* --------------------------------------------------------- panel: files */
 
+  /** The files git says have changed, as the file panel wants them: absolute,
+   *  in this machine's separator, newest information wins. Published from the
+   *  git panel because that is what already asks; held here because the file
+   *  panel is what shows it. */
+  let changedFiles = [];
+  const publishChanged = (changed) => {
+    changedFiles = changed.map((file) => ({
+      ...file,
+      full: `${projectPath.replace(/[\\/]+$/, "")}\\${file.path.replace(/\//g, "\\")}`,
+      name: file.path.split(/[\\/]/).pop(),
+    }));
+    const files = panels.get("files");
+    if (files?.changedOnly) renderChangedOnly(files);
+  };
+
   definePanel("files", {
     label: "Files",
     icon: "folder_open",
     mount(body, panel) {
-      panel.tools.innerHTML = `<button class="db-mini" data-files="refresh" type="button" title="Read the folder again">${icon("refresh")}</button>`;
-      body.className += " db-files";
-      body.innerHTML = `<div class="db-tree" data-depth="0"></div>`;
-      panel.tree = body.querySelector(".db-tree");
+      panel.tools.innerHTML = `
+        <button class="ws-mini" data-files="changed" type="button" aria-pressed="false"
+                title="Show only the files you have changed">${icon("filter_alt")}</button>
+        <button class="ws-mini" data-files="refresh" type="button" title="Read the folder again">${icon("refresh")}</button>`;
+      body.className += " ws-files";
+      body.innerHTML = `<div class="ws-tree" data-depth="0"></div>`;
+      panel.tree = body.querySelector(".ws-tree");
       panel.open = new Set();
-      panel.tools.addEventListener("click", () => loadDir(panel, panel.tree, projectPath, 0));
+      panel.changedOnly = false;
+      panel.tools.addEventListener("click", (e) => {
+        const action = e.target.closest("[data-files]")?.dataset.files;
+        if (action === "refresh") {
+          return panel.changedOnly ? refreshGit() : loadDir(panel, panel.tree, projectPath, 0);
+        }
+        if (action !== "changed") return;
+        panel.changedOnly = !panel.changedOnly;
+        panel.tools.querySelector("[data-files=changed]").setAttribute("aria-pressed", String(panel.changedOnly));
+        panel.tools.querySelector("[data-files=changed]").classList.toggle("on", panel.changedOnly);
+        if (panel.changedOnly) {
+          renderChangedOnly(panel);
+          // The list is only as fresh as the last look at git, and the panel
+          // that looks may not even be showing.
+          refreshGit();
+        } else {
+          loadDir(panel, panel.tree, projectPath, 0);
+        }
+      });
       body.addEventListener("click", async (e) => {
         const row = e.target.closest("[data-path]");
         if (!row) return;
         if (row.dataset.directory === "true") {
           const children = row.nextElementSibling;
           const open = row.classList.toggle("open");
-          row.querySelector(".db-tree-caret").textContent = open ? "expand_more" : "chevron_right";
+          row.querySelector(".ws-tree-caret").textContent = open ? "expand_more" : "chevron_right";
           open ? panel.open.add(row.dataset.path) : panel.open.delete(row.dataset.path);
           children.hidden = !open;
           if (open && !children.dataset.loaded) await loadDir(panel, children, row.dataset.path, Number(row.dataset.depth) + 1);
@@ -485,21 +521,44 @@
     },
   });
 
+  /** Asks git again, whoever is asking. The git panel owns the call; the file
+   *  panel needs the answer, and neither is guaranteed to be on screen. */
+  const refreshGit = () => {
+    const git = panels.get("git");
+    if (git?.state) loadGit(git);
+  };
+
+  /** The changed files as a flat list. Flat rather than a pruned tree on
+   *  purpose: the point of this filter is to see everything you have touched
+   *  at once, and a tree of mostly-single-child folders hides that behind
+   *  chevrons. */
+  function renderChangedOnly(panel) {
+    const mark = (status) => status === "untracked" ? "note_add" : status === "conflict" ? "error" : "edit";
+    panel.tree.innerHTML = changedFiles.map((file) => `
+      <button class="ws-tree-row" data-path="${esc(file.full)}" data-name="${esc(file.name)}"
+              data-directory="false" data-depth="0" style="--ws-depth:0" title="${esc(file.path)}">
+        <span class="ms ws-tree-caret ${file.status === "conflict" ? "bad" : "changed"}" aria-hidden="true">${mark(file.status)}</span>
+        <span class="ws-tree-name">${esc(file.name)}</span>
+        <span class="ws-tree-where">${esc(file.path.split(/[\\/]/).slice(0, -1).join("/"))}</span>
+      </button>`).join("")
+      || `<div class="ws-tree-note">Nothing has changed since your last save.</div>`;
+  }
+
   async function loadDir(panel, host, path, depth) {
     host.dataset.loaded = "1";
-    host.innerHTML = `<div class="db-tree-note">Reading…</div>`;
+    host.innerHTML = `<div class="ws-tree-note">Reading…</div>`;
     try {
-      const rows = await busy(depth ? `Reading ${path.split(/[\\/]/).pop()}` : "Reading the project folder", () => invoke("devbox_list_dir", { path }));
+      const rows = await busy(depth ? `Reading ${path.split(/[\\/]/).pop()}` : "Reading the project folder", () => invoke("workspace_list_dir", { path }));
       host.innerHTML = rows.map((row) => `
-        <button class="db-tree-row${row.directory ? " dir" : ""}" data-path="${esc(row.path)}" data-name="${esc(row.name)}"
-                data-directory="${row.directory}" data-depth="${depth}" style="--db-depth:${depth}">
-          <span class="ms db-tree-caret" aria-hidden="true">${row.directory ? "chevron_right" : "description"}</span>
-          <span class="db-tree-name">${esc(row.name)}</span>
-        </button>${row.directory ? `<div class="db-tree" hidden></div>` : ""}`).join("")
-        || `<div class="db-tree-note">This folder is empty.</div>`;
+        <button class="ws-tree-row${row.directory ? " dir" : ""}" data-path="${esc(row.path)}" data-name="${esc(row.name)}"
+                data-directory="${row.directory}" data-depth="${depth}" style="--ws-depth:${depth}">
+          <span class="ms ws-tree-caret" aria-hidden="true">${row.directory ? "chevron_right" : "description"}</span>
+          <span class="ws-tree-name">${esc(row.name)}</span>
+        </button>${row.directory ? `<div class="ws-tree" hidden></div>` : ""}`).join("")
+        || `<div class="ws-tree-note">This folder is empty.</div>`;
       if (!depth) say(`${rows.length} item${rows.length === 1 ? "" : "s"} in ${projectName}`);
     } catch (err) {
-      host.innerHTML = `<div class="db-tree-note">${esc(String(err))}</div>`;
+      host.innerHTML = `<div class="ws-tree-note">${esc(String(err))}</div>`;
       say(String(err));
     }
   }
@@ -510,19 +569,20 @@
     label: "Save & upload",
     icon: "backup",
     mount(body, panel) {
-      panel.tools.innerHTML = `<button class="db-mini" data-git="refresh" type="button" title="Check again">${icon("refresh")}</button>`;
-      body.className += " db-git";
-      body.innerHTML = `<div class="db-git-state"></div>
-        <form class="db-git-form"><input name="message" placeholder="What did you change?" autocomplete="off" />
-          <div class="db-git-buttons">
-            <button type="submit" class="db-btn primary" data-git="save">${icon("bookmark_add")}Save</button>
-            <button type="button" class="db-btn" data-git="push">${icon("cloud_upload")}Upload</button>
-            <button type="button" class="db-btn" data-git="pull">${icon("cloud_download")}Get</button>
-          </div></form>
-        <div class="db-git-files"></div>`;
-      panel.state = body.querySelector(".db-git-state");
-      panel.files = body.querySelector(".db-git-files");
-      panel.form = body.querySelector(".db-git-form");
+      panel.tools.innerHTML = `<button class="ws-mini" data-git="refresh" type="button" title="Check again">${icon("refresh")}</button>`;
+      body.className += " ws-git";
+      // Deliberately no list of changed files. The file panel above already
+      // lists this project's files and can be filtered down to the changed
+      // ones, and two lists of the same thing in one column is one too many.
+      body.innerHTML = `<div class="ws-git-state"></div>
+        <form class="ws-git-form"><input name="message" placeholder="What did you change?" autocomplete="off" />
+          <div class="ws-git-buttons">
+            <button type="submit" class="ws-btn primary" data-git="save">${icon("bookmark_add")}Save</button>
+            <button type="button" class="ws-btn" data-git="push">${icon("cloud_upload")}Upload</button>
+            <button type="button" class="ws-btn" data-git="pull">${icon("cloud_download")}Get</button>
+          </div></form>`;
+      panel.state = body.querySelector(".ws-git-state");
+      panel.form = body.querySelector(".ws-git-form");
       panel.tools.addEventListener("click", () => loadGit(panel));
       panel.form.addEventListener("submit", (e) => { e.preventDefault(); saveVersion(panel); });
       body.addEventListener("click", (e) => {
@@ -541,18 +601,16 @@
       const g = data.info;
       const changed = g.changed || [];
       panel.state.innerHTML = `
-        <p class="db-git-branch">${icon("fork_right")}<strong>${esc(g.branch || "detached")}</strong>
+        <p class="ws-git-branch">${icon("fork_right")}<strong>${esc(g.branch || "detached")}</strong>
           ${g.ahead ? `<b title="Recorded here, not uploaded">${g.ahead} to upload</b>` : ""}
           ${g.behind ? `<b title="Waiting from your team">${g.behind} to get</b>` : ""}</p>
-        <p class="db-git-line">${changed.length
+        <p class="ws-git-line">${changed.length
           ? `${changed.length} changed file${changed.length === 1 ? "" : "s"} not saved yet.`
           : g.ahead ? "Everything is saved here, but not uploaded yet." : "Nothing to save. You are up to date."}</p>`;
-      panel.files.innerHTML = changed.slice(0, 200).map((file) => `
-        <div class="db-git-file"><span class="ms">${file.status === "untracked" ? "note_add" : file.status === "conflict" ? "error" : "edit"}</span>
-          <span title="${esc(file.path)}">${esc(file.path)}</span></div>`).join("");
+      publishChanged(changed);
       say(changed.length ? `${changed.length} file${changed.length === 1 ? "" : "s"} changed` : "Nothing to save");
     } catch (err) {
-      panel.state.innerHTML = `<p class="db-git-line">${esc(String(err))}</p>`;
+      panel.state.innerHTML = `<p class="ws-git-line">${esc(String(err))}</p>`;
       say(String(err));
     }
   }
@@ -602,7 +660,7 @@
     label: name,
     icon: glyph,
     async mount(body, panel) {
-      body.className += " db-term";
+      body.className += " ws-term";
       const host = document.createElement("div");
       host.className = "term-host";
       body.appendChild(host);
@@ -622,14 +680,17 @@
         const already = await invoke("term_serving", { id: info.id }).catch(() => null);
         if (already && !browserUrl) goTo(already, `Found ${already} already running`);
       } catch (err) {
-        host.innerHTML = `<div class="db-term-error">${esc(String(err))}</div>`;
+        host.innerHTML = `<div class="ws-term-error">${esc(String(err))}</div>`;
         say(String(err));
       }
     },
     resized() { this.view?.fit(); },
   });
 
-  defineTerminal("terminal", { label: "Terminal", icon: "terminal", shell: "", hint: "Terminal ready" });
+  // "auto" is what the Rust side calls "whichever shell this machine has".
+  // An empty string is not a profile it knows, and asking for one is how this
+  // panel used to open onto "Unknown terminal shell."
+  defineTerminal("terminal", { label: "Terminal", icon: "terminal", shell: "auto", hint: "Terminal ready" });
   defineTerminal("chat", { label: "Claude", icon: "forum", shell: "claude", hint: "Claude is starting" });
 
   /* ----------------------------------------------------------------- go */
@@ -648,10 +709,10 @@
     goTo(payload.url, `${sessions.get(payload.id).label} is serving ${payload.url}`);
   }).catch((err) => say(`Cannot watch the terminals for a dev server: ${err}`));
 
-  window.wintTrackPageView?.("/devbox");
+  window.wintTrackPageView?.("/workspace");
 })().catch((err) => {
   // Nothing below the title bar is trustworthy at this point, so the report
   // goes somewhere that needs no state: the status line, which is in the HTML.
-  const status = document.getElementById("db-status");
-  if (status) status.textContent = `The dev box could not start: ${err}`;
+  const status = document.getElementById("ws-status");
+  if (status) status.textContent = `The workspace could not start: ${err}`;
 });

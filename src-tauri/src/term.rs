@@ -351,7 +351,7 @@ struct Session {
     /// when the terminal is closed for good.
     history_key: Option<String>,
     /// The last loopback address this terminal printed, if any. Kept so that a
-    /// dev box opened after the server started can still find out where it is,
+    /// workspace opened after the server started can still find out where it is,
     /// and so the same address announced on every rebuild is only acted on once.
     served: Mutex<Option<String>>,
 }
@@ -1441,11 +1441,19 @@ fn find_local_url(carry: &[u8], chunk: &[u8]) -> Option<String> {
     let mut best: Option<(usize, String)> = None;
     for host in ["http://localhost:", "http://127.0.0.1:"] {
         let mut from = 0;
-        while let Some(at) = text[from..].find(host) {
+        // Every index here is derived from an ASCII match, but the byte after
+        // one is not necessarily a character boundary and can be past the end
+        // of the string - and either would panic this thread, taking the
+        // terminal's output with it.
+        while from < text.len() {
+            let Some(at) = text[from..].find(host) else { break };
             let start = from + at;
             let rest = &text[start + host.len()..];
             let port: String = rest.chars().take_while(char::is_ascii_digit).collect();
-            from = start + host.len() + port.len().max(1);
+            from = (start + host.len() + port.len().max(1)).min(text.len());
+            while from < text.len() && !text.is_char_boundary(from) {
+                from += 1;
+            }
             if port.is_empty() || port.len() > 5 {
                 continue;
             }
@@ -1522,7 +1530,20 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
             // the previous chunk rides along because ConPTY will happily split
             // `http://localhost:5173` down the middle.
             if let Some(url) = find_local_url(&carry, &buf[..n]) {
-                if session.served.lock().unwrap().replace(url.clone()) != Some(url.clone()) {
+                // The lock is taken and released on its own line on purpose. A
+                // temporary guard in an `if` condition lives to the end of the
+                // whole `if` - which would hold this mutex across the emit
+                // below, where anything asking what this terminal serves waits
+                // on it. That is the main thread, and that is the window.
+                let announced = {
+                    let mut served = session.served.lock().unwrap();
+                    let changed = served.as_deref() != Some(url.as_str());
+                    if changed {
+                        *served = Some(url.clone());
+                    }
+                    changed
+                };
+                if announced {
                     let _ = app.emit(
                         "term:serving",
                         Serving {
@@ -1542,13 +1563,17 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
 }
 
 /// Where this terminal last said it was serving, for a view that arrived after
-/// it said so. Without this, opening a dev box on a project whose dev server is
+/// it said so. Without this, opening a workspace on a project whose dev server is
 /// already running would leave the browser panel blank until the next restart.
 #[tauri::command]
-pub fn term_serving(id: String) -> Option<String> {
-    lookup(&id)
-        .ok()
-        .and_then(|session| session.served.lock().unwrap().clone())
+pub async fn term_serving(id: String) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        lookup(&id)
+            .ok()
+            .and_then(|session| session.served.lock().unwrap().clone())
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// Everything a fresh view needs to draw the session as it stands.
