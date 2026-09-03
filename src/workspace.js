@@ -165,13 +165,19 @@
     const split = shown("left-top") && shown("left-bottom") ? layout.size.leftSplit : shown("left-top") ? 1 : 0;
     root.setProperty("--ws-left-split", `${split * 100}%`);
     document.body.classList.toggle("ws-no-left", !leftShown);
+    // With nothing in the middle there is no middle: the two sides close up
+    // against each other rather than leaving a hole where the browser was, and
+    // the right one takes whatever the left does not want.
+    document.body.classList.toggle("ws-no-center", !shown("center"));
     for (const [slot, el] of slotEls) el.hidden = !shown(slot);
     bottomDock.hidden = !shown("bottom");
     dockBottom();
     for (const grip of gripEls) {
       grip.hidden =
         grip.dataset.grip === "left" ? !leftShown
-        : grip.dataset.grip === "right" ? !shown("right")
+        // With the middle gone the right column is what fills the space, so
+        // there is only one boundary left to drag and the left grip is it.
+        : grip.dataset.grip === "right" ? !shown("right") || !shown("center")
         : grip.dataset.grip === "bottom" ? !shown("bottom")
         : !(shown("left-top") && shown("left-bottom"));
     }
@@ -558,19 +564,44 @@
     if (git?.state) loadGit(git);
   };
 
-  /** The changed files as a flat list. Flat rather than a pruned tree on
-   *  purpose: the point of this filter is to see everything you have touched
-   *  at once, and a tree of mostly-single-child folders hides that behind
-   *  chevrons. */
+  /** The changed files, in the same tree shape as everything else - only the
+   *  branches that contain a change, and every one of them already open.
+   *
+   *  Built whole rather than folder by folder: git has already said exactly
+   *  which paths changed, so there is nothing to go and look up and no reason
+   *  to make anyone click. The folder rows are labels, not buttons, because
+   *  there is nothing behind them to reveal. */
   function renderChangedOnly(panel) {
     const mark = (status) => status === "untracked" ? "note_add" : status === "conflict" ? "error" : "edit";
-    panel.tree.innerHTML = changedFiles.map((file) => `
-      <button class="ws-tree-row" data-path="${esc(file.full)}" data-name="${esc(file.name)}"
-              data-directory="false" data-depth="0" style="--ws-depth:0" title="${esc(file.path)}">
-        <span class="ms ws-tree-caret ${file.status === "conflict" ? "bad" : "changed"}" aria-hidden="true">${mark(file.status)}</span>
-        <span class="ws-tree-name">${esc(file.name)}</span>
-        <span class="ws-tree-where">${esc(file.path.split(/[\\/]/).slice(0, -1).join("/"))}</span>
-      </button>`).join("")
+
+    // { folders: Map<name, node>, files: [] } - insertion order is git's, which
+    // is already alphabetical within a folder.
+    const root = { folders: new Map(), files: [] };
+    for (const file of changedFiles) {
+      const parts = file.path.split(/[\\/]/);
+      let node = root;
+      for (const folder of parts.slice(0, -1)) {
+        if (!node.folders.has(folder)) node.folders.set(folder, { folders: new Map(), files: [] });
+        node = node.folders.get(folder);
+      }
+      node.files.push(file);
+    }
+
+    const draw = (node, depth) => [
+      ...[...node.folders].map(([name, child]) => `
+        <div class="ws-tree-row dir static" style="--ws-depth:${depth}">
+          <span class="ms ws-tree-caret" aria-hidden="true">expand_more</span>
+          <span class="ws-tree-name">${esc(name)}</span>
+        </div>${draw(child, depth + 1)}`),
+      ...node.files.map((file) => `
+        <button class="ws-tree-row" data-path="${esc(file.full)}" data-name="${esc(file.name)}"
+                data-directory="false" data-depth="${depth}" style="--ws-depth:${depth}" title="${esc(file.path)}">
+          <span class="ms ws-tree-caret ${file.status === "conflict" ? "bad" : "changed"}" aria-hidden="true">${mark(file.status)}</span>
+          <span class="ws-tree-name">${esc(file.name)}</span>
+        </button>`),
+    ].join("");
+
+    panel.tree.innerHTML = draw(root, 0)
       || `<div class="ws-tree-note">Nothing has changed since your last save.</div>`;
   }
 

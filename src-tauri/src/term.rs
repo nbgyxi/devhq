@@ -1411,10 +1411,6 @@ fn spawn_writer(session: Weak<Session>, inbox: Receiver<Job>) {
 /// The reader thread: block on the pseudoconsole, feed the screen, ship the
 /// rows that changed. Blocking on `ReadFile` is itself the coalescing — ConPTY
 /// hands us one batched repaint per flush rather than a byte at a time.
-/// How much of the previous chunk is kept to catch a URL split across two
-/// reads. Comfortably longer than the longest address this looks for.
-const CARRY: usize = 64;
-
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Serving {
@@ -1422,19 +1418,28 @@ pub struct Serving {
     pub url: String,
 }
 
-/// The first `http://localhost:port` or `http://127.0.0.1:port` in a chunk of
-/// terminal output, which is how every dev server worth pointing a browser at
+/// The printable text of one screen row, with the marker that holds the second
+/// half of a double-width glyph dropped.
+fn row_text(cells: &[Cell]) -> String {
+    cells.iter().map(|cell| cell.ch).filter(|&ch| ch != CONT).collect()
+}
+
+/// The first `http://localhost:port` or `http://127.0.0.1:port` in a line of
+/// terminal text, which is how every dev server worth pointing a browser at
 /// says it has started.
+///
+/// This reads the *screen*, not the byte stream. ConPTY does not forward what
+/// the program wrote - it repaints, and it is free to break a line into
+/// separate writes with cursor moves and colour changes in between, which is
+/// exactly what a dev server's boxed, coloured, right-aligned banner provokes.
+/// The row is where the address is reliably one contiguous run of characters,
+/// and it is the same place the terminal itself finds links to underline.
 ///
 /// Deliberately narrow. Matching any URL would have the browser panel chasing
 /// documentation links and npm advisories printed during a build; matching
 /// loopback with a port is the one case where the terminal is saying "there is
 /// something to look at here, now".
-fn find_local_url(carry: &[u8], chunk: &[u8]) -> Option<String> {
-    let mut text = Vec::with_capacity(carry.len() + chunk.len());
-    text.extend_from_slice(carry);
-    text.extend_from_slice(chunk);
-    let text = String::from_utf8_lossy(&text);
+fn scan_local_url(text: &str) -> Option<String> {
     // The earliest address in the chunk wins. A dev server that prints both a
     // local and a network address prints the local one first, which is the one
     // a browser on this machine should be pointed at.
@@ -1477,7 +1482,6 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
     let handle = session.pty.lock().unwrap().output();
     std::thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
-        let mut carry: Vec<u8> = Vec::with_capacity(CARRY);
         loop {
             let Some(n) = conpty::read_chunk(handle, &mut buf) else {
                 break;
@@ -1485,15 +1489,22 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
             // Where the parser stands after this chunk is what says whether the
             // stream may later be cut here, so the bytes are kept alongside the
             // feed rather than before it.
-            let (update, settled, reply) = {
+            let (update, settled, reply, serving) = {
                 let mut grid = session.grid.lock().unwrap();
                 grid.feed(&buf[..n]);
                 let settled = grid.at_ground() && grid.cx == 0 && !grid.alt;
                 let reply = grid.take_reply();
                 let clear_history = grid.take_clear_history();
                 let scrolled = grid.take_scrolled().iter().map(|l| pack(l)).collect();
-                let rows = grid
-                    .take_dirty()
+                // The rows that changed are scanned for a dev server's address
+                // on the way past. They are already in hand and already the
+                // right shape - one contiguous line of characters, whatever the
+                // pseudoconsole did to the bytes that produced them.
+                let touched = grid.take_dirty();
+                let serving = touched
+                    .iter()
+                    .find_map(|&y| scan_local_url(&row_text(grid.row(y))));
+                let rows = touched
                     .into_iter()
                     .map(|y| RowUpdate {
                         y,
@@ -1516,6 +1527,7 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
                     },
                     settled,
                     reply,
+                    serving,
                 )
             };
             if !reply.is_empty() {
@@ -1525,11 +1537,8 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
                 log.append(&buf[..n], settled);
             }
             // A dev server announcing itself is the one line of terminal output
-            // something else in the app wants to act on, so it is picked out
-            // here rather than by anything re-reading the screen. The tail of
-            // the previous chunk rides along because ConPTY will happily split
-            // `http://localhost:5173` down the middle.
-            if let Some(url) = find_local_url(&carry, &buf[..n]) {
+            // the rest of the app acts on.
+            if let Some(url) = serving {
                 // The lock is taken and released on its own line on purpose. A
                 // temporary guard in an `if` condition lives to the end of the
                 // whole `if` - which would hold this mutex across the emit
@@ -1553,8 +1562,6 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
                     );
                 }
             }
-            carry.clear();
-            carry.extend_from_slice(&buf[n.saturating_sub(CARRY)..n]);
             let _ = app.emit("term:update", update);
         }
         session.alive.store(false, Ordering::Relaxed);
@@ -1885,4 +1892,82 @@ pub fn shutdown() {
             session.pty.lock().unwrap().close();
         }
     });
+}
+
+
+#[cfg(test)]
+mod serving_tests {
+    use super::{row_text, scan_local_url};
+    use crate::vt::Grid;
+
+    /// The address as the screen holds it, which is the only place it is
+    /// reliably one piece: this is a dev server's banner as it arrives -
+    /// coloured, underlined, and with the line split by the pseudoconsole
+    /// between the label and the address.
+    fn screen_line(stream: &[u8]) -> String {
+        let mut grid = Grid::new(80, 4);
+        grid.feed(stream);
+        (0..grid.rows)
+            .map(|y| row_text(grid.row(y)))
+            .find(|line| line.contains("http"))
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn finds_the_address_a_dev_server_prints() {
+        let line = screen_line(
+            b"  \x1b[32m-\x1b[0m \x1b[1mLocal\x1b[0m:    \x1b[36m\x1b[4mhttp://localhost:41823/\x1b[0m\r\n",
+        );
+        assert_eq!(
+            scan_local_url(&line).as_deref(),
+            Some("http://localhost:41823/")
+        );
+    }
+
+    /// The case the byte stream could not handle: the pseudoconsole repaints a
+    /// line in pieces, moving the cursor between them. On the screen it is one
+    /// line either way.
+    #[test]
+    fn finds_one_the_pseudoconsole_painted_in_pieces() {
+        let line = screen_line(b"  - Local:\r\n\x1b[1A\x1b[13Ghttp://localhost:5173/\r\n");
+        assert_eq!(
+            scan_local_url(&line).as_deref(),
+            Some("http://localhost:5173/")
+        );
+    }
+
+    #[test]
+    fn finds_loopback_by_number_too() {
+        assert_eq!(
+            scan_local_url("  Listening on http://127.0.0.1:8080/admin now").as_deref(),
+            Some("http://127.0.0.1:8080/admin")
+        );
+    }
+
+    /// A row is space-padded to the full width, so the address must not eat the
+    /// padding after it.
+    #[test]
+    fn stops_at_the_padding_a_row_carries() {
+        let line = screen_line(b"http://localhost:3000/\r\n");
+        assert_eq!(line.len(), 80);
+        assert_eq!(scan_local_url(&line).as_deref(), Some("http://localhost:3000/"));
+    }
+
+    #[test]
+    fn ignores_what_is_not_a_local_server() {
+        assert_eq!(scan_local_url("see http://localhost/docs"), None);
+        assert_eq!(scan_local_url("read https://docs.example.com/x"), None);
+        assert_eq!(scan_local_url("open http://localhost:"), None);
+    }
+
+    /// The row is arbitrary text, so the scan must not assume where a character
+    /// begins or that anything follows the port.
+    #[test]
+    fn survives_odd_bytes_after_the_port() {
+        assert_eq!(scan_local_url("http://localhost:\u{2713}"), None);
+        assert_eq!(
+            scan_local_url("http://localhost:8080/\u{2713}").as_deref(),
+            Some("http://localhost:8080/\u{2713}")
+        );
+    }
 }

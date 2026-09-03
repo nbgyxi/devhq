@@ -573,7 +573,7 @@ mod tests {
         let dir = root();
         let file = dir.join("README.md");
         fs::write(&file, "hello WinT").unwrap();
-        let registry = ToolRegistry::project(vec![dir.display().to_string()]);
+        let registry = ToolRegistry::routed(None, vec![dir.display().to_string()], &["project".to_string()]);
         let call = ToolCall {
             id: "1".into(),
             name: "read_project_file".into(),
@@ -585,7 +585,7 @@ mod tests {
     #[test]
     fn rejects_paths_outside_registered_root() {
         let dir = root();
-        let registry = ToolRegistry::project(vec![dir.display().to_string()]);
+        let registry = ToolRegistry::routed(None, vec![dir.display().to_string()], &["project".to_string()]);
         let call = ToolCall {
             id: "1".into(),
             name: "read_project_file".into(),

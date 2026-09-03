@@ -3894,12 +3894,6 @@ function skeletonView(p) {
  *  view, in the table row and in the command palette, all of which are places
  *  you arrive at deliberately. */
 function cardActions(p) {
-  // Pull is only offered where it can mean something: a folder git knows about.
-  const pull = p.git
-    ? `<button class="cact" data-act="pull" title="Run git pull here">${icon(
-        "download"
-      )}Pull</button>`
-    : "";
   return `<div class="card-actions">
     <button class="cact" data-act="workspace" title="Open this project's workspace">${icon(
       "dashboard"
@@ -3907,7 +3901,7 @@ function cardActions(p) {
     <button class="cact" data-act="vscode" title="Open in VS Code">${icon("code")}Code</button>
     <button class="cact" data-act="terminal" title="Open a terminal here">${icon(
       "terminal"
-    )}Terminal</button>${pull}
+    )}Terminal</button>
   </div>`;
 }
 

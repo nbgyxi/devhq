@@ -3227,6 +3227,11 @@ body.workspace.ws-resizing,body.workspace.ws-dragging{cursor:grabbing;user-selec
   min-height:0; overflow:hidden;
 }
 body.workspace.ws-no-left #ws-grid{grid-template-columns:0 auto minmax(0,1fr) auto var(--ws-right)}
+/* Nothing in the middle means no middle. The two sides close up against each
+   other and the right one takes the rest of the width, rather than both
+   staying put around a hole. */
+body.workspace.ws-no-center #ws-grid{grid-template-columns:var(--ws-left) auto 0 0 minmax(0,1fr)}
+body.workspace.ws-no-center.ws-no-left #ws-grid{grid-template-columns:0 0 0 0 minmax(0,1fr)}
 .ws-col{display:grid; grid-template-rows:minmax(0,var(--ws-left-split)) auto minmax(0,1fr); min-width:0; overflow:hidden}
 
 .ws-slot{display:flex; min-width:0; min-height:0; overflow:hidden; background:var(--bg1); border:1px solid var(--line); border-radius:8px; margin:4px}
@@ -3297,8 +3302,11 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-tree-row:hover{background:var(--bg2)}
 .ws-tree-row .ms{font-size:15px; color:var(--dim2); flex:0 0 auto}
 .ws-tree-row.dir .ms{color:var(--amber)}
+/* A folder row in the changed list is a label: everything under it is already
+   on screen, so there is nothing for a click to do. */
+.ws-tree-row.static{cursor:default; color:var(--dim)}
+.ws-tree-row.static:hover{background:none}
 .ws-tree-name{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
-.ws-tree-where{margin-left:auto; padding-left:8px; color:var(--dim2); font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; max-width:45%}
 .ws-tree-caret.changed{color:var(--amber)}
 .ws-tree-caret.bad{color:var(--red)}
 .ws-mini.on{color:var(--accent); background:var(--bg3)}
