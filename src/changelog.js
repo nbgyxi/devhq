@@ -16,6 +16,15 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.55.2",
+      date: "2026-09-03",
+      title: "The Claude Code terminal sets itself up",
+      changes: [
+        ["better", "Claude Code is no longer greyed out as unavailable on a computer that does not have it. The terminal opens either way: the pane says what Claude Code is and who it signs in as, offers to install it, and then starts it so you can sign in - without leaving the pane."],
+        ["better", "The terminal list marks that entry \"Set up\" instead of \"Unavailable\", and stops marking it once the CLI is there."],
+      ],
+    },
+    {
       version: "0.55.1",
       date: "2026-09-02",
       title: "A popped-out terminal keeps its width",

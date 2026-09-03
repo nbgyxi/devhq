@@ -5317,7 +5317,7 @@ function renderSettings() {
   const shellSetting = window.wintTerminalSettings;
   const shellSelect = host.querySelector("#setting-terminal-shell");
   shellSelect.innerHTML = shellSetting.profiles
-    .map((profile) => `<option value="${profile.value}"${profile.available === false ? " disabled" : ""}>${profile.label}${profile.available === false ? " · unavailable" : ""}</option>`)
+    .map((profile) => `<option value="${profile.value}"${profile.available === false ? " disabled" : ""}>${profile.label}${profile.available === false ? " · unavailable" : profile.setup ? " · sets itself up on first open" : ""}</option>`)
     .join("");
   shellSelect.value = shellSetting.getDefault();
   host.querySelector("#setting-terminal-history").checked = shellSetting.getSaveHistory();

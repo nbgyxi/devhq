@@ -755,7 +755,7 @@ function renderShellMenu() {
     menu.innerHTML = `<div class="dock-menu-label">New terminal with</div>${TERM_SHELLS.map((profile) => {
       const status = terms.shellAvailability.get(profile.value);
       return `<button role="menuitem" data-new-shell="${profile.value}"${status?.available === false ? " disabled" : ""}${status?.reason ? ` title="${escAttr(status.reason)}"` : ""}>${profile.label}${
-        status?.available === false ? "<span>Unavailable</span>" : profile.value === terms.defaultShell ? "<span>Default</span>" : ""
+        status?.available === false ? "<span>Unavailable</span>" : status?.setup ? "<span>Set up</span>" : profile.value === terms.defaultShell ? "<span>Default</span>" : ""
       }</button>`;
     }).join("")}`;
     menu.hidden = terms.shellMenuPane !== pane;
@@ -937,7 +937,7 @@ function openTerminalTabMenu(id, x, y) {
     const disabled = profile.value === current || status?.available === false;
     const stateClass = profile.value === current ? "current" : status?.available === false ? "unavailable" : "";
     return `<button class="${stateClass}" role="menuitem" data-switch-shell="${profile.value}"${disabled ? " disabled" : ""}${status?.reason ? ` title="${escAttr(status.reason)}"` : ""}>
-      <span>${profile.label}</span>${profile.value === current ? `<span class="dock-menu-current">Current</span>` : status?.available === false ? `<span class="dock-menu-current">Unavailable</span>` : ""}
+      <span>${profile.label}</span>${profile.value === current ? `<span class="dock-menu-current">Current</span>` : status?.available === false ? `<span class="dock-menu-current">Unavailable</span>` : status?.setup ? `<span class="dock-menu-current">Set up</span>` : ""}
     </button>`
   }).join("")}`;
   menu.hidden = false;
@@ -1150,6 +1150,10 @@ async function mountSession(id, historyKey = "", restoredPane = 0) {
   };
   view.onExit = () => {
     renderTabs();
+    // A setup pane that has exited may well have installed the thing it was
+    // set up for, and the menus would otherwise keep offering to set it up
+    // again until the next restart.
+    if (session.info.command.includes("claude-setup.ps1")) loadShellAvailability();
   };
 
   setActive(id);
@@ -1528,7 +1532,7 @@ window.termsState = terms;
 
 function shellProfileFromCommand(command) {
   const value = String(command || "").toLowerCase();
-  if (/claude\.(exe|cmd|bat)/.test(value)) return "claude";
+  if (["claude-setup.ps1", "claude.exe", "claude.cmd", "claude.bat"].some((name) => value.includes(name))) return "claude";
   if (value.includes("git\\bin\\bash.exe")) return "git-bash";
   if (value.includes("7-preview\\pwsh.exe")) return "pwsh-preview";
   if (value.includes("pwsh.exe")) return "pwsh";

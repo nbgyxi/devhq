@@ -111,7 +111,7 @@
    *  one in Program Files. */
   const shellProfileFromCommand = (command) => {
     const value = String(command || "").toLowerCase();
-    if (/claude\.(exe|cmd|bat)/.test(value)) return "claude";
+    if (["claude-setup.ps1", "claude.exe", "claude.cmd", "claude.bat"].some((name) => value.includes(name))) return "claude";
     if (value.includes("git\\bin\\bash.exe") || value.includes("shells\\git-bash\\")) return "git-bash";
     if (value.includes("7-preview\\pwsh.exe") || value.includes("shells\\pwsh-preview\\")) return "pwsh-preview";
     if (value.includes("pwsh.exe")) return "pwsh";
