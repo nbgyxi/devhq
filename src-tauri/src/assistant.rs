@@ -645,45 +645,6 @@ fn route_intent(
             }
         }
     }
-    // Tiny local models are often weaker at multi-label routing than at the
-    // actual task. Explicit tool words from the user are authoritative and
-    // preserve pipelines such as ping -> base64 -> binary.
-    let lower = question.to_ascii_lowercase();
-    let signals: &[(&str, &[&str])] = &[
-        (
-            "path-ping",
-            &["ping", "pathping", "traceroute", "trace route"],
-        ),
-        ("utility:base64", &["base64", "base-64"]),
-        ("utility:binary", &["binary", "base 2", "base-2"]),
-        ("utility:hex", &["hexadecimal", "hex encode", "hex decode"]),
-        (
-            "utility:url",
-            &["url encode", "url decode", "percent encode"],
-        ),
-        (
-            "utility:html",
-            &["html entit", "html escape", "html unescape"],
-        ),
-        (
-            "utility:json",
-            &["format json", "json format", "validate json"],
-        ),
-        ("dns", &["dns lookup", "dns record", "reverse dns"]),
-        (
-            "ports",
-            &["listening port", "port conflict", "which process uses port"],
-        ),
-        ("disk-space", &["disk space", "large files", "drive space"]),
-    ];
-    let explicit = signals
-        .iter()
-        .filter(|(_, words)| words.iter().any(|word| lower.contains(word)))
-        .filter_map(|(id, _)| areas.iter().find(|area| area.id == *id).cloned())
-        .collect::<Vec<_>>();
-    if !explicit.is_empty() {
-        selected = explicit;
-    }
     if selected.is_empty() {
         areas
             .iter()

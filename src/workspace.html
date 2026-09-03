@@ -5,6 +5,24 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Workspace</title>
 <link rel="icon" type="image/png" href="wint-icon.png" />
+<script>
+/* Theme before first paint. Opener ?theme= wins; then prefs; else dark.
+   Rust also stamps data-theme via initialization_script — this covers reload.
+   The terminal panel keeps its own fixed palette regardless of this. */
+(function () {
+  var theme = "dark";
+  try {
+    var q = new URLSearchParams(location.search).get("theme");
+    if (q === "light" || q === "dark") theme = q;
+    else {
+      var prefs = JSON.parse(localStorage.getItem("wint.prefs.v1") || "{}");
+      if (prefs.workspaceTheme === "light" || prefs.workspaceTheme === "dark") theme = prefs.workspaceTheme;
+      else if (prefs.theme === "light" || prefs.theme === "dark") theme = prefs.theme;
+    }
+  } catch (e) {}
+  document.documentElement.dataset.theme = theme;
+})();
+</script>
 <link rel="stylesheet" href="styles.css" />
 </head>
 <body class="popout workspace">
@@ -35,7 +53,11 @@
     <section class="ws-slot ws-center" data-slot="center"></section>
   </div>
   <div class="ws-grip ws-grip-v" data-grip="right" role="separator" aria-label="Resize the right column"></div>
-  <section class="ws-slot ws-right" data-slot="right"></section>
+  <div class="ws-col ws-right-col">
+    <section class="ws-slot" data-slot="right-top"></section>
+    <div class="ws-grip ws-grip-h" data-grip="rightSplit" role="separator" aria-label="Resize the right panels"></div>
+    <section class="ws-slot" data-slot="right-bottom"></section>
+  </div>
 </div>
 <!-- The bottom panel and its divider move together, between the center column
      and the foot of the window. It sits under the center panel where there is
@@ -45,14 +67,12 @@
   <section class="ws-slot ws-bottom" data-slot="bottom"></section>
 </div>
 
-<div class="ws-drop" id="ws-drop" hidden></div>
-<div class="ws-status" id="ws-status">Ready</div>
-
 <script src="analytics.js"></script>
 <script src="i18n.js"></script>
 <script>window.wintI18n.init(window.wintI18n.storedLanguage());</script>
 <script src="maturity.js"></script>
 <script src="terminal.js"></script>
+<script src="highlight.js"></script>
 <script src="workspace.js"></script>
 </body>
 </html>

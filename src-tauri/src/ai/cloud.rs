@@ -690,29 +690,7 @@ fn cursor_chat(
 
 #[cfg(windows)]
 fn cursor_agent_command() -> (Command, String) {
-    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        let install = std::path::PathBuf::from(local_app_data).join("cursor-agent");
-        let versions = install.join("versions");
-        let latest = std::fs::read_dir(&versions).ok().and_then(|entries| {
-            entries
-                .flatten()
-                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-                .filter(|entry| {
-                    entry.path().join("node.exe").is_file()
-                        && entry.path().join("index.js").is_file()
-                })
-                .max_by_key(|entry| entry.file_name())
-        });
-        if let Some(version) = latest {
-            let node = version.path().join("node.exe");
-            let script = version.path().join("index.js");
-            let label = format!("{} (the installed `agent` CLI)", node.display());
-            let mut command = Command::new(node);
-            command.arg(script).env("CURSOR_INVOKED_AS", "agent");
-            return (command, label);
-        }
-    }
-    (Command::new("agent.exe"), "`agent`".into())
+    crate::cursor::agent_command()
 }
 
 #[cfg(not(windows))]

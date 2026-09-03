@@ -13,7 +13,12 @@
   const listen = window.__TAURI__.event.listen;
   const win = window.__TAURI__.window.getCurrentWindow();
 
-  const id = new URLSearchParams(location.search).get("id");
+  const params = new URLSearchParams(location.search);
+  const id = params.get("id");
+  // The dock this terminal was popped out of. Everything this window says
+  // about its sessions carries it, so docking back - or splitting with `wt` -
+  // lands in the dock it came from and not in every window that was listening.
+  const origin = params.get("origin") || "";
   const host = document.getElementById("pop-term");
   const layout = document.getElementById("pop-term-layout");
   const divider = document.querySelector(".pop-divider");
@@ -44,7 +49,7 @@
   const handOver = async () => {
     if (handedOver || closed) return;
     handedOver = true;
-    await Promise.all(ownedIds().map((sessionId, pane) => emit("term:docked", { id: sessionId, pane })));
+    await Promise.all(ownedIds().map((sessionId, pane) => emit("term:docked", { id: sessionId, pane, origin })));
   };
 
   // Closing is not docking. The cross ends the shell immediately, the way the
@@ -55,8 +60,8 @@
     if (handedOver || closed) return;
     closed = true;
     await Promise.all(ownedIds().flatMap((sessionId) => [
-      emit("term:close-watch", { id: sessionId }).catch(() => {}),
-      emit("term:closed", { id: sessionId }).catch(() => {}),
+      emit("term:close-watch", { id: sessionId, origin }).catch(() => {}),
+      emit("term:closed", { id: sessionId, origin }).catch(() => {}),
     ]));
     await win.destroy().catch(() => {});
   };
@@ -278,7 +283,7 @@
     const pane = await addPane(next.id, el);
     activePane = panes.indexOf(pane);
     renderPanes();
-    await emit("term:popped-created", { info: next }).catch(() => {});
+    await emit("term:popped-created", { info: next, origin }).catch(() => {});
     for (const item of panes) item.view.fit();
     pane.view.focus();
     return next;
@@ -293,8 +298,8 @@
     panes.splice(index, 1);
     pane.view.dispose();
     pane.el.remove();
-    await emit("term:close-watch", { id: pane.id }).catch(() => {});
-    await emit("term:closed", { id: pane.id }).catch(() => {});
+    await emit("term:close-watch", { id: pane.id, origin }).catch(() => {});
+    await emit("term:closed", { id: pane.id, origin }).catch(() => {});
     activePane = 0;
     renderPanes();
     panes[0].view.fit();
@@ -440,9 +445,9 @@
       pane.view.onExit = () => { pane.exited = true; renderPanes(); };
       pane.info = await pane.view.attach();
       pane.profile = shellProfileFromCommand(pane.info.command);
-      await emit("term:popped-created", { info: pane.info }).catch(() => {});
-      await emit("term:close-watch", { id: previousId }).catch(() => {});
-      await emit("term:closed", { id: previousId }).catch(() => {});
+      await emit("term:popped-created", { info: pane.info, origin }).catch(() => {});
+      await emit("term:close-watch", { id: previousId, origin }).catch(() => {});
+      await emit("term:closed", { id: previousId, origin }).catch(() => {});
       renderPanes();
       pane.view.fit();
       pane.view.focus();
@@ -450,7 +455,7 @@
       // The half-opened session must not be left running with nothing showing
       // it, and the pane says what went wrong where it was asked for.
       if (replacement?.id && panes.every((item) => item.id !== replacement.id)) {
-        await emit("term:closed", { id: replacement.id }).catch(() => {});
+        await emit("term:closed", { id: replacement.id, origin }).catch(() => {});
       }
       sayInTitle(`${label} couldn't start: ${error}`);
     }
@@ -493,6 +498,10 @@
   listen("term:wt-request", async (event) => {
     const request = event.payload;
     if (!request || !ownedIds().includes(request.termId)) return;
+    // Every dock and every terminal window hears this. Saying that this one is
+    // acting on it is how the others know not to answer for a terminal they
+    // cannot see.
+    if (request.token) emit("term:wt-claimed", { token: request.token }).catch(() => {});
     if (!["new", "-1"].includes(request.window)) {
       if (request.maximized) await win.maximize().catch(() => {});
       if (request.fullscreen) await win.setFullscreen(true).catch(() => {});
@@ -551,8 +560,9 @@
             id: next.id, x: null, y: null, position: request.position || null,
             dimensions: request.dimensions || null, maximized: !!request.maximized,
             fullscreen: !!request.fullscreen, focus: request.focus !== false,
+            origin,
           });
-          await emit("term:popped-created", { info: next }).catch(() => {});
+          await emit("term:popped-created", { info: next, origin }).catch(() => {});
         }
       } catch (error) {
         // The console is not somewhere anyone is looking. A pane that never
@@ -579,7 +589,11 @@
     navigator.clipboard.writeText(current().view.debugReport()).catch(() => {});
   };
 
-  document.getElementById("pop-dock").onclick = async () => {
+  // The button says where the terminal is going back to. A workspace window is
+  // labelled for the project it holds; anything else is WinT itself.
+  const dockButton = document.getElementById("pop-dock");
+  if (origin.startsWith("workspace-")) dockButton.title = "Dock back into the workspace";
+  dockButton.onclick = async () => {
     await handOver();
     win.destroy();
   };

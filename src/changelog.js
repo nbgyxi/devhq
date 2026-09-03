@@ -16,6 +16,294 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.72.0",
+      date: "2026-09-03",
+      title: "Several conversations at once",
+      changes: [
+        ["new", "The Agent panel now holds conversations as tabs, so you can have more than one open at a time - including several of the same agent - switch between them, drag to reorder, or drag a tab to the edge to split the panel into two."],
+        ["better", "The Agent panel fills the whole height of its column again; it used to stop halfway down with blank space below it."],
+      ],
+    },
+    {
+      version: "0.71.0",
+      date: "2026-09-03",
+      title: "A file preview that reads like code",
+      changes: [
+        ["new", "Clicking a file in a workspace's Files panel now shows it with syntax highlighting and line numbers, instead of plain text."],
+        ["new", "Image files (PNG, JPEG, GIF, WebP, BMP, ICO, AVIF, SVG) open in the preview as a picture rather than raw bytes."],
+        ["new", "The preview header now has Reveal in Explorer and Open in VS Code buttons for the file being shown."],
+      ],
+    },
+    {
+      version: "0.70.6",
+      date: "2026-09-03",
+      title: "A workspace theme of its own",
+      changes: [
+        ["new", "A workspace window's light or dark colors can now be set separately from the main window's, in Settings: align with the app, or pin it to light or dark."],
+      ],
+    },
+    {
+      version: "0.70.5",
+      date: "2026-09-03",
+      title: "A workspace of its own",
+      changes: [
+        ["better", "Workspace windows now carry their own taskbar icon instead of the main WinT icon, so an open workspace is easy to pick out among other windows."],
+        ["fix", "A workspace window now follows light/dark mode like the rest of the app, instead of always opening dark. Its terminal panel keeps its own fixed terminal colors either way."],
+      ],
+    },
+    {
+      version: "0.70.4",
+      date: "2026-09-03",
+      title: "A terminal comes home",
+      changes: [
+        ["fix", "Popping a terminal out of a workspace and docking it back in now actually returns it to that workspace, instead of silently failing to dock."],
+      ],
+    },
+    {
+      version: "0.70.3",
+      date: "2026-09-03",
+      title: "Agent panel restored",
+      changes: [
+        ["fix", "Restored the workspace Agent panel to switch between Claude, Cursor, Copilot, Codex and Gemini, with cached install checks and a spinner while rechecking."],
+      ],
+    },
+    {
+      version: "0.70.2",
+      date: "2026-09-03",
+      title: "The status bar is gone",
+      changes: [
+        ["better", "The status bar that said transient things (Went back, Browsing..., Resized) has been removed to free vertical space. Errors and important feedback already surface in the relevant panels."],
+      ],
+    },
+    {
+      version: "0.70.1",
+      date: "2026-09-03",
+      title: "Room for a long branch name",
+      changes: [
+        ["fix", "A long branch name in Save & upload can wrap onto a second line, and the panel grows with it instead of clipping the name."],
+      ],
+    },
+    {
+      version: "0.70.0",
+      date: "2026-09-03",
+      title: "Branches, and git in its own words",
+      changes: [
+        ["new", "The branch in a workspace's Save & upload panel is a menu of every other branch: pick one and the workspace checks it out. When git refuses because it would tread on work you have not saved, it says so in its own words."],
+        ["new", "Settings can put that panel into git's vocabulary — commit, push, pull, branch — instead of spelling out what each button does. Every open workspace changes its words the moment you turn it on."],
+        ["fix", "A terminal popped out of a workspace docks back into that workspace, however it left it. Which dock is holding which terminal is now written where every window can read it, rather than asked for over a broadcast and answered too late."],
+        ["better", "Save & upload takes the height of what it is showing instead of a fixed slice of the column, so the file list above it keeps everything else."],
+      ],
+    },
+    {
+      version: "0.69.4",
+      date: "2026-09-03",
+      title: "Two things a workspace panel no longer does",
+      changes: [
+        ["fix", "Panel headers no longer carry a grip that suggests they can be dragged to another slot. They never could: a window that takes file drops - which is how an attachment reaches the chat - never sees a drag inside the page, so the gesture was drawn but dead."],
+        ["better", "Save & upload takes a fixed height under the file list rather than a share of the column. It is a line of state, a message box and three buttons, and everything it was not using now goes to the files above it."],
+      ],
+    },
+    {
+      version: "0.69.3",
+      date: "2026-09-03",
+      title: "The terminal panel loses its second headline",
+      changes: [
+        ["better", "The terminal panel in a workspace no longer carries a header above its tab strip. The strip already says which terminal each tab is, so the bar above it was the same headline twice - and a row of the panel spent on it, which the terminal now gets instead. The handle that drags the panel between slots sits at the head of the strip."],
+        ["fix", "A panel can be dragged to another slot from the foot of the window, where the bottom panel hangs whenever there is no center panel for it to sit under."],
+      ],
+    },
+    {
+      version: "0.69.2",
+      date: "2026-09-03",
+      title: "Known agents open without waiting",
+      changes: [
+        ["better", "An agent whose CLI already worked on this computer opens straight into the chat. WinT still looks again in the background, and Check again still shows the spinner when you ask it to."],
+      ],
+    },
+    {
+      version: "0.69.1",
+      date: "2026-09-03",
+      title: "The browser panel opens where you left it",
+      changes: [
+        ["new", "The browser panel comes back on the page it was showing when you last closed the window, with the address in the box, instead of on the empty card that asks you to start a dev server."],
+      ],
+    },
+    {
+      version: "0.69.0",
+      date: "2026-09-03",
+      title: "Several agents at once",
+      changes: [
+        ["new", "The Agent panel holds a strip of conversations rather than one at a time: open Claude, Cursor, Copilot, Codex and Gemini together, or two of the same one, and switch between them the way you switch terminals. Each has its own CLI running, so two of them can be working on the same project at once."],
+        ["new", "A conversation that is not on screen keeps answering. Its tab shows a pulsing dot while it works, the status bar says when it has answered, and switching to it shows everything it said while you were reading another."],
+        ["better", "The plus on the strip starts another conversation with whichever agent you pick; the cross closes one and stops whatever it was answering. The last conversation stays, because a panel with none has no way back to an agent."],
+        ["better", "A workspace reopens with the conversations it had open, in the same order, with the same one on top."],
+      ],
+    },
+    {
+      version: "0.68.0",
+      date: "2026-09-03",
+      title: "Paste a screenshot into the chat",
+      changes: [
+        ["new", "The workspace chat takes attachments. Paste a screenshot straight into the composer, or drag files onto the window, and they go up with your next message — Claude, Cursor, Copilot, Codex and Gemini all get them the same way."],
+        ["new", "Text files are attachments too, whatever they are called: a log, a diff, a stack trace, a config, an extensionless Makefile. Anything binary is turned away rather than pasted in as noise."],
+        ["new", "A paste too long to read in a three-line composer becomes a text file instead of a wall of text, so what you typed is still visible above what you pasted."],
+        ["better", "Each attachment shows as a chip you can take back off before sending, with the path it will be given, and stays on the message once it has gone up."],
+      ],
+    },
+    {
+      version: "0.67.6",
+      date: "2026-09-03",
+      title: "A copilot that cannot answer is not installed",
+      changes: [
+        ["fix", "The Copilot panel no longer offers a chat that can never answer. VS Code's Copilot extension leaves a launcher called copilot on PATH that reports success while saying it cannot find the CLI, and WinT took that sentence for a version number and showed it as the installed Copilot. A version has to look like one now, and where several copilots answer to the name, the one that actually runs is used."],
+        ["better", "Claude, Cursor, Codex and Gemini are checked the same way, so none of them can be reported as installed by something merely answering to the name."],
+      ],
+    },
+    {
+      version: "0.67.5",
+      date: "2026-09-03",
+      title: "Closing the file preview closes it",
+      changes: [
+        ["fix", "Closing a file preview in a workspace now puts it away. With no page loaded in the browser panel there was nothing covering the preview, so it stayed on screen and the button looked broken."],
+      ],
+    },
+    {
+      version: "0.67.4",
+      date: "2026-09-03",
+      title: "The address bar follows the page",
+      changes: [
+        ["fix", "Follow a link inside the browser panel and the address above it now changes with the page. It used to show whatever was last typed or detected, so after two clicks the box and the page disagreed, and Back landed somewhere the box could not name. Redirects and posted forms report themselves the same way."],
+      ],
+    },
+    {
+      version: "0.67.3",
+      date: "2026-09-03",
+      title: "The preview fits, and says where the file is",
+      changes: [
+        ["new", "The file preview has a button that shows the file in File Explorer, with the file already picked out in its folder."],
+        ["fix", "A picture bigger than the panel is sized down to fit it instead of overflowing and having to be scrolled."],
+      ],
+    },
+    {
+      version: "0.67.2",
+      date: "2026-09-03",
+      title: "Agent install check shows a spinner",
+      changes: [
+        ["fix", "Switching to an agent or opening the panel no longer flashes \"isn't installed\" while WinT is still looking for the CLI — it says it is checking, with a spinner, until the answer is in."],
+      ],
+    },
+    {
+      version: "0.67.1",
+      date: "2026-09-03",
+      title: "A workspace terminal comes home",
+      changes: [
+        ["fix", "A terminal popped out of a workspace docks back into that workspace and not into the main window, whatever else is open - and the terminal panel opens for it if it had been put away. Only once the workspace itself has closed does WinT take such a terminal in, rather than leave a shell running with no window showing it."],
+      ],
+    },
+    {
+      version: "0.67.0",
+      date: "2026-09-03",
+      title: "The workspace file preview reads like code",
+      changes: [
+        ["new", "Files opened from a workspace's file list are syntax coloured - JavaScript, TypeScript, Rust, Python, the C family, Go, Java, C#, PHP, shell and PowerShell, SQL, CSS, HTML and XML, JSON, YAML, TOML, INI and Markdown - with numbered lines down the side that stay put when a long line is scrolled sideways."],
+        ["new", "Images open in the preview instead of being turned away as binary: PNG, JPEG, GIF, WebP, BMP, AVIF, ICO and SVG, drawn on a chequerboard so transparency shows as transparency, up to 16 MB."],
+        ["better", "The preview header says what it is showing - the language and the line count for a file, the pixel size and the file size for an image."],
+      ],
+    },
+    {
+      version: "0.66.1",
+      date: "2026-09-03",
+      title: "The assistant routes on meaning, not on words",
+      changes: [
+        ["fix", "The assistant no longer overrides its own routing when your question happens to contain a word like ping, binary or hex - it reads what you asked and picks the area itself, so \"helping\" or \"mapping\" no longer sends a question to Path Ping."],
+      ],
+    },
+    {
+      version: "0.66.0",
+      date: "2026-09-03",
+      title: "The workspace terminal is the terminal",
+      changes: [
+        ["new", "The terminal in a workspace is WinT's own terminal panel: several shells in tabs, a split down the middle, every shell type from the menu, restart a tab as another shell, drag tabs to reorder them, and drag one out into a window of its own."],
+        ["better", "A workspace remembers which terminals it had open and brings them back, in the same order, the next time it opens - and keeps its own list, so its terminals and WinT's never turn up in each other's windows."],
+        ["better", "Shell colours, markers, the default shell and the history settings are one answer for the whole app: a workspace terminal follows what WinT's settings say, and follows a change to them as it is made."],
+        ["fix", "A terminal popped out into its own window now docks back into the window it came from rather than into whichever one heard first."],
+      ],
+    },
+    {
+      version: "0.65.0",
+      date: "2026-09-03",
+      title: "Codex in the Agent panel",
+      changes: [
+        ["new", "OpenAI's Codex CLI joins the Agent panel beside Claude, Cursor, Copilot and Gemini — install it, sign in, ask, stop, open the conversation in a terminal, and browse earlier chats for this project."],
+      ],
+    },
+    {
+      version: "0.64.1",
+      date: "2026-09-03",
+      title: "The AI panel says what it is for",
+      changes: [
+        ["better", "A new chat in the AI panel now explains that the assistant drives WinT and Windows itself - and when what you want is a coding agent, it names your own command-palette shortcut and the word to type to open a workspace."],
+      ],
+    },
+    {
+      version: "0.64.0",
+      date: "2026-09-03",
+      title: "Copilot and Gemini in the Agent panel",
+      changes: [
+        ["new", "GitHub Copilot joins the Agent panel beside Claude and Cursor — install the CLI, sign in, ask, stop, open the conversation in a terminal, and browse earlier chats for this project."],
+        ["new", "Google's Gemini CLI is there too, with the same install, chat, history and terminal path as the other agents."],
+      ],
+    },
+    {
+      version: "0.63.0",
+      date: "2026-09-03",
+      title: "Claude and Cursor in one Agent panel",
+      changes: [
+        ["new", "The chat panel is now Agent: switch Claude Code and Cursor Agent with a control in the header, the same way the terminal picks a shell. Each keeps its own conversation, install state and history."],
+        ["new", "Cursor Agent talks in the same panel — install, sign in, ask, stop, open the conversation in a full terminal, and browse earlier chats for this project."],
+        ["better", "The right column no longer reserves an empty second slot for Cursor. One agent panel is enough; drag another panel there if you want the split."],
+      ],
+    },
+    {
+      version: "0.62.2",
+      date: "2026-09-03",
+      title: "Closing a file shows the browser again",
+      changes: [
+        ["fix", "Closing a file preview in the browser panel puts the browser back — the live page if one is open, or the empty state if not. The preview used to leave a blank hole."],
+        ["better", "The browser address box no longer pretends localhost:3000 is already typed in. Its placeholder is just Address."],
+      ],
+    },
+    {
+      version: "0.62.1",
+      date: "2026-09-03",
+      title: "Hiding the browser leaves the chats",
+      changes: [
+        ["fix", "Hiding the workspace browser no longer takes the chats with it. The divider next to the browser was leaving the grid, and the right column slid into the gap and collapsed."],
+        ["fix", "A workspace slot that has no panel in it is no longer drawn as an empty box. The right-bottom place held for Cursor was showing blank until that panel exists."],
+      ],
+    },
+    {
+      version: "0.62.0",
+      date: "2026-09-03",
+      title: "The chat writes, and remembers",
+      changes: [
+        ["new", "Answers are written out as they arrive instead of landing in jumps. The text is let out at the speed it is coming in, so a long answer reads as writing and never falls behind."],
+        ["new", "A line under the conversation says what Claude is doing and how long it has been at it - Thinking, Reading, Running a command - from the moment you press Enter. The first question no longer looks like nothing happened."],
+        ["new", "A clock in the corner of the chat opens every earlier conversation this project has had, newest first, with what you asked and when. Pick one and it comes back into the panel and carries on - conversations held in a terminal included."],
+        ["new", "The browser panel has back, forward and a Go button, so an address you type goes somewhere without having to know that Enter was the only way to send it."],
+        ["better", "Panels no longer carry a close button in their own header. The toolbar above already shows and hides them, and a panel that could close itself but not reopen itself was a door with a handle on one side."],
+        ["fix", "Open in your real browser now opens the address in the box rather than only the one already loaded, and says what it did. Typing somewhere new and reaching for it did nothing at all, silently."],
+      ],
+    },
+    {
+      version: "0.61.1",
+      date: "2026-09-03",
+      title: "An answer about signing in is not a demand to sign in",
+      changes: [
+        ["fix", "Asking Claude something whose answer mentions signing in no longer wipes the chat and replaces it with the sign-in card. Any answer containing the words was being read as the CLI refusing to work; now only the CLI's own message counts, and an answer that arrives takes the card back down."],
+      ],
+    },
+    {
       version: "0.61.0",
       date: "2026-09-03",
       title: "One conversation, two ways to see it",

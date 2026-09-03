@@ -150,8 +150,17 @@
     restoreScroll();
     requestAnimationFrame(() => { if (!followBottom || chatFollowBottom) restoreScroll(); });
   }
+  /** Point at the workspace the way the user actually reaches it - through
+   * the command palette, on whatever key they have bound to it. */
+  function paletteHint() {
+    const binding = window.wintPaletteHotkey?.() || "";
+    return binding
+      ? `Press <kbd>${esc(binding)}</kbd> and type <b>workspace</b> to open one.`
+      : "Open a project workspace instead.";
+  }
   function emptyView() {
     return `<section class="assistant-empty"><span class="ms">auto_awesome</span><h2>Ask WinT.</h2><p>Run a private model on this PC, or connect Claude, Codex, or GPT with your own API key.</p>
+      <div class="assistant-scope"><span class="ms">desktop_windows</span><div><strong>This assistant drives WinT and Windows.</strong><p>Ask it about your projects, ports, DNS, hosts, network, processes and disks, and let it work the WinT tools for you.</p><p>Looking for a coding agent that reads and changes code? ${paletteHint()}</p></div></div>
       ${loading ? `<div class="assistant-loading">Checking AI providers…</div>` : !status?.models?.length && !cloudModels().length ? `<button class="assistant-setup" data-ai="models"><span class="ms">tune</span>Choose a model</button>` : `<div class="assistant-starters"><button data-prompt="Explain this project setup">Explain this project setup</button><button data-prompt="Help me debug a slow development machine">Debug a slow machine</button><button data-prompt="Suggest my next troubleshooting step">Suggest a next step</button></div>`}</section>`;
   }
   function messageView(message) {

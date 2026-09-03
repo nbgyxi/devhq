@@ -440,7 +440,7 @@ fn load_png_icon(path: &Path) -> Option<Image<'static>> {
 
 /// Taskbar icon — always the dark-scheme glyph (teal on transparent).
 /// Windows taskbars are usually dark even when the app window is in light mode.
-fn taskbar_icon_for_tool(id: &str) -> Option<Image<'static>> {
+pub(crate) fn taskbar_icon_for_tool(id: &str) -> Option<Image<'static>> {
     let tools = icons_dir().join("tools").join("dark");
     load_png_icon(&tools.join(format!("{id}.png")))
         .or_else(|| load_png_icon(&tools.join("_default.png")))

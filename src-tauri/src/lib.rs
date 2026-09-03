@@ -22,6 +22,14 @@ mod shells;
 mod tech;
 #[cfg(windows)]
 mod claude;
+#[cfg(windows)]
+mod copilot;
+#[cfg(windows)]
+mod codex;
+#[cfg(windows)]
+mod cursor;
+#[cfg(windows)]
+mod gemini;
 mod workspace;
 mod term;
 pub mod todo;
@@ -2320,13 +2328,49 @@ pub fn run() {
             claude::claude_cancel,
             claude::claude_install,
             claude::claude_terminal_command,
+            claude::claude_sessions,
+            claude::claude_transcript,
+            copilot::copilot_status,
+            copilot::copilot_send,
+            copilot::copilot_cancel,
+            copilot::copilot_install,
+            copilot::copilot_terminal_command,
+            copilot::copilot_sessions,
+            copilot::copilot_transcript,
+            codex::codex_status,
+            codex::codex_send,
+            codex::codex_cancel,
+            codex::codex_install,
+            codex::codex_terminal_command,
+            codex::codex_sessions,
+            codex::codex_transcript,
+            cursor::cursor_status,
+            cursor::cursor_send,
+            cursor::cursor_cancel,
+            cursor::cursor_install,
+            cursor::cursor_terminal_command,
+            cursor::cursor_sessions,
+            cursor::cursor_transcript,
+            gemini::gemini_status,
+            gemini::gemini_send,
+            gemini::gemini_cancel,
+            gemini::gemini_install,
+            gemini::gemini_terminal_command,
+            gemini::gemini_sessions,
+            gemini::gemini_transcript,
             workspace::workspace_browser_show,
             workspace::workspace_browser_hide,
             workspace::workspace_browser_navigate,
             workspace::workspace_browser_reload,
+            workspace::workspace_browser_back,
+            workspace::workspace_browser_forward,
             workspace::workspace_browser_close,
             workspace::workspace_list_dir,
             workspace::workspace_read_file,
+            workspace::workspace_read_image,
+            workspace::workspace_attach_path,
+            workspace::workspace_attach_bytes,
+            workspace::workspace_attach_text,
             term::term_write,
             term::term_resize,
             term::term_close,
@@ -2500,13 +2544,49 @@ pub fn run() {
         ,claude::claude_cancel
         ,claude::claude_install
         ,claude::claude_terminal_command
+        ,claude::claude_sessions
+        ,claude::claude_transcript
+        ,copilot::copilot_status
+        ,copilot::copilot_send
+        ,copilot::copilot_cancel
+        ,copilot::copilot_install
+        ,copilot::copilot_terminal_command
+        ,copilot::copilot_sessions
+        ,copilot::copilot_transcript
+        ,codex::codex_status
+        ,codex::codex_send
+        ,codex::codex_cancel
+        ,codex::codex_install
+        ,codex::codex_terminal_command
+        ,codex::codex_sessions
+        ,codex::codex_transcript
+        ,cursor::cursor_status
+        ,cursor::cursor_send
+        ,cursor::cursor_cancel
+        ,cursor::cursor_install
+        ,cursor::cursor_terminal_command
+        ,cursor::cursor_sessions
+        ,cursor::cursor_transcript
+        ,gemini::gemini_status
+        ,gemini::gemini_send
+        ,gemini::gemini_cancel
+        ,gemini::gemini_install
+        ,gemini::gemini_terminal_command
+        ,gemini::gemini_sessions
+        ,gemini::gemini_transcript
         ,workspace::workspace_browser_show
         ,workspace::workspace_browser_hide
         ,workspace::workspace_browser_navigate
         ,workspace::workspace_browser_reload
+        ,workspace::workspace_browser_back
+        ,workspace::workspace_browser_forward
         ,workspace::workspace_browser_close
         ,workspace::workspace_list_dir
         ,workspace::workspace_read_file
+        ,workspace::workspace_read_image
+        ,workspace::workspace_attach_path
+        ,workspace::workspace_attach_bytes
+        ,workspace::workspace_attach_text
     ]);
 
     builder

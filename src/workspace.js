@@ -38,54 +38,58 @@
   const esc = (v = "") => String(v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const icon = (name) => `<span class="ms" aria-hidden="true">${name}</span>`;
 
-  /* ------------------------------------------------------------ status bar */
-
-  // Never empty, the way the main window's is never empty: with nothing in
-  // flight it says what the workspace last did, because a line that comes and
-  // goes cannot be glanced at.
-  const statusEl = document.getElementById("ws-status");
-  let busyCount = 0;
-  const say = (text) => { statusEl.firstChild ? (statusEl.firstChild.nodeValue = text) : (statusEl.textContent = text); };
-  const busy = async (text, work) => {
-    busyCount += 1;
-    statusEl.classList.add("busy");
-    say(text);
-    try {
-      return await work();
-    } finally {
-      busyCount -= 1;
-      if (busyCount === 0) statusEl.classList.remove("busy");
-    }
-  };
-  say("Opening the workspace");
+  /* The status bar was removed to free vertical space. say() and busy() are
+     kept as no-ops so the rest of the code does not break. */
+  const say = () => {};
+  const busy = async (text, work) => work();
 
   /* --------------------------------------------------------------- layout */
 
-  const SLOTS = ["left-top", "left-bottom", "center", "right", "bottom"];
-  // v2: the default split changed, and a saved v1 layout would keep handing the
-  // save-and-upload panel half the column it no longer needs.
-  const KEY = `wint.workspace.v2:${projectPath.toLowerCase()}`;
+  const SLOTS = ["left-top", "left-bottom", "center", "right-top", "right-bottom", "bottom"];
+  // v3: the right column can split when two panels live there. v2 had a
+  // single `right` slot; that assignment is kept as the top panel. Claude and
+  // Cursor share one Agent panel, so the bottom right starts empty.
+  const KEY = `wint.workspace.v3:${projectPath.toLowerCase()}`;
+  const KEY_V2 = `wint.workspace.v2:${projectPath.toLowerCase()}`;
   const DEFAULT_LAYOUT = {
-    slots: { "left-top": "files", "left-bottom": "git", center: "browser", right: "chat", bottom: "terminal" },
+    slots: { "left-top": "files", "left-bottom": "git", center: "browser", "right-top": "agent", "right-bottom": null, bottom: "terminal" },
     hidden: {},
     // The save-and-upload panel is a message box and three buttons, so it gets
     // what that needs and the file list gets the rest of the column.
-    size: { left: 280, right: 420, bottom: 260, leftSplit: 0.78 },
+    size: { left: 280, right: 420, bottom: 260, leftSplit: 0.78, rightSplit: 0.5 },
+    centerHidden: 0, // Width given up when center panel was hidden, so it can be restored.
+  };
+
+  const migrateLayout = (saved) => {
+    if (!saved?.slots) return structuredClone(DEFAULT_LAYOUT);
+    const slots = { ...saved.slots };
+    const hidden = { ...saved.hidden };
+    if (slots.right && !slots["right-top"]) {
+      slots["right-top"] = slots.right;
+      if (hidden.right) hidden["right-top"] = hidden.right;
+    }
+    // Older builds used the single Claude panel here.
+    if (slots["right-top"] === "chat") slots["right-top"] = "agent";
+    delete slots.right;
+    delete hidden.right;
+    // An earlier build reserved right-bottom for a separate Cursor panel.
+    // Cursor lives in the Agent panel now, so that placeholder goes away.
+    if (slots["right-bottom"] === "cursor") {
+      slots["right-bottom"] = null;
+      delete hidden["right-bottom"];
+    }
+    return {
+      slots: { ...DEFAULT_LAYOUT.slots, ...slots },
+      hidden: { ...DEFAULT_LAYOUT.hidden, ...hidden },
+      size: { ...DEFAULT_LAYOUT.size, ...saved.size },
+    };
   };
 
   const layout = (() => {
     try {
-      const saved = JSON.parse(localStorage.getItem(KEY) || "null");
-      if (!saved?.slots) return structuredClone(DEFAULT_LAYOUT);
-      // A layout saved by an older build can name a panel this one no longer
-      // has, or miss one it has gained. Rebuilding the assignment from the
-      // panel list rather than trusting the file is what stops a slot ending
-      // up empty and a panel ending up nowhere.
-      return {
-        slots: { ...DEFAULT_LAYOUT.slots, ...saved.slots },
-        hidden: { ...saved.hidden },
-        size: { ...DEFAULT_LAYOUT.size, ...saved.size },
-      };
+      const raw = localStorage.getItem(KEY) || localStorage.getItem(KEY_V2);
+      const saved = JSON.parse(raw || "null");
+      return migrateLayout(saved);
     } catch {
       return structuredClone(DEFAULT_LAYOUT);
     }
@@ -108,20 +112,18 @@
     const el = document.createElement("div");
     el.className = `ws-panel ws-panel-${panel.id}`;
     el.dataset.panel = panel.id;
-    el.innerHTML = `<header class="ws-head" draggable="true">
-        <span class="ws-head-grip">${icon("drag_indicator")}</span>
+    // A panel that already draws a bar of its own - the terminal, whose tab
+    // strip says what every tab is - gets no header: two rows saying the same
+    // thing read as a headline printed twice, and the second one costs a row
+    // of the panel.
+    el.innerHTML = (panel.bare ? "" : `<header class="ws-head">
         ${icon(panel.icon)}<strong>${esc(panel.label)}</strong>
         <span class="ws-head-tools"></span>
-        <button class="ws-head-hide" type="button" title="Hide this panel" aria-label="Hide this panel">${icon("close")}</button>
-      </header>
-      <div class="ws-panel-body"></div>`;
+      </header>`)
+      + `<div class="ws-panel-body"></div>`;
     panel.el = el;
     panel.body = el.querySelector(".ws-panel-body");
     panel.tools = el.querySelector(".ws-head-tools");
-    el.querySelector(".ws-head-hide").addEventListener("click", () => {
-      const slot = slotOf(panel.id);
-      if (slot) { layout.hidden[slot] = true; render(); }
-    });
     panel.mount?.(panel.body, panel);
     return el;
   };
@@ -145,7 +147,7 @@
   const dockBottom = () => {
     const host = layout.slots.center && !layout.hidden.center ? centerColEl : document.body;
     if (bottomDock.parentElement === host) return false;
-    host === document.body ? document.body.insertBefore(bottomDock, statusEl) : host.appendChild(bottomDock);
+    host.appendChild(bottomDock);
     return true;
   };
 
@@ -158,12 +160,17 @@
     const shown = (slot) => Boolean(layout.slots[slot]) && !layout.hidden[slot];
     const leftShown = shown("left-top") || shown("left-bottom");
     root.setProperty("--ws-left", leftShown ? `${layout.size.left}px` : "0px");
-    root.setProperty("--ws-right", shown("right") ? `${layout.size.right}px` : "0px");
+    root.setProperty("--ws-right", (shown("right-top") || shown("right-bottom")) ? `${layout.size.right}px` : "0px");
     root.setProperty("--ws-bottom", shown("bottom") ? `${layout.size.bottom}px` : "0px");
     // With one of the two left panels hidden the other takes the whole column,
     // rather than the survivor keeping half and leaving a gap.
     const split = shown("left-top") && shown("left-bottom") ? layout.size.leftSplit : shown("left-top") ? 1 : 0;
     root.setProperty("--ws-left-split", `${split * 100}%`);
+    // Same deal on the right: with only the top slot in use (the common case -
+    // the Agent panel with nothing docked below it) it takes the whole column
+    // rather than being capped at the split fraction with a blank row below.
+    const rightSplit = shown("right-top") && shown("right-bottom") ? layout.size.rightSplit : shown("right-top") ? 1 : 0;
+    root.setProperty("--ws-right-split", `${rightSplit * 100}%`);
     document.body.classList.toggle("ws-no-left", !leftShown);
     // With nothing in the middle there is no middle: the two sides close up
     // against each other rather than leaving a hole where the browser was, and
@@ -177,7 +184,7 @@
         grip.dataset.grip === "left" ? !leftShown
         // With the middle gone the right column is what fills the space, so
         // there is only one boundary left to drag and the left grip is it.
-        : grip.dataset.grip === "right" ? !shown("right") || !shown("center")
+        : grip.dataset.grip === "right" ? !(shown("right-top") || shown("right-bottom")) || !shown("center")
         : grip.dataset.grip === "bottom" ? !shown("bottom")
         : !(shown("left-top") && shown("left-bottom"));
     }
@@ -219,12 +226,53 @@
     }).join("");
   };
 
-  togglesEl.addEventListener("click", (e) => {
+  togglesEl.addEventListener("click", async (e) => {
     const button = e.target.closest("[data-toggle]");
     if (!button) return;
     const slot = button.dataset.toggle;
+    const wasHidden = layout.hidden[slot];
+    const isCenterToggle = slot === "center" && layout.slots.center;
+
+    // Measure center width before hiding it, so we know how much to shrink/grow.
+    let centerW = 0;
+    if (isCenterToggle && !wasHidden) {
+      const grip = gripEls.find((g) => g.dataset.grip === "right");
+      const gripW = grip && !grip.hidden ? grip.getBoundingClientRect().width : 0;
+      centerW = centerColEl.getBoundingClientRect().width + gripW;
+    }
+
     layout.hidden[slot] = !layout.hidden[slot];
     say(`${layout.hidden[slot] ? "Hid" : "Showed"} ${panels.get(layout.slots[slot])?.label || slot}`);
+
+    // Hide browser before resizing so it doesn't interfere or stay visible.
+    if (isCenterToggle && browserShown) hideBrowser();
+
+    // Resize window around the center panel hide/show.
+    if (isCenterToggle) {
+      try {
+        const Size = window.__TAURI__.dpi?.LogicalSize;
+        if (Size && !await win.isMaximized()) {
+          const inner = await win.innerSize();
+          const willResize = layout.hidden[slot]
+            ? centerW > 0 // Hiding: shrink by center width
+            : layout.centerHidden > 0; // Showing: grow back by what was saved
+          if (willResize) {
+            const delta = layout.hidden[slot] ? -centerW : layout.centerHidden;
+            const newWidth = Math.max(760, inner.width + delta);
+            if (layout.hidden[slot]) {
+              layout.centerHidden = centerW; // Remember how much we shrunk
+            } else {
+              layout.centerHidden = 0; // Clear since we restored it
+            }
+            saveLayout();
+            await win.setSize(new Size(newWidth, inner.height));
+          }
+        }
+      } catch (err) {
+        // Silently fail; layout still updates visually even if window doesn't resize.
+      }
+    }
+
     render();
   });
 
@@ -426,11 +474,21 @@
       body.innerHTML = `<div class="ws-browser-hole"></div>
         <div class="ws-browser-empty">${icon("public")}<strong>Nothing to show yet</strong>
           <p>Start a dev server in the terminal below. The moment it prints a localhost address, this panel opens it.</p></div>
-        <div class="ws-preview" hidden><header><strong></strong><button type="button" class="ws-mini">${icon("close")}</button></header><pre></pre></div>`;
+        <div class="ws-preview" hidden>
+          <header>
+            <strong></strong><small></small>
+            <button type="button" class="ws-mini" data-preview="reveal" title="Reveal in Explorer">${icon("folder_open")}</button>
+            <button type="button" class="ws-mini" data-preview="vscode" title="Open in VS Code">${icon("code")}</button>
+            <button type="button" class="ws-mini" data-preview="close" title="Close">${icon("close")}</button>
+          </header>
+          <div class="ws-preview-code"><div class="ws-preview-gutter"></div><pre></pre></div>
+          <div class="ws-preview-image" hidden><img alt="" /></div>
+        </div>`;
       panel.hole = body.querySelector(".ws-browser-hole");
       panel.empty = body.querySelector(".ws-browser-empty");
       panel.preview = body.querySelector(".ws-preview");
       panel.previewOpen = false;
+      panel.previewPath = "";
 
       panel.tools.addEventListener("click", (e) => {
         const action = e.target.closest("[data-browser]")?.dataset.browser;
@@ -440,18 +498,27 @@
       panel.address.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && panel.address.value.trim()) goTo(panel.address.value.trim());
       });
-      panel.preview.querySelector("button").addEventListener("click", () => {
-        panel.previewOpen = false;
-        panel.preview.hidden = true;
-        syncBrowser();
-        say("Closed the preview");
+      panel.preview.querySelector("header").addEventListener("click", (e) => {
+        const action = e.target.closest("[data-preview]")?.dataset.preview;
+        if (!action) return;
+        if (action === "close") {
+          panel.previewOpen = false;
+          panel.preview.hidden = true;
+          syncBrowser();
+          say("Closed the preview");
+          return;
+        }
+        if (!panel.previewPath) return;
+        if (action === "reveal") invoke("open_in", { path: panel.previewPath, target: "reveal" }).catch(() => {});
+        if (action === "vscode") invoke("open_in", { path: panel.previewPath, target: "vscode" }).catch(() => {});
       });
     },
     resized: () => syncBrowser(),
   });
 
-  /** Shows a file's text over the browser hole. The webview has to go away
-   *  while this is up: it is drawn above the page and would sit on top of it. */
+  /** Shows a file over the browser hole — syntax-highlighted text, or an image
+   *  drawn full size. The webview has to go away while this is up: it is drawn
+   *  above the page and would sit on top of it. */
   const showPreview = async (path, name) => {
     const panel = panels.get("browser");
     if (!panel?.preview) return;
@@ -461,17 +528,49 @@
       render();
     }
     panel.previewOpen = true;
+    panel.previewPath = path;
     panel.empty.hidden = true;
     panel.preview.hidden = false;
-    panel.preview.querySelector("strong").textContent = name;
-    panel.preview.querySelector("pre").textContent = "Reading…";
+    panel.preview.querySelector("header strong").textContent = name;
+    panel.preview.querySelector("header small").textContent = window.wintHighlight?.languageOf(name) ?? "";
     hideBrowser();
+
+    const codeEl = panel.preview.querySelector(".ws-preview-code");
+    const imageEl = panel.preview.querySelector(".ws-preview-image");
+    const gutter = codeEl.querySelector(".ws-preview-gutter");
+    const pre = codeEl.querySelector("pre");
+    const img = imageEl.querySelector("img");
+
+    if (window.wintHighlight?.isImage(name)) {
+      codeEl.hidden = true;
+      imageEl.hidden = false;
+      img.removeAttribute("src");
+      try {
+        img.src = await busy(`Reading ${name}`, () => invoke("workspace_read_image", { path }));
+        say(`Showing ${name}`);
+      } catch (err) {
+        imageEl.hidden = true;
+        codeEl.hidden = false;
+        gutter.textContent = "";
+        pre.textContent = String(err);
+        say(String(err));
+      }
+      return;
+    }
+
+    imageEl.hidden = true;
+    codeEl.hidden = false;
+    gutter.textContent = "";
+    pre.textContent = "Reading…";
     try {
       const text = await busy(`Reading ${name}`, () => invoke("workspace_read_file", { path }));
-      panel.preview.querySelector("pre").textContent = text;
+      const lines = text.split("\n");
+      gutter.textContent = lines.map((_, i) => i + 1).join("\n");
+      pre.innerHTML = window.wintHighlight ? window.wintHighlight.html(text, name) : esc(text);
       say(`Showing ${name}`);
     } catch (err) {
-      panel.preview.querySelector("pre").textContent = String(err);
+      gutter.textContent = "";
+      pre.textContent = String(err);
       say(String(err));
     }
   };
@@ -710,48 +809,53 @@
     await loadGit(panel);
   }
 
-  /* --------------------------------------------------- panels: terminals */
+  /** Load a script file and wait for it to load. */
+  const loadScript = (src) => new Promise((ok, fail) => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.onload = ok;
+    script.onerror = fail;
+    document.body.appendChild(script);
+  });
 
-  const sessions = new Map();
+  /* --------------------------------------------------- panel: terminal */
 
-  /** A terminal panel. The session lives in Rust, so moving this panel between
-   *  slots — or closing the window entirely — leaves whatever is running in it
-   *  running. */
-  const defineTerminal = (id, { label: name, icon: glyph, shell, hint }) => definePanel(id, {
-    label: name,
-    icon: glyph,
-    async mount(body, panel) {
+  definePanel("terminal", {
+    label: "Terminal",
+    icon: "terminal",
+    // The dock's tab strip is this panel's header: it says which terminal each
+    // tab is and carries the buttons a header would have. A second bar above
+    // it saying "Terminal" is the same headline twice, and a row of the panel
+    // spent on it.
+    bare: true,
+    async mount(body) {
       body.className += " ws-term";
-      const host = document.createElement("div");
-      host.className = "term-host";
-      body.appendChild(host);
+      window.wintDockHost = {
+        id: projectPath.toLowerCase(),
+        container: body,
+        projectPath,
+        projectName,
+        autoOpen: true,
+        // A terminal popped out of this workspace comes back to this
+        // workspace, and the panel opens for it if it had been put away.
+        onDock: () => {
+          const slot = slotOf("terminal");
+          if (slot && layout.hidden[slot]) {
+            layout.hidden[slot] = false;
+            render();
+          }
+          say("Took the terminal back into the workspace");
+        },
+      };
       try {
-        const info = await busy(`Starting ${name}`, () => invoke("term_open", {
-          args: { projectPath, projectName, shell },
-        }));
-        const view = new window.TermView(host, info.id);
-        panel.view = view;
-        panel.info = await view.attach();
-        sessions.set(info.id, panel);
-        view.onExit = () => say(`${name} ended`);
-        view.fit();
-        say(hint || `${name} is ready`);
-        // A dev server that was already running before this window opened has
-        // said where it is; nobody was listening at the time.
-        const already = await invoke("term_serving", { id: info.id }).catch(() => null);
-        if (already && !browserUrl) goTo(already, `Found ${already} already running`);
+        await busy("Starting the terminal", () => loadScript("terminals.js"));
       } catch (err) {
-        host.innerHTML = `<div class="ws-term-error">${esc(String(err))}</div>`;
+        body.innerHTML = `<div class="ws-term-error">${esc(String(err))}</div>`;
         say(String(err));
       }
     },
-    resized() { this.view?.fit(); },
+    resized() { window.wintTermDock?.fit(); },
   });
-
-  // "auto" is what the Rust side calls "whichever shell this machine has".
-  // An empty string is not a profile it knows, and asking for one is how this
-  // panel used to open onto "Unknown terminal shell."
-  defineTerminal("terminal", { label: "Terminal", icon: "terminal", shell: "auto", hint: "Terminal ready" });
   /* ------------------------------------------------------- panel: Claude */
 
   // A chat, not a terminal. The CLI has a machine-readable mode - one JSON
@@ -1059,7 +1163,7 @@
     if (pre && payload.line) { pre.textContent += `${payload.line}\n`; pre.scrollTop = pre.scrollHeight; }
     if (!payload.done) return;
     say(payload.ok ? "Claude Code installed" : "The install did not finish");
-    if (payload.ok) checkClaude(panel);
+    if (payload.ok && panel) checkClaude(panel);
   }).catch(() => {});
 
   // One line of the CLI's stream. Matched on the few fields the panel needs;
@@ -1134,6 +1238,1093 @@
     return short ? `${block.name} · ${short.slice(0, 120)}` : block.name;
   };
 
+  /* ------------------------------------------------------- panel: Agent */
+
+  const AGENT_STATUS_KEY = (kind) => `wint.workspace.agent.status.v1:${kind}`;
+
+  const readStatusCache = (kind) => {
+    try {
+      const raw = localStorage.getItem(AGENT_STATUS_KEY(kind));
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const rememberStatus = (kind, status) => {
+    try {
+      localStorage.setItem(AGENT_STATUS_KEY(kind), JSON.stringify(status));
+    } catch {}
+  };
+
+  // CLI-driven agents in the workspace Agent panel.
+  const AGENTS = {
+    claude: {
+      id: "claude",
+      label: "Claude",
+      product: "Claude Code",
+      icon: "forum",
+      placeholder: "Ask Claude about this project…",
+      statusCmd: "claude_status",
+      sendCmd: "claude_send",
+      cancelCmd: "claude_cancel",
+      installCmd: "claude_install",
+      terminalCmd: "claude_terminal_command",
+      mintSession: true,
+      installHint: `WinT doesn't ship it and holds no key for it. You install Anthropic's CLI and sign in as
+           yourself; this panel gives it somewhere to talk.`,
+    },
+    cursor: {
+      id: "cursor",
+      label: "Cursor",
+      product: "Cursor Agent",
+      icon: "code",
+      placeholder: "Ask Cursor Agent about this project…",
+      statusCmd: "cursor_status",
+      sendCmd: "cursor_send",
+      cancelCmd: "cursor_cancel",
+      installCmd: "cursor_install",
+      terminalCmd: "cursor_terminal_command",
+      mintSession: false,
+      installHint: `WinT doesn't ship it and holds no key for it. You install Cursor Agent and sign in as
+           yourself; this panel gives it somewhere to talk.`,
+    },
+    copilot: {
+      id: "copilot",
+      label: "Copilot",
+      product: "GitHub Copilot",
+      icon: "robot",
+      placeholder: "Ask Copilot about this project…",
+      statusCmd: "copilot_status",
+      sendCmd: "copilot_send",
+      cancelCmd: "copilot_cancel",
+      installCmd: "copilot_install",
+      terminalCmd: "copilot_terminal_command",
+      mintSession: false,
+      installHint: `WinT doesn't ship it and holds no key for it. You install GitHub Copilot CLI and sign in as
+           yourself; this panel gives it somewhere to talk.`,
+    },
+    codex: {
+      id: "codex",
+      label: "Codex",
+      product: "Codex",
+      icon: "token",
+      placeholder: "Ask Codex about this project…",
+      statusCmd: "codex_status",
+      sendCmd: "codex_send",
+      cancelCmd: "codex_cancel",
+      installCmd: "codex_install",
+      terminalCmd: "codex_terminal_command",
+      mintSession: false,
+      installHint: `WinT doesn't ship it and holds no key for it. You install OpenAI Codex CLI and sign in as
+           yourself; this panel gives it somewhere to talk.`,
+    },
+    gemini: {
+      id: "gemini",
+      label: "Gemini",
+      product: "Gemini",
+      icon: "auto_awesome",
+      placeholder: "Ask Gemini about this project…",
+      statusCmd: "gemini_status",
+      sendCmd: "gemini_send",
+      cancelCmd: "gemini_cancel",
+      installCmd: "gemini_install",
+      terminalCmd: "gemini_terminal_command",
+      mintSession: false,
+      installHint: `WinT doesn't ship it and holds no key for it. You install Gemini CLI and sign in as
+           yourself; this panel gives it somewhere to talk.`,
+    },
+  };
+
+  const freshAgentState = (kind) => {
+    const cached = readStatusCache(kind);
+    const status = cached === null ? null : cached;
+    return {
+      session: AGENTS[kind].mintSession ? newSessionId() : null,
+      started: false,
+      turns: [],
+      streaming: null,
+      status,
+      needsSignIn: kind === "cursor" && Boolean(status?.installed && !status?.signedIn),
+    };
+  };
+
+  // Several tabs can be streaming at once now, so the dirty set is per tab
+  // rather than a single flag for the whole panel.
+  const dirtyAgentTabs = new Set();
+  let agentDirtyQueued = false;
+  function markAgentTabDirty(panel, tab) {
+    dirtyAgentTabs.add(tab.id);
+    if (agentDirtyQueued) return;
+    agentDirtyQueued = true;
+    requestAnimationFrame(() => {
+      agentDirtyQueued = false;
+      const ids = [...dirtyAgentTabs];
+      dirtyAgentTabs.clear();
+      for (const id of ids) {
+        const t = panel.tabs.get(id);
+        if (t) renderAgentTab(panel, t);
+      }
+    });
+  }
+
+  function agentTurnHtml(turn) {
+    if (turn.role === "you") {
+      return `<div class="ws-turn you"><div class="ws-turn-body">${esc(turn.text)}</div></div>`;
+    }
+    if (turn.role === "tool") {
+      return `<div class="ws-turn tool">${icon(turn.icon || "build")}<span>${esc(turn.text)}</span></div>`;
+    }
+    if (turn.role === "error") {
+      return `<div class="ws-turn error">${icon("error")}<span>${esc(turn.text)}</span></div>`;
+    }
+    return `<div class="ws-turn claude"><div class="ws-turn-body">${markdown(turn.text)}</div></div>`;
+  }
+
+  // Every tab keeps its own log/ask/input, mounted once when the tab was
+  // created and never rebuilt - only this tab's own innerHTML changes here,
+  // so a conversation streaming in a background tab does not touch the one
+  // on screen, and switching tabs does not lose scroll position or a draft.
+  function renderAgentTab(panel, tab) {
+    const spec = AGENTS[tab.kind];
+    if (!spec || !tab.log) return;
+
+    const busy = Boolean(tab.streaming);
+    tab.input.placeholder = spec.placeholder;
+    tab.ask.hidden = !tab.status?.installed;
+    tab.ask.querySelector(".ws-chat-send").hidden = busy;
+    tab.ask.querySelector(".ws-chat-stop").hidden = !busy;
+
+    if (tab.status === null) {
+      tab.log.innerHTML = `<div class="ws-chat-card checking">${icon("progress_activity")}Checking if ${esc(spec.label)} is installed...</div>`;
+      return;
+    }
+
+    if (!tab.status?.installed) {
+      tab.log.innerHTML = `<div class="ws-chat-card">${icon("download")}
+        <strong>${esc(spec.product)} isn't installed</strong>
+        <p>${spec.installHint.replace(/\n/g, "<br>")}</p>
+        <div class="ws-chat-card-actions">
+          <button class="ws-btn primary" data-chat="install" type="button">${icon("download")}Install</button>
+          <button class="ws-btn" data-chat="recheck" type="button">${icon("refresh")}Check again</button>
+        </div>
+        <pre class="ws-chat-install" hidden></pre></div>`;
+      return;
+    }
+
+    if (tab.kind === "cursor" && tab.needsSignIn) {
+      tab.log.innerHTML = `<div class="ws-chat-card">${icon("account_circle")}
+        <strong>Sign in to Cursor Agent</strong>
+        <p>The CLI is installed but not signed in. Signing in happens in a terminal, once — it opens your
+           browser and the account it signs in as is yours, not WinT's.</p>
+        <div class="ws-chat-card-actions">
+          <button class="ws-btn primary" data-chat="signin" type="button">${icon("terminal")}Open a terminal to sign in</button>
+          <button class="ws-btn" data-chat="recheck" type="button">${icon("refresh")}I've signed in</button>
+        </div></div>`;
+      return;
+    }
+
+    if (!tab.turns.length) {
+      tab.log.innerHTML = `<div class="ws-chat-card quiet">${icon(spec.icon)}
+        <strong>${esc(spec.product)} ${esc(tab.status.version || "")}</strong>
+        <p>Working in <code>${esc(projectName)}</code>. Ask it anything about this project.</p></div>`;
+      return;
+    }
+
+    tab.log.innerHTML = tab.turns.map(agentTurnHtml).join("");
+    tab.log.scrollTop = tab.log.scrollHeight;
+  }
+
+  // Install/sign-in status is a fact about the kind, not the conversation, so
+  // one check refreshes every open tab of that kind - not just the one that
+  // asked - the same way the cached status is shared across them at creation.
+  async function checkAgent(panel, tab, { force = false } = {}) {
+    const spec = AGENTS[tab.kind];
+    if (!spec) return;
+
+    const shouldShowSpinner = force || tab.status === null;
+    if (shouldShowSpinner) {
+      for (const t of panel.tabs.values()) {
+        if (t.kind !== tab.kind) continue;
+        t.status = null;
+        t.needsSignIn = false;
+        renderAgentTab(panel, t);
+      }
+    }
+
+    let status;
+    try {
+      status = await invoke(spec.statusCmd);
+    } catch {
+      status = { installed: false, path: "", version: "" };
+    }
+    rememberStatus(tab.kind, status);
+
+    for (const t of panel.tabs.values()) {
+      if (t.kind !== tab.kind) continue;
+      t.status = status;
+      t.needsSignIn = tab.kind === "cursor" && Boolean(status.installed && !status.signedIn);
+      renderAgentTab(panel, t);
+    }
+  }
+
+  async function openAgentTerminal(panel, tab, { login = false } = {}) {
+    const spec = AGENTS[tab.kind];
+    if (!spec) return;
+
+    const open = agentOverlay.session;
+    if (open) {
+      agentOverlay.el.hidden = false;
+      hideBrowser();
+      return;
+    }
+
+    let launch;
+    try {
+      if (tab.kind === "claude") {
+        const command = await invoke(spec.terminalCmd, { session: tab.session || null });
+        launch = { command, session: tab.session || null };
+      } else if (tab.kind === "cursor") {
+        launch = await invoke(spec.terminalCmd, { cwd: projectPath, session: tab.session || null, login });
+      } else {
+        launch = await invoke(spec.terminalCmd, { session: tab.session || null, login });
+      }
+    } catch (err) {
+      return say(String(err));
+    }
+
+    agentOverlay.el.hidden = false;
+    hideBrowser();
+    agentOverlay.note.textContent = `${spec.label} is open in a terminal. Anything you do there is in the same conversation.`;
+
+    try {
+      const info = await busy("Opening agent in a terminal", () => invoke("term_open", {
+        args: { projectPath, projectName, command: launch.command || launch },
+      }));
+      const view = new window.TermView(agentOverlay.host, info.id);
+      agentOverlay.session = { id: info.id, view, tabId: tab.id };
+      await view.attach();
+      view.fit();
+
+      // A conversation opened in a terminal must be resumed in the chat.
+      if (tab.kind === "claude") tab.started = true;
+      if (launch?.session) tab.session = launch.session;
+      say(`${spec.label} is open in a terminal`);
+    } catch (err) {
+      agentOverlay.host.innerHTML = `<div class="ws-term-error">${esc(String(err))}</div>`;
+      say(String(err));
+    }
+  }
+
+  async function closeAgentTerminal() {
+    const open = agentOverlay.session;
+    agentOverlay.session = null;
+    agentOverlay.el.hidden = true;
+    agentOverlay.host.replaceChildren();
+    syncBrowser();
+    if (open) await invoke("term_close", { id: open.id }).catch(() => {});
+    const panel = panels.get("agent");
+    const tab = open && panel?.tabs.get(open.tabId);
+    if (tab) renderAgentTab(panel, tab);
+    say("Back to the chat");
+  }
+
+  const agentOverlay = (() => {
+    const el = document.createElement("div");
+    el.className = "ws-cursor-full";
+    el.hidden = true;
+    el.innerHTML = `<header>${icon("auto_awesome")}<strong>Agent</strong>
+        <span class="ws-agent-note"></span>
+        <button type="button" class="ws-btn" data-agent-full="close">${icon("close")}Back to the chat</button>
+      </header>
+      <div class="term-host"></div>`;
+    document.body.appendChild(el);
+    el.querySelector("[data-agent-full=close]").addEventListener("click", closeAgentTerminal);
+    return { el, host: el.querySelector(".term-host"), note: el.querySelector(".ws-agent-note"), session: null };
+  })();
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !agentOverlay.el.hidden) closeAgentTerminal();
+  });
+
+  async function installAgent(panel, tab) {
+    const pre = tab.log.querySelector(".ws-chat-install");
+    if (pre) {
+      pre.hidden = false;
+      pre.textContent = "Installing…\n";
+    }
+    try {
+      await busy(`Installing ${AGENTS[tab.kind].label}`, () => invoke(AGENTS[tab.kind].installCmd, { window: label }));
+    } catch (err) {
+      if (pre) pre.textContent += `\n${err}`;
+      say(String(err));
+    }
+  }
+
+  async function sendToAgent(panel, tab) {
+    const spec = AGENTS[tab.kind];
+    const text = tab.input.value.trim();
+    if (!spec || !text || tab.streaming) return;
+
+    tab.input.value = "";
+    tab.input.style.height = "auto";
+    tab.turns.push({ role: "you", text });
+
+    tab.streaming = { role: tab.kind, text: "" };
+    tab.turns.push(tab.streaming);
+    renderAgentTab(panel, tab);
+    renderAgentTabs(panel);
+
+    try {
+      if (tab.kind === "claude") {
+        await invoke(spec.sendCmd, {
+          window: label,
+          tab: tab.id,
+          prompt: text,
+          cwd: projectPath,
+          session: tab.session || null,
+          resume: tab.started,
+          permissionMode: "acceptEdits",
+        });
+        tab.started = true;
+        say("Claude is working");
+      } else {
+        await invoke(spec.sendCmd, {
+          window: label,
+          tab: tab.id,
+          prompt: text,
+          cwd: projectPath,
+          session: tab.session || null,
+        });
+        say(`${spec.label} is working`);
+      }
+    } catch (err) {
+      tab.streaming = null;
+      tab.turns.push({ role: "error", text: String(err) });
+      renderAgentTab(panel, tab);
+      renderAgentTabs(panel);
+      say(String(err));
+    }
+  }
+
+  // Tabs survive a reload (which kind, which pane, which conversation id) even
+  // though the turns inside them do not - matching the pre-tabs limitation
+  // that a chat's own history was never persisted either.
+  const AGENT_TABS_KEY = `wint.workspace.agent.tabs.v1:${projectPath.toLowerCase()}`;
+
+  const loadAgentTabs = () => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(AGENT_TABS_KEY) || "null");
+      return saved?.tabs?.length ? saved : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const saveAgentTabs = (panel) => {
+    try {
+      const tabs = [...panel.tabs.values()].map((t) => ({ id: t.id, kind: t.kind, pane: t.pane, session: t.session || null }));
+      localStorage.setItem(AGENT_TABS_KEY, JSON.stringify({ tabs, active: panel.active, splitRatio: panel.splitRatio }));
+    } catch {}
+  };
+
+  function renderAgentTabs(panel) {
+    for (let pane = 0; pane < 2; pane++) {
+      const bar = panel.el.querySelector(`.ws-agent-tab-pane[data-tab-pane="${pane}"] .ws-agent-tabs`);
+      const tabs = [...panel.tabs.values()].filter((t) => t.pane === pane);
+      bar.innerHTML = tabs.length ? tabs.map((t) => {
+        const spec = AGENTS[t.kind];
+        const cls = ["ws-chat-tab"];
+        if (t.id === panel.active) cls.push("on");
+        return `<div class="${cls.join(" ")}" data-tab="${t.id}" title="Drag to reorder or split · ${esc(spec.label)}">${icon(spec.icon)}<span>${esc(spec.label)}</span>${t.streaming ? '<span class="ws-chat-tab-live"></span>' : ""}<button type="button" class="ws-chat-tab-x" data-close="${t.id}" title="Close this conversation">${icon("close")}</button></div>`;
+      }).join("") : '<span class="ws-chat-tab-empty">No conversations</span>';
+
+      const actions = panel.el.querySelector(`[data-pane-actions="${pane}"]`);
+      const paneTab = panel.paneActive[pane] && panel.tabs.get(panel.paneActive[pane]);
+      for (const button of actions.querySelectorAll('[data-dock="terminal"],[data-dock="close"]')) {
+        button.disabled = !paneTab;
+      }
+    }
+  }
+
+  function syncAgentPaneLayout(panel) {
+    const split = [...panel.tabs.values()].some((t) => t.pane === 1);
+    panel.views.classList.toggle("split", split);
+    panel.bar.classList.toggle("split", split);
+    panel.views.style.setProperty("--agent-split", `${panel.splitRatio * 100}%`);
+    panel.bar.style.setProperty("--agent-split", `${panel.splitRatio * 100}%`);
+    for (const tab of panel.tabs.values()) {
+      tab.el.dataset.pane = tab.pane;
+      tab.el.classList.toggle("on", panel.paneActive[tab.pane] === tab.id);
+    }
+    for (const empty of panel.views.querySelectorAll("[data-empty-pane]")) {
+      const pane = Number(empty.dataset.emptyPane);
+      empty.hidden = !split || panel.paneActive[pane] !== null;
+    }
+  }
+
+  function setActiveAgentTab(panel, id, { focus = true } = {}) {
+    const tab = panel.tabs.get(id);
+    if (!tab) return;
+    panel.active = id;
+    panel.paneActive[tab.pane] = id;
+    renderAgentTabs(panel);
+    syncAgentPaneLayout(panel);
+    if (focus) tab.input.focus();
+    saveAgentTabs(panel);
+  }
+
+  function createAgentTab(panel, kind, { pane = 0, id, session, started = false, activate = true } = {}) {
+    const fresh = freshAgentState(kind);
+    const tab = {
+      id: id || newSessionId(),
+      kind,
+      pane,
+      session: session ?? fresh.session,
+      started,
+      turns: [],
+      streaming: null,
+      status: fresh.status,
+      needsSignIn: fresh.needsSignIn,
+    };
+
+    const el = document.createElement("div");
+    el.className = "ws-agent-conv";
+    el.innerHTML = `<div class="ws-chat-log"></div>
+      <form class="ws-chat-ask" hidden>
+        <textarea rows="1" placeholder="" spellcheck="false"></textarea>
+        <button type="submit" class="ws-chat-send" title="Send (Enter)">${icon("send")}</button>
+        <button type="button" class="ws-chat-stop" title="Stop" hidden>${icon("stop_circle")}</button>
+      </form>`;
+    tab.el = el;
+    tab.log = el.querySelector(".ws-chat-log");
+    tab.ask = el.querySelector(".ws-chat-ask");
+    tab.input = el.querySelector("textarea");
+    panel.views.appendChild(el);
+
+    tab.input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); tab.ask.requestSubmit(); }
+    });
+    tab.input.addEventListener("input", () => {
+      tab.input.style.height = "auto";
+      tab.input.style.height = `${Math.min(160, tab.input.scrollHeight)}px`;
+    });
+    tab.ask.addEventListener("submit", (e) => { e.preventDefault(); sendToAgent(panel, tab); });
+    tab.ask.querySelector(".ws-chat-stop").addEventListener("click", () => {
+      const spec = AGENTS[tab.kind];
+      if (spec) invoke(spec.cancelCmd, { tab: tab.id }).catch(() => {});
+      tab.streaming = null;
+      renderAgentTab(panel, tab);
+      renderAgentTabs(panel);
+    });
+    tab.el.addEventListener("click", (e) => {
+      const action = e.target.closest("[data-chat]")?.dataset.chat;
+      if (action === "install") return installAgent(panel, tab).catch(() => {});
+      if (action === "signin") return openAgentTerminal(panel, tab, { login: true }).catch(() => {});
+      if (action === "recheck") return checkAgent(panel, tab, { force: true }).catch(() => {});
+    });
+
+    panel.tabs.set(tab.id, tab);
+    if (activate || panel.active === null) setActiveAgentTab(panel, tab.id, { focus: activate });
+    renderAgentTabs(panel);
+    syncAgentPaneLayout(panel);
+    saveAgentTabs(panel);
+    renderAgentTab(panel, tab);
+    checkAgent(panel, tab).catch(() => {});
+    return tab;
+  }
+
+  function closeAgentTab(panel, id) {
+    const tab = panel.tabs.get(id);
+    if (!tab) return;
+    if (tab.streaming) {
+      const spec = AGENTS[tab.kind];
+      if (spec) invoke(spec.cancelCmd, { tab: tab.id }).catch(() => {});
+    }
+    tab.el.remove();
+    panel.tabs.delete(id);
+
+    for (const pane of [0, 1]) {
+      if (panel.paneActive[pane] !== id) continue;
+      const next = [...panel.tabs.values()].find((t) => t.pane === pane);
+      panel.paneActive[pane] = next ? next.id : null;
+    }
+    if (panel.active === id) {
+      const next = panel.paneActive[0] || panel.paneActive[1] || null;
+      panel.active = next;
+    }
+    renderAgentTabs(panel);
+    syncAgentPaneLayout(panel);
+    saveAgentTabs(panel);
+  }
+
+  function moveAgentTabToPane(panel, id, pane) {
+    const tab = panel.tabs.get(id);
+    if (!tab) return;
+    const oldPane = tab.pane;
+    tab.pane = pane;
+    panel.paneActive[pane] = id;
+    if (panel.paneActive[oldPane] === id) {
+      const next = [...panel.tabs.values()].find((t) => t.id !== id && t.pane === oldPane);
+      panel.paneActive[oldPane] = next ? next.id : null;
+    }
+    panel.active = id;
+    renderAgentTabs(panel);
+    syncAgentPaneLayout(panel);
+    tab.input.focus();
+    saveAgentTabs(panel);
+  }
+
+  function reorderAgentTab(panel, id, target, after, pane) {
+    if (target?.dataset.tab === id) return;
+    const tab = panel.tabs.get(id);
+    if (!tab) return;
+    const oldPane = tab.pane;
+    tab.pane = pane;
+    panel.paneActive[pane] = id;
+    if (oldPane !== pane && panel.paneActive[oldPane] === id) {
+      const next = [...panel.tabs.values()].find((t) => t.id !== id && t.pane === oldPane);
+      panel.paneActive[oldPane] = next ? next.id : null;
+    }
+    const ordered = [...panel.tabs.keys()].filter((tid) => tid !== id);
+    if (target) {
+      let at = ordered.indexOf(target.dataset.tab);
+      if (after) at += 1;
+      ordered.splice(at, 0, id);
+    } else {
+      ordered.push(id);
+    }
+    panel.tabs = new Map(ordered.map((tid) => [tid, panel.tabs.get(tid)]));
+    panel.active = id;
+    renderAgentTabs(panel);
+    syncAgentPaneLayout(panel);
+    saveAgentTabs(panel);
+  }
+
+  definePanel("agent", {
+    label: "Agent",
+    icon: "auto_awesome",
+    bare: true,
+    mount(body, panel) {
+      panel.tabs = new Map();
+      panel.active = null;
+      panel.paneActive = [null, null];
+      panel.splitRatio = 0.5;
+
+      body.className += " ws-agent-dock";
+      const agentMenu = (pane) => `<div class="ws-chat-tab-add" data-pane-add="${pane}">
+          <button type="button" data-dock="add" title="New conversation">${icon("add")}</button>
+          <div class="ws-chat-agent-menu" hidden>
+            <div class="ws-chat-menu-label">New conversation</div>
+            ${Object.values(AGENTS).map((spec) => `<button type="button" data-new-kind="${spec.id}">${icon(spec.icon)}${spec.label}</button>`).join("")}
+          </div>
+        </div>`;
+      body.innerHTML = `<div class="ws-agent-bar">
+          ${[0, 1].map((pane) => `
+            <div class="ws-agent-tab-pane" data-tab-pane="${pane}">
+              <div class="ws-agent-tabs"></div>
+              <div class="ws-agent-pane-actions" data-pane-actions="${pane}">
+                ${agentMenu(pane)}
+                <button type="button" data-dock="terminal" title="Open in a terminal">${icon("terminal")}</button>
+                <button type="button" data-dock="close" title="Close this conversation">${icon("close")}</button>
+              </div>
+            </div>`).join("")}
+        </div>
+        <div class="ws-agent-views">
+          <div class="ws-agent-pane-empty" data-empty-pane="0">No conversation open</div>
+          <div class="ws-agent-divider"></div>
+          <div class="ws-agent-pane-empty" data-empty-pane="1">Drop a tab here to split</div>
+          <div class="ws-agent-drop-zones">
+            <div data-drop-pane="0"><span>${icon("dock_to_left")}Dock left</span></div>
+            <div data-drop-pane="1"><span>${icon("dock_to_right")}Dock right</span></div>
+          </div>
+        </div>`;
+      panel.bar = body.querySelector(".ws-agent-bar");
+      panel.views = body.querySelector(".ws-agent-views");
+
+      const paneOf = (el) => Number(el.closest("[data-pane-actions]")?.dataset.paneActions ?? 0);
+      // Set true for the duration of a tab drag, so the click that a pointerup
+      // generates right after releasing it does not also switch tabs.
+      let suppressTabClick = false;
+
+      // Clicking a pane's "+" opens that pane's agent-kind picker; the rest of
+      // the pane actions act on whichever tab is currently shown in that pane.
+      panel.bar.addEventListener("click", (e) => {
+        if (suppressTabClick) return;
+        const addButton = e.target.closest('[data-dock="add"]');
+        if (addButton) {
+          const menu = addButton.nextElementSibling;
+          const wasHidden = menu.hidden;
+          body.querySelectorAll(".ws-chat-agent-menu").forEach((m) => { m.hidden = true; });
+          menu.hidden = !wasHidden;
+          return;
+        }
+        const newKind = e.target.closest("[data-new-kind]")?.dataset.newKind;
+        if (newKind) {
+          const pane = Number(e.target.closest("[data-pane-actions]").dataset.paneActions);
+          e.target.closest(".ws-chat-agent-menu").hidden = true;
+          createAgentTab(panel, newKind, { pane });
+          return;
+        }
+        const closeId = e.target.closest("[data-close]")?.dataset.close;
+        if (closeId) return closeAgentTab(panel, closeId);
+        const tabEl = e.target.closest("[data-tab]");
+        if (tabEl) return setActiveAgentTab(panel, tabEl.dataset.tab);
+        const dockAction = e.target.closest("[data-dock]")?.dataset.dock;
+        if (dockAction === "terminal" || dockAction === "close") {
+          const pane = paneOf(e.target);
+          const tab = panel.paneActive[pane] && panel.tabs.get(panel.paneActive[pane]);
+          if (!tab) return;
+          if (dockAction === "terminal") openAgentTerminal(panel, tab).catch(() => {});
+          else closeAgentTab(panel, tab.id);
+        }
+      });
+      document.addEventListener("click", (e) => {
+        if (!e.target.closest(".ws-chat-tab-add")) body.querySelectorAll(".ws-chat-agent-menu").forEach((m) => { m.hidden = true; });
+      });
+
+      // Drag to reorder within a pane, or drag onto a drop zone to split into
+      // the other pane. Pointer events (not native HTML5 drag) keep the whole
+      // gesture inside the webview, the same reasoning terminals.js uses for
+      // its own tab strip.
+      const clearDropMarks = () => panel.bar.querySelectorAll(".drop-before,.drop-after").forEach((t) => t.classList.remove("drop-before", "drop-after"));
+      panel.bar.addEventListener("pointerdown", (down) => {
+        const tabEl = down.target.closest("[data-tab]");
+        if (!tabEl || down.target.closest("[data-close]") || down.button !== 0) return;
+        const id = tabEl.dataset.tab;
+        const startX = down.clientX;
+        const startY = down.clientY;
+        let dragging = false;
+        let target = null;
+        let after = false;
+        let ghost = null;
+        tabEl.setPointerCapture(down.pointerId);
+
+        const move = (e) => {
+          if (!dragging && Math.hypot(e.clientX - startX, e.clientY - startY) < 5) return;
+          if (!dragging) {
+            dragging = true;
+            suppressTabClick = true;
+            tabEl.classList.add("dragging");
+            ghost = document.createElement("div");
+            ghost.className = "ws-chat-tab ws-agent-tab-ghost";
+            ghost.innerHTML = tabEl.innerHTML;
+            document.body.appendChild(ghost);
+            panel.views.classList.add("choosing-pane");
+          }
+          ghost.style.transform = `translate(${e.clientX + 12}px,${e.clientY + 12}px)`;
+          clearDropMarks();
+          panel.views.querySelectorAll("[data-drop-pane]").forEach((zone) => zone.classList.remove("hover"));
+          const dropZone = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-drop-pane]");
+          dropZone?.classList.add("hover");
+          const strip = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-tab-pane]")?.getBoundingClientRect();
+          const inStrip = strip && e.clientX >= strip.left && e.clientX <= strip.right && e.clientY >= strip.top && e.clientY <= strip.bottom;
+          target = inStrip ? document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-tab]") : null;
+          if (target && target !== tabEl) {
+            const rect = target.getBoundingClientRect();
+            after = e.clientX >= rect.left + rect.width / 2;
+            target.classList.add(after ? "drop-after" : "drop-before");
+          }
+        };
+        const finish = (e, cancelled = false) => {
+          const destination = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-drop-pane]");
+          tabEl.removeEventListener("pointermove", move);
+          tabEl.removeEventListener("pointerup", up);
+          tabEl.removeEventListener("pointercancel", cancel);
+          tabEl.classList.remove("dragging");
+          clearDropMarks();
+          ghost?.remove();
+          panel.views.classList.remove("choosing-pane");
+          panel.views.querySelectorAll("[data-drop-pane]").forEach((zone) => zone.classList.remove("hover"));
+          if (!dragging || cancelled) { suppressTabClick = false; return; }
+          const tabPane = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-tab-pane]");
+          const strip = tabPane?.getBoundingClientRect();
+          const inStrip = strip && e.clientX >= strip.left && e.clientX <= strip.right && e.clientY >= strip.top && e.clientY <= strip.bottom;
+          if (destination) moveAgentTabToPane(panel, id, Number(destination.dataset.dropPane));
+          else if (inStrip) reorderAgentTab(panel, id, target, after, Number(tabPane.dataset.tabPane));
+          setTimeout(() => { suppressTabClick = false; }, 0);
+        };
+        const up = (e) => finish(e);
+        const cancel = (e) => finish(e, true);
+        tabEl.addEventListener("pointermove", move);
+        tabEl.addEventListener("pointerup", up);
+        tabEl.addEventListener("pointercancel", cancel);
+      });
+
+      const divider = panel.views.querySelector(".ws-agent-divider");
+      divider.addEventListener("pointerdown", (down) => {
+        down.preventDefault();
+        divider.setPointerCapture(down.pointerId);
+        const move = (e) => {
+          const rect = panel.views.getBoundingClientRect();
+          panel.splitRatio = Math.min(0.75, Math.max(0.25, (e.clientX - rect.left) / rect.width));
+          syncAgentPaneLayout(panel);
+        };
+        const up = () => {
+          divider.removeEventListener("pointermove", move);
+          divider.removeEventListener("pointerup", up);
+          saveAgentTabs(panel);
+        };
+        divider.addEventListener("pointermove", move);
+        divider.addEventListener("pointerup", up);
+      });
+
+      const saved = loadAgentTabs();
+      if (saved) {
+        panel.splitRatio = Math.min(0.75, Math.max(0.25, saved.splitRatio || 0.5));
+        for (const t of saved.tabs) {
+          if (!AGENTS[t.kind]) continue;
+          createAgentTab(panel, t.kind, { pane: t.pane === 1 ? 1 : 0, id: t.id, session: t.session, activate: false });
+        }
+        // Restoring with activate:false only sets paneActive for whichever
+        // tab happened to land first overall - make sure a split's second
+        // pane also has something showing rather than an empty placeholder.
+        for (const pane of [0, 1]) {
+          if (panel.paneActive[pane]) continue;
+          const first = [...panel.tabs.values()].find((t) => t.pane === pane);
+          if (first) panel.paneActive[pane] = first.id;
+        }
+        setActiveAgentTab(panel, saved.active && panel.tabs.has(saved.active) ? saved.active : panel.tabs.keys().next().value, { focus: false });
+      } else {
+        createAgentTab(panel, "claude");
+      }
+    },
+  });
+
+  // ---------------------------------------------------------- install/line parsers
+
+  function cursorAssistantText(obj) {
+    const content = obj?.message?.content;
+    if (!Array.isArray(content)) return "";
+    return content.filter((c) => c.type === "text").map((c) => c.text || "").join("");
+  }
+
+  function cursorToolSummary(obj) {
+    const toolCall = obj?.tool_call || {};
+    const key = Object.keys(toolCall).find((k) => k.endsWith("ToolCall"));
+    if (!key) return "";
+    const rawName = key.replace(/ToolCall$/, "");
+    const toolName = rawName ? rawName[0].toUpperCase() + rawName.slice(1) : "Tool";
+    const args = toolCall[key]?.args || {};
+    if (args.path) return `${toolName} · ${args.path}`;
+    if (args.pattern) return `${toolName} · ${args.pattern}`;
+    if (args.command) return `${toolName} · ${args.command}`;
+    return `${toolName}`;
+  }
+
+  // Every kind's events carry the tab id that started the turn, so with
+  // several tabs (even several of the same kind) open at once the line lands
+  // on the conversation that asked for it, not a single kind-wide slot.
+  function agentTabFor(payload) {
+    if (payload.window !== label) return null;
+    const panel = panels.get("agent");
+    return panel ? { panel, tab: panel.tabs.get(payload.tab) } : null;
+  }
+
+  await listen("claude:install", ({ payload }) => {
+    const found = agentTabFor(payload);
+    if (!found?.tab) return;
+    const { panel, tab } = found;
+    const pre = tab.log?.querySelector(".ws-chat-install");
+    if (pre && payload.line) {
+      pre.textContent += `${payload.line}\n`;
+      pre.scrollTop = pre.scrollHeight;
+    }
+    if (!payload.done) return;
+    if (payload.ok) checkAgent(panel, tab, { force: true }).catch(() => {});
+  }).catch(() => {});
+
+  await listen("claude:line", ({ payload }) => {
+    const found = agentTabFor(payload);
+    if (!found?.tab) return;
+    const { panel, tab } = found;
+    let msg;
+    try { msg = JSON.parse(payload.line); } catch { return; }
+
+    if (msg.session_id) tab.session = msg.session_id;
+
+    if (msg.type === "stream_event" && msg.event?.delta?.type === "text_delta") {
+      if (!tab.streaming) { tab.streaming = { role: "claude", text: "" }; tab.turns.push(tab.streaming); }
+      tab.streaming.text += msg.event.delta.text || "";
+      return markAgentTabDirty(panel, tab);
+    }
+    if (msg.type === "assistant") {
+      for (const block of msg.message?.content || []) {
+        if (block.type !== "tool_use") continue;
+        tab.turns.push({ role: "tool", icon: TOOL_ICONS[block.name] || "build", text: toolLine(block) });
+      }
+      return markAgentTabDirty(panel, tab);
+    }
+    if (msg.type === "result") {
+      tab.streaming = null;
+      const text = String(msg.result || "");
+      if (msg.is_error || msg.subtype === "error_during_execution") {
+        tab.turns.push({ role: "error", text: text || "That turn did not finish." });
+      }
+      if (/log ?in|sign ?in|not authenticated|invalid api key|credit balance/i.test(text)) {
+        tab.needsSignIn = true;
+      }
+      renderAgentTab(panel, tab);
+      renderAgentTabs(panel);
+    }
+  }).catch(() => {});
+
+  await listen("claude:end", ({ payload }) => {
+    const found = agentTabFor(payload);
+    if (!found?.tab) return;
+    const { panel, tab } = found;
+    tab.streaming = null;
+    if (payload.code !== 0 && payload.error) {
+      tab.turns.push({ role: "error", text: payload.error.trim() });
+    }
+    renderAgentTab(panel, tab);
+    renderAgentTabs(panel);
+  }).catch(() => {});
+
+  await listen("cursor:install", ({ payload }) => {
+    const found = agentTabFor(payload);
+    if (!found?.tab) return;
+    const { panel, tab } = found;
+    const pre = tab.log?.querySelector(".ws-chat-install");
+    if (pre && payload.line) {
+      pre.textContent += `${payload.line}\n`;
+      pre.scrollTop = pre.scrollHeight;
+    }
+    if (!payload.done) return;
+    if (payload.ok) checkAgent(panel, tab, { force: true }).catch(() => {});
+  }).catch(() => {});
+
+  await listen("cursor:line", ({ payload }) => {
+    const found = agentTabFor(payload);
+    if (!found?.tab) return;
+    const { panel, tab } = found;
+    let obj;
+    try { obj = JSON.parse(payload.line); } catch { return; }
+
+    if (obj.session_id && !tab.session) tab.session = obj.session_id;
+
+    if (obj.type === "assistant") {
+      const text = cursorAssistantText(obj);
+      if (!text) return;
+
+      const hasTs = obj.timestamp_ms !== undefined && obj.timestamp_ms !== null;
+      const hasModelCallId = obj.model_call_id !== undefined && obj.model_call_id !== null;
+      if (hasTs && hasModelCallId) {
+        // Buffered flush before a tool call: duplicates the token stream.
+        return;
+      }
+      if (hasTs) {
+        if (!tab.streaming) { tab.streaming = { role: "cursor", text: "" }; tab.turns.push(tab.streaming); }
+        tab.streaming.text += text;
+        return markAgentTabDirty(panel, tab);
+      }
+
+      // Final assistant message chunk between tool calls.
+      if (tab.streaming) tab.streaming.text = text;
+      else tab.turns.push({ role: "cursor", text });
+      tab.streaming = null;
+      renderAgentTab(panel, tab);
+      renderAgentTabs(panel);
+      return;
+    }
+
+    if (obj.type === "tool_call" && obj.subtype === "completed") {
+      const summary = cursorToolSummary(obj);
+      if (!summary) return;
+      tab.turns.push({ role: "tool", icon: "build", text: summary });
+      renderAgentTab(panel, tab);
+    }
+  }).catch(() => {});
+
+  await listen("cursor:end", ({ payload }) => {
+    const found = agentTabFor(payload);
+    if (!found?.tab) return;
+    const { panel, tab } = found;
+    tab.streaming = null;
+    if (payload.code !== 0 && payload.error) {
+      tab.turns.push({ role: "error", text: payload.error.trim() });
+    }
+    renderAgentTab(panel, tab);
+    renderAgentTabs(panel);
+  }).catch(() => {});
+
+  await listen("copilot:install", ({ payload }) => {
+    const found = agentTabFor(payload);
+    if (!found?.tab) return;
+    const { panel, tab } = found;
+    const pre = tab.log?.querySelector(".ws-chat-install");
+    if (pre && payload.line) {
+      pre.textContent += `${payload.line}\n`;
+      pre.scrollTop = pre.scrollHeight;
+    }
+    if (!payload.done) return;
+    if (payload.ok) checkAgent(panel, tab, { force: true }).catch(() => {});
+  }).catch(() => {});
+
+  await listen("copilot:line", ({ payload }) => {
+    const found = agentTabFor(payload);
+    if (!found?.tab) return;
+    const { panel, tab } = found;
+    let obj;
+    try { obj = JSON.parse(payload.line); } catch { return; }
+
+    const sid = obj.sessionId || obj.session_id || obj.data?.sessionId;
+    if (typeof sid === "string" && sid.length <= 64) tab.session = sid;
+
+    if (obj.type === "assistant.message_delta") {
+      const delta = obj.data?.deltaContent;
+      if (!delta) return;
+      if (!tab.streaming) { tab.streaming = { role: "copilot", text: "" }; tab.turns.push(tab.streaming); }
+      tab.streaming.text += delta;
+      return markAgentTabDirty(panel, tab);
+    }
+
+    if (obj.type === "assistant.message") {
+      const msg = obj.data?.message;
+      const text = msg?.content?.join ? msg.content.join("") : msg?.content || msg?.text || "";
+      if (!text) return;
+      if (!tab.streaming) tab.turns.push({ role: "copilot", text });
+      else tab.streaming.text = text;
+      tab.streaming = null;
+      renderAgentTab(panel, tab);
+      renderAgentTabs(panel);
+    }
+  }).catch(() => {});
+
+  await listen("copilot:end", ({ payload }) => {
+    const found = agentTabFor(payload);
+    if (!found?.tab) return;
+    const { panel, tab } = found;
+    tab.streaming = null;
+    if (payload.code !== 0 && payload.error) {
+      tab.turns.push({ role: "error", text: payload.error.trim() });
+    }
+    renderAgentTab(panel, tab);
+    renderAgentTabs(panel);
+  }).catch(() => {});
+
+  await listen("gemini:install", ({ payload }) => {
+    const found = agentTabFor(payload);
+    if (!found?.tab) return;
+    const { panel, tab } = found;
+    const pre = tab.log?.querySelector(".ws-chat-install");
+    if (pre && payload.line) {
+      pre.textContent += `${payload.line}\n`;
+      pre.scrollTop = pre.scrollHeight;
+    }
+    if (!payload.done) return;
+    if (payload.ok) checkAgent(panel, tab, { force: true }).catch(() => {});
+  }).catch(() => {});
+
+  await listen("gemini:line", ({ payload }) => {
+    const found = agentTabFor(payload);
+    if (!found?.tab) return;
+    const { panel, tab } = found;
+    let obj;
+    try { obj = JSON.parse(payload.line); } catch { return; }
+
+    if (obj.type === "init" && obj.session_id) tab.session = obj.session_id;
+
+    if (obj.type === "message" && obj.role === "assistant") {
+      const text = obj.content || "";
+      if (!text) return;
+      if (obj.delta) {
+        if (!tab.streaming) { tab.streaming = { role: "gemini", text: "" }; tab.turns.push(tab.streaming); }
+        tab.streaming.text += text;
+        return markAgentTabDirty(panel, tab);
+      }
+
+      if (!tab.streaming) tab.turns.push({ role: "gemini", text });
+      else tab.streaming.text += text;
+      tab.streaming = null;
+      renderAgentTab(panel, tab);
+      renderAgentTabs(panel);
+      return;
+    }
+
+    if (obj.type === "error") {
+      tab.turns.push({ role: "error", text: String(obj.message || obj.error || "Gemini error") });
+      tab.streaming = null;
+      renderAgentTab(panel, tab);
+      renderAgentTabs(panel);
+    }
+  }).catch(() => {});
+
+  await listen("gemini:end", ({ payload }) => {
+    const found = agentTabFor(payload);
+    if (!found?.tab) return;
+    const { panel, tab } = found;
+    tab.streaming = null;
+    if (payload.code !== 0 && payload.error) {
+      tab.turns.push({ role: "error", text: payload.error.trim() });
+    }
+    renderAgentTab(panel, tab);
+    renderAgentTabs(panel);
+  }).catch(() => {});
+
+  await listen("codex:install", ({ payload }) => {
+    const found = agentTabFor(payload);
+    if (!found?.tab) return;
+    const { panel, tab } = found;
+    const pre = tab.log?.querySelector(".ws-chat-install");
+    if (pre && payload.line) {
+      pre.textContent += `${payload.line}\n`;
+      pre.scrollTop = pre.scrollHeight;
+    }
+    if (!payload.done) return;
+    if (payload.ok) checkAgent(panel, tab, { force: true }).catch(() => {});
+  }).catch(() => {});
+
+  await listen("codex:line", ({ payload }) => {
+    const found = agentTabFor(payload);
+    if (!found?.tab) return;
+    const { panel, tab } = found;
+    let obj;
+    try { obj = JSON.parse(payload.line); } catch { return; }
+
+    if (obj.type === "thread.started" && obj.thread_id) tab.session = obj.thread_id;
+
+    if (obj.type === "item.completed" && obj.item?.type === "agent_message") {
+      const text = String(obj.item?.text || "");
+      if (!tab.streaming) {
+        tab.streaming = { role: "codex", text: "" };
+        tab.turns.push(tab.streaming);
+      }
+      tab.streaming.text = text;
+      tab.streaming = null;
+      renderAgentTab(panel, tab);
+      renderAgentTabs(panel);
+      return;
+    }
+
+    if (obj.type === "turn.failed" && obj.error?.message) {
+      tab.streaming = null;
+      tab.turns.push({ role: "error", text: String(obj.error.message) });
+      renderAgentTab(panel, tab);
+      renderAgentTabs(panel);
+      return;
+    }
+    if (obj.type === "error" && obj.message) {
+      tab.streaming = null;
+      tab.turns.push({ role: "error", text: String(obj.message) });
+      renderAgentTab(panel, tab);
+      renderAgentTabs(panel);
+      return;
+    }
+  }).catch(() => {});
+
+  await listen("codex:end", ({ payload }) => {
+    const found = agentTabFor(payload);
+    if (!found?.tab) return;
+    const { panel, tab } = found;
+    tab.streaming = null;
+    if (payload.code !== 0 && payload.error) {
+      tab.turns.push({ role: "error", text: payload.error.trim() });
+    }
+    renderAgentTab(panel, tab);
+    renderAgentTabs(panel);
+  }).catch(() => {});
+
   /* ----------------------------------------------------------------- go */
 
   // Drawn before anything is subscribed to or awaited. This window has no
@@ -1152,8 +2343,5 @@
 
   window.wintTrackPageView?.("/workspace");
 })().catch((err) => {
-  // Nothing below the title bar is trustworthy at this point, so the report
-  // goes somewhere that needs no state: the status line, which is in the HTML.
-  const status = document.getElementById("ws-status");
-  if (status) status.textContent = `The workspace could not start: ${err}`;
+  console.error("The workspace could not start:", err);
 });

@@ -44,6 +44,7 @@ const CORE_TOOLS = [
   { id: "hosts", icon: "edit_note" },
   { id: "network", icon: "network_check" },
   { id: "github", icon: "merge" },
+  { id: "workspace", icon: "workspaces" },
 ];
 
 function parseCatalogArray(src, marker) {

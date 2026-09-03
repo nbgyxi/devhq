@@ -71,6 +71,9 @@ const state = {
   analytics: false,
   analyticsChosen: false,
   theme: "dark",
+  /** "app" follows `theme`; "light"/"dark" pins a workspace window to that
+   *  scheme regardless of what the main window is set to. */
+  workspaceTheme: "app",
   compactTechOverview: true,
   /** Whether the optional title-bar control that hides WinT to the tray is visible. */
   minimizeToTrayButton: false,
@@ -127,6 +130,11 @@ const state = {
   /** Where the pins live: false keeps the handful of chips in the status bar,
    *  true gives them a shelf of their own above it with room to wrap. */
   pinsPanel: false,
+  /** Which words a workspace's Save & upload panel uses: false spells out what
+   *  each button does, true says commit, push, pull and branch. The panel is
+   *  the same panel either way - somebody who knows git should not have to
+   *  read "Get" and work out that it means pull. */
+  gitWording: false,
   /** Tool ids currently open in their own window. Opening one from a pin
    *  focuses that window instead of remounting the tool in the main view. */
   toolPopouts: [],
@@ -314,6 +322,7 @@ function loadPrefs() {
     }
     applyAnalytics();
     if (["dark", "light"].includes(p.theme)) state.theme = p.theme;
+    if (["app", "dark", "light"].includes(p.workspaceTheme)) state.workspaceTheme = p.workspaceTheme;
     if (["cards", "table"].includes(p.viewMode)) state.viewMode = p.viewMode;
     if (typeof p.tableSortKey === "string") state.tableSortKey = p.tableSortKey;
     if (p.tableSortDirection === -1) state.tableSortDirection = -1;
@@ -332,6 +341,7 @@ function loadPrefs() {
     // A pin for a tool this build no longer has is dropped rather than left in
     // the bar as a chip that leads nowhere.
     if (typeof p.pinsPanel === "boolean") state.pinsPanel = p.pinsPanel;
+    if (typeof p.gitWording === "boolean") state.gitWording = p.gitWording;
     if (Array.isArray(p.toolPins)) {
       state.toolPins = p.toolPins.filter((id) => TOOLS.some((tool) => tool.id === id));
     }
@@ -381,6 +391,7 @@ function savePrefs() {
         ...(state.languageChosen ? { language: state.language } : {}),
         ...(state.analyticsChosen ? { analytics: state.analytics } : {}),
         theme: state.theme,
+        workspaceTheme: state.workspaceTheme,
         compactTechOverview: state.compactTechOverview,
         minimizeToTrayButton: state.minimizeToTrayButton,
         viewMode: state.viewMode,
@@ -395,6 +406,7 @@ function savePrefs() {
         favorites: [...state.favorites],
         toolPins: state.toolPins,
         pinsPanel: state.pinsPanel,
+        gitWording: state.gitWording,
         toolPopouts: state.toolPopouts,
         toolRecent: state.toolRecent,
         activeView: state.activeView,
@@ -2872,7 +2884,10 @@ function clearDetailData() {
  *  browser, all in one window of its own. The window is keyed by the project
  *  path in Rust, so asking twice focuses the one already open. */
 function openWorkspace(p) {
-  trackWork("workspace:open", `Opening the ${p.name} workspace`, invoke("workspace_open", { path: p.path, name: p.name }))
+  const workspaceTheme = state.workspaceTheme === "light" || state.workspaceTheme === "dark"
+    ? state.workspaceTheme
+    : (state.theme === "light" ? "light" : "dark");
+  trackWork("workspace:open", `Opening the ${p.name} workspace`, invoke("workspace_open", { path: p.path, name: p.name, theme: workspaceTheme }))
     .catch((err) => {
       state.error = `${p.name}: ${String(err)}`;
       markDirty("banner");
@@ -5264,9 +5279,21 @@ function renderSettings() {
               <button type="button" data-setting-theme="light">Light</button>
             </div>
           </div>
+          <div class="settings-row">
+            <span><strong>Workspace theme</strong><small>A project's own workspace window can keep its own light or dark colors instead of following this one.</small></span>
+            <div class="sort-buttons setting-workspace-theme-buttons" aria-label="Workspace theme">
+              <button type="button" data-setting-workspace-theme="app">Align with app</button>
+              <button type="button" data-setting-workspace-theme="light">Light</button>
+              <button type="button" data-setting-workspace-theme="dark">Dark</button>
+            </div>
+          </div>
           <label class="settings-row" for="setting-compact-tech">
             <span><strong>Compact tech in overview</strong><small>Show technologies in a single neutral line instead of colored tags.</small></span>
             <input class="setting-check" id="setting-compact-tech" type="checkbox" />
+          </label>
+          <label class="settings-row" for="setting-git-wording">
+            <span><strong>Git wording in a workspace</strong><small>Say commit, push, pull and branch in a project workspace's Save &amp; upload panel, instead of spelling out what each button does.</small></span>
+            <input class="setting-check" id="setting-git-wording" type="checkbox" />
           </label>
           <label class="settings-row" for="setting-pins-panel">
             <span><strong>Pinned tools on their own shelf</strong><small>Give the pins a panel above the status bar instead of a few chips inside it. The row wraps, so every pin stays on screen however many you keep.</small></span>
@@ -5367,8 +5394,14 @@ function renderSettings() {
     button.classList.toggle("on", active);
     button.setAttribute("aria-pressed", String(active));
   }
+  for (const button of host.querySelectorAll("[data-setting-workspace-theme]")) {
+    const active = button.dataset.settingWorkspaceTheme === state.workspaceTheme;
+    button.classList.toggle("on", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
   host.querySelector("#setting-compact-tech").checked = state.compactTechOverview;
   host.querySelector("#setting-pins-panel").checked = state.pinsPanel;
+  host.querySelector("#setting-git-wording").checked = state.gitWording;
   host.querySelector("#setting-minimize-to-tray").checked = state.minimizeToTrayButton;
   host.querySelector("#setting-analytics").checked = state.analyticsChosen && state.analytics;
   host.querySelector("#setting-time-tracker").checked = window.wintTimeTracker?.getAlways() === true;
@@ -6269,6 +6302,16 @@ function wireShell() {
       state.theme = button.dataset.settingTheme;
       applyTheme();
       savePrefs();
+    } else if (e.target.closest("[data-setting-workspace-theme]")) {
+      const button = e.target.closest("[data-setting-workspace-theme]");
+      if (button.dataset.settingWorkspaceTheme === state.workspaceTheme) return;
+      state.workspaceTheme = button.dataset.settingWorkspaceTheme;
+      for (const choice of el["settings-host"].querySelectorAll("[data-setting-workspace-theme]")) {
+        const active = choice === button;
+        choice.classList.toggle("on", active);
+        choice.setAttribute("aria-pressed", String(active));
+      }
+      savePrefs();
     } else if (e.target.closest("[data-terminal-marker]")) {
       const button = e.target.closest("[data-terminal-marker]");
       window.wintTerminalSettings.setShellMarkerStyle(button.dataset.terminalMarker);
@@ -6362,6 +6405,11 @@ function wireShell() {
       state.compactTechOverview = e.target.checked;
       savePrefs();
       markDirty("grid");
+    } else if (e.target.id === "setting-git-wording") {
+      state.gitWording = e.target.checked;
+      savePrefs();
+      // Every workspace open right now changes its words on this frame.
+      emit("settings:git-wording", { on: state.gitWording }).catch(() => {});
     } else if (e.target.id === "setting-pins-panel") {
       state.pinsPanel = e.target.checked;
       closeToolPins();
@@ -6750,6 +6798,9 @@ window.wintAssistantContext = () => {
   return JSON.stringify({ roots: state.roots, selectedProject: selected?.name || "", projects });
 };
 window.wintAssistantRoots = () => [...state.roots];
+/** The palette shortcut as the user has it bound, for panels that tell people
+ * where to go next. Empty when the binding has been cleared. */
+window.wintPaletteHotkey = () => hotkeyBinding("command:palette");
 window.addEventListener("wint:assistant-tool-cap-changed", (event) => {
   const input = document.getElementById("setting-assistant-tool-cap");
   if (input) input.value = event.detail?.value || 20;

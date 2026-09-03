@@ -102,6 +102,7 @@ code,.mono{font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,mon
 .assistant-activity{overflow:hidden;border:1px solid var(--line);border-radius:9px;background:var(--bg)}.assistant-activity>header{height:34px;display:flex;align-items:center;gap:7px;padding:0 9px;border-bottom:1px solid var(--line);background:var(--bg2)}.assistant-activity>header>.ms{color:var(--accent);font-size:15px}.assistant-activity>header>.ms:first-child{animation:none}.assistant-activity>header strong{flex:1;font-size:10.5px}.assistant-activity>header>span:last-child{color:var(--dim2);font-size:9px}.assistant-activity section{display:flex;align-items:flex-start;gap:8px;padding:7px 9px;border-bottom:1px solid var(--line)}.assistant-activity section:last-child{border:0}.assistant-activity section>.ms{margin-top:1px;color:var(--green);font-size:14px}.assistant-activity section.running>.ms{color:var(--accent);animation:spin 1s linear infinite}.assistant-activity section.error>.ms{color:var(--red)}.assistant-activity section>div{display:flex;flex-direction:column;gap:2px}.assistant-activity section strong{font:600 10.5px 'Cascadia Mono',Consolas,monospace}.assistant-activity section small{color:var(--dim2);font-size:9.5px;line-height:1.4}
 .assistant-step-detail{min-width:0;color:var(--dim2);font-size:9.5px;line-height:1.45;overflow-wrap:anywhere}.assistant-step-detail p{margin:1px 0 5px}.assistant-step-detail p:last-child{margin-bottom:0}.assistant-step-detail ul,.assistant-step-detail ol{margin:2px 0 5px;padding-left:18px}.assistant-table-wrap{max-width:100%;margin:4px 0;overflow:auto;border:1px solid var(--line);border-radius:5px}.assistant-table-wrap table{width:100%;border-collapse:collapse;font-size:inherit}.assistant-table-wrap th,.assistant-table-wrap td{padding:3px 5px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}.assistant-table-wrap th{background:var(--bg2);color:var(--text)}.assistant-table-wrap tr:last-child td{border-bottom:0}.assistant-table-wrap th:last-child,.assistant-table-wrap td:last-child{border-right:0}
 .assistant-question{padding:10px 11px;border:1px solid color-mix(in srgb,var(--amber) 45%,var(--line));border-radius:9px;background:color-mix(in srgb,var(--amber) 7%,var(--bg1));font-size:12px;line-height:1.55}.assistant-question>header{display:flex;align-items:center;gap:6px;margin-bottom:7px;color:var(--amber);font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}.assistant-question>header .ms{font-size:15px}.assistant-question footer{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}.assistant-question footer button{padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--text);font-size:10.5px}.assistant-question footer button:hover{border-color:var(--accent)}
+.assistant-scope{display:flex;align-items:flex-start;gap:8px;padding:9px 10px;border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line));border-radius:9px;background:color-mix(in srgb,var(--accent) 7%,transparent)}.assistant-scope>.ms{flex:none;margin-top:1px;color:var(--accent);font-size:16px}.assistant-scope strong{display:block;margin-bottom:3px;font-size:11.5px}.assistant-scope p{color:var(--dim);font-size:10.5px;line-height:1.5}.assistant-scope p+p{margin-top:7px}.assistant-scope kbd{display:inline-block;padding:1px 5px;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;background:var(--bg2);color:var(--text);font:10px 'Cascadia Mono',Consolas,monospace}.assistant-scope b{color:var(--text);font-weight:650}
 
 ::-webkit-scrollbar{width:10px;height:10px}
 ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:8px;border:2px solid transparent;background-clip:content-box}
@@ -1415,6 +1416,17 @@ html[dir="rtl"] .srclines{direction:ltr;text-align:left}
   border-top:1px solid var(--line);z-index:40;
 }
 #term-dock.open{display:flex}
+/* The same dock, inside a workspace panel. The panel owns the size and the
+   showing, so the two things that move a boundary this dock no longer draws —
+   the resize grip and the hide button — are left out, and the shell menu drops
+   down over the terminal instead of up out of the panel. */
+#term-dock.embedded{position:absolute;inset:0;height:auto;border-top:0;z-index:1;display:flex}
+#term-dock.embedded .dock-grip,#term-dock.embedded .dock-hide{display:none}
+#term-dock.embedded .dock-bar:not(.split) [data-tab-pane="0"] .dock-tabs,
+#term-dock.embedded .dock-bar.split [data-tab-pane="1"] .dock-tabs{margin-right:170px}
+#term-dock.embedded .dock-bar:not(.split) [data-pane-actions="0"],
+#term-dock.embedded .dock-bar.split [data-pane-actions="1"]{right:0}
+#term-dock.embedded .dock-shell-menu{top:36px;bottom:auto}
 .dock-grip{height:5px;flex:0 0 auto;cursor:ns-resize;background:transparent}
 .dock-grip:hover{background:var(--accent)}
 .dock-bar{
@@ -3216,12 +3228,15 @@ button.copy-confirmed .ms{color:var(--green)!important}button.copy-failed .ms{co
    and why every visible thing in this file stays out of its way. */
 
 body.workspace{
-  --ws-left:280px; --ws-right:420px; --ws-bottom:260px; --ws-left-split:50%;
-  display:grid; grid-template-rows:var(--titlebar) minmax(0,1fr) auto var(--status-h);
+  --ws-left:280px; --ws-right:420px; --ws-bottom:260px; --ws-left-split:50%; --ws-right-split:50%;
+  /* Save & upload is a line of state, a message box and three buttons. It is
+     given the height of what it is showing, and no more. */
+  --ws-git-h:90px;
+  display:grid; grid-template-rows:var(--titlebar) minmax(0,1fr) auto;
   height:100vh; margin:0; overflow:hidden; background:var(--bg);
 }
 body.workspace .titlebar{grid-row:1}
-body.workspace.ws-resizing,body.workspace.ws-dragging{cursor:grabbing;user-select:none}
+body.workspace.ws-resizing{cursor:grabbing;user-select:none}
 
 #ws-grid{
   grid-row:2;
@@ -3229,16 +3244,24 @@ body.workspace.ws-resizing,body.workspace.ws-dragging{cursor:grabbing;user-selec
   min-height:0; overflow:hidden;
 }
 body.workspace.ws-no-left #ws-grid{grid-template-columns:0 auto minmax(0,1fr) auto var(--ws-right)}
+body.workspace.ws-no-right #ws-grid{grid-template-columns:var(--ws-left) auto minmax(0,1fr) 0 0}
+body.workspace.ws-no-left.ws-no-right #ws-grid{grid-template-columns:0 0 minmax(0,1fr) 0 0}
 /* Nothing in the middle means no middle. The two sides close up against each
    other and the right one takes the rest of the width, rather than both
    staying put around a hole. */
 body.workspace.ws-no-center #ws-grid{grid-template-columns:var(--ws-left) auto 0 0 minmax(0,1fr)}
 body.workspace.ws-no-center.ws-no-left #ws-grid{grid-template-columns:0 0 0 0 minmax(0,1fr)}
+body.workspace.ws-no-center.ws-no-right #ws-grid{grid-template-columns:var(--ws-left) auto minmax(0,1fr) 0 0}
+body.workspace.ws-no-center.ws-no-left.ws-no-right #ws-grid{grid-template-columns:minmax(0,1fr) 0 0 0 0}
 .ws-col{display:grid; grid-template-rows:minmax(0,var(--ws-left-split)) auto minmax(0,1fr); min-width:0; overflow:hidden}
+/* With Save & upload underneath it, the file list takes the whole column bar
+   that panel's own height - there is nothing a taller Save & upload would
+   show, and the divider between the two has nothing left to decide. */
+.ws-col.ws-git-fixed{grid-template-rows:minmax(0,1fr) auto var(--ws-git-h)}
+.ws-right-col{display:grid; grid-template-rows:minmax(0,var(--ws-right-split)) auto minmax(0,1fr); min-width:0; overflow:hidden}
 
 .ws-slot{display:flex; min-width:0; min-height:0; overflow:hidden; background:var(--bg1); border:1px solid var(--line); border-radius:8px; margin:4px}
 .ws-slot[hidden]{display:none}
-.ws-slot.ws-over{border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent)}
 
 /* The center column holds the center panel and, when that panel is showing,
    the bottom panel underneath it - so a terminal sits below the browser it
@@ -3254,22 +3277,19 @@ body.workspace.ws-no-center.ws-no-left #ws-grid{grid-template-columns:0 0 0 0 mi
 body.workspace>#ws-bottom-dock{grid-row:3}
 #ws-bottom-dock[hidden]{display:none}
 #ws-bottom-dock>.ws-bottom{height:var(--ws-bottom); min-height:0}
-.ws-drop{position:fixed; inset:0; pointer-events:none}
 
-.ws-panel{display:flex; flex-direction:column; flex:1; min-width:0; min-height:0}
-.ws-head{display:flex; align-items:center; gap:6px; padding:0 4px 0 2px; height:30px; flex:0 0 auto;
-  border-bottom:1px solid var(--line); background:var(--bg2); border-radius:7px 7px 0 0; cursor:grab; font-size:12px}
-.ws-head:active{cursor:grabbing}
+.ws-panel{display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; position:relative}
+.ws-head{display:flex; align-items:center; gap:6px; padding:0 6px 0 7px; height:30px; flex:0 0 auto;
+  border-bottom:1px solid var(--line); background:var(--bg2); border-radius:7px 7px 0 0; font-size:12px}
 .ws-head strong{font-weight:600; font-size:12px; white-space:nowrap}
 .ws-head .ms{font-size:16px; color:var(--dim)}
-.ws-head-grip{display:grid; place-items:center; color:var(--dim2)}
 .ws-head-tools{display:flex; align-items:center; gap:4px; flex:1; min-width:0; margin-left:6px}
-.ws-head-hide{background:none; border:0; color:var(--dim2); padding:2px; border-radius:4px; cursor:pointer; display:grid; place-items:center}
-.ws-head-hide:hover{background:var(--bg3); color:var(--text)}
+.ws-head-end{display:flex; align-items:center; gap:4px; flex:0 0 auto; padding-right:2px}
 .ws-panel-body{flex:1; min-height:0; position:relative; overflow:auto}
 
 .ws-mini{background:none; border:0; color:var(--dim); padding:2px; border-radius:4px; cursor:pointer; display:grid; place-items:center}
 .ws-mini:hover{background:var(--bg3); color:var(--text)}
+.ws-mini.go{color:var(--accent)}
 .ws-address{flex:1; min-width:60px; background:var(--bg); border:1px solid var(--line); color:var(--text);
   border-radius:5px; padding:2px 7px; font-size:11px; font-family:inherit}
 .ws-address:focus{outline:none; border-color:var(--accent)}
@@ -3280,6 +3300,13 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-grip-v::before{content:""; position:absolute; inset:0 -4px; cursor:col-resize}
 .ws-grip-h::before{content:""; position:absolute; inset:-4px 0; cursor:row-resize}
 .ws-grip[hidden]{display:none}
+/* Vertical grips are columns of #ws-grid. `display:none` drops them out of
+   the grid, so the next column (the right panels) lands in the zero-width
+   track meant for the grip — hiding the browser then swallowed the chats.
+   They keep their cell and collapse instead. Split grips inside a column
+   still disappear, or they would leave a gap in the column. */
+#ws-grid>.ws-grip[hidden]{display:block; visibility:hidden; width:0; min-width:0;
+  overflow:hidden; pointer-events:none}
 .ws-grip-v{width:6px; cursor:col-resize}
 .ws-grip-h{height:6px; cursor:row-resize}
 .ws-grip:hover,body.workspace.ws-resizing .ws-grip{background:var(--accent)}
@@ -3292,10 +3319,53 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-browser-empty .ms{font-size:34px; color:var(--dim2)}
 .ws-browser-empty p{max-width:320px; margin:0; font-size:12px; line-height:1.5}
 .ws-preview{position:absolute; inset:0; display:flex; flex-direction:column; background:var(--bg1)}
+/* A `display` of its own beats the browser's own rule for [hidden], so both of
+   these layers need to say it themselves - without this, setting `.hidden`
+   left them on screen, and closing the preview did nothing visible whenever
+   there was no page loaded underneath to cover it. */
+.ws-browser-empty[hidden],.ws-preview[hidden]{display:none}
 .ws-preview header{display:flex; align-items:center; gap:8px; padding:6px 8px; border-bottom:1px solid var(--line)}
 .ws-preview header strong{flex:1; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
-.ws-preview pre{flex:1; margin:0; overflow:auto; padding:10px 12px; font-size:12px; line-height:1.5;
-  font-family:ui-monospace,Consolas,monospace; white-space:pre; tab-size:2}
+.ws-preview header small{flex:0 0 auto; color:var(--dim2); font:9.5px 'Cascadia Mono',Consolas,monospace}
+.ws-preview-code{flex:1; min-height:0; display:flex; align-items:flex-start; overflow:auto;
+  font:12px/1.5 ui-monospace,'Cascadia Mono',Consolas,monospace; tab-size:2}
+.ws-preview-code[hidden]{display:none}
+/* Sticky so the numbers stay put when a long line is scrolled sideways, and
+   unselectable so copying the code copies the code. */
+.ws-preview-gutter{position:sticky; left:0; z-index:1; flex:0 0 auto; padding:10px 8px 10px 10px;
+  border-right:1px solid var(--line); background:var(--bg1); color:var(--dim2);
+  font:inherit; text-align:right; white-space:pre; user-select:none}
+.ws-preview pre{flex:1; margin:0; padding:10px 12px; font:inherit; white-space:pre; user-select:text}
+/* Flex rather than grid to centre it: an auto-sized grid row is not a length
+   the image's max-height can be a percentage of, so a tall picture overflowed
+   the panel and scrolled instead of being sized down to fit it. */
+.ws-preview-image{flex:1; min-width:0; min-height:0; overflow:hidden;
+  display:flex; align-items:center; justify-content:center; padding:14px;
+  background:var(--bg2);
+  /* The chequerboard every image viewer uses, so transparency reads as
+     transparency rather than as whatever the theme happens to be. */
+  background-image:linear-gradient(45deg,var(--bg3) 25%,transparent 25%),
+    linear-gradient(-45deg,var(--bg3) 25%,transparent 25%),
+    linear-gradient(45deg,transparent 75%,var(--bg3) 75%),
+    linear-gradient(-45deg,transparent 75%,var(--bg3) 75%);
+  background-size:18px 18px; background-position:0 0,0 9px,9px -9px,-9px 0}
+.ws-preview-image[hidden]{display:none}
+.ws-preview-image img{max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain;
+  image-rendering:auto; box-shadow:0 2px 14px rgba(0,0,0,.35)}
+
+/* One colour per kind of token, drawn from the palette the rest of the app
+   already uses so a file preview looks like part of the window. */
+.hl-com{color:var(--dim2); font-style:italic}
+.hl-str{color:var(--green)}
+.hl-num{color:var(--amber)}
+.hl-kw{color:var(--purple)}
+.hl-typ{color:var(--teal)}
+.hl-fn{color:var(--accent)}
+.hl-lit{color:var(--amber)}
+.hl-var,.hl-key{color:var(--accent)}
+.hl-ann{color:var(--amber)}
+.hl-tag{color:var(--purple)}
+.hl-sel,.hl-prop{color:var(--teal)}
 
 .ws-files{padding:4px 0}
 .ws-tree{display:flex; flex-direction:column}
@@ -3315,10 +3385,10 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 
 /* Two words rather than one ambiguous icon: which of the two you are looking
    at should be readable without hovering anything. */
-.ws-seg{display:flex; align-items:center; flex:0 0 auto; padding:1px; gap:1px;
-  border:1px solid var(--line); border-radius:6px; background:var(--bg)}
+.ws-seg{display:flex; align-items:center; flex:0 1 auto; min-width:0; padding:1px; gap:1px;
+  border:1px solid var(--line); border-radius:6px; background:var(--bg); overflow-x:auto}
 .ws-seg button{display:flex; align-items:center; gap:4px; background:none; border:0; cursor:pointer;
-  color:var(--dim); font:inherit; font-size:10.5px; line-height:1; padding:3px 8px; border-radius:4px; white-space:nowrap}
+  color:var(--dim); font:inherit; font-size:10.5px; line-height:1; padding:3px 7px; border-radius:4px; white-space:nowrap; flex:0 0 auto}
 .ws-seg button:hover{color:var(--text)}
 .ws-seg button.on{background:var(--bg3); color:var(--text)}
 .ws-seg b{font-weight:700; font-size:9.5px; padding:1px 4px; border-radius:99px; background:var(--bg2); color:var(--amber)}
@@ -3326,9 +3396,22 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-tree-note{padding:6px 12px; color:var(--dim2); font-size:12px}
 
 .ws-git{padding:8px; display:flex; flex-direction:column; gap:8px}
-.ws-git-branch{display:flex; align-items:center; gap:6px; margin:0; font-size:12px; flex-wrap:wrap}
-.ws-git-branch .ms{font-size:15px; color:var(--dim)}
-.ws-git-branch b{font-weight:600; font-size:10px; padding:1px 6px; border-radius:99px; background:var(--bg3); color:var(--dim)}
+.ws-git-branch{display:flex; align-items:flex-start; gap:6px; margin:0; font-size:12px; line-height:1.35; flex-wrap:wrap}
+.ws-git-branch>.ms{flex:0 0 auto; margin-top:1px; font-size:15px; color:var(--dim)}
+.ws-git-branch b{flex:0 0 auto; align-self:center; font-weight:600; font-size:10px; padding:1px 6px; border-radius:99px; background:var(--bg3); color:var(--dim)}
+.ws-git-branch-pick{display:flex; align-items:flex-start; gap:2px; min-width:0; max-width:100%; padding:1px 4px; margin:-1px -2px; border:0;
+  border-radius:5px; background:none; color:var(--text); font:inherit; font-size:12px; line-height:1.35; text-align:left; white-space:normal; cursor:pointer}
+.ws-git-branch-pick strong{min-width:0; overflow-wrap:anywhere}
+.ws-git-branch-pick:hover:not(:disabled){background:var(--bg3)}
+.ws-git-branch-pick:disabled{cursor:default; padding-left:0}
+.ws-git-branch-pick>.ms{flex:0 0 auto; margin-top:1px; font-size:15px; color:var(--dim)}
+.ws-branch-menu{position:fixed; z-index:120; min-width:180px; max-width:280px; max-height:280px; overflow-y:auto;
+  padding:5px; border:1px solid var(--line); border-radius:8px; background:var(--bg2);
+  box-shadow:0 10px 30px rgba(0,0,0,.45)}
+.ws-branch-menu button{display:flex; align-items:center; gap:7px; width:100%; height:28px; padding:0 8px; border:0;
+  border-radius:5px; background:none; color:var(--text); font-size:12px; text-align:left; cursor:pointer; white-space:nowrap}
+.ws-branch-menu button:hover{background:var(--bg3)}
+.ws-branch-menu .ms{font-size:15px; color:var(--dim)}
 .ws-git-line{margin:4px 0 0; font-size:11px; color:var(--dim); line-height:1.5}
 .ws-git-form{display:flex; flex-direction:column; gap:6px}
 .ws-git-form input{background:var(--bg); border:1px solid var(--line); color:var(--text);
@@ -3352,12 +3435,6 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-toggle.on{color:var(--text); background:var(--bg3)}
 .ws-toggle:hover{color:var(--text)}
 
-.ws-status{grid-row:4; display:flex; align-items:center; gap:8px; padding:0 12px; font-size:11px;
-  color:var(--dim); background:var(--bg1); border-top:1px solid var(--line); overflow:hidden; white-space:nowrap}
-.ws-status.busy::after{content:""; width:60px; height:2px; border-radius:2px; flex:0 0 auto;
-  background:linear-gradient(90deg,transparent,var(--accent),transparent); animation:ws-busy 1.1s linear infinite}
-@keyframes ws-busy{from{transform:translateX(-40px)}to{transform:translateX(40px)}}
-
 /* ------------------------------------------------------ workspace: Claude */
 /* A chat, not a terminal. The CLI's own interface is a full-screen terminal
    program; folded into a narrow pane it is theme pickers and wrapped ASCII.
@@ -3366,10 +3443,95 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-chat{display:flex; flex-direction:column; overflow:hidden}
 .ws-chat-log{flex:1; min-height:0; overflow-y:auto; padding:10px 12px; display:flex; flex-direction:column; gap:10px}
 
+/* The strip of open conversations, read the same way as the terminal's tabs:
+   which agent each one is, which is on screen, which is still answering. */
+.ws-chat-tabs{flex:0 0 auto; display:flex; align-items:stretch; gap:2px; padding:0 4px;
+  background:var(--bg1); border-bottom:1px solid var(--line); overflow-x:auto; overflow-y:hidden}
+.ws-chat-tabs::-webkit-scrollbar{height:0}
+.ws-chat-tab{display:flex; align-items:center; gap:5px; height:29px; padding:0 4px 0 8px; cursor:pointer;
+  color:var(--dim); font-size:11.5px; font-weight:500; white-space:nowrap; border-bottom:2px solid transparent}
+.ws-chat-tab:hover{color:var(--text)}
+.ws-chat-tab.on{color:var(--text); background:var(--bg); border-bottom-color:var(--accent)}
+.ws-chat-tab .ms{font-size:14px}
+.ws-chat-tab-live{width:6px; height:6px; border-radius:50%; background:var(--accent); flex:0 0 auto;
+  animation:ws-chat-pulse 1.4s ease-in-out infinite}
+@keyframes ws-chat-pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.ws-chat-tab-x{display:grid; place-items:center; width:16px; height:16px; border:0; border-radius:4px;
+  padding:0; background:none; color:var(--dim2); cursor:pointer; opacity:0}
+.ws-chat-tab-x .ms{font-size:12px}
+.ws-chat-tab:hover .ws-chat-tab-x,.ws-chat-tab.on .ws-chat-tab-x{opacity:1}
+.ws-chat-tab-x:hover{background:var(--bg3); color:var(--red)}
+.ws-chat-tab-add{position:relative; display:flex; align-items:center}
+.ws-chat-tab-add>button{display:grid; place-items:center; width:26px; height:29px; border:0; padding:0;
+  background:none; color:var(--dim); cursor:pointer}
+.ws-chat-tab-add>button:hover{color:var(--text); background:var(--bg3)}
+.ws-chat-tab-add .ms{font-size:16px}
+.ws-chat-agent-menu{position:absolute; right:0; top:30px; z-index:12; width:180px; padding:5px;
+  border:1px solid var(--line); border-radius:8px; background:var(--bg2); box-shadow:0 10px 30px rgba(0,0,0,.45)}
+.ws-chat-agent-menu[hidden]{display:none}
+.ws-chat-agent-menu button{display:flex; align-items:center; gap:8px; width:100%; height:28px; padding:0 8px;
+  border:0; border-radius:5px; background:none; color:var(--text); font-size:12px; text-align:left; cursor:pointer}
+.ws-chat-agent-menu button:hover{background:var(--bg3)}
+.ws-chat-menu-label{padding:3px 8px 5px; color:var(--dim2); font-size:9.5px; text-transform:uppercase; letter-spacing:.08em}
+
+/* The Agent panel's own dock: several conversations at once, tabbed and
+   optionally split into two panes, the same interaction the terminal's dock
+   uses for its shells - drag to reorder, drag onto an edge to split. */
+.ws-agent-dock{display:flex; flex-direction:column; overflow:hidden; padding:0}
+.ws-agent-bar{--agent-split:50%; height:30px; flex:0 0 auto; display:flex; align-items:stretch;
+  position:relative; background:var(--bg1); border-bottom:1px solid var(--line)}
+.ws-agent-tab-pane{display:none; position:relative; min-width:0}
+.ws-agent-tab-pane[data-tab-pane="0"]{display:flex; flex:1}
+.ws-agent-bar.split .ws-agent-tab-pane{display:flex; position:absolute; top:0; bottom:0}
+.ws-agent-bar.split .ws-agent-tab-pane[data-tab-pane="0"]{left:0; width:var(--agent-split); border-right:3px solid var(--line)}
+.ws-agent-bar.split .ws-agent-tab-pane[data-tab-pane="1"]{left:var(--agent-split); right:0; border-left:3px solid var(--line)}
+.ws-agent-tabs{flex:1; min-width:0; display:flex; align-items:stretch; overflow-x:auto; overflow-y:hidden}
+.ws-agent-tabs::-webkit-scrollbar{height:0}
+.ws-chat-tab-empty{display:flex; align-items:center; padding:0 8px; color:var(--dim2); font-size:11.5px}
+.ws-chat-tab.dragging{opacity:.45}
+.ws-chat-tab.drop-before{box-shadow:inset 2px 0 var(--accent)}
+.ws-chat-tab.drop-after{box-shadow:inset -2px 0 var(--accent)}
+.ws-agent-tab-ghost{position:fixed; left:0; top:0; z-index:100; pointer-events:none; max-width:220px;
+  border-radius:6px; box-shadow:0 8px 24px rgba(0,0,0,.5); background:var(--bg2); opacity:.94}
+.ws-agent-pane-actions{flex:0 0 auto; display:flex; align-items:stretch}
+.ws-agent-pane-actions button[data-dock]{width:26px; display:grid; place-items:center; border:0; padding:0;
+  background:none; color:var(--dim); cursor:pointer}
+.ws-agent-pane-actions button[data-dock]:hover{color:var(--text); background:var(--bg3)}
+.ws-agent-pane-actions button[data-dock]:disabled{opacity:.35; pointer-events:none}
+.ws-agent-pane-actions .ms{font-size:15px}
+.ws-agent-views{flex:1; min-height:0; position:relative}
+.ws-agent-conv{position:absolute; inset:0; display:none; min-width:0; flex-direction:column}
+.ws-agent-conv.on{display:flex}
+.ws-agent-views.split .ws-agent-conv[data-pane="0"]{right:calc(100% - var(--agent-split) + 3px)}
+.ws-agent-views.split .ws-agent-conv[data-pane="1"]{left:calc(var(--agent-split) + 3px)}
+.ws-agent-divider{display:none; position:absolute; z-index:4; top:0; bottom:0;
+  left:calc(var(--agent-split) - 3px); width:6px; cursor:ew-resize; background:var(--line)}
+.ws-agent-divider:hover{background:var(--accent)}
+.ws-agent-views.split .ws-agent-divider{display:block}
+.ws-agent-pane-empty{position:absolute; top:0; bottom:0; display:grid; place-items:center; color:var(--dim2); font-size:12px}
+.ws-agent-pane-empty[data-empty-pane="0"]{left:0; right:calc(100% - var(--agent-split) + 3px)}
+.ws-agent-pane-empty[data-empty-pane="1"]{left:calc(var(--agent-split) + 3px); right:0}
+.ws-agent-pane-empty[hidden]{display:none}
+.ws-agent-drop-zones{display:none; position:absolute; inset:0; z-index:8; pointer-events:none;
+  background:color-mix(in srgb, var(--bg) 45%, transparent)}
+.ws-agent-views.choosing-pane .ws-agent-drop-zones{display:block}
+.ws-agent-drop-zones>div{position:absolute; top:8px; bottom:8px; display:grid; place-items:center;
+  border:2px dashed var(--dim2); border-radius:8px; color:var(--dim);
+  background:color-mix(in srgb, var(--bg) 82%, transparent); pointer-events:auto}
+.ws-agent-drop-zones>[data-drop-pane="0"]{left:8px; right:calc(100% - var(--agent-split) + 4px)}
+.ws-agent-drop-zones>[data-drop-pane="1"]{left:calc(var(--agent-split) + 4px); right:8px}
+.ws-agent-drop-zones>div.hover{border-color:var(--accent); color:var(--text);
+  background:color-mix(in srgb, var(--accent) 16%, var(--bg))}
+.ws-agent-drop-zones span{display:flex; align-items:center; gap:7px; padding:8px 12px; border-radius:7px;
+  background:var(--bg2); font-size:12px; font-weight:600}
+.ws-agent-drop-zones .ms{font-size:18px; color:var(--accent)}
+
 .ws-chat-card{display:flex; flex-direction:column; align-items:flex-start; gap:8px; padding:16px;
   border:1px solid var(--line); border-radius:10px; background:var(--bg2)}
 .ws-chat-card.quiet{border-style:dashed; background:none; color:var(--dim)}
+.ws-chat-card.checking{border-style:dashed; background:none}
 .ws-chat-card>.ms{font-size:26px; color:var(--dim2)}
+.ws-chat-card.checking>.ms{color:var(--accent); animation:spin 1s linear infinite}
 .ws-chat-card strong{font-size:13px}
 .ws-chat-card p{margin:0; font-size:12px; line-height:1.55; color:var(--dim)}
 .ws-chat-card code{padding:1px 5px; border-radius:4px; background:var(--bg3); font-size:11px}
@@ -3382,22 +3544,101 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-turn-body{overflow-wrap:anywhere}
 .ws-turn.you{align-self:flex-end; max-width:88%; padding:7px 11px; border-radius:11px 11px 3px 11px;
   background:var(--accent); color:#fff; white-space:pre-wrap}
-.ws-turn.claude .ws-turn-body>p{margin:0 0 9px}
-.ws-turn.claude .ws-turn-body>p:last-child{margin-bottom:0}
-.ws-turn.claude code{padding:1px 4px; border-radius:4px; background:var(--bg3); font-size:11.5px;
+.ws-turn.claude .ws-turn-body>p,.ws-turn.bot .ws-turn-body>p{margin:0 0 9px}
+.ws-turn.claude .ws-turn-body>p:last-child,.ws-turn.bot .ws-turn-body>p:last-child{margin-bottom:0}
+.ws-turn.claude code,.ws-turn.bot code{padding:1px 4px; border-radius:4px; background:var(--bg3); font-size:11.5px;
   font-family:ui-monospace,Consolas,monospace}
 .ws-turn.tool,.ws-turn.error{display:flex; align-items:center; gap:6px; font-size:11px; color:var(--dim2)}
 .ws-turn.tool .ms,.ws-turn.error .ms{font-size:14px; flex:0 0 auto}
 .ws-turn.tool span,.ws-turn.error span{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 .ws-turn.error{color:var(--red)}
 .ws-turn.error span{white-space:pre-wrap}
+
+/* A run of tool lines, folded. The three most recent stay visible - what the
+   agent is doing now is the part worth reading - and the line above opens the
+   rest in place rather than in a dialog. */
+.ws-steps{display:flex; flex-direction:column; gap:3px; padding:6px 9px;
+  border:1px solid var(--line); border-radius:8px; background:var(--bg2)}
+.ws-steps-more{display:flex; align-items:center; gap:5px; margin:0 0 2px -3px; padding:0;
+  border:0; background:none; color:var(--dim); font:inherit; font-size:11px; cursor:pointer}
+.ws-steps-more:hover{color:var(--text)}
+.ws-steps-more .ms{font-size:15px; transition:transform .12s ease}
+.ws-steps.open .ws-steps-more .ms{transform:rotate(180deg)}
 .ws-code{margin:8px 0; padding:9px 11px; border:1px solid var(--line); border-radius:8px;
   background:var(--term-bg); overflow-x:auto; font-size:11.5px; line-height:1.5}
 .ws-code code{background:none!important; padding:0!important; font-family:ui-monospace,Consolas,monospace}
 
-.ws-chat-ask{flex:0 0 auto; display:flex; align-items:flex-end; gap:6px; padding:8px 10px;
+/* The line that says something is happening. It is drawn from the turn being
+   in flight, not from text arriving - the moment it is needed most is the one
+   before any text exists. */
+.ws-turn.thinking{display:flex; align-items:center; gap:7px; font-size:11.5px; color:var(--dim)}
+.ws-turn.thinking[hidden]{display:none}
+.ws-thinking-for{font-weight:500; color:var(--dim2); font-variant-numeric:tabular-nums}
+.ws-dots{display:flex; align-items:center; gap:3px}
+.ws-dots i{width:4px; height:4px; border-radius:50%; background:var(--accent); opacity:.35;
+  animation:ws-dot 1.1s ease-in-out infinite}
+.ws-dots i:nth-child(2){animation-delay:.16s}
+.ws-dots i:nth-child(3){animation-delay:.32s}
+@keyframes ws-dot{0%,80%,100%{opacity:.25; transform:translateY(0)} 40%{opacity:1; transform:translateY(-2px)}}
+
+/* The answer is written out rather than pasted in, so the bubble being
+   written carries a caret while it is. */
+.ws-turn[data-live] .ws-turn-body>p:last-child::after{content:"▍"; margin-left:1px; color:var(--accent);
+  animation:ws-caret 1s steps(1) infinite}
+@keyframes ws-caret{50%{opacity:0}}
+
+/* Everything this project has asked before, over the panel it belongs to. */
+.ws-history{position:absolute; z-index:5; top:30px; right:6px; width:min(320px, calc(100% - 12px));
+  max-height:min(420px, calc(100% - 40px)); display:flex; flex-direction:column; overflow:hidden;
+  border:1px solid var(--line); border-radius:10px; background:var(--bg2);
+  box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.ws-history>header{display:flex; align-items:center; gap:6px; padding:7px 6px 7px 9px;
+  border-bottom:1px solid var(--line)}
+.ws-history>header strong{flex:1; font-size:12px}
+.ws-history>header .ms{font-size:15px; color:var(--dim)}
+.ws-history-list{overflow-y:auto; padding:5px}
+.ws-history-note{padding:12px 10px; font-size:11.5px; line-height:1.55; color:var(--dim)}
+.ws-history-row{display:flex; flex-direction:column; gap:2px; width:100%; text-align:left;
+  padding:7px 9px; border:0; border-radius:7px; background:none; color:var(--text); cursor:pointer}
+.ws-history-row:hover{background:var(--bg3)}
+.ws-history-row.on{background:var(--bg3); box-shadow:inset 2px 0 0 var(--accent)}
+.ws-history-row strong{font-size:12px; font-weight:500; line-height:1.4;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
+.ws-history-row span{font-size:10.5px; color:var(--dim2)}
+/* A row still being read is named by its shape, not by a spinner over the list. */
+.ws-history-row.skeleton{pointer-events:none; gap:5px; padding:9px}
+.ws-history-row.skeleton span{height:9px; border-radius:4px; background:var(--bg3);
+  animation:ws-shimmer 1.4s ease-in-out infinite}
+.ws-history-row.skeleton span:first-child{width:78%}
+.ws-history-row.skeleton span:last-child{width:40%; height:7px; animation-delay:.2s}
+@keyframes ws-shimmer{50%{opacity:.4}}
+
+.ws-chat-ask{flex:0 0 auto; display:flex; flex-direction:column; gap:6px; padding:8px 10px;
   border-top:1px solid var(--line); background:var(--bg2)}
 .ws-chat-ask[hidden]{display:none}
+.ws-chat-row{display:flex; align-items:flex-end; gap:6px}
+
+/* What is going up with the next message: a screenshot off the clipboard, a
+   file dragged onto the window, a paste too long to sit in the composer. Each
+   one is a file on disk whose path the prompt names, so the chip carries the
+   path as its tooltip - that is what the agent is actually being told. */
+.ws-clips{display:flex; flex-wrap:wrap; gap:5px}
+.ws-clips[hidden]{display:none}
+.ws-clip{display:inline-flex; align-items:center; gap:5px; max-width:100%; padding:3px 4px 3px 7px;
+  border:1px solid var(--line); border-radius:7px; background:var(--bg); font-size:11px; color:var(--dim)}
+.ws-clip>.ms{font-size:14px; color:var(--dim2)}
+.ws-clip-name{overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text)}
+.ws-clip-size{flex:0 0 auto; color:var(--dim2); font-size:10px}
+.ws-clip button{display:grid; place-items:center; width:17px; height:17px; padding:0; border:0;
+  border-radius:5px; background:none; color:var(--dim2); cursor:pointer}
+.ws-clip button:hover{background:var(--bg3); color:var(--text)}
+.ws-clip button .ms{font-size:13px}
+.ws-clips.sent{margin-top:5px}
+.ws-clips.sent .ws-clip{padding-right:7px; background:var(--bg2)}
+
+/* Dropped files land on the chat wherever over the window they are let go, so
+   the chat is what lights up while a file is over the window. */
+.ws-panel.ws-clip-over{outline:2px dashed var(--accent); outline-offset:-2px}
 .ws-chat-ask textarea{flex:1; min-width:0; resize:none; max-height:160px; padding:7px 10px;
   border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text);
   font:inherit; font-size:12.5px; line-height:1.5}
@@ -3411,16 +3652,16 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 /* The CLI's own interface, over the whole window. It is a full-screen terminal
    program, so a pane is exactly what it must not be given - and it is the way
    out of everything the chat cannot do, approving a command most of all. */
-.ws-claude-full{position:fixed; inset:0; z-index:40; display:flex; flex-direction:column;
+.ws-claude-full,.ws-cursor-full{position:fixed; inset:0; z-index:40; display:flex; flex-direction:column;
   background:var(--term-bg)}
-.ws-claude-full[hidden]{display:none}
-.ws-claude-full>header{flex:0 0 auto; display:flex; align-items:center; gap:8px; padding:8px 12px;
+.ws-claude-full[hidden],.ws-cursor-full[hidden]{display:none}
+.ws-claude-full>header,.ws-cursor-full>header{flex:0 0 auto; display:flex; align-items:center; gap:8px; padding:8px 12px;
   border-bottom:1px solid var(--line); background:var(--bg2); font-size:12px}
-.ws-claude-full>header>.ms{font-size:17px; color:var(--dim)}
-.ws-claude-full>header strong{flex:0 0 auto}
-.ws-claude-note{flex:1; min-width:0; color:var(--dim2); font-size:11px;
+.ws-claude-full>header>.ms,.ws-cursor-full>header>.ms{font-size:17px; color:var(--dim)}
+.ws-claude-full>header strong,.ws-cursor-full>header strong{flex:0 0 auto}
+.ws-claude-note,.ws-cursor-note{flex:1; min-width:0; color:var(--dim2); font-size:11px;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
-.ws-claude-full>.term-host{flex:1; min-height:0}
+.ws-claude-full>.term-host,.ws-cursor-full>.term-host{flex:1; min-height:0}
 
 .ws-chat-rescue{display:flex; flex-direction:column; align-items:flex-start; gap:7px; padding:11px 13px;
   border:1px solid var(--line); border-radius:9px; background:var(--bg2)}

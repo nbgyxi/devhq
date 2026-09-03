@@ -9,7 +9,41 @@ const term_dock_invoke = window.__TAURI__.core.invoke;
 const term_dock_listen = window.__TAURI__.event.listen;
 const term_dock_emit = window.__TAURI__.event.emit;
 
-const TERM_PREFS = "wint.terminals.v1";
+/** Where this dock is drawn and whose terminals it holds.
+ *
+ *  WinT's own dock is the strip across the bottom of the main window. A
+ *  workspace mounts the same dock inside one of its panels instead, so the
+ *  terminal in a workspace is this terminal - tabs, splits, shell types, the
+ *  shell menu, pop-out and all - and not a second, thinner one.
+ *
+ *  A host sets `window.wintDockHost` before this file loads:
+ *    id          names this dock's own list of what it has open
+ *    container   the element the dock is appended to
+ *    projectPath the folder a new terminal opens in
+ *    projectName what to call that folder
+ *    autoOpen    start a shell when there is nothing to restore
+ *    onDock      a terminal has been handed back into this dock
+ *  Absent, the dock is WinT's own and behaves exactly as it always has. */
+const dockHost = window.wintDockHost || null;
+const embedded = Boolean(dockHost);
+
+/** Where WinT keeps the terminal settings that are the same in every window.
+ *  A dock in a workspace reads them from here and writes down only its own
+ *  open terminals, so changing the default shell once changes it everywhere. */
+const TERM_APP_PREFS = "wint.terminals.v1";
+
+/** Where a dock other than WinT's own writes what it has open, one key per
+ *  host. Every window shares one localStorage, so a dock can read what the
+ *  other docks are holding - which is how pruning kept scrollback never throws
+ *  away the terminals of a workspace that simply is not open at the time. */
+const TERM_DOCK_PREFIX = "wint.terminals.dock.v1:";
+
+const TERM_PREFS = dockHost ? `${TERM_DOCK_PREFIX}${dockHost.id}` : TERM_APP_PREFS;
+
+/** This window. Sessions popped out of a dock carry it, so that a terminal
+ *  handed back lands in the dock it came from rather than in every dock that
+ *  happened to be listening. */
+const dockOrigin = window.__TAURI__.window.getCurrentWindow().label;
 
 /** Names one terminal's kept stream. The output itself never comes through
  *  here: the session in Rust keeps the bytes the shell wrote and replays them
@@ -77,6 +111,76 @@ function historyKeyForOpen(existing = "") {
   return existing || newHistoryKey();
 }
 
+/** Which dock is holding which live terminal, written where every window can
+ *  read it: they all share one localStorage, and reading it is instant and
+ *  cannot be missed.
+ *
+ *  A terminal handed back from its own window has to reach the dock it came
+ *  from, and the window that hears the handover first is not necessarily that
+ *  dock. Asking - by broadcast, and hoping for an answer before acting - is a
+ *  race; looking the terminal up is not.
+ *
+ *  Session ids only mean anything while the app is running, so this is not a
+ *  preference: at startup a dock forgets everything it had claimed, because
+ *  nothing it was holding survived. */
+const OWNERS_KEY = "wint.terminals.owners.v1";
+
+function readOwners() {
+  try {
+    const owners = JSON.parse(localStorage.getItem(OWNERS_KEY) || "{}");
+    return owners && typeof owners === "object" ? owners : {};
+  } catch { return {}; }
+}
+
+function writeOwners(owners) {
+  try { localStorage.setItem(OWNERS_KEY, JSON.stringify(owners)); } catch { /* nothing to do about it */ }
+}
+
+/** This dock holds that terminal - still true while it is popped out into its
+ *  own window, which is the whole point: that window is showing it, but this
+ *  dock is where it goes back to. */
+function ownTerminal(id) {
+  const owners = readOwners();
+  if (owners[id] === dockOrigin) return;
+  owners[id] = dockOrigin;
+  writeOwners(owners);
+}
+
+function disownTerminal(id) {
+  const owners = readOwners();
+  if (!(id in owners)) return;
+  delete owners[id];
+  writeOwners(owners);
+}
+
+function forgetOwnedTerminals() {
+  const owners = readOwners();
+  let changed = false;
+  for (const [id, owner] of Object.entries(owners)) {
+    if (owner !== dockOrigin) continue;
+    delete owners[id];
+    changed = true;
+  }
+  if (changed) writeOwners(owners);
+}
+
+/** Every kept stream any dock in the app still means to open again, this one
+ *  included. Pruning to only what this dock holds would delete the scrollback
+ *  of every workspace that happens to be closed. */
+function allKeptStreams() {
+  const keys = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const name = localStorage.key(i);
+    if (name !== TERM_APP_PREFS && !name?.startsWith(TERM_DOCK_PREFIX)) continue;
+    try {
+      for (const spec of JSON.parse(localStorage.getItem(name) || "{}").sessions || []) {
+        if (spec?.key) keys.push(spec.key);
+      }
+    } catch { /* a key that cannot be read holds no streams worth keeping */ }
+  }
+  return keys;
+}
+
 /** Writes the panel down: which shells are open, where, in what order, and the
  *  key that names each one's kept stream. No output passes through here - it
  *  never has to, and a terminal's scrollback was never something localStorage
@@ -110,24 +214,35 @@ function termsSavePrefs() {
   } catch { /* nothing here is worth failing a render over */ }
 }
 
+/** What shells there are, what they look like and which one is the default is
+ *  one answer for the whole app, and it is WinT's settings panel that gives
+ *  it. Only the list of what a dock has open is per window. */
+function termsLoadSettings() {
+  const saved = (() => {
+    try { return JSON.parse(localStorage.getItem(TERM_APP_PREFS) || "{}"); } catch { return {}; }
+  })();
+  terms.shellColors = { ...DEFAULT_SHELL_COLORS };
+  if (saved.shellColors && typeof saved.shellColors === "object") {
+    for (const profile of Object.keys(DEFAULT_SHELL_COLORS)) {
+      if (/^#[0-9a-f]{6}$/i.test(saved.shellColors[profile])) terms.shellColors[profile] = saved.shellColors[profile];
+    }
+  }
+  if (["none", "dot", "code"].includes(saved.shellMarkerStyle)) terms.shellMarkerStyle = saved.shellMarkerStyle;
+  if (typeof saved.saveHistory === "boolean") terms.saveHistory = saved.saveHistory;
+  if (typeof saved.enhancedHistorySearch === "boolean") terms.enhancedHistorySearch = saved.enhancedHistorySearch;
+  if (TERM_SHELLS.some((profile) => profile.value === saved.defaultShell)) {
+    terms.defaultShell = saved.defaultShell;
+    terms.nextShell = saved.defaultShell;
+  }
+}
+
 function termsLoadPrefs() {
+  termsLoadSettings();
   try {
     const saved = JSON.parse(localStorage.getItem(TERM_PREFS) || "{}");
     if (saved.height) terms.height = saved.height;
     if (saved.splitRatio >= .25 && saved.splitRatio <= .75) terms.splitRatio = saved.splitRatio;
     if (["horizontal", "vertical"].includes(saved.splitDirection)) terms.splitDirection = saved.splitDirection;
-    if (saved.shellColors && typeof saved.shellColors === "object") {
-      for (const profile of Object.keys(DEFAULT_SHELL_COLORS)) {
-        if (/^#[0-9a-f]{6}$/i.test(saved.shellColors[profile])) terms.shellColors[profile] = saved.shellColors[profile];
-      }
-    }
-    if (["none", "dot", "code"].includes(saved.shellMarkerStyle)) terms.shellMarkerStyle = saved.shellMarkerStyle;
-    if (typeof saved.saveHistory === "boolean") terms.saveHistory = saved.saveHistory;
-    if (typeof saved.enhancedHistorySearch === "boolean") terms.enhancedHistorySearch = saved.enhancedHistorySearch;
-    if (TERM_SHELLS.some((profile) => profile.value === saved.defaultShell)) {
-      terms.defaultShell = saved.defaultShell;
-      terms.nextShell = saved.defaultShell;
-    }
     if (Array.isArray(saved.sessions)) {
       terms.restoreSpecs = saved.sessions.filter((s) => s?.projectPath);
       terms.restoreOpen = saved.open !== false;
@@ -205,7 +320,11 @@ function dockEl() {
         <button data-shell-error-close>OK</button>
       </div>
     </div>`;
-  document.body.appendChild(el);
+  // Embedded, the dock fills whatever panel it was given and that panel owns
+  // its size, so the resize grip and the hide button - both of which move a
+  // boundary this dock no longer draws - are left out of it.
+  el.classList.toggle("embedded", embedded);
+  (dockHost?.container || document.body).appendChild(el);
   terms.el = el;
 
   // Delegated, because the strip is rebuilt every time a shell starts, stops
@@ -512,9 +631,10 @@ async function openTerminalWindow(shell = terms.defaultShell) {
       shell: shellProfileFromCommand(info.command),
       pane: 0,
     });
+    ownTerminal(info.id);
     await term_dock_invoke("term_popout", {
       id: info.id, x: null, y: null, position: null, dimensions: null,
-      maximized: false, fullscreen: false, focus: true,
+      maximized: false, fullscreen: false, focus: true, origin: dockOrigin,
     });
     termsSavePrefs();
   } catch (e) {
@@ -630,19 +750,28 @@ function clampDockHeight(height) {
 }
 
 function applyDockHeight() {
+  // Embedded, the height is the panel's and the workspace grip moves it.
+  if (embedded) return;
   terms.height = clampDockHeight(terms.height);
   document.documentElement.classList.toggle("terminal-dock-open", terms.open);
   document.documentElement.style.setProperty("--dock-h", terms.open ? `${terms.height}px` : "0px");
 }
 
 function setDockOpen(open) {
-  terms.open = open;
-  dockEl().classList.toggle("open", open);
+  // A dock inside a panel has no closed state: the panel is what is shown and
+  // hidden, and a strip that emptied itself would leave the panel blank with
+  // no way back to a new terminal.
+  terms.open = embedded || open;
+  dockEl().classList.toggle("open", terms.open);
   applyDockHeight();
   syncTerminalButton();
-  if (open) {
+  if (terms.open) {
     fitVisible();
-    terms.sessions.get(terms.active)?.view.focus();
+    // Only WinT's own dock takes the caret when it opens: there, opening the
+    // panel is the click. A workspace panel is simply on screen, and a window
+    // that grabs the keyboard for a shell nobody asked to type in is a window
+    // that swallows the first thing typed into the chat beside it.
+    if (!embedded) terms.sessions.get(terms.active)?.view.focus();
   }
   termsSavePrefs();
 }
@@ -805,7 +934,10 @@ function closeShellError() {
 function showTerminalError(title, detail, shell = "") {
   const dialog = dockEl().querySelector(".term-shell-error");
   const offer = dialog.querySelector("[data-shell-error-get]");
-  const download = shell ? downloadableShell(shell) : null;
+  // The offer to fetch a shell leads to WinT's settings, which a workspace
+  // does not have. There it says how to install it instead of offering a
+  // button that goes nowhere.
+  const download = shell && !embedded ? downloadableShell(shell) : null;
   dialog.querySelector("strong").textContent = title;
   dialog.querySelector("p").textContent = download
     ? `${detail} WinT can download it for you — ${megabytes(download.downloadBytes)}, from ${download.source}.`
@@ -852,7 +984,7 @@ function showShellError(shell, detail = "") {
   // The winget line is only worth printing for the shells WinT cannot fetch
   // itself; for the rest the dialog offers the download instead of describing
   // a command the user would have to go and type.
-  const hint = missing && !downloadableShell(shell) ? PROFILE_HINTS[shell] : "";
+  const hint = missing && (embedded || !downloadableShell(shell)) ? PROFILE_HINTS[shell] : "";
   showTerminalError(
     missing ? `${label} isn't installed` : `${label} couldn't start`,
     hint ? `${reason} ${hint}` : reason,
@@ -977,6 +1109,7 @@ async function switchTerminalShell(id, shell) {
     old.host.remove();
     terms.sessions.delete(id);
     terms.known.delete(id);
+    disownTerminal(id);
     await term_dock_invoke("term_close", { id }).catch(() => {});
 
     const replacementSession = terms.sessions.get(replacement.id);
@@ -1009,11 +1142,16 @@ async function switchTerminalShell(id, shell) {
 function newTerminalTarget(pane = terms.active ? sessionPane(terms.active) : 0) {
   const active = terms.sessions.get(terms.paneActive[pane])?.info;
   if (active) return { path: active.projectPath, name: active.projectName || "this project" };
+  // Embedded, a new terminal belongs to the project the workspace is for;
+  // in WinT it belongs to the folder being scanned.
+  if (dockHost?.projectPath) {
+    return { path: dockHost.projectPath, name: dockHost.projectName || "this project" };
+  }
   const root = window.wintPrimaryRoot?.() || "";
   return { path: root, name: root.split(/[\/]/).filter(Boolean).pop() || root || "no folder" };
 }
 
-function openNewTerminal(shell = terms.defaultShell, pane = terms.active ? sessionPane(terms.active) : 0) {
+function openNewTerminal(shell = terms.defaultShell, pane = terms.active ? sessionPane(terms.active) : 0, opts = {}) {
   const target = newTerminalTarget(pane);
   if (!target.path) {
     termNote("term:noroot", "Nowhere to open a shell - add a folder to scan first.", 4000);
@@ -1023,14 +1161,17 @@ function openNewTerminal(shell = terms.defaultShell, pane = terms.active ? sessi
     showShellError(shell);
     return;
   }
-  openTerminal(target, { shell, pane });
+  openTerminal(target, { shell, pane, ...opts });
 }
 
 function escAttr(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 }
 
-function setActive(id) {
+/** Brings a terminal to the front. `focus` is false for the ones that arrive
+ *  without anybody asking - restored, or the shell a workspace panel opens
+ *  onto - which are shown but do not take the keyboard. */
+function setActive(id, focus = true) {
   terms.active = id;
   terms.paneActive[sessionPane(id)] = id;
   syncPaneLayout();
@@ -1039,7 +1180,7 @@ function setActive(id) {
     const session = terms.sessions.get(id);
     if (session) {
       session.view.fit();
-      session.view.focus();
+      if (focus) session.view.focus();
     }
   }
   termsSavePrefs();
@@ -1076,7 +1217,7 @@ async function openTerminal(project, opts = {}) {
       },
     });
     terms.pending.delete(key);
-    await mountSession(info.id, historyKey || "", pane);
+    await mountSession(info.id, historyKey || "", pane, opts.focus !== false);
     if (opts.run) sendWhenReady(info.id, opts.run);
     return info;
   } catch (e) {
@@ -1119,9 +1260,9 @@ function sendWhenReady(id, command) {
 
 /** Attaches a view to a session that already exists — a new one, or one coming
  *  back from a popped-out window. */
-async function mountSession(id, historyKey = "", restoredPane = 0) {
+async function mountSession(id, historyKey = "", restoredPane = 0, focus = true) {
   if (terms.sessions.has(id)) {
-    setActive(id);
+    setActive(id, focus);
     return;
   }
   const host = document.createElement("div");
@@ -1129,6 +1270,9 @@ async function mountSession(id, historyKey = "", restoredPane = 0) {
   dockEl().querySelector(".dock-views").appendChild(host);
 
   const remembered = terms.known.get(id);
+  // Written down where the other windows can see it, before anything can go
+  // wrong: from here on this dock is where that terminal goes back to.
+  ownTerminal(id);
 
   const view = new TermView(host, id);
   const info = await view.attach();
@@ -1156,7 +1300,7 @@ async function mountSession(id, historyKey = "", restoredPane = 0) {
     if (session.info.command.includes("claude-setup.ps1")) loadShellAvailability();
   };
 
-  setActive(id);
+  setActive(id, focus);
   view.fit();
   termsSavePrefs();
 }
@@ -1191,6 +1335,7 @@ function removeTerminal(id) {
   session.host.remove();
   terms.sessions.delete(id);
   terms.known.delete(id);
+  disownTerminal(id);
   focusNext();
   termsSavePrefs();
 }
@@ -1237,6 +1382,35 @@ function popoutGrid(view) {
   return `${Math.min(cols, maxCols)},${Math.min(rows, maxRows)}`;
 }
 
+/** Whether an event about a popped-out terminal is this dock's business.
+ *
+ *  Every dock hears every one of these. The dock a terminal was popped out of
+ *  still remembers it, and that memory is what decides - not the label the
+ *  window carries back, which is only there for the sessions no dock has ever
+ *  held, such as a pane a popped-out window opened for itself with `wt`. */
+function ownsPopped(payload) {
+  const id = payload?.id || payload?.info?.id;
+  if (id && terms.known.has(id)) return true;
+  const origin = payload?.origin;
+  return origin ? origin === dockOrigin : !embedded;
+}
+
+/** Whether this dock takes in a terminal being handed back.
+ *
+ *  Whichever dock popped it out takes it: a terminal that left a workspace
+ *  comes home to that workspace, not to whichever window heard the handover
+ *  first. Nobody's - a workspace closed since it was popped out - is WinT's,
+ *  because the alternative is a shell left running with no window anywhere
+ *  showing it. */
+function claimsDock(payload) {
+  const id = payload?.id;
+  if (!id) return false;
+  if (terms.known.has(id)) return true;
+  const owner = readOwners()[id];
+  if (owner) return owner === dockOrigin;
+  return !embedded;
+}
+
 /** Hands the session to its own window. The shell is untouched — only the view
  *  moves, so a running build carries straight on. */
 async function popOutTerminal(id, screenX, screenY, windowOptions = {}) {
@@ -1269,6 +1443,7 @@ async function popOutTerminal(id, screenX, screenY, windowOptions = {}) {
       maximized: !!windowOptions.maximized,
       fullscreen: !!windowOptions.fullscreen,
       focus: windowOptions.focus !== false,
+      origin: dockOrigin,
     });
     termsSavePrefs();
   } catch (e) {
@@ -1285,25 +1460,44 @@ async function popOutTerminal(id, screenX, screenY, windowOptions = {}) {
   }
 }
 
+// Nothing this window was holding survived the last time it was open, whatever
+// the register still says about it.
+forgetOwnedTerminals();
 termsLoadPrefs();
 applyShellColors();
 dockEl();
 applyShellMarkerStyle();
 renderTabs();
 applyDockHeight();
+// Embedded, the panel is already on screen: the dock is what fills it, with or
+// without a terminal in it yet.
+if (embedded) setDockOpen(true);
+
+// Shell colours and markers are a setting, not a dock's own state: when the
+// settings panel changes them, every dock on screen follows.
+term_dock_listen("term:markers", () => {
+  if (!embedded) return;
+  termsLoadSettings();
+  applyShellColors();
+  applyShellMarkerStyle();
+  renderTabs();
+});
 
 // A popped-out window docking back, or simply being closed: take the session
 // into the panel rather than letting it run with nothing showing it.
 // The cross on a popped-out window: that terminal is gone, not moving. Forget
 // it rather than pulling it back into the panel or restoring it next launch.
 term_dock_listen("term:closed", (event) => {
+  if (!ownsPopped(event.payload)) return;
   const id = event.payload.id;
   terms.known.delete(id);
+  disownTerminal(id);
   renderTabs();
   termsSavePrefs();
 });
 
 term_dock_listen("term:popped-created", (event) => {
+  if (!ownsPopped(event.payload)) return;
   const info = event.payload?.info;
   if (!info?.id) return;
   terms.known.set(info.id, {
@@ -1314,6 +1508,7 @@ term_dock_listen("term:popped-created", (event) => {
     shell: shellProfileFromCommand(info.command),
     pane: 1,
   });
+  ownTerminal(info.id);
   termsSavePrefs();
 });
 
@@ -1337,6 +1532,20 @@ function reportWt(token, ok, message = "") {
   term_dock_invoke("wt_report", { token, ok, message }).catch(() => {});
 }
 
+/** Requests another window has said it is acting on.
+ *
+ *  A `wt` command is broadcast to every dock and every popped-out terminal.
+ *  Only the one holding that terminal acts on it; this is how the rest learn
+ *  not to answer on its behalf. */
+const wtClaimed = new Set();
+term_dock_listen("term:wt-claimed", (event) => {
+  const token = event.payload?.token;
+  if (!token) return;
+  wtClaimed.add(token);
+  // Only the moment right after the broadcast matters; the set is not a log.
+  setTimeout(() => wtClaimed.delete(token), 10000);
+});
+
 async function executeWtRequest(request) {
   if (!request) return;
   if (!terms.sessions.has(request.termId)) {
@@ -1345,16 +1554,25 @@ async function executeWtRequest(request) {
     // never heard of has nowhere to put the pane; `wt` learns that from the
     // answer never arriving.
     if (!terms.known.has(request.termId)) {
-      termNote("term:wt-lost", "A wt command arrived from a terminal WinT no longer holds.", 5000);
-      // With nothing popped out there is no other window that could own it, so
-      // the shell is told now rather than left waiting for an answer that is
-      // never coming.
+      // A workspace holds terminals of its own, and hears this broadcast as
+      // well. Speaking for a terminal it was never going to own is how it
+      // would answer "no such terminal" to a `wt` the main window is at that
+      // moment carrying out, so only WinT's own dock says so - and not even
+      // then if the register says the terminal belongs to a dock elsewhere.
+      if (embedded || readOwners()[request.termId]) return;
       if (![...terms.known.values()].some((spec) => spec.popped)) {
-        reportWt(request.token, false, "WinT has no terminal with that id any more.");
+        setTimeout(() => {
+          if (wtClaimed.has(request.token)) return;
+          termNote("term:wt-lost", "A wt command arrived from a terminal WinT no longer holds.", 5000);
+          reportWt(request.token, false, "WinT has no terminal with that id any more.");
+        }, 400);
       }
     }
     return;
   }
+  // Claimed before anything is opened: the windows that are not going to act
+  // on this are waiting on the answer.
+  if (request.token) term_dock_emit("term:wt-claimed", { token: request.token }).catch(() => {});
   const targetNewWindow = ["new", "-1"].includes(request.window);
   if (!targetNewWindow) {
     const current = window.__TAURI__.window.getCurrentWindow();
@@ -1449,20 +1667,31 @@ term_dock_listen("term:wt-request", (event) => executeWtRequest(event.payload));
 
 term_dock_listen("term:close-watch", (event) => {
   const id = event.payload?.id;
-  if (!id) return;
+  if (!id || !ownsPopped(event.payload)) return;
   term_dock_invoke("term_close_snapshot", { id })
     .then(scheduleOrphanCheck)
     .catch(() => term_dock_invoke("term_close", { id }).catch(() => {}));
 });
 
 term_dock_listen("term:docked", async (event) => {
+  if (!claimsDock(event.payload)) return;
   const id = event.payload.id;
-  await term_dock_invoke("term_dock", { id }).catch(() => {});
+  const focus = embedded ? dockOrigin : undefined;
+  await term_dock_invoke("term_dock", { id, focus }).catch(() => {});
   try {
     await mountSession(id, "", event.payload.pane === 1 ? 1 : 0);
     setDockOpen(true);
     termsSavePrefs();
-  } catch {}
+    // A terminal arriving from outside must not land in a panel that is
+    // hidden: the window it was in has just closed, so that would be a
+    // terminal with nowhere left to be seen.
+    dockHost?.onDock?.(id);
+  } catch (e) {
+    // It has left its own window, so there is nowhere else it could be. Said
+    // out loud rather than swallowed: a terminal that vanishes on the way home
+    // is not something to leave anybody guessing about.
+    termNote("term:dock-failed", `That terminal could not be taken back in: ${e}`, 6000);
+  }
 });
 
 /** Recreates the shells that were open when WinT last closed. Processes do
@@ -1474,7 +1703,7 @@ async function restoreTerminals() {
   // not running, or one lost with a crash - are dropped before anything else
   // touches them.
   term_dock_invoke("term_prune_history", {
-    keys: terms.saveHistory ? specs.map((spec) => spec.key).filter(Boolean) : [],
+    keys: terms.saveHistory ? allKeptStreams() : [],
   }).catch(() => {});
   if (!specs.length) return;
   terms.restoring = true;
@@ -1500,7 +1729,7 @@ async function restoreTerminals() {
         },
       });
       terms.pending.delete(key);
-      await mountSession(info.id, historyKey || "", spec.pane);
+      await mountSession(info.id, historyKey || "", spec.pane, false);
       Object.assign(terms.known.get(info.id) || {}, {
         tabColor: spec.tabColor || "", colorScheme: spec.colorScheme || "",
       });
@@ -1516,7 +1745,7 @@ async function restoreTerminals() {
   terms.restoring = false;
   const preferred = restored[Math.min(terms.restoreActive, restored.length - 1)];
   const active = terms.sessions.has(preferred) ? preferred : terms.sessions.keys().next().value;
-  if (active) setActive(active);
+  if (active) setActive(active, !embedded);
   setDockOpen(terms.restoreOpen && terms.sessions.size > 0);
   termsSavePrefs();
 }
@@ -1529,6 +1758,26 @@ window.openTerminalWindow = openTerminalWindow;
 window.setDockOpen = setDockOpen;
 window.syncTerminalButton = syncTerminalButton;
 window.termsState = terms;
+
+/** What a host window needs of its own dock: the panel around it changes size
+ *  on its own, and the workspace has one or two things to say to whichever
+ *  terminal is on top. */
+window.wintTermDock = {
+  state: terms,
+  embedded,
+  activeId: () => terms.active,
+  has: (id) => terms.sessions.has(id),
+  label: (id) => terms.known.get(id)?.projectName || "The terminal",
+  newTerminal: openNewTerminal,
+  write: (data) => {
+    const session = terms.sessions.get(terms.active);
+    if (!session) return false;
+    session.view.send(data);
+    session.view.focus();
+    return true;
+  },
+  fit: fitVisible,
+};
 
 function shellProfileFromCommand(command) {
   const value = String(command || "").toLowerCase();
@@ -1619,6 +1868,13 @@ term_dock_listen("shells:download-progress", async (event) => {
   window.wintShellDownloadProgress?.(event.payload);
 });
 
-restoreTerminals();
+restoreTerminals().finally(() => {
+  // A workspace opens onto a shell in its project. An empty strip with a plus
+  // button on it is not what "the terminal panel" means there, and the first
+  // thing anyone does with a workspace terminal is run something in it.
+  if (embedded && dockHost.autoOpen && !terms.sessions.size && !terms.pending.size) {
+    openNewTerminal(terms.defaultShell, 0, { focus: false });
+  }
+});
 loadShellAvailability();
 loadShellDownloads();

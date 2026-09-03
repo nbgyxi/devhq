@@ -29,10 +29,12 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// The turn a window currently has in flight, so it can be interrupted.
+/// The turn a tab currently has in flight, so it can be interrupted.
 ///
-/// One per window: a workspace has a single chat, and a second question while
-/// the first is still answering replaces it rather than racing it.
+/// One per tab: a workspace can hold several Claude conversations open at
+/// once (several tabs), and a second question in the *same* tab while the
+/// first is still answering replaces it - but a question in another tab must
+/// not touch this one.
 fn running() -> &'static Mutex<std::collections::HashMap<String, Child>> {
     static RUNNING: OnceLock<Mutex<std::collections::HashMap<String, Child>>> = OnceLock::new();
     RUNNING.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
@@ -68,7 +70,7 @@ pub async fn claude_status() -> ClaudeStatus {
             .output()
             .ok()
             .filter(|out| out.status.success())
-            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .map(|out| crate::term::version_line(&String::from_utf8_lossy(&out.stdout)))
             .unwrap_or_default();
         ClaudeStatus {
             installed: !version.is_empty(),
@@ -110,6 +112,9 @@ fn command(path: &std::path::Path) -> Command {
 #[serde(rename_all = "camelCase")]
 struct Line {
     window: String,
+    /// Which tab this turn belongs to, so a window with several Claude tabs
+    /// open can route the line to the right conversation.
+    tab: String,
     /// One line of the CLI's stream, unparsed. The front end owns the schema:
     /// it is Anthropic's, it grows, and a field this file does not know about
     /// is not a reason to drop the line.
@@ -120,6 +125,7 @@ struct Line {
 #[serde(rename_all = "camelCase")]
 struct Ended {
     window: String,
+    tab: String,
     code: i32,
     /// Anything the CLI wrote to stderr. Empty on a clean run; on a failed one
     /// it is the only place the reason exists.
@@ -135,6 +141,7 @@ struct Ended {
 pub async fn claude_send(
     app: AppHandle,
     window: String,
+    tab: String,
     prompt: String,
     cwd: String,
     session: Option<String>,
@@ -147,8 +154,9 @@ pub async fn claude_send(
     if !std::path::Path::new(&cwd).is_dir() {
         return Err("That folder no longer exists.".into());
     }
-    // A question asked while the last one is still answering replaces it.
-    let _ = claude_cancel(window.clone()).await;
+    // A question asked in this tab while the last one is still answering
+    // replaces it; a question in another tab is untouched.
+    let _ = claude_cancel(tab.clone()).await;
 
     tauri::async_runtime::spawn_blocking(move || {
         let mut cmd = command(&path);
@@ -188,7 +196,7 @@ pub async fn claude_send(
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        running().lock().unwrap().insert(window.clone(), child);
+        running().lock().unwrap().insert(tab.clone(), child);
 
         // stderr on its own thread: a run that fails before it says anything on
         // stdout says why here, and a full pipe nobody drains would wedge it.
@@ -212,6 +220,7 @@ pub async fn claude_send(
                     "claude:line",
                     Line {
                         window: window.clone(),
+                        tab: tab.clone(),
                         line,
                     },
                 );
@@ -221,7 +230,7 @@ pub async fn claude_send(
         let code = running()
             .lock()
             .unwrap()
-            .remove(&window)
+            .remove(&tab)
             .and_then(|mut child| child.wait().ok())
             .and_then(|status| status.code())
             .unwrap_or(-1);
@@ -230,6 +239,7 @@ pub async fn claude_send(
             "claude:end",
             Ended {
                 window,
+                tab,
                 code,
                 error,
             },
@@ -278,9 +288,9 @@ fn is_session_id(value: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn claude_cancel(window: String) -> Result<(), String> {
+pub async fn claude_cancel(tab: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        if let Some(mut child) = running().lock().unwrap().remove(&window) {
+        if let Some(mut child) = running().lock().unwrap().remove(&tab) {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -362,4 +372,282 @@ pub async fn claude_install(app: AppHandle, window: String) -> Result<(), String
     })
     .await
     .unwrap_or_else(|_| Err("The install stopped unexpectedly.".into()))
+}
+
+/* ------------------------------------------------------- previous chats */
+
+// The CLI keeps every conversation as a JSONL transcript under
+// `~/.claude/projects/<the cwd, punctuation turned to dashes>/<session id>.jsonl`.
+// Reading them is what lets the panel offer the conversations this project has
+// had before - the ones held in a terminal included, since both surfaces are
+// the same CLI writing to the same place.
+
+/// The folder the CLI keeps this project's transcripts in.
+///
+/// The name is the working directory with every character that is not a letter
+/// or a digit turned into a dash, so `C:\code\devhq` becomes `C--code-devhq`.
+/// Windows hands the name back in whatever case it was created with, so the
+/// folder is matched case-insensitively rather than trusted to be spelled the
+/// same way twice.
+fn transcript_dir(cwd: &str) -> Option<PathBuf> {
+    let home = std::env::var_os("USERPROFILE").map(PathBuf::from)?;
+    let projects = home.join(".claude").join("projects");
+    let slug: String = cwd
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let exact = projects.join(&slug);
+    if exact.is_dir() {
+        return Some(exact);
+    }
+    std::fs::read_dir(&projects)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.eq_ignore_ascii_case(&slug))
+        })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeSession {
+    id: String,
+    /// The first thing the person actually typed, which is what a conversation
+    /// is remembered by. Empty when there is nothing in it but tool noise.
+    title: String,
+    /// Last write, in milliseconds since the epoch. The front end owns how a
+    /// date is spelled, because it owns the language the window is in.
+    modified: u64,
+    /// How many questions were asked, so an afternoon's work does not look the
+    /// same in the list as one abandoned line.
+    turns: u32,
+}
+
+/// One transcript line, matched on the few fields this needs. The rest of the
+/// schema is large and growing, and is ignored rather than parsed.
+#[derive(serde::Deserialize)]
+struct Entry {
+    #[serde(default, rename = "type")]
+    kind: String,
+    #[serde(default)]
+    message: Option<serde_json::Value>,
+    #[serde(default, rename = "isMeta")]
+    is_meta: bool,
+    /// The name the CLI gave the conversation itself, on its own line. It is
+    /// written again as the conversation goes on, so the last one is the one
+    /// that has read the most of it.
+    #[serde(default, rename = "aiTitle")]
+    ai_title: Option<String>,
+}
+
+/// The text blocks of a message, whether its content is a bare string or the
+/// list of blocks. A tool result is not something anybody said, so it is not
+/// one of them.
+fn text_blocks(message: &serde_json::Value) -> Vec<&str> {
+    match message.get("content") {
+        Some(serde_json::Value::String(text)) => vec![text.as_str()],
+        Some(serde_json::Value::Array(blocks)) => blocks
+            .iter()
+            .filter(|block| block.get("type").and_then(|t| t.as_str()) == Some("text"))
+            .filter_map(|block| block.get("text").and_then(|t| t.as_str()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn message_text(message: &serde_json::Value) -> String {
+    text_blocks(message).join("\n\n")
+}
+
+/// What the person actually typed.
+///
+/// A question reaches the CLI wrapped in blocks nobody wrote by hand - the
+/// file open in the editor, the reminders injected into a turn - and the
+/// typed one is somewhere among them, not necessarily first. So the envelopes
+/// are dropped one block at a time; judging the message by how it starts
+/// throws away every question asked with a file open.
+fn spoken_text(message: &serde_json::Value) -> String {
+    text_blocks(message)
+        .into_iter()
+        .filter(|block| is_spoken(block))
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Whether a block of user text is something the person typed, rather than one
+/// of the envelopes the CLI wraps around it: IDE notices, slash command
+/// plumbing, the reminders injected into a turn.
+fn is_spoken(text: &str) -> bool {
+    let text = text.trim();
+    !text.is_empty() && !text.starts_with('<') && !text.starts_with("Caveat:")
+}
+
+/// The conversations this project has had, newest first.
+#[tauri::command]
+pub async fn claude_sessions(cwd: String) -> Vec<ClaudeSession> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(dir) = transcript_dir(&cwd) else {
+            return Vec::new();
+        };
+        let mut sessions: Vec<ClaudeSession> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
+            })
+            .filter_map(|entry| {
+                let path = entry.path();
+                let id = path.file_stem()?.to_str()?.to_string();
+                if !is_session_id(&id) {
+                    return None;
+                }
+                let modified = entry
+                    .metadata()
+                    .ok()?
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|since| since.as_millis() as u64)
+                    .unwrap_or(0);
+                let (title, turns) = summarise(&path);
+                Some(ClaudeSession {
+                    id,
+                    title,
+                    modified,
+                    turns,
+                })
+            })
+            .collect();
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.modified));
+        sessions.truncate(40);
+        sessions
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// What a transcript is called and how big it is.
+///
+/// Transcripts run to megabytes and this reads one per conversation in the
+/// list, so it goes line by line rather than slurping the file, and stops
+/// counting once the number has stopped being worth showing.
+fn summarise(path: &std::path::Path) -> (String, u32) {
+    let Ok(file) = std::fs::File::open(path) else {
+        return (String::new(), 0);
+    };
+    // The CLI names conversations itself, and its name is better than the
+    // first thing anybody typed - it has read the whole thing. The first
+    // question is what stands in until it has.
+    let mut named = String::new();
+    let mut first = String::new();
+    let mut turns = 0u32;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(entry) = serde_json::from_str::<Entry>(&line) else {
+            continue;
+        };
+        if entry.is_meta {
+            continue;
+        }
+        if let Some(title) = entry.ai_title.filter(|title| !title.trim().is_empty()) {
+            named = title.trim().to_string();
+            continue;
+        }
+        if entry.kind != "user" {
+            continue;
+        }
+        let Some(message) = entry.message.as_ref() else {
+            continue;
+        };
+        let text = spoken_text(message);
+        if text.is_empty() {
+            continue;
+        }
+        turns += 1;
+        if first.is_empty() {
+            first = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            first.truncate(160);
+        }
+    }
+    let mut title = if named.is_empty() { first } else { named };
+    title.truncate(160);
+    (title, turns)
+}
+
+/// One turn of a past conversation, in the shape the panel draws.
+#[derive(Serialize)]
+pub struct ClaudeTurn {
+    role: String,
+    text: String,
+}
+
+/// A past conversation, replayed into the chat log.
+///
+/// Only what the panel can draw: what was asked and what was answered. The
+/// tool calls are left out - live they say the work is moving, but a week
+/// later they are noise between the answers.
+#[tauri::command]
+pub async fn claude_transcript(cwd: String, session: String) -> Result<Vec<ClaudeTurn>, String> {
+    if !is_session_id(&session) {
+        return Err("That is not a conversation.".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = transcript_dir(&cwd)
+            .map(|dir| dir.join(format!("{session}.jsonl")))
+            .filter(|path| path.is_file())
+            .ok_or("That conversation is no longer on disk.")?;
+        let file = std::fs::File::open(&path).map_err(|e| format!("Could not read it: {e}"))?;
+        let mut turns: Vec<ClaudeTurn> = Vec::new();
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let Ok(entry) = serde_json::from_str::<Entry>(&line) else {
+                continue;
+            };
+            if entry.is_meta {
+                continue;
+            }
+            let Some(message) = entry.message.as_ref() else {
+                continue;
+            };
+            match entry.kind.as_str() {
+                "user" => {
+                    let text = spoken_text(message);
+                    if text.is_empty() {
+                        continue;
+                    }
+                    turns.push(ClaudeTurn {
+                        role: "you".into(),
+                        text,
+                    });
+                }
+                "assistant" if !message_text(message).trim().is_empty() => {
+                    let text = message_text(message);
+                    // One answer arrives as several blocks; the panel drew them
+                    // as a single bubble when it was live, so it does here too.
+                    match turns.last_mut() {
+                        Some(last) if last.role == "claude" => {
+                            last.text.push_str("\n\n");
+                            last.text.push_str(&text);
+                        }
+                        _ => turns.push(ClaudeTurn {
+                            role: "claude".into(),
+                            text,
+                        }),
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(turns)
+    })
+    .await
+    .unwrap_or_else(|_| Err("Could not read that conversation.".into()))
 }

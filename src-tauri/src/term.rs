@@ -74,11 +74,28 @@ fn find_command(name: &str) -> Option<PathBuf> {
 /// `.cmd` shim beside an `.exe` that may not exist, and which of the two is
 /// there is not something to guess at.
 pub fn find_program_on_path(names: &[&str]) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path)
-            .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
-            .find(|path| path.is_file())
-    })
+    find_programs_on_path(names).into_iter().next()
+}
+
+/// Every one of those names that is on PATH, in PATH order.
+///
+/// The first hit is not always the real thing: another program's launcher can
+/// sit earlier on PATH under the same name and answer for it. A caller that can
+/// tell a working install from a broken stand-in walks the whole list.
+pub fn find_programs_on_path(names: &[&str]) -> Vec<PathBuf> {
+    std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path)
+                .flat_map(|dir| {
+                    names
+                        .iter()
+                        .map(move |name| dir.join(name))
+                        .collect::<Vec<_>>()
+                })
+                .filter(|path| path.is_file())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// A command line that starts `path`, whatever kind of file it is.
@@ -1754,6 +1771,10 @@ pub async fn term_popout(
     maximized: Option<bool>,
     fullscreen: Option<bool>,
     focus: Option<bool>,
+    // The window whose dock this terminal is leaving. It travels with the
+    // window, so that docking back lands in the dock it came from rather than
+    // in whichever window happened to hear the broadcast.
+    origin: Option<String>,
 ) -> Result<(), String> {
     let session = lookup(&id)?;
     let label = format!("term-{id}");
@@ -1770,7 +1791,13 @@ pub async fn term_popout(
         let mut builder = WebviewWindowBuilder::new(
             &app,
             &label,
-            WebviewUrl::App(format!("terminal.html?id={id}").into()),
+            WebviewUrl::App(
+                match origin.as_deref().filter(|value| !value.is_empty()) {
+                    Some(origin) => format!("terminal.html?id={id}&origin={origin}"),
+                    None => format!("terminal.html?id={id}"),
+                }
+                .into(),
+            ),
         )
         .title(title)
         .inner_size(900.0, 600.0)
@@ -1859,10 +1886,20 @@ pub async fn term_drag_preview(
 /// close request by announcing a dock - which lands right back here. The panel
 /// already holds the session by this point, so the window is simply gone.
 #[tauri::command]
-pub async fn term_dock(app: AppHandle, id: String) -> Result<(), String> {
+pub async fn term_dock(app: AppHandle, id: String, focus: Option<String>) -> Result<(), String> {
     off_thread(move || {
         if let Some(win) = app.get_webview_window(&format!("term-{id}")) {
             let _ = win.destroy();
+        }
+        // Focus the window the terminal is docking into: the workspace it came
+        // from, or the main window if nowhere else claims it.
+        if let Some(focus_label) = focus.as_ref() {
+            if let Some(win) = app.get_webview_window(focus_label) {
+                let _ = win.unminimize();
+                let _ = win.show();
+                let _ = win.set_focus();
+                return;
+            }
         }
         if let Some(main) = app.get_webview_window("main") {
             let _ = main.unminimize();
@@ -1970,4 +2007,26 @@ mod serving_tests {
             Some("http://localhost:8080/\u{2713}")
         );
     }
+}
+
+/// The version out of a `--version` run, or nothing if it doesn't look like one.
+///
+/// Exit code zero is not proof a CLI is there. VS Code's Copilot Chat extension
+/// puts a `copilot.bat` launcher on PATH that exits 0 while printing
+/// "Cannot find GitHub Copilot CLI (…)" — taken at face value that sentence
+/// became the version, the panel called the CLI installed and offered a chat
+/// that could never answer. A real version carries a number, so that is what
+/// this looks for: the first line holding a `<digits>.<digits>`.
+pub fn version_line(stdout: &str) -> String {
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| {
+            let bytes = line.as_bytes();
+            bytes.windows(3).any(|w| {
+                w[0].is_ascii_digit() && w[1] == b'.' && w[2].is_ascii_digit()
+            })
+        })
+        .unwrap_or("")
+        .to_string()
 }
