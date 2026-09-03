@@ -3230,7 +3230,8 @@ button.copy-confirmed .ms{color:var(--green)!important}button.copy-failed .ms{co
 body.workspace{
   --ws-left:280px; --ws-right:420px; --ws-bottom:260px; --ws-left-split:50%; --ws-right-split:50%;
   /* Save & upload is a line of state, a message box and three buttons. It is
-     given the height of what it is showing, and no more. */
+     given the height of what it is showing, and no more - workspace.js
+     measures its content and keeps this in step. */
   --ws-git-h:90px;
   display:grid; grid-template-rows:var(--titlebar) minmax(0,1fr) auto;
   height:100vh; margin:0; overflow:hidden; background:var(--bg);
@@ -3258,6 +3259,9 @@ body.workspace.ws-no-center.ws-no-left.ws-no-right #ws-grid{grid-template-column
    that panel's own height - there is nothing a taller Save & upload would
    show, and the divider between the two has nothing left to decide. */
 .ws-col.ws-git-fixed{grid-template-rows:minmax(0,1fr) auto var(--ws-git-h)}
+/* Same, mirrored, for the rare layout where Save & upload has been dragged
+   above the other panel instead of below it. */
+.ws-col.ws-git-fixed-top{grid-template-rows:var(--ws-git-h) auto minmax(0,1fr)}
 .ws-right-col{display:grid; grid-template-rows:minmax(0,var(--ws-right-split)) auto minmax(0,1fr); min-width:0; overflow:hidden}
 
 .ws-slot{display:flex; min-width:0; min-height:0; overflow:hidden; background:var(--bg1); border:1px solid var(--line); border-radius:8px; margin:4px}
@@ -3327,6 +3331,8 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-preview header{display:flex; align-items:center; gap:8px; padding:6px 8px; border-bottom:1px solid var(--line)}
 .ws-preview header strong{flex:1; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 .ws-preview header small{flex:0 0 auto; color:var(--dim2); font:9.5px 'Cascadia Mono',Consolas,monospace}
+.ws-preview-dot{flex:0 0 auto; width:6px; height:6px; border-radius:50%; background:var(--amber)}
+.ws-preview-code pre[contenteditable="true"]{cursor:text; outline:0}
 .ws-preview-code{flex:1; min-height:0; display:flex; align-items:flex-start; overflow:auto;
   font:12px/1.5 ui-monospace,'Cascadia Mono',Consolas,monospace; tab-size:2}
 .ws-preview-code[hidden]{display:none}
@@ -3478,22 +3484,26 @@ body.workspace>#ws-bottom-dock{grid-row:3}
    optionally split into two panes, the same interaction the terminal's dock
    uses for its shells - drag to reorder, drag onto an edge to split. */
 .ws-agent-dock{display:flex; flex-direction:column; overflow:hidden; padding:0}
-.ws-agent-bar{--agent-split:50%; height:30px; flex:0 0 auto; display:flex; align-items:stretch;
+/* The bar's height is set from JS (syncAgentBarHeight), not CSS, because a
+   split pane's tab strip is position:absolute (so its wrapped rows cannot
+   grow the bar the normal flex-content way) - min-height is only the paint
+   before the first measurement lands. Tabs wrap instead of scrolling so a
+   pane with many conversations open still shows every tab title. */
+.ws-agent-bar{--agent-split:50%; min-height:30px; flex:0 0 auto; display:flex; align-items:stretch;
   position:relative; background:var(--bg1); border-bottom:1px solid var(--line)}
-.ws-agent-tab-pane{display:none; position:relative; min-width:0}
+.ws-agent-tab-pane{display:none; position:relative; min-width:0; align-items:flex-start}
 .ws-agent-tab-pane[data-tab-pane="0"]{display:flex; flex:1}
 .ws-agent-bar.split .ws-agent-tab-pane{display:flex; position:absolute; top:0; bottom:0}
 .ws-agent-bar.split .ws-agent-tab-pane[data-tab-pane="0"]{left:0; width:var(--agent-split); border-right:3px solid var(--line)}
 .ws-agent-bar.split .ws-agent-tab-pane[data-tab-pane="1"]{left:var(--agent-split); right:0; border-left:3px solid var(--line)}
-.ws-agent-tabs{flex:1; min-width:0; display:flex; align-items:stretch; overflow-x:auto; overflow-y:hidden}
-.ws-agent-tabs::-webkit-scrollbar{height:0}
-.ws-chat-tab-empty{display:flex; align-items:center; padding:0 8px; color:var(--dim2); font-size:11.5px}
+.ws-agent-tabs{flex:1; min-width:0; display:flex; flex-wrap:wrap; align-content:flex-start}
+.ws-chat-tab-empty{display:flex; align-items:center; height:30px; padding:0 8px; color:var(--dim2); font-size:11.5px}
 .ws-chat-tab.dragging{opacity:.45}
 .ws-chat-tab.drop-before{box-shadow:inset 2px 0 var(--accent)}
 .ws-chat-tab.drop-after{box-shadow:inset -2px 0 var(--accent)}
 .ws-agent-tab-ghost{position:fixed; left:0; top:0; z-index:100; pointer-events:none; max-width:220px;
   border-radius:6px; box-shadow:0 8px 24px rgba(0,0,0,.5); background:var(--bg2); opacity:.94}
-.ws-agent-pane-actions{flex:0 0 auto; display:flex; align-items:stretch}
+.ws-agent-pane-actions{flex:0 0 auto; height:30px; display:flex; align-items:stretch}
 .ws-agent-pane-actions button[data-dock]{width:26px; display:grid; place-items:center; border:0; padding:0;
   background:none; color:var(--dim); cursor:pointer}
 .ws-agent-pane-actions button[data-dock]:hover{color:var(--text); background:var(--bg3)}

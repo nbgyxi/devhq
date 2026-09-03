@@ -38,9 +38,10 @@ function armToolRecovery(view, tool = "") {
     toolRecoveryTimer = 0;
   }, 4000);
 }
-/** Last finished scan, kept so a restart within a few minutes can skip the disk. */
+/** Last finished scan, kept so a restart has something to show immediately
+ *  while a fresh scan runs behind it. */
 const SCAN_CACHE_KEY = "wint.scanCache.v1";
-const SCAN_CACHE_TTL_MS = 5 * 60 * 1000;
+const SCAN_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Set once a reset is under way, so nothing writes remembered state back
  *  between the wipe and the reload. */
@@ -1056,8 +1057,10 @@ function applyRootEditor() {
 function rescan() {
   state.error = "";
   state.scanning = true;
-  state.projects = [];
-  state.byPath = new Map();
+  // state.projects / state.byPath are left as they are: whatever is already
+  // on screen (a restored cache or the previous scan) stays there until
+  // scan:start arrives, so reopening never flashes to empty or to skeletons
+  // for projects it already has good data for.
   state.total = 0;
   state.settled = 0;
   state.durationMs = 0;
@@ -1109,7 +1112,18 @@ function listenScan() {
     state.scannedAt = p.scannedAtMs;
     state.total = p.stubs.length;
     state.settled = 0;
-    state.projects = p.stubs.map(stubProject);
+    // A project already known and fully read (a restored cache, or one this
+    // same scan already passed over once) stays exactly as it is instead of
+    // reverting to a skeleton - only genuinely new folders start pending.
+    const known = state.byPath;
+    state.projects = p.stubs.map((stub) => {
+      const previous = known.get(stub.path);
+      if (previous && !previous.pending && !previous.stopped) {
+        state.settled++;
+        return previous;
+      }
+      return stubProject(stub);
+    });
     state.byPath = new Map(state.projects.map((s) => [s.path, s]));
     // A missing folder is reported but does not stop the others: the scan
     // carries on for as long as it has something to read.
@@ -1226,7 +1240,8 @@ function saveScanCache() {
   }
 }
 
-/** A cache that is still warm and matches the folders we would scan. */
+/** The last finished scan, as long as it matches the folders we would scan
+ *  and isn't old enough to be a leftover from a stale install. */
 function loadScanCache() {
   try {
     const cache = JSON.parse(localStorage.getItem(SCAN_CACHE_KEY) || "null");
@@ -1329,7 +1344,7 @@ function pullProject(project) {
 
 function openIn(path, target) {
   const labels = { explorer: "Opening Explorer", vscode: "Opening VS Code", terminal: "Opening a shell" };
-  trackWork(`open:${target}`, labels[target] || "Opening", invoke("open_in", { path, target })).catch(
+  trackWork(`open:${target}`, labels[target] || "Opening", invoke("open_in", { path, target, context: null })).catch(
     (err) => {
       state.error = String(err);
       markDirty("banner");
@@ -6760,11 +6775,12 @@ window.wintShell = {
       await firstRunUsageData();
     }
     if (state.roots.length) {
-      // A scan that finished in the last few minutes is still good enough to
-      // show; F5 / Rescan always hits the disk again.
+      // Show the last scan immediately if there is one - ordering and content
+      // match what the user left, with nothing to wait on. A fresh scan still
+      // runs behind it and updates cards one by one as results land.
       const cache = loadScanCache();
       if (cache) restoreScanCache(cache);
-      else rescan();
+      rescan();
     }
     // An install that already has folders keeps its projects loading while it
     // answers - the question is not worth a wait.

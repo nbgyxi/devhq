@@ -1525,21 +1525,24 @@ async fn save_text_file(_text: String, _default_name: String) -> Result<Option<S
 
 /// Opens a project in Explorer, VS Code or a terminal. `target` is validated
 /// against a fixed set so the front end can never name an arbitrary program.
+/// `context`, only used for `"vscode"`, is the project folder `path` belongs
+/// to when `path` is a file inside a workspace - without it VS Code opens the
+/// file in whatever window it last had active, project or not.
 #[tauri::command]
-async fn open_in(path: String, target: String) -> Result<(), String> {
-    off_thread(move || open_in_sync(path, target))
+async fn open_in(path: String, target: String, context: Option<String>) -> Result<(), String> {
+    off_thread(move || open_in_sync(path, target, context))
         .await
         .unwrap_or_else(|| Err("Could not start that program.".into()))
 }
 
-pub fn open_in_sync(path: String, target: String) -> Result<(), String> {
+pub fn open_in_sync(path: String, target: String, context: Option<String>) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err("That item no longer exists.".into());
     }
     let ok = match target.as_str() {
         "explorer" => util::run_lossy("explorer", &[&path], None).is_some(),
         "reveal" => util::run_lossy("explorer", &["/select,", &path], None).is_some(),
-        "vscode" => util::run_lossy("cmd", &["/c", "code", &path], None).is_some(),
+        "vscode" => util::open_vscode(&path, context.as_deref()),
         "terminal" => util::run_lossy(
             "cmd",
             &["/c", "start", "cmd", "/K", &format!("cd /d \"{path}\"")],
@@ -2367,6 +2370,7 @@ pub fn run() {
             workspace::workspace_browser_close,
             workspace::workspace_list_dir,
             workspace::workspace_read_file,
+            workspace::workspace_write_file,
             workspace::workspace_read_image,
             workspace::workspace_attach_path,
             workspace::workspace_attach_bytes,
@@ -2583,6 +2587,7 @@ pub fn run() {
         ,workspace::workspace_browser_close
         ,workspace::workspace_list_dir
         ,workspace::workspace_read_file
+        ,workspace::workspace_write_file
         ,workspace::workspace_read_image
         ,workspace::workspace_attach_path
         ,workspace::workspace_attach_bytes

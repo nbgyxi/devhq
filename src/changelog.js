@@ -16,6 +16,41 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.74.1",
+      date: "2026-09-03",
+      title: "Open in VS Code opens the right project",
+      changes: [
+        ["fix", "Open in VS Code from a workspace file preview now opens (or reuses) that project's own window, instead of dropping the file into whichever window VS Code last had active."],
+      ],
+    },
+    {
+      version: "0.74.0",
+      date: "2026-09-03",
+      title: "A file preview you can edit",
+      changes: [
+        ["new", "A previewed file can now be edited in place - typing shows a dot and a Save button on the header, and the change is highlighted live as you type."],
+        ["new", "Leaving an edited file - closing the preview, opening another file, or closing the window - now asks whether to save it or discard the change."],
+        ["fix", "Open in VS Code now finds VS Code even when it was installed after the app last started, instead of silently doing nothing."],
+        ["fix", "A workspace window's title bar now shows the same icon as its taskbar entry, instead of the main app's icon."],
+      ],
+    },
+    {
+      version: "0.73.0",
+      date: "2026-09-03",
+      title: "Overview opens on last scan",
+      changes: [
+        ["better", "Opening the overview now shows the projects from the last scan right away, in the same order, instead of waiting on a fresh one - a rescan still runs behind it and updates cards one by one as results land."],
+      ],
+    },
+    {
+      version: "0.72.1",
+      date: "2026-09-03",
+      title: "Save & upload sized to fit",
+      changes: [
+        ["fix", "The Save & upload panel now takes only the height its message box and buttons need, and the Files panel above it gets the rest - the divider between them no longer drags, since there's nothing left for it to decide."],
+      ],
+    },
+    {
       version: "0.72.0",
       date: "2026-09-03",
       title: "Several conversations at once",

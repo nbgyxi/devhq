@@ -219,7 +219,7 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
             other => Err(format!("Unknown todo action: {other}")),
         },
         "open" => {
-            wint_lib::open_in_sync(need(&args, 1, "path")?, need(&args, 2, "target")?)?;
+            wint_lib::open_in_sync(need(&args, 1, "path")?, need(&args, 2, "target")?, None)?;
             emit(json!({"ok": true}), pretty)
         }
         "ports" => match need(&args, 1, "ports action")?.as_str() {

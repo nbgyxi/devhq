@@ -28,6 +28,19 @@
   document.getElementById("ws-subtitle").textContent = projectPath;
   document.title = `${projectName} — workspace`;
 
+  // The title bar is drawn by the page, not Windows, so it needs its own copy
+  // of the icon the taskbar already shows — the generic app mark left over in
+  // the markup otherwise reads as a different window.
+  const brandImg = document.querySelector(".titlebar .brand img");
+  if (brandImg) {
+    const themeKey = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+    brandImg.src = `tool-icons/${themeKey}/workspace.png`;
+    brandImg.onerror = () => {
+      brandImg.onerror = null;
+      brandImg.src = `tool-icons/${themeKey}/_default.png`;
+    };
+  }
+
   // The same badge every tool header carries, and for the same reason: the
   // workspace has been built and not put through its paces, and that is
   // something to be told rather than to discover. `maturity.js` wires the
@@ -134,6 +147,8 @@
   const slotEls = new Map(SLOTS.map((slot) => [slot, document.querySelector(`[data-slot="${slot}"]`)]));
   const gripEls = [...document.querySelectorAll("[data-grip]")];
   const togglesEl = document.getElementById("ws-toggles");
+  const leftColEl = document.querySelector(".ws-col.ws-left");
+  const rightColEl = document.querySelector(".ws-col.ws-right-col");
   const centerColEl = document.getElementById("ws-center-col");
   const bottomDock = document.getElementById("ws-bottom-dock");
 
@@ -162,6 +177,17 @@
     root.setProperty("--ws-left", leftShown ? `${layout.size.left}px` : "0px");
     root.setProperty("--ws-right", (shown("right-top") || shown("right-bottom")) ? `${layout.size.right}px` : "0px");
     root.setProperty("--ws-bottom", shown("bottom") ? `${layout.size.bottom}px` : "0px");
+    // Save & upload is sized to its own content, not a draggable fraction of
+    // the column - wherever it sits, the other panel in that column gets what
+    // is left over and the divider between them cannot be dragged.
+    const gitLeftBottom = layout.slots["left-bottom"] === "git";
+    const gitLeftTop = layout.slots["left-top"] === "git";
+    const gitRightBottom = layout.slots["right-bottom"] === "git";
+    const gitRightTop = layout.slots["right-top"] === "git";
+    leftColEl.classList.toggle("ws-git-fixed", gitLeftBottom);
+    leftColEl.classList.toggle("ws-git-fixed-top", gitLeftTop);
+    rightColEl.classList.toggle("ws-git-fixed", gitRightBottom);
+    rightColEl.classList.toggle("ws-git-fixed-top", gitRightTop);
     // With one of the two left panels hidden the other takes the whole column,
     // rather than the survivor keeping half and leaving a gap.
     const split = shown("left-top") && shown("left-bottom") ? layout.size.leftSplit : shown("left-top") ? 1 : 0;
@@ -186,7 +212,11 @@
         // there is only one boundary left to drag and the left grip is it.
         : grip.dataset.grip === "right" ? !(shown("right-top") || shown("right-bottom")) || !shown("center")
         : grip.dataset.grip === "bottom" ? !shown("bottom")
-        : !(shown("left-top") && shown("left-bottom"));
+        // Save & upload's own row is fixed to its content, so there is
+        // nothing left for this divider to decide.
+        : grip.dataset.grip === "leftSplit" ? !(shown("left-top") && shown("left-bottom")) || gitLeftBottom || gitLeftTop
+        : grip.dataset.grip === "rightSplit" ? !(shown("right-top") && shown("right-bottom")) || gitRightBottom || gitRightTop
+        : false;
     }
   };
 
@@ -400,6 +430,7 @@
       const action = button.dataset.win;
       if (action === "min") return win.minimize();
       if (action === "max") return (await win.isMaximized()) ? win.unmaximize() : win.maximize();
+      await panels.get("browser")?.settlePreviewEdit?.();
       // The child webview is not destroyed with the page, so it is closed
       // explicitly rather than left behind holding a page open.
       await invoke("workspace_browser_close", { window: label }).catch(() => {});
@@ -476,12 +507,13 @@
           <p>Start a dev server in the terminal below. The moment it prints a localhost address, this panel opens it.</p></div>
         <div class="ws-preview" hidden>
           <header>
-            <strong></strong><small></small>
+            <strong></strong><span class="ws-preview-dot" hidden title="Unsaved changes"></span><small></small>
+            <button type="button" class="ws-mini" data-preview="save" title="Save" hidden>${icon("save")}</button>
             <button type="button" class="ws-mini" data-preview="reveal" title="Reveal in Explorer">${icon("folder_open")}</button>
             <button type="button" class="ws-mini" data-preview="vscode" title="Open in VS Code">${icon("code")}</button>
             <button type="button" class="ws-mini" data-preview="close" title="Close">${icon("close")}</button>
           </header>
-          <div class="ws-preview-code"><div class="ws-preview-gutter"></div><pre></pre></div>
+          <div class="ws-preview-code"><div class="ws-preview-gutter"></div><pre spellcheck="false"></pre></div>
           <div class="ws-preview-image" hidden><img alt="" /></div>
         </div>`;
       panel.hole = body.querySelector(".ws-browser-hole");
@@ -489,6 +521,120 @@
       panel.preview = body.querySelector(".ws-preview");
       panel.previewOpen = false;
       panel.previewPath = "";
+      panel.previewName = "";
+      panel.previewOriginal = "";
+      panel.previewDirty = false;
+
+      const setPreviewDirty = (dirty) => {
+        panel.previewDirty = dirty;
+        panel.preview.querySelector(".ws-preview-dot").hidden = !dirty;
+        panel.preview.querySelector('[data-preview="save"]').hidden = !dirty;
+      };
+
+      const savePreview = async () => {
+        if (!panel.previewDirty || !panel.previewPath) return;
+        const pre = panel.preview.querySelector(".ws-preview-code pre");
+        const text = pre.textContent;
+        try {
+          await busy(`Saving ${panel.previewName}`, () => invoke("workspace_write_file", { path: panel.previewPath, contents: text }));
+          panel.previewOriginal = text;
+          setPreviewDirty(false);
+          say(`Saved ${panel.previewName}`);
+        } catch (err) {
+          say(String(err));
+        }
+      };
+
+      // Asks before whatever is about to happen throws away an edit: closing
+      // the preview, opening a different file, navigating the browser, or
+      // closing the window. Resolves once it is safe to proceed - saved,
+      // discarded, or there was nothing to lose.
+      const settlePreviewEdit = async () => {
+        if (!panel.previewDirty) return;
+        const pre = panel.preview.querySelector(".ws-preview-code pre");
+        const wantsSave = window.confirm(
+          `"${panel.previewName}" has unsaved changes.\n\nOK to save them, Cancel to discard.`,
+        );
+        if (wantsSave) {
+          await savePreview();
+        } else {
+          pre.textContent = panel.previewOriginal;
+          setPreviewDirty(false);
+        }
+      };
+      panel.settlePreviewEdit = settlePreviewEdit;
+
+      const pre = panel.preview.querySelector(".ws-preview-code pre");
+
+      // Where the caret sits, as a plain character count into the element's
+      // text - stable across an innerHTML rebuild, unlike a node+offset pair.
+      const caretOffset = () => {
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0 || !pre.contains(sel.focusNode)) return null;
+        const range = sel.getRangeAt(0).cloneRange();
+        range.selectNodeContents(pre);
+        range.setEnd(sel.focusNode, sel.focusOffset);
+        return range.toString().length;
+      };
+      const setCaretOffset = (offset) => {
+        const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
+        let node = walker.nextNode();
+        let remaining = offset;
+        let last = null;
+        while (node) {
+          if (remaining <= node.textContent.length) {
+            const range = document.createRange();
+            range.setStart(node, remaining);
+            range.collapse(true);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+            return;
+          }
+          remaining -= node.textContent.length;
+          last = node;
+          node = walker.nextNode();
+        }
+        if (last) {
+          const range = document.createRange();
+          range.setStart(last, last.textContent.length);
+          range.collapse(true);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      };
+
+      // Recolours on every keystroke, restoring the caret afterwards: an
+      // innerHTML rebuild is the only way to keep the token spans in step
+      // with edited text, and it throws the caret to the start of the
+      // element unless something puts it back.
+      pre.addEventListener("input", () => {
+        const text = pre.textContent;
+        setPreviewDirty(text !== panel.previewOriginal);
+        const offset = caretOffset();
+        pre.innerHTML = window.wintHighlight ? window.wintHighlight.html(text, panel.previewName) : esc(text);
+        if (offset !== null) setCaretOffset(offset);
+        panel.preview.querySelector(".ws-preview-gutter").textContent =
+          text.split("\n").map((_, i) => i + 1).join("\n");
+      });
+      pre.addEventListener("keydown", (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+          e.preventDefault();
+          savePreview();
+          return;
+        }
+        // A `<pre>` needs its line breaks to stay literal `\n` characters, not
+        // the `<div>` the browser inserts by default - and Tab typing a
+        // character beats it jumping focus to the next button.
+        if (e.key === "Enter") {
+          e.preventDefault();
+          document.execCommand("insertText", false, "\n");
+        } else if (e.key === "Tab") {
+          e.preventDefault();
+          document.execCommand("insertText", false, "  ");
+        }
+      });
 
       panel.tools.addEventListener("click", (e) => {
         const action = e.target.closest("[data-browser]")?.dataset.browser;
@@ -498,10 +644,12 @@
       panel.address.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && panel.address.value.trim()) goTo(panel.address.value.trim());
       });
-      panel.preview.querySelector("header").addEventListener("click", (e) => {
+      panel.preview.querySelector("header").addEventListener("click", async (e) => {
         const action = e.target.closest("[data-preview]")?.dataset.preview;
         if (!action) return;
+        if (action === "save") return savePreview();
         if (action === "close") {
+          await settlePreviewEdit();
           panel.previewOpen = false;
           panel.preview.hidden = true;
           syncBrowser();
@@ -510,7 +658,7 @@
         }
         if (!panel.previewPath) return;
         if (action === "reveal") invoke("open_in", { path: panel.previewPath, target: "reveal" }).catch(() => {});
-        if (action === "vscode") invoke("open_in", { path: panel.previewPath, target: "vscode" }).catch(() => {});
+        if (action === "vscode") invoke("open_in", { path: panel.previewPath, target: "vscode", context: projectPath }).catch(() => {});
       });
     },
     resized: () => syncBrowser(),
@@ -522,6 +670,7 @@
   const showPreview = async (path, name) => {
     const panel = panels.get("browser");
     if (!panel?.preview) return;
+    await panel.settlePreviewEdit?.();
     if (!visible("browser")) {
       const slot = slotOf("browser");
       if (slot) layout.hidden[slot] = false;
@@ -529,6 +678,7 @@
     }
     panel.previewOpen = true;
     panel.previewPath = path;
+    panel.previewName = name;
     panel.empty.hidden = true;
     panel.preview.hidden = false;
     panel.preview.querySelector("header strong").textContent = name;
@@ -540,6 +690,7 @@
     const gutter = codeEl.querySelector(".ws-preview-gutter");
     const pre = codeEl.querySelector("pre");
     const img = imageEl.querySelector("img");
+    pre.contentEditable = "false";
 
     if (window.wintHighlight?.isImage(name)) {
       codeEl.hidden = true;
@@ -567,6 +718,8 @@
       const lines = text.split("\n");
       gutter.textContent = lines.map((_, i) => i + 1).join("\n");
       pre.innerHTML = window.wintHighlight ? window.wintHighlight.html(text, name) : esc(text);
+      panel.previewOriginal = text;
+      pre.contentEditable = "true";
       say(`Showing ${name}`);
     } catch (err) {
       gutter.textContent = "";
@@ -725,6 +878,20 @@
 
   /* ----------------------------------------------------------- panel: git */
 
+  // The row Save & upload sits in is sized in pixels (`--ws-git-h`), not a
+  // draggable fraction, so it can be measured from the panel's own content
+  // and never shows blank space or clips its buttons. `panel.body` is a flex
+  // child stretched to fill whatever the column gives it, so its own box
+  // can't be measured for this - state and form are natural-height children
+  // of that box, so they are what gets measured instead.
+  const syncGitHeight = (panel) => {
+    if (!panel.state || !panel.form) return;
+    const h = panel.state.getBoundingClientRect().height + panel.form.getBoundingClientRect().height
+      + 24 // .ws-git padding (8+8) and the gap between state and form (8)
+      + 40; // panel header (30), slot margin (4+4) and slot border (1+1)
+    document.body.style.setProperty("--ws-git-h", `${Math.max(90, Math.ceil(h))}px`);
+  };
+
   definePanel("git", {
     label: "Save & upload",
     icon: "backup",
@@ -750,6 +917,12 @@
         if (action === "push") gitAct(panel, "push", "Uploading your work");
         if (action === "pull") gitAct(panel, "pull", "Getting your team's changes");
       });
+      // Catches everything that can change the content's height - the state
+      // line wrapping to two lines, a longer branch name, an error message -
+      // without having to call this from every place that updates them.
+      const heightObserver = new ResizeObserver(() => syncGitHeight(panel));
+      heightObserver.observe(panel.state);
+      heightObserver.observe(panel.form);
       loadGit(panel);
     },
   });
@@ -1645,6 +1818,16 @@
         button.disabled = !paneTab;
       }
     }
+    syncAgentBarHeight(panel);
+  }
+
+  // Tabs wrap instead of scrolling, so the bar has to grow with them. A split
+  // pane's strip is position:absolute (needed so left/right panes don't share
+  // width the normal flex way), which takes it out of the flow the bar would
+  // otherwise auto-size to - so the height is measured and set here instead.
+  function syncAgentBarHeight(panel) {
+    const rows = [...panel.bar.querySelectorAll(".ws-agent-tabs")].map((el) => el.scrollHeight);
+    panel.bar.style.height = `${Math.max(30, ...rows)}px`;
   }
 
   function syncAgentPaneLayout(panel) {
@@ -1841,6 +2024,9 @@
         </div>`;
       panel.bar = body.querySelector(".ws-agent-bar");
       panel.views = body.querySelector(".ws-agent-views");
+      // A column resize can change how many tabs fit per row, so the wrapped
+      // bar height has to be re-measured whenever this panel's box changes.
+      panel.resized = () => syncAgentBarHeight(panel);
 
       const paneOf = (el) => Number(el.closest("[data-pane-actions]")?.dataset.paneActions ?? 0);
       // Set true for the duration of a tab drag, so the click that a pointerup

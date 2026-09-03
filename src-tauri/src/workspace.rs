@@ -421,6 +421,25 @@ pub async fn workspace_read_file(path: String) -> Result<String, String> {
     .unwrap_or_else(|_| Err("Could not read the file.".to_string()))
 }
 
+/// Writes the preview's edited text back to disk. Capped the same as the read
+/// side, and only ever called with a path the preview already read — there is
+/// no path picker here, so nothing this command touches was not already open.
+#[tauri::command]
+pub async fn workspace_write_file(path: String, contents: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        const CAP: usize = 2 * 1024 * 1024;
+        if contents.len() > CAP {
+            return Err(format!(
+                "That file would be {} MB. The workspace saves files up to 2 MB.",
+                contents.len() / 1_000_000
+            ));
+        }
+        std::fs::write(&path, contents).map_err(|e| format!("Could not save the file: {e}"))
+    })
+    .await
+    .unwrap_or_else(|_| Err("Could not save the file.".to_string()))
+}
+
 /// Base64, written out here rather than pulled in as a dependency: this is the
 /// only place in the app that needs it, and it is twenty lines.
 fn base64(bytes: &[u8]) -> String {
