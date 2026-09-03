@@ -477,32 +477,47 @@
       name: file.path.split(/[\\/]/).pop(),
     }));
     const files = panels.get("files");
-    if (files?.changedOnly) renderChangedOnly(files);
+    if (!files?.tree) return;
+    renderFilesTools(files);
+    if (files.changedOnly) renderChangedOnly(files);
+  };
+
+  /** All / Changed, as two words rather than a funnel that could mean anything.
+   *  The count rides on the Changed side, so how much there is to look at is
+   *  readable without switching to it. */
+  const renderFilesTools = (panel) => {
+    const count = changedFiles.length;
+    panel.tools.innerHTML = `
+      <span class="ws-seg" role="group" aria-label="Which files to show">
+        <button type="button" data-files="all" class="${panel.changedOnly ? "" : "on"}"
+                aria-pressed="${!panel.changedOnly}">All</button>
+        <button type="button" data-files="changed" class="${panel.changedOnly ? "on" : ""}"
+                aria-pressed="${panel.changedOnly}" title="Only the files you have changed">Changed${count ? ` <b>${count}</b>` : ""}</button>
+      </span>
+      <button class="ws-mini" data-files="refresh" type="button" title="Look again">${icon("refresh")}</button>`;
   };
 
   definePanel("files", {
     label: "Files",
     icon: "folder_open",
     mount(body, panel) {
-      panel.tools.innerHTML = `
-        <button class="ws-mini" data-files="changed" type="button" aria-pressed="false"
-                title="Show only the files you have changed">${icon("filter_alt")}</button>
-        <button class="ws-mini" data-files="refresh" type="button" title="Read the folder again">${icon("refresh")}</button>`;
       body.className += " ws-files";
       body.innerHTML = `<div class="ws-tree" data-depth="0"></div>`;
       panel.tree = body.querySelector(".ws-tree");
       panel.open = new Set();
       panel.changedOnly = false;
+      renderFilesTools(panel);
       panel.tools.addEventListener("click", (e) => {
         const action = e.target.closest("[data-files]")?.dataset.files;
         if (action === "refresh") {
           return panel.changedOnly ? refreshGit() : loadDir(panel, panel.tree, projectPath, 0);
         }
-        if (action !== "changed") return;
-        panel.changedOnly = !panel.changedOnly;
-        panel.tools.querySelector("[data-files=changed]").setAttribute("aria-pressed", String(panel.changedOnly));
-        panel.tools.querySelector("[data-files=changed]").classList.toggle("on", panel.changedOnly);
-        if (panel.changedOnly) {
+        if (action !== "all" && action !== "changed") return;
+        const wanted = action === "changed";
+        if (wanted === panel.changedOnly) return;
+        panel.changedOnly = wanted;
+        renderFilesTools(panel);
+        if (wanted) {
           renderChangedOnly(panel);
           // The list is only as fresh as the last look at git, and the panel
           // that looks may not even be showing.

@@ -3302,6 +3302,17 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-tree-caret.changed{color:var(--amber)}
 .ws-tree-caret.bad{color:var(--red)}
 .ws-mini.on{color:var(--accent); background:var(--bg3)}
+
+/* Two words rather than one ambiguous icon: which of the two you are looking
+   at should be readable without hovering anything. */
+.ws-seg{display:flex; align-items:center; flex:0 0 auto; padding:1px; gap:1px;
+  border:1px solid var(--line); border-radius:6px; background:var(--bg)}
+.ws-seg button{display:flex; align-items:center; gap:4px; background:none; border:0; cursor:pointer;
+  color:var(--dim); font:inherit; font-size:10.5px; line-height:1; padding:3px 8px; border-radius:4px; white-space:nowrap}
+.ws-seg button:hover{color:var(--text)}
+.ws-seg button.on{background:var(--bg3); color:var(--text)}
+.ws-seg b{font-weight:700; font-size:9.5px; padding:1px 4px; border-radius:99px; background:var(--bg2); color:var(--amber)}
+.ws-seg button.on b{background:var(--bg1)}
 .ws-tree-note{padding:6px 12px; color:var(--dim2); font-size:12px}
 
 .ws-git{padding:8px; display:flex; flex-direction:column; gap:8px}

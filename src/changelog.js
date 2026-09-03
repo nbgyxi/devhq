@@ -16,6 +16,14 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.57.2",
+      date: "2026-09-03",
+      title: "All or Changed, in words",
+      changes: [
+        ["better", "The workspace file list now says which files it is showing: an All / Changed switch instead of a funnel icon that could have meant anything. The Changed side carries the number, so you can see how much is waiting without switching to it."],
+      ],
+    },
+    {
       version: "0.57.1",
       date: "2026-09-03",
       title: "Workspace dividers move",
