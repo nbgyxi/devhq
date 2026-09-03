@@ -1596,6 +1596,12 @@ const embeddedToolResident = [];
 /** Which resident tools currently believe they are visible. */
 const embeddedToolAwakeIds = new Set();
 
+/** Tools whose webview is alive but which did not manage to open. A failed
+ *  tool never earns a residency slot: keeping one would mean coming back to a
+ *  cached error page instead of a fresh attempt. Leaving one destroys it, so
+ *  the next visit is a cold start. */
+const embeddedToolFailedIds = new Set();
+
 /** id -> the session its live webview was built with. The session is baked
  *  into the webview's URL and its bridge filters on it, so it has to survive
  *  for as long as that webview does - it can no longer be rolled per visit. */
@@ -1650,10 +1656,20 @@ async function evictEmbeddedTool(id) {
   const at = embeddedToolResident.indexOf(id);
   if (at >= 0) embeddedToolResident.splice(at, 1);
   embeddedToolAwakeIds.delete(id);
+  embeddedToolFailedIds.delete(id);
   embeddedToolSessions.delete(id);
   if (embeddedToolMountedId === id) embeddedToolMountedId = "";
   if (embeddedToolReadyId === id) embeddedToolReadyId = "";
   await invoke("tool_embedded_destroy", { id }).catch(() => {});
+}
+
+/** Stop showing a tool. A healthy one is only hidden - that is what makes
+ *  coming back a show rather than a rebuild - but one that failed to open is
+ *  destroyed, so nothing caches the error page it is sitting on. */
+async function releaseEmbeddedTool(id) {
+  if (embeddedToolFailedIds.has(id)) return evictEmbeddedTool(id);
+  setEmbeddedToolAwake(id, false);
+  return invoke("tool_embedded_hide", { id });
 }
 
 /** Evict from the least recently used end until the budget is met. */
@@ -1674,6 +1690,11 @@ function showEmbeddedToolLoading(tool, phase) {
   const panel = document.getElementById("isolated-tool-loading");
   if (!panel) return;
   panel.classList.remove("failed");
+  // The failed state only hides the spinner and the skeleton, so a retry can
+  // put the ordinary loading screen back without rebuilding this markup.
+  panel.querySelector(".tool-loading-ring").hidden = false;
+  panel.querySelector(".tool-loading-body").hidden = false;
+  panel.querySelector("[data-retry-tool]").hidden = true;
   panel.querySelector("[data-loading-name]").textContent = tool?.name || "This tool";
   panel.querySelector("[data-loading-phase]").textContent = phase;
   panel.hidden = false;
@@ -1688,10 +1709,33 @@ function failEmbeddedToolLoading(tool, message) {
   const panel = document.getElementById("isolated-tool-loading");
   if (!panel) return;
   panel.classList.add("failed");
-  panel.querySelector(".tool-loading-ring")?.remove();
-  panel.querySelector(".tool-loading-body")?.remove();
+  panel.querySelector(".tool-loading-ring").hidden = true;
+  panel.querySelector(".tool-loading-body").hidden = true;
+  panel.querySelector("[data-loading-name]").textContent = tool?.name || "This tool";
   panel.querySelector("[data-loading-phase]").textContent = message;
+  const retry = panel.querySelector("[data-retry-tool]");
+  retry.hidden = false;
+  retry.onclick = () => retryEmbeddedTool(tool?.id || state.isolatedToolId);
   panel.hidden = false;
+}
+
+/** Throw the failed attempt away and open the tool again from nothing. The
+ *  webview is destroyed rather than reloaded: whatever it failed on may be in
+ *  the page, the bridge or the environment, and only a rebuild clears all
+ *  three. */
+async function retryEmbeddedTool(id) {
+  // Creating and destroying a WebView2 both touch the native window tree and
+  // must never overlap, so a retry while one is already in flight is dropped
+  // rather than queued - that attempt is the retry.
+  if (!id || embeddedToolOpening) return;
+  const tool = toolById(id);
+  showEmbeddedToolLoading(tool, `Opening ${tool?.name || id}…`);
+  beginWork(EMBEDDED_TOOL_WORK, `Opening ${tool?.name || id}`);
+  await evictEmbeddedTool(id);
+  // Closing a webview releases its label a moment after the call returns, and
+  // rebuilding under a label still in use fails. The stand-in is already up
+  // and named, so this pause is covered rather than a blank wait.
+  setTimeout(syncEmbeddedTool, 150);
 }
 
 /** Keep the isolated tracker exactly over the ordinary Windows-tools host.
@@ -1715,10 +1759,9 @@ function syncEmbeddedTool() {
     if (mountedId) {
       embeddedToolMountedId = "";
       embeddedToolOpening = true;
-      // Hidden, not destroyed: this is what makes coming back a show rather
-      // than a rebuild. Put it to sleep first so it stops working while away.
-      setEmbeddedToolAwake(mountedId, false);
-      invoke("tool_embedded_hide", { id: mountedId }).catch(() => {}).finally(() => {
+      // Hidden, not destroyed - that is what makes coming back a show rather
+      // than a rebuild - unless it failed to open, which is thrown away.
+      releaseEmbeddedTool(mountedId).catch(() => {}).finally(() => {
         embeddedToolOpening = false;
         if (embeddedToolResyncPending) {
           embeddedToolResyncPending = false;
@@ -1751,8 +1794,7 @@ function syncEmbeddedTool() {
       if (embeddedToolMountedId && embeddedToolMountedId !== id) {
         const mountedId = embeddedToolMountedId;
         embeddedToolMountedId = "";
-        setEmbeddedToolAwake(mountedId, false);
-        await invoke("tool_embedded_hide", { id: mountedId });
+        await releaseEmbeddedTool(mountedId);
       }
       const resident = embeddedToolResident.includes(id);
       await invoke("tool_embedded_show", {
@@ -1793,6 +1835,7 @@ function syncEmbeddedTool() {
       // overview used to throw the reason away along with the view.
       const label = tool?.name || id;
       console.error(`Could not show the isolated ${label}`, error);
+      embeddedToolFailedIds.add(id);
       endWork(EMBEDDED_TOOL_WORK);
       failEmbeddedToolLoading(tool, `${label} could not open. ${String(error)}`);
       beginWork("isolated-tool-fail", `${label} could not open`, String(error));
@@ -4695,6 +4738,7 @@ function mountShell() {
             <div class="tool-loading-row"><span class="tool-loading-bar" style="max-width:320px"></span></div>
             <div class="tool-loading-row"><span class="tool-loading-bar" style="max-width:240px"></span></div>
           </div>
+          <button class="btn tool-loading-retry" type="button" data-retry-tool hidden>${icon("refresh")}Try again</button>
         </div>
       </div>
     </main>
@@ -6485,12 +6529,17 @@ async function wireToolPopoutEvents() {
         // The tool has mounted and drawn. Both the slot's stand-in and the
         // status line have been telling the truth until exactly now.
         embeddedToolReadyId = fromId;
+        const failure = request.value?.error;
+        // A tool that reported a failure is not worth keeping alive: leaving
+        // it destroys the webview so the next visit tries again. Its own page
+        // carries the retry button, since it is the surface on screen.
+        if (failure) embeddedToolFailedIds.add(fromId);
+        else embeddedToolFailedIds.delete(fromId);
         // Only the tool you are looking at owns the stand-in and the status
         // line. A resident tool waking up in the background must not clear
         // them out from under whatever is actually on screen.
         if (fromId === state.isolatedToolId) {
           endWork(EMBEDDED_TOOL_WORK);
-          const failure = request.value?.error;
           if (failure) failEmbeddedToolLoading(toolById(fromId), String(failure));
           else hideEmbeddedToolLoading();
         }

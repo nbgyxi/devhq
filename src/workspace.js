@@ -766,7 +766,12 @@
     label: "Claude",
     icon: "forum",
     mount(body, panel) {
-      panel.session = "";
+      // The workspace mints the conversation's id rather than reading one back
+      // off the stream, so a terminal can be pointed at the same conversation
+      // before the chat has said anything. `--session-id` names it on the first
+      // turn; every turn after that resumes it.
+      panel.session = newSessionId();
+      panel.started = false;
       panel.turns = [];
       panel.streaming = null;
       body.className += " ws-chat";
@@ -779,10 +784,15 @@
       panel.log = body.querySelector(".ws-chat-log");
       panel.ask = body.querySelector(".ws-chat-ask");
       panel.input = panel.ask.querySelector("textarea");
-      panel.tools.innerHTML = `<button class="ws-mini" data-chat="new" type="button" title="Start a new conversation">${icon("refresh")}</button>`;
+      panel.tools.innerHTML = `
+        <button class="ws-mini" data-chat="terminal" type="button" title="Open this conversation in a terminal">${icon("terminal")}</button>
+        <button class="ws-mini" data-chat="new" type="button" title="Start a new conversation">${icon("refresh")}</button>`;
       panel.tools.addEventListener("click", (e) => {
-        if (!e.target.closest("[data-chat=new]")) return;
-        panel.session = "";
+        const action = e.target.closest("[data-chat]")?.dataset.chat;
+        if (action === "terminal") return openClaudeTerminal(panel);
+        if (action !== "new") return;
+        panel.session = newSessionId();
+        panel.started = false;
         panel.turns = [];
         renderChat(panel);
         say("Started a new conversation");
@@ -807,9 +817,95 @@
         if (action === "install") installClaude(panel);
         if (action === "signin") signInToClaude(panel);
         if (action === "recheck") checkClaude(panel);
+        if (action === "terminal") openClaudeTerminal(panel);
       });
       checkClaude(panel);
     },
+  });
+
+  /** A conversation's name, minted here so both surfaces can use it.
+   *  `--session-id` requires a UUID. */
+  const newSessionId = () => (crypto.randomUUID
+    ? crypto.randomUUID()
+    : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+        const r = (Math.random() * 16) | 0;
+        return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+      }));
+
+  /** The whole conversation, in the CLI's own interface, over the window.
+   *
+   *  This is the way out of everything the chat cannot do: approving a command
+   *  Claude wants to run, signing in, a slash command, plan mode. It is the
+   *  same conversation because both surfaces name it - `--resume` takes a
+   *  session id interactively as well as in print mode - so an answer given
+   *  here is in the history the chat picks up again afterwards.
+   *
+   *  Full window, because the CLI's interface is a full-screen program and
+   *  cramming it into a pane is what this panel exists to stop. */
+  async function openClaudeTerminal(panel) {
+    if (claudeOverlay.session) { claudeOverlay.el.hidden = false; hideBrowser(); return; }
+    let command;
+    try {
+      command = await invoke("claude_terminal_command", { session: panel.session || null });
+    } catch (err) {
+      return say(String(err));
+    }
+    claudeOverlay.el.hidden = false;
+    // The browser panel is a native webview drawn over the page, so it would
+    // sit on top of this overlay rather than behind it.
+    hideBrowser();
+    claudeOverlay.note.textContent = panel.started
+      ? "The same conversation, in Claude's own interface. Answer here, then close this and carry on in the chat."
+      : "Claude's own interface. Anything you do here is in the conversation the chat picks up.";
+    try {
+      const info = await busy("Opening Claude in a terminal", () => invoke("term_open", {
+        args: { projectPath, projectName, command },
+      }));
+      const view = new window.TermView(claudeOverlay.host, info.id);
+      claudeOverlay.session = { id: info.id, view };
+      await view.attach();
+      view.fit();
+      // A conversation the chat had not started yet has been started now, by
+      // the terminal - so the next chat turn must resume rather than claim it.
+      panel.started = true;
+      say("Claude is open in a terminal");
+    } catch (err) {
+      claudeOverlay.host.innerHTML = `<div class="ws-term-error">${esc(String(err))}</div>`;
+      say(String(err));
+    }
+  }
+
+  /** Closing puts the chat back in charge. The session in Rust is ended: two
+   *  processes holding the same conversation open is how a session file ends up
+   *  written by whichever exits last. */
+  async function closeClaudeTerminal() {
+    const open = claudeOverlay.session;
+    claudeOverlay.session = null;
+    claudeOverlay.el.hidden = true;
+    claudeOverlay.host.replaceChildren();
+    syncBrowser();
+    if (open) await invoke("term_close", { id: open.id }).catch(() => {});
+    const panel = panels.get("chat");
+    if (panel) renderChat(panel);
+    say("Back to the chat");
+  }
+
+  const claudeOverlay = (() => {
+    const el = document.createElement("div");
+    el.className = "ws-claude-full";
+    el.hidden = true;
+    el.innerHTML = `<header>${icon("forum")}<strong>Claude Code</strong>
+        <span class="ws-claude-note"></span>
+        <button type="button" class="ws-btn" data-claude-full="close">${icon("close")}Back to the chat</button>
+      </header>
+      <div class="term-host"></div>`;
+    document.body.appendChild(el);
+    el.querySelector("[data-claude-full=close]").addEventListener("click", closeClaudeTerminal);
+    return { el, host: el.querySelector(".term-host"), note: el.querySelector(".ws-claude-note"), session: null };
+  })();
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !claudeOverlay.el.hidden) closeClaudeTerminal();
   });
 
   async function checkClaude(panel) {
@@ -854,7 +950,16 @@
         <p>Working in <code>${esc(projectName)}</code>. Ask it anything about this project.</p></div>`;
       return;
     }
-    panel.log.innerHTML = panel.turns.map(turnHtml).join("");
+    // A turn that ended badly is nearly always a tool Claude was not allowed to
+    // run: in this mode there is nobody to ask, so it declines. The way to say
+    // yes is the CLI's own interface, on this same conversation.
+    const stuck = !busy && panel.turns[panel.turns.length - 1]?.role === "error";
+    panel.log.innerHTML = panel.turns.map(turnHtml).join("")
+      + (stuck ? `<div class="ws-chat-rescue">${icon("terminal")}
+          <span>Claude may have wanted permission to run something. It can only ask you in its own
+                interface — this opens the same conversation there.</span>
+          <button class="ws-btn primary" data-chat="terminal" type="button">Continue in a terminal</button>
+        </div>` : "");
     panel.log.scrollTop = panel.log.scrollHeight;
   }
 
@@ -904,11 +1009,13 @@
         prompt: text,
         cwd: projectPath,
         session: panel.session || null,
+        resume: panel.started,
         // Edits land without a prompt; anything else Claude Code would have
         // asked about, it still asks about - and in this mode there is nobody
         // to ask, so it declines and says so in the conversation.
         permissionMode: "acceptEdits",
       });
+      panel.started = true;
       say("Claude is working");
     } catch (err) {
       panel.streaming = null;

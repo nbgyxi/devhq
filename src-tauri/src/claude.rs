@@ -138,6 +138,7 @@ pub async fn claude_send(
     prompt: String,
     cwd: String,
     session: Option<String>,
+    resume: bool,
     permission_mode: Option<String>,
 ) -> Result<(), String> {
     let Some(path) = claude_path() else {
@@ -161,9 +162,12 @@ pub async fn claude_send(
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // Only ever a session id the CLI itself gave us.
+        // The workspace mints the id and hands it over, rather than reading one
+        // back off the stream. That is what lets the same conversation be
+        // opened in a terminal and come back here: both name it.
         if let Some(id) = session.as_deref().filter(|id| is_session_id(id)) {
-            cmd.arg("--resume").arg(id);
+            cmd.arg(if resume { "--resume" } else { "--session-id" })
+                .arg(id);
         }
         if let Some(mode) = permission_mode
             .as_deref()
@@ -234,6 +238,33 @@ pub async fn claude_send(
     })
     .await
     .unwrap_or_else(|_| Err("Claude Code stopped unexpectedly.".into()))
+}
+
+/// The command line that opens a conversation in a real terminal.
+///
+/// `--resume` takes a session id in the interactive interface as well as in
+/// `-p`, and looks for it across every project on the machine - which is what
+/// makes the chat and a terminal two views of one conversation rather than two
+/// conversations. The way out of anything the chat cannot do is the CLI itself:
+/// approving a command it wants to run, signing in, a slash command, plan mode.
+#[tauri::command]
+pub fn claude_terminal_command(session: Option<String>) -> Result<String, String> {
+    let path = claude_path().ok_or("Claude Code is not installed.")?;
+    let quoted = format!("\"{}\"", path.display());
+    let program = if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
+    {
+        // A shim is a script, so it needs the interpreter - and the whole line
+        // has to be quoted again, because `cmd /c` strips one layer.
+        format!("cmd.exe /d /k \"{quoted}\"")
+    } else {
+        quoted
+    };
+    match session.as_deref().filter(|id| is_session_id(id)) {
+        Some(id) => Ok(format!("{program} --resume {id}")),
+        None => Ok(program),
+    }
 }
 
 /// Session ids come back from the CLI and go straight out again; this is the

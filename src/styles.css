@@ -2742,6 +2742,8 @@ html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
   background-size:400% 100%;animation:shimmer 1.4s ease infinite;
 }
 .tool-loading.failed .tool-loading-title small{color:var(--red)}
+.tool-loading-ring[hidden],.tool-loading-body[hidden],.tool-loading-retry[hidden]{display:none}
+.tool-loading-retry{display:inline-flex;align-items:center;gap:6px}
 @media(prefers-reduced-motion:reduce){.tool-loading-ring,.tool-loading-bar{animation:none}}
 .win-tool-body{flex:1;min-height:0;overflow:auto;padding:14px 16px 18px}
 /* Event Log: fill the pane with flex so the list scrolls inside — a fixed
@@ -3405,3 +3407,22 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-chat-stop{background:var(--bg3); color:var(--text)}
 .ws-chat-send[hidden],.ws-chat-stop[hidden]{display:none}
 .ws-chat-send .ms,.ws-chat-stop .ms{font-size:17px}
+
+/* The CLI's own interface, over the whole window. It is a full-screen terminal
+   program, so a pane is exactly what it must not be given - and it is the way
+   out of everything the chat cannot do, approving a command most of all. */
+.ws-claude-full{position:fixed; inset:0; z-index:40; display:flex; flex-direction:column;
+  background:var(--term-bg)}
+.ws-claude-full[hidden]{display:none}
+.ws-claude-full>header{flex:0 0 auto; display:flex; align-items:center; gap:8px; padding:8px 12px;
+  border-bottom:1px solid var(--line); background:var(--bg2); font-size:12px}
+.ws-claude-full>header>.ms{font-size:17px; color:var(--dim)}
+.ws-claude-full>header strong{flex:0 0 auto}
+.ws-claude-note{flex:1; min-width:0; color:var(--dim2); font-size:11px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.ws-claude-full>.term-host{flex:1; min-height:0}
+
+.ws-chat-rescue{display:flex; flex-direction:column; align-items:flex-start; gap:7px; padding:11px 13px;
+  border:1px solid var(--line); border-radius:9px; background:var(--bg2)}
+.ws-chat-rescue>.ms{font-size:19px; color:var(--amber)}
+.ws-chat-rescue span{font-size:11.5px; line-height:1.55; color:var(--dim)}

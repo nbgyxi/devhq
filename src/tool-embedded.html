@@ -49,6 +49,13 @@ html[data-theme="light"],html[data-theme="light"] body,html[data-theme="light"] 
   background-size:400% 100%;
   animation:tool-loading-shimmer 1.4s ease infinite;
 }
+.tool-loading-retry{
+  padding:7px 16px;border:1px solid #2c3140;border-radius:9px;
+  background:#171922;color:#e8eaf0;font:inherit;font-weight:600;cursor:pointer;
+}
+.tool-loading-retry:hover{background:#1e212c;border-color:#3a4152}
+.tool-loading-retry[hidden]{display:none}
+.tool-loading-retry:disabled{opacity:.6;cursor:default}
 @keyframes tool-loading-spin{to{transform:rotate(360deg)}}
 @keyframes tool-loading-shimmer{0%{background-position:100% 0}100%{background-position:0 0}}
 @media(prefers-reduced-motion:reduce){
@@ -57,6 +64,8 @@ html[data-theme="light"],html[data-theme="light"] body,html[data-theme="light"] 
 html[data-theme="light"] #tool-loading{background:#f4f5f8;color:#1a1c24}
 html[data-theme="light"] .tool-loading-ring{border-color:#d5d9e2;border-top-color:#4868df}
 html[data-theme="light"] .tool-loading-title small{color:#7a8292}
+html[data-theme="light"] .tool-loading-retry{background:#fff;border-color:#d5d9e2;color:#1a1c24}
+html[data-theme="light"] .tool-loading-retry:hover{background:#eef0f5}
 html[data-theme="light"] .tool-loading-bar{
   background:linear-gradient(90deg,#f0f1f5 25%,#e4e7ed 37%,#f0f1f5 63%);
   background-size:400% 100%;
@@ -80,6 +89,7 @@ html[data-theme="light"] .tool-loading-bar{
     <div class="tool-loading-row"><span class="tool-loading-bar" style="max-width:320px"></span></div>
     <div class="tool-loading-row"><span class="tool-loading-bar" style="max-width:240px"></span></div>
   </div>
+  <button type="button" id="tool-loading-retry" class="tool-loading-retry" hidden>Try again</button>
 </div>
 <script>
 // Name the tool in the first paint. The shell put it in the URL precisely so

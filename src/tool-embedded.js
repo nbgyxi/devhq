@@ -11,11 +11,25 @@
   const id = bridge.id;
   const host = document.getElementById("tool-host");
   const queryName = new URLSearchParams(location.search).get("name") || id;
+  // A dead end needs a way out. The shell's own stand-in sits underneath this
+  // native webview and cannot be clicked, so the retry has to live here: a
+  // reload re-runs the bridge handshake and the tool's whole open path, which
+  // is every step that could have failed above.
   const stall = (text) => {
     if (!loading) return;
     loading.querySelector(".tool-loading-ring")?.remove();
     loading.querySelector(".tool-loading-body")?.remove();
     sayPhase(text);
+    const retry = document.getElementById("tool-loading-retry");
+    if (retry) {
+      retry.hidden = false;
+      retry.addEventListener("click", () => {
+        retry.disabled = true;
+        retry.textContent = "Retrying…";
+        location.reload();
+      });
+      retry.focus();
+    }
   };
   // The bridge answers over Tauri events and gives up after 15s. Waiting on it
   // outside the try would leave this screen spinning forever on a shell that
@@ -26,6 +40,9 @@
     context = await bridge.ready;
   } catch (error) {
     stall(`${queryName} could not reach WinT. ${String(error)}`);
+    // Best effort: if the shell is listening after all, it should know this
+    // webview is a dead one and destroy it instead of keeping it resident.
+    bridge.request("ready", { error: String(error) }).catch(() => {});
     return;
   }
   const label = context?.tool?.name || queryName;

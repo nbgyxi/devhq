@@ -2319,6 +2319,7 @@ pub fn run() {
             claude::claude_send,
             claude::claude_cancel,
             claude::claude_install,
+            claude::claude_terminal_command,
             workspace::workspace_browser_show,
             workspace::workspace_browser_hide,
             workspace::workspace_browser_navigate,
@@ -2498,6 +2499,7 @@ pub fn run() {
         ,claude::claude_send
         ,claude::claude_cancel
         ,claude::claude_install
+        ,claude::claude_terminal_command
         ,workspace::workspace_browser_show
         ,workspace::workspace_browser_hide
         ,workspace::workspace_browser_navigate

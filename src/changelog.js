@@ -16,6 +16,15 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.60.1",
+      date: "2026-09-03",
+      title: "A tool that fails to open offers you another go",
+      changes: [
+        ["new", "A tool that could not open now has a Try again button on the error, instead of leaving you with the reason and no way to act on it."],
+        ["fix", "Leaving a tool that failed to open throws it away. It was being kept warm like a working one, so coming back showed you the same cached error page without ever retrying."],
+      ],
+    },
+    {
       version: "0.60.0",
       date: "2026-09-03",
       title: "Claude is a chat, not a terminal",
