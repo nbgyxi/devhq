@@ -3438,6 +3438,7 @@ const COMMAND_KIND_ICONS = {
   REPO: "folder_open",
   RUN: "play_arrow",
   PULL: "download",
+  BOX: "dashboard",
 };
 
 function availableSearchCommands(query = "") {
@@ -3472,6 +3473,11 @@ function availableSearchCommands(query = "") {
     if (project.runCmd) {
       commands.push({ kind: "RUN", label: `Run ${project.name}`, detail: project.runCmd, keywords: "run start launch serve dev server npm yarn pnpm cargo start up", action: "run", project });
     }
+    commands.push({
+      kind: "BOX", label: `Dev box — ${project.name}`, detail: project.path,
+      keywords: "dev box devbox workspace window files browser preview terminal claude chat panel",
+      action: "devbox", project,
+    });
     commands.push({
       kind: "TERM", label: `Terminal — ${project.name}`, detail: project.path,
       keywords: "terminal shell console prompt powershell cmd bash open here cd",
@@ -3681,6 +3687,7 @@ function runSearchCommand(index) {
     openDetail(command.project);
   }
   else if (command.action === "run") projectAction("run", command.project);
+  else if (command.action === "devbox") projectAction("devbox", command.project);
   else if (command.action === "terminal") projectAction("terminal", command.project);
   else if (command.action === "pull") projectAction("pull", command.project);
   else if (command.action === "kill-process") {
@@ -3897,6 +3904,9 @@ function cardActions(p) {
       )}Pull</button>`
     : "";
   return `<div class="card-actions">${run}
+    <button class="cact" data-act="devbox" title="Open this project's dev box">${icon(
+      "dashboard"
+    )}Dev box</button>
     <button class="cact" data-act="vscode" title="Open in VS Code">${icon("code")}Code</button>
     <button class="cact" data-act="terminal" title="Open a terminal here">${icon(
       "terminal"

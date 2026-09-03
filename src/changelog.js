@@ -16,6 +16,14 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.56.1",
+      date: "2026-09-03",
+      title: "The dev box has a button",
+      changes: [
+        ["fix", "The dev box could only be reached by binding a hotkey to it. Every project card now has a Dev box button next to Code and Terminal, and typing a project name into the command palette offers it too."],
+      ],
+    },
+    {
       version: "0.56.0",
       date: "2026-09-03",
       title: "Dev boxes",
