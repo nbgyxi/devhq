@@ -28,6 +28,13 @@
   document.getElementById("ws-subtitle").textContent = projectPath;
   document.title = `${projectName} — workspace`;
 
+  // The same badge every tool header carries, and for the same reason: the
+  // workspace has been built and not put through its paces, and that is
+  // something to be told rather than to discover. `maturity.js` wires the
+  // explanation popover itself, so this is the whole of it.
+  const maturityEl = document.getElementById("ws-maturity");
+  if (maturityEl) maturityEl.innerHTML = window.wintMaturity?.badge("workspace") ?? "";
+
   const esc = (v = "") => String(v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const icon = (name) => `<span class="ms" aria-hidden="true">${name}</span>`;
 

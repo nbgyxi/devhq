@@ -3335,6 +3335,7 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-term .term-host{position:absolute; inset:0}
 .ws-term-error{padding:12px; color:var(--red); font-size:12px}
 
+.ws-maturity{display:flex; align-items:center; flex:0 0 auto; margin-right:6px; -webkit-app-region:no-drag}
 .ws-toggles{display:flex; align-items:center; gap:2px; -webkit-app-region:no-drag}
 .ws-toggle{background:none; border:0; color:var(--dim2); padding:4px; border-radius:5px; cursor:pointer; display:grid; place-items:center}
 .ws-toggle .ms{font-size:17px}

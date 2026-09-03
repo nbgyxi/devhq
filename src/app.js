@@ -3885,25 +3885,22 @@ function skeletonView(p) {
   </article>`;
 }
 
-/** The three things a project is usually wanted for. Always drawn, never
- *  revealed on hover: a button that appears under the pointer is a button that
- *  cannot be found by looking. Run says what it will actually type, and when
- *  the folder gives no clue how it starts, it says that instead of guessing. */
+/** The things a project is usually wanted for. Always drawn, never revealed on
+ *  hover: a button that appears under the pointer is a button that cannot be
+ *  found by looking.
+ *
+ *  Run is not among them. A card is where a project is recognised, and running
+ *  one is a thing to do once you are looking at it - it is still on the detail
+ *  view, in the table row and in the command palette, all of which are places
+ *  you arrive at deliberately. */
 function cardActions(p) {
-  const run = p.runCmd
-    ? `<button class="cact go" data-act="run" title="Run ${esc(p.runCmd)}">${icon(
-        "play_arrow"
-      )}Run</button>`
-    : `<button class="cact" disabled title="Nothing in this folder says how it runs">${icon(
-        "play_disabled"
-      )}Run</button>`;
   // Pull is only offered where it can mean something: a folder git knows about.
   const pull = p.git
     ? `<button class="cact" data-act="pull" title="Run git pull here">${icon(
         "download"
       )}Pull</button>`
     : "";
-  return `<div class="card-actions">${run}
+  return `<div class="card-actions">
     <button class="cact" data-act="workspace" title="Open this project's workspace">${icon(
       "dashboard"
     )}Workspace</button>

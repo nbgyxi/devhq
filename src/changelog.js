@@ -16,6 +16,15 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.58.0",
+      date: "2026-09-03",
+      title: "The workspace says it is Alpha",
+      changes: [
+        ["new", "The workspace window carries the same Alpha badge every tool does, and clicking it explains what that means: built, not yet put through its paces. Check what it tells you before acting on it."],
+        ["better", "Project cards no longer carry a Run button. A card is where a project is recognised; running it is something you do once you are looking at it, and Run is still on the project itself, in the table view and in the command palette."],
+      ],
+    },
+    {
       version: "0.57.2",
       date: "2026-09-03",
       title: "All or Changed, in words",
