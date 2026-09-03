@@ -350,6 +350,10 @@ struct Session {
     /// What names this terminal's stream across runs, so it can be forgotten
     /// when the terminal is closed for good.
     history_key: Option<String>,
+    /// The last loopback address this terminal printed, if any. Kept so that a
+    /// dev box opened after the server started can still find out where it is,
+    /// and so the same address announced on every rebuild is only acted on once.
+    served: Mutex<Option<String>>,
 }
 
 fn registry() -> &'static Mutex<HashMap<String, Arc<Session>>> {
@@ -1033,6 +1037,7 @@ fn term_open_sync(app: AppHandle, args: OpenArgs) -> Result<TermInfo, String> {
         command,
         log: Mutex::new(log),
         history_key,
+        served: Mutex::new(None),
     });
     registry()
         .lock()
@@ -1406,10 +1411,65 @@ fn spawn_writer(session: Weak<Session>, inbox: Receiver<Job>) {
 /// The reader thread: block on the pseudoconsole, feed the screen, ship the
 /// rows that changed. Blocking on `ReadFile` is itself the coalescing — ConPTY
 /// hands us one batched repaint per flush rather than a byte at a time.
+/// How much of the previous chunk is kept to catch a URL split across two
+/// reads. Comfortably longer than the longest address this looks for.
+const CARRY: usize = 64;
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Serving {
+    pub id: String,
+    pub url: String,
+}
+
+/// The first `http://localhost:port` or `http://127.0.0.1:port` in a chunk of
+/// terminal output, which is how every dev server worth pointing a browser at
+/// says it has started.
+///
+/// Deliberately narrow. Matching any URL would have the browser panel chasing
+/// documentation links and npm advisories printed during a build; matching
+/// loopback with a port is the one case where the terminal is saying "there is
+/// something to look at here, now".
+fn find_local_url(carry: &[u8], chunk: &[u8]) -> Option<String> {
+    let mut text = Vec::with_capacity(carry.len() + chunk.len());
+    text.extend_from_slice(carry);
+    text.extend_from_slice(chunk);
+    let text = String::from_utf8_lossy(&text);
+    // The earliest address in the chunk wins. A dev server that prints both a
+    // local and a network address prints the local one first, which is the one
+    // a browser on this machine should be pointed at.
+    let mut best: Option<(usize, String)> = None;
+    for host in ["http://localhost:", "http://127.0.0.1:"] {
+        let mut from = 0;
+        while let Some(at) = text[from..].find(host) {
+            let start = from + at;
+            let rest = &text[start + host.len()..];
+            let port: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            from = start + host.len() + port.len().max(1);
+            if port.is_empty() || port.len() > 5 {
+                continue;
+            }
+            // Whatever follows the port up to whitespace is the path. A dev
+            // server that prints a trailing slash means it, and one that prints
+            // `/admin` means that.
+            let tail: String = rest[port.len()..]
+                .chars()
+                .take_while(|c| !c.is_whitespace() && !matches!(c, '"' | '\'' | '\u{1b}' | ','))
+                .collect();
+            let found = format!("{host}{port}{tail}");
+            if best.as_ref().map_or(true, |(seen, _)| start < *seen) {
+                best = Some((start, found));
+            }
+        }
+    }
+    best.map(|(_, url)| url)
+}
+
 fn spawn_reader(app: AppHandle, session: Arc<Session>) {
     let handle = session.pty.lock().unwrap().output();
     std::thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
+        let mut carry: Vec<u8> = Vec::with_capacity(CARRY);
         loop {
             let Some(n) = conpty::read_chunk(handle, &mut buf) else {
                 break;
@@ -1456,11 +1516,39 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
             if let Some(log) = session.log.lock().unwrap().as_mut() {
                 log.append(&buf[..n], settled);
             }
+            // A dev server announcing itself is the one line of terminal output
+            // something else in the app wants to act on, so it is picked out
+            // here rather than by anything re-reading the screen. The tail of
+            // the previous chunk rides along because ConPTY will happily split
+            // `http://localhost:5173` down the middle.
+            if let Some(url) = find_local_url(&carry, &buf[..n]) {
+                if session.served.lock().unwrap().replace(url.clone()) != Some(url.clone()) {
+                    let _ = app.emit(
+                        "term:serving",
+                        Serving {
+                            id: session.id.clone(),
+                            url,
+                        },
+                    );
+                }
+            }
+            carry.clear();
+            carry.extend_from_slice(&buf[n.saturating_sub(CARRY)..n]);
             let _ = app.emit("term:update", update);
         }
         session.alive.store(false, Ordering::Relaxed);
         let _ = app.emit("term:exit", session.info());
     });
+}
+
+/// Where this terminal last said it was serving, for a view that arrived after
+/// it said so. Without this, opening a dev box on a project whose dev server is
+/// already running would leave the browser panel blank until the next restart.
+#[tauri::command]
+pub fn term_serving(id: String) -> Option<String> {
+    lookup(&id)
+        .ok()
+        .and_then(|session| session.served.lock().unwrap().clone())
 }
 
 /// Everything a fresh view needs to draw the session as it stands.

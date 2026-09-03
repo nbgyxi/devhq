@@ -16,6 +16,17 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.56.0",
+      date: "2026-09-03",
+      title: "Dev boxes",
+      changes: [
+        ["new", "Every project can now open a dev box: one window holding the files, a save-and-upload panel, a terminal, a Claude chat and a browser, all pointed at that project. Find it in the command palette as \"Open dev box\"."],
+        ["new", "The browser panel fills itself in. Start a dev server in the dev box terminal and the moment it prints a localhost address, the browser opens it - no copying the port across."],
+        ["new", "Panels go where you want them. Drag a panel by its title bar onto another to swap the two, drag the dividers to resize, and use the row of icons in the title bar to hide and show any of them. The arrangement is remembered per project."],
+        ["new", "The terminal and the Claude chat belong to the dev box but not to its window: close it and reopen it, and whatever was running is still running."],
+      ],
+    },
+    {
       version: "0.55.2",
       date: "2026-09-03",
       title: "The Claude Code terminal sets itself up",

@@ -21,6 +21,7 @@ pub mod procs;
 mod shells;
 mod tech;
 #[cfg(windows)]
+mod devbox;
 mod term;
 pub mod todo;
 mod tool_window;
@@ -2311,6 +2312,15 @@ pub fn run() {
             shell_download_remove,
             term::term_open,
             term::term_attach,
+            term::term_serving,
+            devbox::devbox_open,
+            devbox::devbox_browser_show,
+            devbox::devbox_browser_hide,
+            devbox::devbox_browser_navigate,
+            devbox::devbox_browser_reload,
+            devbox::devbox_browser_close,
+            devbox::devbox_list_dir,
+            devbox::devbox_read_file,
             term::term_write,
             term::term_resize,
             term::term_close,
@@ -2477,6 +2487,15 @@ pub fn run() {
         ,tool_window::changelog_show
         ,tool_window::changelog_hide
         ,search_global_binding_set
+        ,term::term_serving
+        ,devbox::devbox_open
+        ,devbox::devbox_browser_show
+        ,devbox::devbox_browser_hide
+        ,devbox::devbox_browser_navigate
+        ,devbox::devbox_browser_reload
+        ,devbox::devbox_browser_close
+        ,devbox::devbox_list_dir
+        ,devbox::devbox_read_file
     ]);
 
     builder

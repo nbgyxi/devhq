@@ -2825,6 +2825,17 @@ function clearDetailData() {
   state.todoSource = new Map();
 }
 
+/** Opens the project's dev box - its files, git, terminal, AI chat and a
+ *  browser, all in one window of its own. The window is keyed by the project
+ *  path in Rust, so asking twice focuses the one already open. */
+function openDevBox(p) {
+  trackWork("devbox:open", `Opening the ${p.name} dev box`, invoke("devbox_open", { path: p.path, name: p.name }))
+    .catch((err) => {
+      state.error = `${p.name}: ${String(err)}`;
+      markDirty("banner");
+    });
+}
+
 /** Every action a project offers, in one place, so the card and the detail
  *  view cannot drift apart about what "Run" or "Code" means. */
 function projectAction(action, p, button = null) {
@@ -2851,6 +2862,9 @@ function projectAction(action, p, button = null) {
       if (!p.git) return;
       window.wintGit?.open(p.path, p.name);
       if (state.activeView !== "git") switchMainView("git");
+      break;
+    case "devbox":
+      openDevBox(p);
       break;
     case "external":
       openIn(p.path, "terminal");
@@ -3702,6 +3716,7 @@ function hotkeyCatalog() {
     add("vscode", "Open in VS Code —", "code", project.path);
     add("terminal", "Open terminal —", "terminal", project.path);
     add("explorer", "Open in Explorer —", "folder_open", project.path);
+    add("devbox", "Open dev box —", "dashboard", project.path);
     add("external", "Open external shell —", "open_in_new", project.path);
     add("copy", "Copy path —", "content_copy", project.path);
     add(
