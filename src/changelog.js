@@ -16,6 +16,15 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.56.3",
+      date: "2026-09-03",
+      title: "The dev box terminal sits under the browser",
+      changes: [
+        ["better", "The bottom panel no longer runs the full width of the dev box. It sits under the center panel, where the terminal belongs to the browser above it rather than reading as a fourth unrelated strip - and the file list and the chat now run the full height of the window."],
+        ["better", "Hide the center panel and the bottom one spreads across the window again, because there is nothing left for it to sit under."],
+      ],
+    },
+    {
       version: "0.56.2",
       date: "2026-09-03",
       title: "The dev box opens",

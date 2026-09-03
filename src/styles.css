@@ -3215,13 +3215,14 @@ button.copy-confirmed .ms{color:var(--green)!important}button.copy-failed .ms{co
 
 body.devbox{
   --db-left:280px; --db-right:420px; --db-bottom:260px; --db-left-split:50%;
-  display:grid; grid-template-rows:var(--titlebar) minmax(0,1fr) auto var(--db-bottom) var(--status-h);
+  display:grid; grid-template-rows:var(--titlebar) minmax(0,1fr) auto var(--status-h);
   height:100vh; margin:0; overflow:hidden; background:var(--bg);
 }
 body.devbox .titlebar{grid-row:1}
 body.devbox.db-resizing,body.devbox.db-dragging{cursor:grabbing;user-select:none}
 
 #db-grid{
+  grid-row:2;
   display:grid; grid-template-columns:var(--db-left) auto minmax(0,1fr) auto var(--db-right);
   min-height:0; overflow:hidden;
 }
@@ -3231,7 +3232,22 @@ body.devbox.db-no-left #db-grid{grid-template-columns:0 auto minmax(0,1fr) auto 
 .db-slot{display:flex; min-width:0; min-height:0; overflow:hidden; background:var(--bg1); border:1px solid var(--line); border-radius:8px; margin:4px}
 .db-slot[hidden]{display:none}
 .db-slot.db-over{border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent)}
-.db-bottom{grid-row:4}
+
+/* The center column holds the center panel and, when that panel is showing,
+   the bottom panel underneath it - so a terminal sits below the browser it
+   belongs to rather than running under the file list and the chat as well.
+   With the center panel hidden the dock moves out to the foot of the window
+   and does spread across everything, because there is nothing left to sit
+   under. */
+.db-center-col{display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden}
+.db-center-col>.db-center{flex:1; min-height:0}
+#db-bottom-dock{display:flex; flex-direction:column; flex:0 0 auto; min-height:0}
+/* Only a grid item when it is at the foot of the window; inside the center
+   column it is an ordinary flex child and body row 3 collapses to nothing. */
+body.devbox>#db-bottom-dock{grid-row:3}
+#db-bottom-dock[hidden]{display:none}
+#db-bottom-dock>.db-bottom{height:var(--db-bottom); min-height:0}
+.db-drop{position:fixed; inset:0; pointer-events:none}
 
 .db-panel{display:flex; flex-direction:column; flex:1; min-width:0; min-height:0}
 .db-head{display:flex; align-items:center; gap:6px; padding:0 4px 0 2px; height:30px; flex:0 0 auto;
@@ -3256,7 +3272,6 @@ body.devbox.db-no-left #db-grid{grid-template-columns:0 auto minmax(0,1fr) auto 
 .db-grip-v{width:6px; cursor:col-resize}
 .db-grip-h{height:6px; cursor:row-resize}
 .db-grip:hover,body.devbox.db-resizing .db-grip{background:var(--accent)}
-.db-grip-bottom{grid-row:3}
 
 /* The hole the native browser webview is positioned over. It must stay empty:
    anything drawn here is simply covered by the webview and never seen. */
@@ -3311,7 +3326,7 @@ body.devbox.db-no-left #db-grid{grid-template-columns:0 auto minmax(0,1fr) auto 
 .db-toggle.on{color:var(--text); background:var(--bg3)}
 .db-toggle:hover{color:var(--text)}
 
-.db-status{grid-row:5; display:flex; align-items:center; gap:8px; padding:0 12px; font-size:11px;
+.db-status{grid-row:4; display:flex; align-items:center; gap:8px; padding:0 12px; font-size:11px;
   color:var(--dim); background:var(--bg1); border-top:1px solid var(--line); overflow:hidden; white-space:nowrap}
 .db-status.busy::after{content:""; width:60px; height:2px; border-radius:2px; flex:0 0 auto;
   background:linear-gradient(90deg,transparent,var(--accent),transparent); animation:db-busy 1.1s linear infinite}

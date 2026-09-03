@@ -30,12 +30,19 @@
     <section class="db-slot" data-slot="left-bottom"></section>
   </div>
   <div class="db-grip db-grip-v" data-grip="left" role="separator" aria-label="Resize the left column"></div>
-  <section class="db-slot db-center" data-slot="center"></section>
+  <div class="db-center-col" id="db-center-col">
+    <section class="db-slot db-center" data-slot="center"></section>
+  </div>
   <div class="db-grip db-grip-v" data-grip="right" role="separator" aria-label="Resize the right column"></div>
   <section class="db-slot db-right" data-slot="right"></section>
 </div>
-<div class="db-grip db-grip-h db-grip-bottom" data-grip="bottom" role="separator" aria-label="Resize the bottom panel"></div>
-<section class="db-slot db-bottom" data-slot="bottom"></section>
+<!-- The bottom panel and its divider move together, between the center column
+     and the foot of the window. It sits under the center panel where there is
+     one, and only spreads across everything when there is not. -->
+<div id="db-bottom-dock">
+  <div class="db-grip db-grip-h db-grip-bottom" data-grip="bottom" role="separator" aria-label="Resize the bottom panel"></div>
+  <section class="db-slot db-bottom" data-slot="bottom"></section>
+</div>
 
 <div class="db-drop" id="db-drop" hidden></div>
 <div class="db-status" id="db-status">Ready</div>

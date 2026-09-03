@@ -121,6 +121,22 @@
   const slotEls = new Map(SLOTS.map((slot) => [slot, document.querySelector(`[data-slot="${slot}"]`)]));
   const gripEls = [...document.querySelectorAll("[data-grip]")];
   const togglesEl = document.getElementById("db-toggles");
+  const centerColEl = document.getElementById("db-center-col");
+  const bottomDock = document.getElementById("db-bottom-dock");
+
+  /** Where the bottom panel hangs from.
+   *
+   *  Under the center panel while there is one, because a terminal belongs to
+   *  the thing above it — running under the file list and the chat as well
+   *  makes the window read as four unrelated strips. With the center panel
+   *  hidden there is nothing to sit under, so it goes to the foot of the
+   *  window and takes the full width. */
+  const dockBottom = () => {
+    const host = layout.slots.center && !layout.hidden.center ? centerColEl : document.body;
+    if (bottomDock.parentElement === host) return false;
+    host === document.body ? document.body.insertBefore(bottomDock, statusEl) : host.appendChild(bottomDock);
+    return true;
+  };
 
   const applySizes = () => {
     const root = document.documentElement.style;
@@ -135,6 +151,8 @@
     root.setProperty("--db-left-split", `${split * 100}%`);
     document.body.classList.toggle("db-no-left", !leftShown);
     for (const [slot, el] of slotEls) el.hidden = !shown(slot);
+    bottomDock.hidden = !shown("bottom");
+    dockBottom();
     for (const grip of gripEls) {
       grip.hidden =
         grip.dataset.grip === "left" ? !leftShown
@@ -263,7 +281,15 @@
         const dy = ev.clientY - start.y;
         if (which === "left") layout.size.left = Math.max(160, Math.min(640, start.left + dx));
         else if (which === "right") layout.size.right = Math.max(220, Math.min(760, start.right - dx));
-        else if (which === "bottom") layout.size.bottom = Math.max(120, Math.min(window.innerHeight - 200, start.bottom - dy));
+        else if (which === "bottom") {
+          // How far it can grow depends on where it is hanging from: the whole
+          // window at the foot, or just the center column when it is under the
+          // center panel.
+          const room = bottomDock.parentElement === document.body
+            ? window.innerHeight - 120
+            : centerColEl.getBoundingClientRect().height - 60;
+          layout.size.bottom = Math.max(120, Math.min(Math.max(120, room), start.bottom - dy));
+        }
         else {
           const column = slotEls.get("left-top").parentElement.getBoundingClientRect();
           layout.size.leftSplit = Math.max(0.15, Math.min(0.85, start.leftSplit + dy / Math.max(1, column.height)));
