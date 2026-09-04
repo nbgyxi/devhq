@@ -3962,10 +3962,13 @@ function skeletonView(p) {
  *  hover: a button that appears under the pointer is a button that cannot be
  *  found by looking.
  *
+ *  The table row carries the same three, so moving between the two views never
+ *  shifts a button or takes one away.
+ *
  *  Run is not among them. A card is where a project is recognised, and running
  *  one is a thing to do once you are looking at it - it is still on the detail
- *  view, in the table row and in the command palette, all of which are places
- *  you arrive at deliberately. */
+ *  view and in the command palette, both of which are places you arrive at
+ *  deliberately. */
 function cardActions(p) {
   return `<div class="card-actions">
     <button class="cact" data-act="workspace" title="Open this project's workspace">${icon(
@@ -4138,10 +4141,9 @@ function tableRowView(p) {
       <button class="table-fav${starred ? " on" : ""}" data-act="favorite" title="${
         starred ? "Remove from favorites" : "Add to favorites"
       }" aria-pressed="${starred}">${icon(starred ? "star" : "star_border")}</button>
-      <button data-act="run" title="${p.runCmd ? `Run ${esc(p.runCmd)}` : "No run command detected"}" ${p.runCmd ? "" : "disabled"}>${icon("play_arrow")}</button>
+      <button data-act="workspace" title="Open this project's workspace">${icon("dashboard")}</button>
       <button data-act="vscode" title="Open in VS Code">${icon("code")}</button>
       <button data-act="terminal" title="Open a terminal">${icon("terminal")}</button>
-      ${p.git ? `<button data-act="pull" title="Run git pull here">${icon("download")}</button>` : ""}
     </div></td>
   </tr>`;
 }
@@ -6228,7 +6230,7 @@ function wireShell() {
     const project = state.byPath.get(card.dataset.path);
     if (!project) return;
 
-    // Run, Code and Terminal are the card doing something; anything else on it
+    // Workspace, Code and Terminal are the card doing something; anything else on it
     // is the card being opened.
     const action = e.target.closest("[data-act]");
     if (action) return projectAction(action.dataset.act, project, action);

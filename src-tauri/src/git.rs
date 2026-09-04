@@ -209,7 +209,13 @@ pub struct ConflictFile {
 pub struct Workspace {
     pub info: GitInfo,
     pub remotes: Vec<Remote>,
+    /// The branch the team shares - what the remote points its HEAD at, or a
+    /// local `main`/`master`. Empty when neither can be found, and the UI then
+    /// offers nothing to join work into rather than guessing.
+    pub main_branch: String,
     pub history: Vec<HistoryEntry>,
+    /// Commits recorded here that the upstream branch has not been given yet.
+    pub unpushed: Vec<HistoryEntry>,
     pub incoming: Vec<HistoryEntry>,
     pub conflicts: Vec<ConflictFile>,
     pub diff: String,
@@ -328,29 +334,46 @@ pub async fn git_workspace(path: String) -> Result<Workspace, String> {
                 }
             })
             .collect();
-        let incoming = run_lossy(
+        // Both sides of the upstream comparison are read the same way: what is
+        // waiting to come down, and what is saved here but not up there yet.
+        let log_range = |range: &str, limit: &str| -> Vec<HistoryEntry> {
+            run_lossy(
+                "git",
+                &["log", limit, "--format=%h%x1f%an%x1f%ct%x1f%s%x1f%D", range],
+                Some(&dir),
+            )
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                let p: Vec<_> = line.split('\u{1f}').collect();
+                (p.len() == 5).then(|| HistoryEntry {
+                    hash: p[0].into(),
+                    author: p[1].into(),
+                    timestamp: p[2].parse().unwrap_or(0),
+                    subject: p[3].into(),
+                    refs: p[4].into(),
+                })
+            })
+            .collect()
+        };
+        let main_branch = run_lossy(
             "git",
-            &[
-                "log",
-                "-12",
-                "--format=%h%x1f%an%x1f%ct%x1f%s%x1f%D",
-                "HEAD..@{upstream}",
-            ],
+            &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
             Some(&dir),
         )
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|line| {
-            let p: Vec<_> = line.split('\u{1f}').collect();
-            (p.len() == 5).then(|| HistoryEntry {
-                hash: p[0].into(),
-                author: p[1].into(),
-                timestamp: p[2].parse().unwrap_or(0),
-                subject: p[3].into(),
-                refs: p[4].into(),
-            })
-        })
-        .collect();
+        .map(|s| s.trim().trim_start_matches("origin/").to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            ["main", "master"]
+                .iter()
+                .find(|c| info.branches.iter().any(|b| b == *c))
+                .map(|c| (*c).to_string())
+                .unwrap_or_default()
+        });
+        let incoming = log_range("HEAD..@{upstream}", "-12");
+        // With no upstream the range fails and this stays empty, which is
+        // right: nothing is "not uploaded" to a remote that isn't there.
+        let unpushed = log_range("@{upstream}..HEAD", "-50");
         let mut diff =
             run_lossy("git", &["diff", "--cached", "--no-color"], Some(&dir)).unwrap_or_default();
         diff.push_str(&run_lossy("git", &["diff", "--no-color"], Some(&dir)).unwrap_or_default());
@@ -364,7 +387,9 @@ pub async fn git_workspace(path: String) -> Result<Workspace, String> {
         Ok(Workspace {
             info,
             remotes,
+            main_branch,
             history,
+            unpushed,
             incoming,
             conflicts,
             diff,
@@ -409,6 +434,81 @@ pub async fn git_action(request: ActionRequest) -> Result<ActionResult, String> 
             } else {
                 git_command(&dir, &["switch", "-c", name, source])
             };
+        }
+        // Joining a branch back into the main one is four git commands with
+        // three different ways to fail, and every one of them has to come back
+        // as a sentence rather than as git's own words. It lives here, not in
+        // the front end, so a failure half way through can put the repository
+        // back the way it was before anyone is told about it.
+        if request.action == "merge_into" {
+            let target = request.value.trim().to_string();
+            if target.is_empty() {
+                return Err("A branch to save onto is required.".into());
+            }
+            let from = run_lossy("git", &["rev-parse", "--abbrev-ref", "HEAD"], Some(&dir))
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if from == target {
+                return Ok(ActionResult {
+                    ok: false,
+                    output: format!("You are already working on {target}."),
+                });
+            }
+            // Switching branches would carry unsaved work across with it, and
+            // then join a half-finished state into the main branch.
+            if !run_lossy("git", &["status", "--porcelain"], Some(&dir))
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                return Ok(ActionResult {
+                    ok: false,
+                    output: "Save your changes first - there is still work here that has not been saved.".into(),
+                });
+            }
+            let switched = git_command(&dir, &["switch", &target])?;
+            if !switched.ok {
+                return Ok(ActionResult {
+                    ok: false,
+                    output: format!("Could not open {target}.\n\n{}", switched.output),
+                });
+            }
+            let merged = git_command(&dir, &["merge", "--no-ff", &from])?;
+            if !merged.ok {
+                let _ = git_command(&dir, &["merge", "--abort"]);
+                let _ = git_command(&dir, &["switch", &from]);
+                return Ok(ActionResult {
+                    ok: false,
+                    output: format!(
+                        "Your work and {target} changed the same lines, so they could not be joined automatically. Nothing was changed - you are back on {from}.\n\n{}",
+                        merged.output
+                    ),
+                });
+            }
+            let pushed = git_command(&dir, &["push"])?;
+            if !pushed.ok {
+                let said = pushed.output.to_lowercase();
+                let refused = ["protected branch", "hook declined", "not allowed", "permission", "denied", "gh006", "review"]
+                    .iter()
+                    .any(|hint| said.contains(hint));
+                return Ok(ActionResult {
+                    ok: false,
+                    output: format!(
+                        "{}\n\n{}",
+                        if refused {
+                            format!("Your work is part of {target} on this computer, but the team's rules do not let you upload it to {target} yourself. Upload your own branch instead and ask for it to be reviewed.")
+                        } else {
+                            format!("Your work is part of {target} on this computer, but uploading it did not go through.")
+                        },
+                        pushed.output
+                    ),
+                });
+            }
+            return Ok(ActionResult {
+                ok: true,
+                output: format!("Your work is now part of {target} and uploaded."),
+            });
         }
         let mut args: Vec<&str> = match request.action.as_str() {
             "fetch" => vec!["fetch", "--all", "--prune"],

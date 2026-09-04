@@ -11,7 +11,7 @@
     { id: "system", name: "System", icon: "tune", hint: "audit PATH and environment variables", keywords: "system path %path% environment variable variables env envvar user machine system-wide missing broken duplicate order folders directories not recognized command not found diagnostics audit" },
     { id: "log-tail", name: "Log Tail", icon: "subject", hint: "follow the newest lines in any local log file", keywords: "log tail logs follow file live stream watch monitor grep filter search lines output text last newest realtime" },
     { id: "lock-inspector", name: "Lock Inspector", icon: "lock_open", hint: "find processes holding a file or folder", keywords: "lock locked file folder handle handles process who holds using delete remove rename move in use cannot access being used by another sharing violation access denied unlock close restart manager" },
-    { id: "clipboard", name: "Clipboard History", icon: "content_paste", hint: "search, pin, restore and forget copied text", keywords: "clipboard clip clips history copied copy cut paste buffer text links urls code snippets search restore pin forget clear earlier" },
+    { id: "clipboard", name: "Clipboard History", icon: "content_paste", hint: "everything you copy, recorded from startup — search, pin, restore, forget", keywords: "clipboard clip clips history copied copy cut paste buffer text links urls code snippets search restore pin forget clear earlier" },
     { id: "keep-awake", name: "Keep Awake", icon: "coffee", hint: "keep Windows and the display awake for as long as you need", keywords: "keep awake stay awake sleep no sleep power display screen monitor timeout screensaver lock idle prevent caffeine caffeinate insomnia presentation meeting build download transfer render" },
     { id: "time-tracker", name: "Active Window Time Tracker", icon: "schedule", hint: "local time by application and window title", keywords: "time tracker tracking activity active window title productivity apps applications usage screen time hours focus idle away log history what did i do local private" },
   ];
@@ -63,13 +63,10 @@
   let systemScope = "user";
   let systemReport = { paths: [], variables: [] };
   let systemSelected = "Path";
-  const CLIPBOARD_DB = "wint-clipboard";
   let clipboardKind = "all";
   let clipboardPinnedOnly = false;
   let clipboardSelected = "";
-  let clipboardTimer = 0;
   let clipboardRows = [];
-  let clipboardDb = null;
   const TRACKER_DB = "wint-time-tracker";
   const TRACKER_ALWAYS_KEY = "wint-time-tracker-always";
   const TRACKER_IDLE_MS = 5 * 60 * 1000;
@@ -94,22 +91,25 @@
   let handoffHtml = "";
   let handoffRunning = false;
 
-  const clipboardReady = new Promise((resolve) => {
-    const request = indexedDB.open(CLIPBOARD_DB, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("clips", { keyPath: "id" });
-    request.onerror = () => resolve();
-    request.onsuccess = () => {
-      clipboardDb = request.result;
-      const transaction = clipboardDb.transaction("clips", "readonly");
-      const all = transaction.objectStore("clips").getAll();
-      all.onsuccess = () => {
-        clipboardRows = (all.result || []).sort((a, b) => b.time - a.time).slice(0, 250);
-        if (active === "clipboard" && host) renderClipboard(catalog.find((item) => item.id === "clipboard"));
-        resolve();
-      };
-      all.onerror = () => resolve();
-    };
-  });
+  // The history itself is kept by the Windows clipboard listener in the Rust
+  // backend, which records every copy from the moment WinT starts — the
+  // webview can only read the clipboard while this tool is open, and only
+  // after Windows has prompted for permission.
+  invoke("clipboard_history")
+    .then((rows) => {
+      setClips(rows);
+      if (active === "clipboard" && host) renderClipboard(catalog.find((item) => item.id === "clipboard"));
+    })
+    .catch(() => { /* an older backend or a non-Windows build: start empty */ });
+
+  try {
+    window.__TAURI__.event.listen("clipboard:clip", (event) => {
+      const clip = event.payload;
+      if (!clip || !clip.id) return;
+      setClips([clip, ...clipboardRows.filter((row) => row.id !== clip.id)]);
+      if (active === "clipboard" && host) renderClipboard(catalog.find((item) => item.id === "clipboard"));
+    });
+  } catch { /* no event bridge in this window; the list still loads on open */ }
 
   const trackerReady = new Promise((resolve) => {
     const request = indexedDB.open(TRACKER_DB, 1);
@@ -199,39 +199,12 @@
   function readClips() {
     return clipboardRows.filter((row) => row && (typeof row.text === "string" || typeof row.dataUrl === "string")).slice(0, 250);
   }
-  function writeClips(rows) {
-    clipboardRows = rows.slice(0, 250);
-    if (!clipboardDb) return;
-    try {
-      const transaction = clipboardDb.transaction("clips", "readwrite");
-      const store = transaction.objectStore("clips");
-      store.clear();
-      for (const row of clipboardRows) store.put(row);
-    } catch { /* database unavailable; keep the session's in-memory history */ }
-  }
-  function clipKind(text) {
-    const value = text.trim();
-    if (/^https?:\/\/\S+$/i.test(value)) return "links";
-    if (/\n|[{}();]|\b(const|let|fn|class|select|git|npm|cargo|pkmon)\b/i.test(value)) return "code";
-    return "text";
+  // The backend owns the history and writes it to disk; this only mirrors it
+  // so a redraw does not have to wait for a round trip.
+  function setClips(rows) {
+    clipboardRows = Array.isArray(rows) ? rows.slice(0, 250) : [];
   }
   function clipIcon(kind) { return kind === "links" ? "link" : kind === "code" ? "code" : kind === "images" ? "image" : "notes"; }
-  function blobToDataUrl(blob) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ""));
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(blob);
-    });
-  }
-  function imageDimensions(dataUrl) {
-    return new Promise((resolve) => {
-      const image = new Image();
-      image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-      image.onerror = () => resolve({ width: 0, height: 0 });
-      image.src = dataUrl;
-    });
-  }
   function dataUrlBlob(dataUrl) {
     const [head, encoded] = dataUrl.split(",", 2);
     const mime = head.match(/^data:([^;]+)/)?.[1] || "image/png";
@@ -268,7 +241,6 @@
   function render() {
     if (!host) return;
     clearInterval(timer); timer = 0;
-    if (active !== "clipboard") { clearInterval(clipboardTimer); clipboardTimer = 0; }
     const tool = catalog.find((x) => x.id === active) || catalog[0];
     if (active === "events") renderEvents(tool);
     if (active === "help") renderHelp(tool);
@@ -656,55 +628,46 @@
     if (selected) clipboardSelected = selected.id;
     const count = (kind) => rows.filter((row) => kind === "all" || row.kind === kind).length;
     const kinds = [["all","All","select_all"],["text","Text","notes"],["links","Links","link"],["code","Code","code"],["images","Images","image"]];
-    host.innerHTML = header(tool, `<div class="clipboard-toolbar"><button class="btn primary" data-clip-capture>${icon("content_paste")}Capture current clipboard</button><span>Text copied while WinT is open can be added here. Pinned entries are kept until you forget them.</span></div><div class="clipboard-workspace">
+    host.innerHTML = header(tool, `<div class="clipboard-toolbar"><button class="btn primary" data-clip-capture>${icon("content_paste")}Capture current clipboard</button><button class="btn danger" data-clip-clear>${icon("delete")}Forget unpinned</button><span>Everything copied while WinT runs is recorded here, whether or not this tool is open. Pinned entries are kept until you forget them.</span></div><div class="clipboard-workspace">
       <aside class="clipboard-kinds"><h3>Kinds</h3>${kinds.map(([id,label,glyph])=>`<button class="${clipboardKind===id?'on':''}" data-clip-kind="${id}">${icon(glyph)}<strong>${label}</strong><small>${count(id)}</small></button>`).join("")}</aside>
-      <section class="clipboard-list"><header><strong>${clipboardKind === 'all' ? 'All clips' : clipboardKind}</strong><button class="${clipboardPinnedOnly?'on':''}" data-clip-pinned>${icon("push_pin")}Pinned only</button><small>${visible.length} of ${rows.length} entries</small></header><div>${visible.length ? visible.map((row)=>`<button class="clipboard-row${row.id===clipboardSelected?' on':''}" data-clip-row="${esc(row.id)}">${row.kind === 'images' ? `<img src="${esc(row.dataUrl)}" alt="">` : icon(clipIcon(row.kind))}<span><strong>${row.kind === 'images' ? `${esc(row.width || '?')} × ${esc(row.height || '?')} ${esc(row.mime || 'image')}` : esc(row.text.replace(/\s+/g,' ').slice(0,160))}</strong><small>${esc(new Date(row.time).toLocaleString())} · ${row.kind === 'images' ? `${Math.round((row.size || 0) / 1024)} KB` : `${row.text.length} characters`}</small></span>${row.pinned?icon('push_pin'):''}</button>`).join('') : `<div class="win-empty">${rows.length ? 'No clips match this view.' : 'Capture the current clipboard to start a private local history.'}</div>`}</div></section>
+      <section class="clipboard-list"><header><strong>${clipboardKind === 'all' ? 'All clips' : clipboardKind}</strong><button class="${clipboardPinnedOnly?'on':''}" data-clip-pinned>${icon("push_pin")}Pinned only</button><small>${visible.length} of ${rows.length} entries</small></header><div>${visible.length ? visible.map((row)=>`<button class="clipboard-row${row.id===clipboardSelected?' on':''}" data-clip-row="${esc(row.id)}">${row.kind === 'images' ? `<img src="${esc(row.dataUrl)}" alt="">` : icon(clipIcon(row.kind))}<span><strong>${row.kind === 'images' ? `${esc(row.width || '?')} × ${esc(row.height || '?')} ${esc(row.mime || 'image')}` : esc(row.text.replace(/\s+/g,' ').slice(0,160))}</strong><small>${esc(new Date(row.time).toLocaleString())} · ${row.kind === 'images' ? `${Math.round((row.size || 0) / 1024)} KB` : `${row.text.length} characters`}</small></span>${row.pinned?icon('push_pin'):''}</button>`).join('') : `<div class="win-empty">${rows.length ? 'No clips match this view.' : 'Copy something to start a private local history.'}</div>`}</div></section>
       <aside class="clipboard-detail">${selected ? `<header>${icon(clipIcon(selected.kind))}<strong>Entry</strong><small>${esc(selected.kind)}</small></header>${selected.kind === 'images' ? `<div class="clipboard-image-preview"><img src="${esc(selected.dataUrl)}" alt="Clipboard image"></div>` : `<pre>${esc(selected.text)}</pre>`}<dl><dt>Captured</dt><dd>${esc(new Date(selected.time).toLocaleString())}</dd><dt>Size</dt><dd>${selected.kind === 'images' ? `${esc(selected.width)} × ${esc(selected.height)} · ${Math.round((selected.size || 0) / 1024)} KB` : `${selected.text.length} characters`}</dd><dt>Format</dt><dd>${esc(selected.mime || 'text/plain')}</dd><dt>Store</dt><dd>local · up to 250 entries</dd></dl><footer><button class="btn primary" data-clip-copy>${icon('content_copy')}Copy back</button><button class="btn" data-clip-pin>${icon('push_pin')}${selected.pinned?'Unpin':'Pin'}</button><button class="btn danger" data-clip-forget>${icon('delete')}Forget</button></footer>` : '<div class="win-empty">Select an entry to inspect it.</div>'}</aside>
     </div>`);
-    if (!clipboardTimer) clipboardTimer = setInterval(() => captureClipboard(true), 1200);
   }
-  async function captureClipboard(silent = false) {
+  // The listener already records every copy; this is for the case where the
+  // clipboard was filled before WinT started, or by an app that replaced its
+  // own entry without announcing it.
+  async function captureClipboard() {
     try {
-      const rows = readClips();
-      if (navigator.clipboard.read) {
-        let items = [];
-        try { items = await navigator.clipboard.read(); } catch { /* text fallback below */ }
-        const imageType = items.flatMap((item) => item.types).find((type) => type.startsWith("image/"));
-        if (imageType) {
-          const item = items.find((entry) => entry.types.includes(imageType));
-          const blob = await item.getType(imageType);
-          if (blob.size > 25 * 1024 * 1024) return silent ? undefined : status("That image is larger than the 25 MB clipboard-history limit.", "warn");
-          const dataUrl = await blobToDataUrl(blob);
-          if (rows[0]?.dataUrl === dataUrl) return;
-          const dimensions = await imageDimensions(dataUrl);
-          const row = { id: `${Date.now()}-${Math.random().toString(36).slice(2,8)}`, kind: "images", dataUrl, mime: blob.type || imageType, size: blob.size, ...dimensions, time: Date.now(), pinned: false };
-          writeClips([row, ...rows]);
-          clipboardSelected = row.id;
-          renderClipboard(catalog.find((entry) => entry.id === "clipboard"));
-          return;
-        }
-      }
-      const text = await navigator.clipboard.readText();
-      if (!text) return silent ? undefined : status("The clipboard has no supported text or image to capture.", "warn");
-      if (rows[0]?.text === text) return;
-      const duplicate = rows.find((row) => row.text === text);
-      const row = duplicate || { id: `${Date.now()}-${Math.random().toString(36).slice(2,8)}`, text, kind: clipKind(text), time: Date.now(), pinned: false };
-      row.time = Date.now();
-      writeClips([row, ...rows.filter((item) => item.id !== row.id)]);
-      clipboardSelected = row.id;
+      const clip = await work("clip-capture", "Reading the clipboard", invoke("clipboard_capture"));
+      if (!clip) return status("The clipboard holds nothing WinT can keep, or it is already the newest entry.", "warn");
+      setClips([clip, ...clipboardRows.filter((row) => row.id !== clip.id)]);
+      clipboardSelected = clip.id;
       renderClipboard(catalog.find((item) => item.id === "clipboard"));
-      if (!silent) status("Clipboard entry captured.", "ok");
-    } catch { if (!silent) status("Windows did not allow WinT to read the clipboard. Try pasting into the tool.", "bad"); }
+      status("Clipboard entry captured.", "ok");
+    } catch (error) { status(String(error), "bad"); }
   }
-  function updateSelectedClip(action) {
-    const rows = readClips();
-    const row = rows.find((item) => item.id === clipboardSelected);
+  async function updateSelectedClip(action) {
+    const row = clipboardRows.find((item) => item.id === clipboardSelected);
     if (!row) return;
-    if (action === "pin") row.pinned = !row.pinned;
-    else if (action === "forget") rows.splice(rows.indexOf(row), 1);
-    writeClips(rows);
-    if (action === "forget") clipboardSelected = rows[0]?.id || "";
-    renderClipboard(catalog.find((item) => item.id === "clipboard"));
+    try {
+      const rows = action === "pin"
+        ? await invoke("clipboard_pin", { id: row.id, pinned: !row.pinned })
+        : await invoke("clipboard_forget", { id: row.id });
+      setClips(rows);
+      if (action === "forget") clipboardSelected = clipboardRows[0]?.id || "";
+      renderClipboard(catalog.find((item) => item.id === "clipboard"));
+    } catch (error) { status(String(error), "bad"); }
+  }
+  async function clearClips() {
+    if (armed !== "clips") { armed = "clips"; return status("Click again to forget every unpinned entry.", "warn"); }
+    armed = "";
+    try {
+      setClips(await invoke("clipboard_clear"));
+      clipboardSelected = clipboardRows[0]?.id || "";
+      renderClipboard(catalog.find((item) => item.id === "clipboard"));
+      status("Unpinned entries forgotten.", "ok");
+    } catch (error) { status(String(error), "bad"); }
   }
   async function inspectLocks(){const path=host.querySelector("[data-lock-path]").value.trim();if(!path)return status("Enter a file or folder path.","warn");status("Asking Restart Manager…");
     try{const rows=await work("lock-inspect",`Inspecting locks on ${path}`,invoke("lock_inspect",{path}));host.querySelector("[data-lock-results]").innerHTML=rows.length?`<table class="win-table"><thead><tr><th>Process</th><th>PID</th><th>Service</th><th>Restartable</th></tr></thead><tbody>${rows.map((r)=>`<tr><td>${esc(r.name||"Unknown")}</td><td class="mono">${esc(r.pid)}</td><td>${esc(r.service||"—")}</td><td>${r.restartable?"yes":"no"}</td></tr>`).join("")}</tbody></table>`:`<div class="win-empty">Windows reports no process holding this path.</div>`;status(`${rows.length} locking process${rows.length===1?"":"es"}`,rows.length?"warn":"ok");}catch(error){status(String(error),"bad");}}
@@ -729,6 +692,7 @@
     const trackerRangeButton=event.target.closest("[data-tracker-range]");if(trackerRangeButton){trackerRange=trackerRangeButton.dataset.trackerRange;trackerSelected="";return renderTimeTracker(catalog.find((x)=>x.id==="time-tracker"));}
     const trackerApp=event.target.closest("[data-tracker-app]");if(trackerApp){trackerSelected=trackerApp.dataset.trackerApp;return renderTimeTracker(catalog.find((x)=>x.id==="time-tracker"));}
     if(event.target.closest('[data-clip-capture]'))return captureClipboard();
+    if(event.target.closest('[data-clip-clear]'))return clearClips();
     const clipKindButton=event.target.closest('[data-clip-kind]');if(clipKindButton){clipboardKind=clipKindButton.dataset.clipKind;return renderClipboard(catalog.find((item)=>item.id==='clipboard'));}
     if(event.target.closest('[data-clip-pinned]')){clipboardPinnedOnly=!clipboardPinnedOnly;return renderClipboard(catalog.find((item)=>item.id==='clipboard'));}
     const clipRow=event.target.closest('[data-clip-row]');if(clipRow){clipboardSelected=clipRow.dataset.clipRow;return renderClipboard(catalog.find((item)=>item.id==='clipboard'));}

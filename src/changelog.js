@@ -16,6 +16,138 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.81.0",
+      date: "2026-09-04",
+      title: "Clipboard history that was already there when you opened it",
+      changes: [
+        ["new", "Clipboard History now records every copy from the moment WinT starts, not only while the tool happens to be open. Windows tells WinT when the clipboard changes and the app keeps the history itself, so opening the tool shows what you copied an hour ago instead of an empty list."],
+        ["better", "Windows no longer asks for permission to see what you copy, and the tool no longer re-reads the clipboard every 1.2 seconds while it is open."],
+        ["better", "The history survives a restart, is written next to WinT's other data rather than inside browser storage, and keeps images copied from screenshot tools as well as from browsers."],
+        ["new", "Forget unpinned clears the history in one click, twice to confirm, and leaves everything pinned where it is."],
+      ],
+    },
+    {
+      version: "0.80.1",
+      date: "2026-09-04",
+      title: "The terminal you open is one you can type into",
+      changes: [
+        ["fix", "Opening a conversation in a terminal now hands it the keyboard. It was opening as something to look at: the cursor blinked, nothing you typed reached it, and approving a command — the one thing that window exists for — took a click first to work out."],
+        ["fix", "The terminal now resizes with the window instead of staying at whatever size it happened to open at, so a resized window no longer leaves the text drawn against the wrong width."],
+        ["fix", "Opening a terminal from a second conversation no longer silently shows you the first conversation's session. The one that was open is closed and the one you asked for opens."],
+        ["better", "Quitting the CLI in the terminal now returns you to the chat by itself, rather than leaving a dead screen with a close button on it."],
+        ["fix", "The header names which agent the terminal is running and how to get back, and no longer mislays its own layout."],
+      ],
+    },
+    {
+      version: "0.80.0",
+      date: "2026-09-04",
+      title: "A conversation decides how much it may do",
+      changes: [
+        ["new", "Conversations now run in automatic mode, where the agent judges each tool on its own merits, rather than the old mode that accepted file edits and refused everything else. A command, a fetch, a script - the things that used to come back refused with nothing said - now mostly just run."],
+        ["new", "A shield button on the title line sets how much that one conversation may do without asking: automatic, edits only, plan only, or refuse anything unapproved. It is per conversation, because a tab reading the code and a tab changing it are not owed the same trust, and it is remembered. A conversation held to anything but automatic marks the button."],
+        ["better", "A refused tool now says which mode refused it, so the line points at the thing you can change rather than only at the terminal."],
+      ],
+    },
+    {
+      version: "0.79.4",
+      date: "2026-09-04",
+      title: "A silent minute now says what it is spending",
+      changes: [
+        ["new", "A long think is no longer a blank wait. Claude sends its thinking with the words withheld - only a running token count is real - so the waiting line now carries that count: \"Thinking… 1,350 thinking tokens · 41s\". A minute being spent and a minute wasted finally look different."],
+        ["new", "Every turn opens with the model that answered and the permission mode it ran under, so what the answers below are worth is not something you have to remember."],
+        ["new", "A usage limit that is no longer allowing work says so in the conversation instead of only killing the turn."],
+        ["better", "A finished step is summed up in its own terms - \"34 lines\", \"36 files\", \"4 matches\" - taken from what the tool reported, rather than the first line of whatever it happened to print."],
+        ["fix", "A step no longer crushes its own name to make room for its outcome. \"Read\" was being shortened to \"R…\" so the first line of the file could be shown; the name and its argument now keep the room and the outcome gives way first."],
+        ["better", "The raw stream view now tells a line the panel deliberately passes over from one nothing matched at all. Only the second kind is highlighted and counted, so the count means what it says."],
+      ],
+    },
+    {
+      version: "0.79.3",
+      date: "2026-09-04",
+      title: "The raw stream, when the panel cannot explain itself",
+      changes: [
+        ["new", "A debug button on the conversation's title line opens the raw stream underneath it: every line the CLI sent, stamped with how far into the turn it arrived, and marked with what the panel made of it. Lines nothing renders are highlighted, runs of tokens are folded into one row that counts itself, and Copy puts the lot on the clipboard. When the panel goes quiet and you cannot tell whether the agent is working or wedged, this is the answer - a gap in the times is real silence, and untagged lines are the panel failing to draw what did arrive."],
+        ["fix", "Installing an agent now shows npm's output as it runs and notices by itself when it has finished, instead of printing nothing and waiting for you to press \"Check again\". None of the install's progress was reaching the panel: those events name the window they came from and nothing finer, and the panel was looking for a conversation id in them that was never there."],
+      ],
+    },
+    {
+      version: "0.79.2",
+      date: "2026-09-04",
+      title: "The same buttons on a card and on a table row",
+      changes: [
+        ["better", "A project row in the table now offers Workspace, Code and Terminal - the same three the card offers - so switching between the overview and the table never moves a button or takes one away."],
+        ["better", "Run and Pull are off the table row. Running a project or pulling it is something you do once you are looking at it, so both live on the project view (Run is also in the command palette)."],
+      ],
+    },
+    {
+      version: "0.79.1",
+      date: "2026-09-04",
+      title: "Save & upload says which folder you are working in",
+      changes: [
+        ["better", "Save & upload now opens with \"Working on the main folder\" (or master), or \"Working on a separate folder\" with the folder's name on the line underneath. The branch name used to be the headline, which only told you something if you already knew what a branch was."],
+      ],
+    },
+    {
+      version: "0.79.0",
+      date: "2026-09-04",
+      title: "Save & upload shows what is waiting, and can branch or join",
+      changes: [
+        ["new", "Save & upload lists everything you have saved but not uploaded yet, newest first, with when you saved it. The panel grows to fit the list up to two fifths of the column and the list scrolls after that, so a long queue never squeezes the file list out."],
+        ["new", "On the shared branch there is now a button to carry on somewhere of your own, with a name suggested for you, so a change is not saved straight onto main by accident."],
+        ["new", "Anywhere else, one button joins everything you saved into the shared branch and uploads it."],
+        ["better", "When that cannot be done you are told why in plain words inside the panel - work still unsaved, the same lines changed on both sides, or the team's rules not letting you upload to the shared branch yourself - and a join that fails puts you back where you were with nothing changed."],
+      ],
+    },
+    {
+      version: "0.78.2",
+      date: "2026-09-04",
+      title: "The history list is no longer behind the browser",
+      changes: [
+        ["fix", "A workspace's earlier-conversations list, and the picker for starting a new one, are visible again when they open across the browser panel. The browser is drawn by Windows on top of the window, so a list reaching into it was simply not there; the page now steps the browser aside while such a list is open and puts it straight back."],
+        ["better", "The browser only gets out of the way when the list would actually cross it, so a chat panel wide enough to hold its own list no longer blanks the page you were looking at."],
+      ],
+    },
+    {
+      version: "0.78.1",
+      date: "2026-09-04",
+      title: "Closing a workspace closes its shells",
+      changes: [
+        ["fix", "Closing a workspace window now closes the terminals it was holding. They used to keep running with nothing anywhere showing them, so a build or a dev server started in a workspace went on running until WinT itself was closed."],
+        ["new", "What a workspace's terminals leave behind is checked the same way closing a single terminal already was: anything still running afterwards appears in WinT's status bar, with what it is and a button to kill it."],
+        ["better", "Alt+F4 on a workspace now puts the window away as properly as the cross does - the browser panel and every shell are closed either way."],
+      ],
+    },
+    {
+      version: "0.78.0",
+      date: "2026-09-04",
+      title: "You can see what the agent is doing",
+      changes: [
+        ["new", "A running turn now shows its work as it happens: every tool the agent starts appears the moment it starts, with a live dot, and turns into a tick or a red cross carrying the first line of what came back. A step that only ever said it started could not be told from one that had hung."],
+        ["new", "When the agent needs permission to run something, the chat says so on its own line instead of going quiet. Nothing in the chat can answer a permission prompt - the CLI is driven without anything to ask - so the line carries the button that opens the same conversation in a terminal, where you can approve it."],
+        ["new", "Claude's thinking is shown while it thinks, dimmed and folded to a few lines, with the rest openable in place."],
+        ["new", "The waiting line names the phase the CLI says it is in - asking the model, running a tool, compacting - and otherwise names the step still running, rather than always saying Thinking."],
+        ["new", "A finished turn ends with what it took: how long, how many tokens, what it cost."],
+        ["better", "Pasting a wall of text into the chat no longer buries the conversation - anything over a dozen lines folds to its opening lines, with a line that opens and closes the rest."],
+        ["better", "An answer that carries on after a tool call now starts its own block instead of being appended to the bubble above the steps."],
+        ["better", "The waiting line and the tab's live dot last until the turn actually ends, rather than stopping the moment the last token arrived."],
+        ["better", "Cursor and Codex steps also appear as they start, and gain an outcome when they end."],
+        ["fix", "A conversation no longer gets stuck on \"Session ID … is already in use\". A tab now knows its conversation exists from the moment the CLI names it, rather than only once the turn it is streaming has finished - so the next question resumes it instead of trying to start it again. A tab already in that state picks itself back up on the next try."],
+        ["fix", "Pressing Enter twice while a turn is still running no longer starts a second run of the same conversation."],
+        ["fix", "Adding a conversation from a pane's + menu no longer throws when the click lands on a node a redraw has already replaced."],
+      ],
+    },
+    {
+      version: "0.77.0",
+      date: "2026-09-04",
+      title: "The empty browser panel is a play button",
+      changes: [
+        ["new", "A workspace with nothing running opens on a big play button carrying the command that starts the project - npm run dev, cargo run, whatever the folder actually says. Pressing it types the command into the terminal below, and the panel opens on the address the server prints."],
+        ["new", "The command sits in a box you can edit when the guess is wrong, and what you type there is kept for that project."],
+        ["better", "The address bar shows where the browser panel actually is - a link followed inside the page, a redirect, an app rewriting its own address - instead of only the address it was told to open. Its empty state no longer suggests a localhost port that was never there."],
+        ["fix", "Shrinking the window or dragging a divider now resizes the page in the browser panel with it, instead of leaving it drawn over the terminal at its old size."],
+      ],
+    },
+    {
       version: "0.76.1",
       date: "2026-09-04",
       title: "Save & upload keeps its own height",

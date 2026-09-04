@@ -17,6 +17,7 @@
 (async () => {
   const invoke = window.__TAURI__.core.invoke;
   const listen = window.__TAURI__.event.listen;
+  const emit = window.__TAURI__.event.emit;
   const win = window.__TAURI__.window.getCurrentWindow();
   const label = win.label;
 
@@ -119,6 +120,14 @@
    *  have changed its box. */
   const panels = new Map();
   const definePanel = (id, def) => panels.set(id, { id, resized: () => {}, ...def });
+
+  /** One panel's `resized`, and never anyone else's problem. These run in a
+   *  loop that ends by putting the browser webview back over its hole, so a
+   *  panel that throws while measuring itself used to take the whole pass with
+   *  it - and the webview stayed the size it was, drawn over the terminal. */
+  const resizePanel = (panel) => {
+    try { panel.resized(); } catch (err) { console.error(`${panel.id} could not resize:`, err); }
+  };
 
   const panelEl = (panel) => {
     if (panel.el) return panel.el;
@@ -244,7 +253,7 @@
       // Sizes are only real once the browser has laid the grid out, so
       // everything that measures waits for the frame after this one.
       requestAnimationFrame(() => {
-        for (const panel of panels.values()) if (visible(panel.id)) panel.resized();
+        for (const panel of panels.values()) if (visible(panel.id)) resizePanel(panel);
         syncBrowser();
       });
     });
@@ -401,21 +410,32 @@
       const up = () => {
         grip.removeEventListener("pointermove", move);
         grip.removeEventListener("pointerup", up);
+        // A capture lost to anything else - the window losing focus, a touch
+        // cancelled - ends the drag as surely as letting go does, and without
+        // this the webview stayed hidden and the sizes stayed unsaved.
+        grip.removeEventListener("pointercancel", up);
+        grip.removeEventListener("lostpointercapture", up);
         document.body.classList.remove("ws-resizing");
         saveLayout();
-        for (const panel of panels.values()) if (visible(panel.id)) panel.resized();
+        for (const panel of panels.values()) if (visible(panel.id)) resizePanel(panel);
         syncBrowser();
         say("Resized the panels");
       };
       grip.addEventListener("pointermove", move);
       grip.addEventListener("pointerup", up);
+      grip.addEventListener("pointercancel", up);
+      grip.addEventListener("lostpointercapture", up);
     });
   }
 
   window.addEventListener("resize", () => {
-    for (const panel of panels.values()) if (visible(panel.id)) panel.resized();
-    syncBrowser();
+    for (const panel of panels.values()) if (visible(panel.id)) resizePanel(panel);
+    queueSyncBrowser();
   });
+
+  // Windows resizes a window in a loop of its own that can starve the page's
+  // own resize event, so the native side reports it too.
+  win.onResized(() => queueSyncBrowser()).catch(() => {});
 
   /* --------------------------------------------------------- window chrome */
 
@@ -433,13 +453,51 @@
       const action = button.dataset.win;
       if (action === "min") return win.minimize();
       if (action === "max") return (await win.isMaximized()) ? win.unmaximize() : win.maximize();
-      await panels.get("browser")?.settlePreviewEdit?.();
-      // The child webview is not destroyed with the page, so it is closed
-      // explicitly rather than left behind holding a page open.
-      await invoke("workspace_browser_close", { window: label }).catch(() => {});
       return win.close();
     });
   });
+
+  /** Everything this window holds open outside the page itself, put away
+   *  before the window goes: the child webview, which is not destroyed with
+   *  the page, and every shell this workspace was showing.
+   *
+   *  The cross and Alt+F4 both arrive here, so it runs once either way. */
+  let closing = false;
+  win.onCloseRequested(async (event) => {
+    if (closing) return;
+    closing = true;
+    event.preventDefault();
+    await panels.get("browser")?.settlePreviewEdit?.();
+    await invoke("workspace_browser_close", { window: label }).catch(() => {});
+    await closeWorkspaceTerminals();
+    win.close();
+  }).catch(() => {});
+
+  /** Closes every shell this workspace had - the terminal panel's tabs, and a
+   *  conversation the chat handed to a terminal of its own - and has whatever
+   *  they leave behind watched.
+   *
+   *  Closing a terminal tab already checks that what was running under it
+   *  really ended; closing the window those tabs live in is the same act on
+   *  all of them at once, and the same check is owed. The survivors are handed
+   *  to WinT's own window, because that is where the warning is shown and this
+   *  one is about to be gone. */
+  async function closeWorkspaceTerminals() {
+    const expected = [];
+    for (const overlay of [claudeOverlay, agentOverlay]) {
+      const open = overlay?.session;
+      if (!open) continue;
+      overlay.session = null;
+      const processes = await invoke("term_close_snapshot", { id: open.id }).catch(async () => {
+        await invoke("term_close", { id: open.id }).catch(() => {});
+        return [];
+      });
+      expected.push(...(processes || []));
+    }
+    const dockLeftovers = await (window.wintTermDock?.closeAll?.().catch(() => []) ?? []);
+    expected.push(...(dockLeftovers || []));
+    if (expected.length) await emit("term:orphan-watch", { expected }).catch(() => {});
+  }
 
   /* ------------------------------------------------------- panel: browser */
 
@@ -462,10 +520,34 @@
     invoke("workspace_browser_hide", { window: label }).catch(() => {});
   };
 
+  /** The full-window overlays are page elements, so the browser must stay away
+   *  while one of them is up. Asked of the DOM rather than of the overlays
+   *  themselves so this holds for a sync from anywhere, at any point in the
+   *  window's life. */
+  const fullOverlayOpen = () =>
+    !!document.querySelector(".ws-claude-full:not([hidden]),.ws-cursor-full:not([hidden])");
+
+  /** Whether something the page is drawing lands on the browser. A native
+   *  child webview is a window over the window, not a layer in the page: it is
+   *  in front of everything the page can draw, and no z-index reaches past it.
+   *  Anything that would be covered has to move the webview out of the way. */
+  const overlapsBrowser = (el) => {
+    // Asked of where the webview belongs, not of where it is: something that
+    // hid it a moment ago is still covering it, and answering no there would
+    // hand the ground back to a webview that must stay away.
+    if (!el || el.hidden || !browserUrl) return false;
+    const hole = browserRect();
+    if (!hole) return false;
+    const rect = el.getBoundingClientRect();
+    if (!rect.width || !rect.height) return false;
+    return rect.left < hole.right && rect.right > hole.left
+      && rect.top < hole.bottom && rect.bottom > hole.top;
+  };
+
   /** Puts the webview exactly over the hole, creating it the first time. */
   const syncBrowser = () => {
     const rect = browserRect();
-    if (!rect || !browserUrl || panels.get("browser")?.previewOpen) return hideBrowser();
+    if (!rect || !browserUrl || fullOverlayOpen() || panels.get("browser")?.previewOpen) return hideBrowser();
     browserShown = true;
     invoke("workspace_browser_show", {
       window: label,
@@ -477,6 +559,23 @@
     }).catch((err) => {
       browserShown = false;
       say(String(err));
+    });
+  };
+
+  // Resizes arrive in bursts - a window edge being dragged is one event per
+  // frame - and each one is an IPC call that moves a native webview. One per
+  // frame is what the window can actually draw, so they are coalesced.
+  // While a divider or a panel is being dragged the webview is deliberately
+  // hidden - it swallows the mouse - so a resize arriving mid-drag must not
+  // put it back. The drag ends by syncing itself.
+  let syncQueued = false;
+  const queueSyncBrowser = () => {
+    if (syncQueued) return;
+    syncQueued = true;
+    requestAnimationFrame(() => {
+      syncQueued = false;
+      if (document.body.classList.contains("ws-resizing") || document.body.classList.contains("ws-dragging")) return;
+      syncBrowser();
     });
   };
 
@@ -496,18 +595,58 @@
     say(reason || `Browsing ${target}`);
   };
 
+  /* ------------------------------------------------ the run button */
+
+  // An empty browser panel is one command away from not being empty, so that
+  // is what it shows: a play button carrying the command this project is
+  // started with. The command is only ever a guess, so it sits in a real
+  // input - what gets typed there is what runs, and it is kept for the
+  // project so the guess is only made once.
+  const RUN_KEY = `wint.workspace.run:${projectPath.toLowerCase()}`;
+  const savedRunCommand = () => { try { return localStorage.getItem(RUN_KEY) || ""; } catch { return ""; } };
+  const saveRunCommand = (value) => { try { localStorage.setItem(RUN_KEY, value); } catch {} };
+
+  /** How this project is started, worked out by the same detector the project
+   *  list's Run button uses - the dev script that is really declared, run
+   *  through the package manager the lock file names, and the handful of
+   *  ecosystems without one. Empty when the folder says nothing. */
+  const guessRunCommand = () => invoke("project_run_command", { path: projectPath }).catch(() => "");
+
+  /** Types the command into this workspace's terminal and presses Enter. The
+   *  terminal panel is opened if it was put away, and a workspace whose dock
+   *  has not finished starting is waited on rather than told no. */
+  const runCommand = (command) => {
+    const value = String(command || "").trim();
+    if (!value) return say("Type the command that starts this project first");
+    saveRunCommand(value);
+    const slot = slotOf("terminal");
+    if (slot && layout.hidden[slot]) { layout.hidden[slot] = false; render(); }
+    let asked = false;
+    const send = (tries = 0) => {
+      if (window.wintTermDock?.write(`${value}\r`)) return say(`Running ${value}`);
+      if (!asked && window.wintTermDock) { asked = true; window.wintTermDock.newTerminal(); }
+      if (tries < 20) setTimeout(() => send(tries + 1), 250);
+      else say("There is no terminal to run that in yet.");
+    };
+    send();
+  };
+
   definePanel("browser", {
     label: "Browser",
     icon: "public",
     mount(body, panel) {
       panel.tools.innerHTML = `
         <button class="ws-mini" data-browser="reload" type="button" title="Reload">${icon("refresh")}</button>
-        <input class="ws-address" data-browser="address" placeholder="localhost:3000" spellcheck="false" />
+        <input class="ws-address" data-browser="address" placeholder="Type an address" spellcheck="false" />
         <button class="ws-mini" data-browser="external" type="button" title="Open in your real browser">${icon("open_in_new")}</button>`;
       panel.address = panel.tools.querySelector("[data-browser=address]");
       body.innerHTML = `<div class="ws-browser-hole"></div>
-        <div class="ws-browser-empty">${icon("public")}<strong>Nothing to show yet</strong>
-          <p>Start a dev server in the terminal below. The moment it prints a localhost address, this panel opens it.</p></div>
+        <div class="ws-browser-empty">
+          <button class="ws-run" data-browser="run" type="button" title="Run this command in the terminal below">${icon("play_arrow")}</button>
+          <input class="ws-run-cmd" data-browser="command" spellcheck="false" autocomplete="off" placeholder="Working out how this project starts…" />
+          <p>Runs in the terminal below. The moment it prints a localhost address, this panel opens it.
+             Wrong command? Edit it — it is kept for this project.</p>
+        </div>
         <div class="ws-preview" hidden>
           <header>
             <strong></strong><span class="ws-preview-dot" hidden title="Unsaved changes"></span><small></small>
@@ -520,7 +659,30 @@
           <div class="ws-preview-image" hidden><img alt="" /></div>
         </div>`;
       panel.hole = body.querySelector(".ws-browser-hole");
+      // The hole is the only truth about where the webview belongs, so watch
+      // it rather than the things that move it. A window resized by its edge
+      // reflows the grid without any of the layout code running, and the
+      // webview - drawn over the page, not in it - stayed the size it was and
+      // sat on top of the terminal until something else happened to sync it.
+      new ResizeObserver(() => queueSyncBrowser()).observe(panel.hole);
       panel.empty = body.querySelector(".ws-browser-empty");
+      panel.command = body.querySelector(".ws-run-cmd");
+      panel.command.value = savedRunCommand();
+      if (panel.command.value) panel.command.placeholder = "Command that starts this project";
+      if (!panel.command.value) {
+        guessRunCommand().then((guess) => {
+          // Whatever was typed while the guess was being worked out wins.
+          if (!panel.command.value) panel.command.value = guess;
+          panel.command.placeholder = "Command that starts this project";
+        });
+      }
+      panel.command.addEventListener("change", () => saveRunCommand(panel.command.value.trim()));
+      panel.command.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        runCommand(panel.command.value);
+      });
+      panel.empty.querySelector(".ws-run").addEventListener("click", () => runCommand(panel.command.value));
       panel.preview = body.querySelector(".ws-preview");
       panel.previewOpen = false;
       panel.previewPath = "";
@@ -655,6 +817,9 @@
           await settlePreviewEdit();
           panel.previewOpen = false;
           panel.preview.hidden = true;
+          // With no page loaded there is nothing behind the preview, so the
+          // play button comes back rather than a blank panel.
+          panel.empty.hidden = Boolean(browserUrl);
           syncBrowser();
           say("Closed the preview");
           return;
@@ -903,8 +1068,13 @@
     if (!body || !slot || slot.hidden) return;
     const box = getComputedStyle(body);
     const gap = parseFloat(box.rowGap) || 0;
-    const kids = [...body.children];
-    const content = kids.reduce((sum, el) => sum + el.getBoundingClientRect().height, 0)
+    const kids = [...body.children].filter((el) => !el.hidden);
+    // The list of saved-but-not-uploaded versions is the one child allowed to
+    // scroll, so its own box is already whatever height it was given last
+    // time. Its content height is what the panel wants; the ceiling below is
+    // what it gets.
+    const kidHeight = (el) => Math.max(el.getBoundingClientRect().height, el.classList.contains("ws-git-saved") ? el.scrollHeight : 0);
+    const content = kids.reduce((sum, el) => sum + kidHeight(el), 0)
       + gap * Math.max(0, kids.length - 1)
       + parseFloat(box.paddingTop) + parseFloat(box.paddingBottom);
     const head = panel.el.querySelector(".ws-head");
@@ -914,11 +1084,12 @@
     const chrome = slot.offsetHeight - slot.clientHeight
       + parseFloat(slotBox.marginTop) + parseFloat(slotBox.marginBottom);
     const want = content + (head?.getBoundingClientRect().height || 0) + chrome;
-    // The panel above it still has to exist: past this the row stops growing
-    // and this panel scrolls after all, rather than squeezing its neighbour
-    // out of the column.
+    // The panel above it still has to exist, and a long list of saved versions
+    // must not take the column over: two fifths of it is as far as this panel
+    // grows, and past that the list scrolls inside it.
     const column = slot.parentElement;
-    const ceiling = Math.max(90, (column?.clientHeight || 0) - 120);
+    const columnHeight = column?.clientHeight || 0;
+    const ceiling = Math.max(90, Math.min(columnHeight - 120, columnHeight * 0.4));
     const px = `${Math.min(ceiling, Math.max(90, Math.ceil(want)))}px`;
     if (document.body.style.getPropertyValue("--ws-git-h") !== px) {
       document.body.style.setProperty("--ws-git-h", px);
@@ -935,6 +1106,9 @@
       // lists this project's files and can be filtered down to the changed
       // ones, and two lists of the same thing in one column is one too many.
       body.innerHTML = `<div class="ws-git-state"></div>
+        <div class="ws-git-branchline" hidden></div>
+        <div class="ws-git-saved" hidden></div>
+        <div class="ws-git-note" hidden></div>
         <form class="ws-git-form"><input name="message" placeholder="What did you change?" autocomplete="off" />
           <div class="ws-git-buttons">
             <button type="submit" class="ws-btn primary" data-git="save">${icon("bookmark_add")}Save</button>
@@ -942,6 +1116,9 @@
             <button type="button" class="ws-btn" data-git="pull">${icon("cloud_download")}Get</button>
           </div></form>`;
       panel.state = body.querySelector(".ws-git-state");
+      panel.branchline = body.querySelector(".ws-git-branchline");
+      panel.saved = body.querySelector(".ws-git-saved");
+      panel.note = body.querySelector(".ws-git-note");
       panel.form = body.querySelector(".ws-git-form");
       panel.tools.addEventListener("click", () => loadGit(panel));
       panel.form.addEventListener("submit", (e) => { e.preventDefault(); saveVersion(panel); });
@@ -949,7 +1126,13 @@
         const action = e.target.closest("[data-git]")?.dataset.git;
         if (action === "push") gitAct(panel, "push", "Uploading your work");
         if (action === "pull") gitAct(panel, "pull", "Getting your team's changes");
+        if (action === "branch-out") askBranchName(panel);
+        if (action === "branch-cancel") renderBranchLine(panel);
+        if (action === "branch-make") makeBranch(panel);
+        if (action === "merge-main") mergeToMain(panel);
+        if (action === "note-close") gitNote(panel, "");
       });
+      panel.branchline.addEventListener("submit", (e) => { e.preventDefault(); makeBranch(panel); });
       // Catches everything that can change the content's height - the state
       // line wrapping to two lines, a longer branch name, an error message -
       // without having to call this from every place that updates them.
@@ -961,6 +1144,9 @@
       heightObserver.observe(body);
       heightObserver.observe(panel.el.querySelector(".ws-head"));
       heightObserver.observe(panel.state);
+      heightObserver.observe(panel.branchline);
+      heightObserver.observe(panel.saved);
+      heightObserver.observe(panel.note);
       heightObserver.observe(panel.form);
       panel.resized = () => syncGitHeight(panel);
       loadGit(panel);
@@ -973,19 +1159,143 @@
       panel.data = data;
       const g = data.info;
       const changed = g.changed || [];
+      // Where the work is, said the way people think about it: the folder
+      // everyone shares, or one of your own. The branch name is no use as the
+      // headline - it is what the folder is called, so it goes underneath, and
+      // only when you are not on the shared one.
+      const main = mainBranch(panel);
+      const onMain = !!main && g.branch === main;
       panel.state.innerHTML = `
-        <p class="ws-git-branch">${icon("fork_right")}<strong>${esc(g.branch || "detached")}</strong>
+        <p class="ws-git-branch">${icon(onMain ? "folder" : "alt_route")}
+          <strong>${onMain ? `Working on the ${esc(main)} folder` : "Working on a separate folder"}</strong>
           ${g.ahead ? `<b title="Recorded here, not uploaded">${g.ahead} to upload</b>` : ""}
           ${g.behind ? `<b title="Waiting from your team">${g.behind} to get</b>` : ""}</p>
+        ${onMain ? "" : `<p class="ws-git-branch-name" title="What this folder is called">${esc(g.branch || "a detached snapshot")}</p>`}
         <p class="ws-git-line">${changed.length
           ? `${changed.length} changed file${changed.length === 1 ? "" : "s"} not saved yet.`
           : g.ahead ? "Everything is saved here, but not uploaded yet." : "Nothing to save. You are up to date."}</p>`;
+      renderUnpushed(panel, data.unpushed || []);
+      renderBranchLine(panel);
       publishChanged(changed);
       say(changed.length ? `${changed.length} file${changed.length === 1 ? "" : "s"} changed` : "Nothing to save");
     } catch (err) {
       panel.state.innerHTML = `<p class="ws-git-line">${esc(String(err))}</p>`;
+      renderUnpushed(panel, []);
       say(String(err));
     }
+  }
+
+  /** Lists what has been saved here but not uploaded yet - one line per
+   *  version, newest first. Hidden entirely when there is nothing waiting, so
+   *  a repository that is up to date keeps the small panel it had. */
+  function renderUnpushed(panel, commits) {
+    if (!panel.saved) return;
+    panel.saved.hidden = commits.length === 0;
+    panel.saved.innerHTML = commits.length
+      ? `<p class="ws-git-saved-head">${icon("cloud_off")}${commits.length} saved, waiting to upload</p>
+        <ul>${commits.map((c) => `<li title="${esc(c.hash)} - ${esc(c.author)}">
+          <span class="ws-git-saved-subject">${esc(c.subject)}</span>
+          <span class="ws-git-saved-when">${esc(whenAgo(c.timestamp * 1000))}</span></li>`).join("")}</ul>`
+      : "";
+    syncGitHeight(panel);
+  }
+
+  /** The branch everyone shares. Named `main` or `master` in almost every
+   *  repository; without either there is nothing to offer to join work into,
+   *  and the row stays away rather than guessing. */
+  const mainBranch = (panel) => {
+    const named = panel.data?.mainBranch;
+    if (named) return named;
+    const names = panel.data?.info?.branches || [];
+    return names.includes("main") ? "main" : names.includes("master") ? "master" : "";
+  };
+
+  /** Says something at length, inside the panel - a merge that could not be
+   *  done, or an upload the team's rules turned down. The status bar only has
+   *  room for one line and these need more than that. */
+  function gitNote(panel, text, kind = "warn") {
+    if (!panel.note) return;
+    panel.note.hidden = !text;
+    panel.note.className = `ws-git-note ws-git-note-${kind}`;
+    panel.note.innerHTML = text
+      ? `<button class="ws-mini" data-git="note-close" type="button" title="Close">${icon("close")}</button>
+        ${String(text).trim().split("\n\n").map((para) => `<p>${esc(para.trim())}</p>`).join("")}`
+      : "";
+    syncGitHeight(panel);
+  }
+
+  /** One button, and which one depends on where the work is: on the shared
+   *  branch it offers to move the work off it, and anywhere else it offers to
+   *  put the work back on it. */
+  function renderBranchLine(panel) {
+    const g = panel.data?.info;
+    const main = mainBranch(panel);
+    if (!panel.branchline) return;
+    panel.branchline.hidden = !main;
+    panel.branchline.innerHTML = !main ? ""
+      : g.branch === main
+        ? `<button class="ws-btn" data-git="branch-out" type="button"
+            title="Keep working, but somewhere of your own, so ${esc(main)} stays as it is">${icon("alt_route")}Work on this separately</button>`
+        : `<button class="ws-btn" data-git="merge-main" type="button"
+            title="Join everything you saved on ${esc(g.branch)} into ${esc(main)} and upload it">${icon("merge")}Save this on ${esc(main)}</button>`;
+    syncGitHeight(panel);
+  }
+
+  /** Asks for a name for the work, suggesting today's date so there is always
+   *  something to press Enter on. Anything unsaved comes along to the new
+   *  branch, which is the point: this is what people reach for once they are
+   *  already half way through a change on the shared branch. */
+  function askBranchName(panel) {
+    const suggestion = `my-changes-${new Date().toISOString().slice(0, 10)}`;
+    panel.branchline.innerHTML = `<form class="ws-git-branch-new">
+      <input name="branch" value="${esc(suggestion)}" autocomplete="off" spellcheck="false" aria-label="Name for this work" />
+      <div class="ws-git-buttons">
+        <button type="submit" class="ws-btn primary" data-git="branch-make">${icon("check")}Create</button>
+        <button type="button" class="ws-btn" data-git="branch-cancel">${icon("close")}Cancel</button>
+      </div></form>`;
+    const input = panel.branchline.querySelector("input");
+    input.focus();
+    input.select();
+    syncGitHeight(panel);
+  }
+
+  /** Git will not take spaces or most punctuation in a branch name, and being
+   *  told so is no use to someone who was only naming their work. */
+  const branchSlug = (name) => name.trim().toLowerCase()
+    .replace(/[^a-z0-9._/-]+/g, "-").replace(/^[-/.]+|[-/.]+$/g, "").slice(0, 60);
+
+  async function makeBranch(panel) {
+    const input = panel.branchline.querySelector("input");
+    const name = branchSlug(input?.value || "");
+    if (!name) { input?.focus(); return say("Give this work a name first"); }
+    gitNote(panel, "");
+    try {
+      const result = await busy("Moving your work to its own branch",
+        () => invoke("git_action", { request: { path: projectPath, action: "create_branch", value: name, amend: false } }));
+      if (result.ok) say(`You are now working on ${name}`);
+      else gitNote(panel, `That branch could not be made.\n\n${result.output}`);
+    } catch (err) {
+      gitNote(panel, String(err));
+    }
+    await loadGit(panel);
+  }
+
+  /** Joins this branch into the shared one and uploads it. The backend does
+   *  the whole sequence and puts everything back if the join fails, so all
+   *  that is left here is to show what it said. */
+  async function mergeToMain(panel) {
+    const main = mainBranch(panel);
+    if (!main) return;
+    gitNote(panel, "");
+    try {
+      const result = await busy(`Saving your work on ${main}`,
+        () => invoke("git_action", { request: { path: projectPath, action: "merge_into", value: main, amend: false } }));
+      if (result.ok) say(result.output);
+      else gitNote(panel, result.output);
+    } catch (err) {
+      gitNote(panel, String(err));
+    }
+    await loadGit(panel);
   }
 
   async function gitAct(panel, action, label) {
@@ -1461,6 +1771,198 @@
     return short ? `${block.name} · ${short.slice(0, 120)}` : block.name;
   };
 
+  /* --- the raw stream, kept for when the panel cannot explain itself ----- */
+
+  // Everything the CLI said, before this file made sense of it. The panel is
+  // a reading of that stream, and a reading can be wrong or incomplete - a
+  // line whose shape nothing here matches simply vanishes. So the stream is
+  // kept as it arrived, and the debug view marks the lines this file
+  // understood: a long silence is then either lines arriving that nothing
+  // renders, or no lines at all, and those are very different faults.
+  const RAW_KEEP = 800;
+
+  /** Which lines are one of a run rather than an event of their own. Text and
+   *  thinking arrive a token at a time, and a thousand of them would push
+   *  every line worth reading out of the record - so a run of them is one row
+   *  that counts itself, and the last one stands for the rest. */
+  const deltaRun = (line) =>
+    line.includes('"text_delta"') ? "text"
+    : line.includes('"thinking_delta"') ? "thinking"
+    : line.includes('"input_json_delta"') ? "arguments"
+    : "";
+
+  function recordRaw(tab, kind, line) {
+    if (!tab.raw) tab.raw = [];
+    const text = String(line).slice(0, 4000);
+    const since = tab.startedAt ? Date.now() - tab.startedAt : 0;
+    const run = kind === "out" ? deltaRun(text) : "";
+    const last = tab.raw[tab.raw.length - 1];
+    if (run && last?.run === run) {
+      last.repeat += 1;
+      last.line = text;
+      last.until = since;
+      if (tab.debugOpen) markDebugDirty(tab);
+      return;
+    }
+    tab.raw.push({ at: Date.now(), since, until: since, kind, run, repeat: 1, line: text, tag: "" });
+    if (tab.raw.length > RAW_KEEP) tab.raw.splice(0, tab.raw.length - RAW_KEEP);
+    if (tab.debugOpen) markDebugDirty(tab);
+  }
+
+  /** Names what this file did with the line just recorded. A line left
+   *  untagged is one nothing here matched - which is the whole point. */
+  function tagRaw(tab, tag, quiet = false) {
+    const last = tab.raw?.[tab.raw.length - 1];
+    if (last && !last.tag) {
+      last.tag = tag;
+      last.quiet = quiet;
+    }
+    if (tab.debugOpen) markDebugDirty(tab);
+  }
+
+  /* --- what a turn is doing, while it is doing it ------------------------ */
+
+  // The CLI's own phase names, said the way the status bar says everything
+  // else. An unknown one is dropped rather than shown raw.
+  // How much the agent may do without being asked.
+  //
+  // Nothing here can answer a permission prompt: the CLI is driven over a
+  // pipe, and a pipe has nobody to ask. So the mode is not a preference, it
+  // is the whole of what the chat is allowed to do - anything that would have
+  // prompted is refused instead, and the way to approve it is the terminal.
+  // `auto` is the default because it is the mode that judges each tool on its
+  // own merits rather than refusing everything that is not an edit.
+  const PERMISSION_MODES = {
+    auto: {
+      label: "Automatic",
+      short: "deciding for itself",
+      blurb: "Judges each tool on its own merits. The most a conversation here can do without a terminal.",
+      icon: "auto_awesome",
+    },
+    acceptEdits: {
+      label: "Edits only",
+      short: "edits accepted, the rest refused",
+      blurb: "Files may be changed. Anything else that would ask - a command, a fetch - is refused instead.",
+      icon: "edit",
+    },
+    plan: {
+      label: "Plan only",
+      short: "planning, no changes",
+      blurb: "Reads and reasons, changes nothing. Good for asking what it would do before letting it.",
+      icon: "checklist",
+    },
+    dontAsk: {
+      label: "Refuse anything unapproved",
+      short: "never asks, refuses instead",
+      blurb: "Every tool that is not already allowed by your settings is refused outright.",
+      icon: "lock",
+    },
+  };
+
+  const DEFAULT_PERMISSION_MODE = "auto";
+  const permissionMode = (tab) => (PERMISSION_MODES[tab.mode] ? tab.mode : DEFAULT_PERMISSION_MODE);
+
+  const STATUS_PHASES = {
+    requesting: "Asking the model",
+    thinking: "Thinking",
+    tool_use: "Running a tool",
+    compacting: "Compacting the conversation",
+    retrying: "Retrying",
+    waiting: "Waiting",
+  };
+
+  /** A tool result's content, whether it is a bare string or the list of
+   *  blocks a tool that returned images or structure sends back. */
+  const resultText = (content) => {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content.filter((b) => b?.type === "text").map((b) => b.text || "").join("\n");
+  };
+
+  /** The first line of what a tool said back, short enough to sit at the end
+   *  of the step it belongs to. */
+  const resultSummary = (text) => {
+    const first = String(text).split("\n").map((l) => l.trim()).find(Boolean) || "";
+    return first.length > 90 ? `${first.slice(0, 90)}…` : first;
+  };
+
+  const plural = (n, one, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+
+  /** How a tool went, said in its own terms.
+   *
+   *  The CLI reports what a tool returned as well as its text, and the count
+   *  is the useful half: the first line of a file says nothing about a Read,
+   *  where '34 lines' says all of it. The text is what stands in when there
+   *  is no count - which is most of what a command prints. */
+  function toolOutcome(result, text) {
+    if (result && typeof result === "object") {
+      if (Number.isFinite(result.numFiles) && result.numFiles > 0) return plural(result.numFiles, "file");
+      if (Number.isFinite(result.totalMatches)) return plural(result.totalMatches, "match", "matches");
+      if (Number.isFinite(result.totalLines)) return plural(result.totalLines, "line");
+      if (Number.isFinite(result.file?.numLines)) return plural(result.file.numLines, "line");
+    }
+    return resultSummary(text);
+  }
+
+  /** Opens a step, or fills in the arguments of one already open.
+   *
+   *  A tool is announced twice - once as its block opens, with only a name,
+   *  and again in the finished assistant message with its arguments - and the
+   *  same step has to serve both, or every tool would appear twice. */
+  function beginToolTurn(tab, block) {
+    const existing = block.id && tab.turns.find((t) => t.role === "tool" && t.id === block.id);
+    const line = toolLine(block);
+    if (existing) {
+      if (line) existing.text = line;
+      return existing;
+    }
+    const turn = {
+      role: "tool",
+      id: block.id || "",
+      icon: TOOL_ICONS[block.name] || "build",
+      text: line || block.name || "Tool",
+      state: "run",
+      detail: "",
+    };
+    tab.turns.push(turn);
+    return turn;
+  }
+
+  /** Marks a step finished, and says in one line what came back. */
+  function finishToolTurn(tab, id, isError, text, result) {
+    const turn = id && tab.turns.find((t) => t.role === "tool" && t.id === id);
+    if (!turn) return false;
+    turn.state = isError ? "err" : "ok";
+    // A failure is always its own words; only a success is worth counting.
+    turn.detail = isError ? resultSummary(text) : toolOutcome(result, text);
+    return true;
+  }
+
+  /** What a finished turn cost, on one line under the answer. */
+  function turnReceipt(msg) {
+    const bits = [];
+    const ms = Number(msg.duration_ms ?? msg.duration_api_ms ?? 0);
+    if (ms > 0) bits.push(ms >= 60000 ? `${Math.round(ms / 6000) / 10}m` : `${Math.round(ms / 100) / 10}s`);
+    const used = msg.usage || {};
+    const out = Number(used.output_tokens || 0);
+    if (out) bits.push(`${out.toLocaleString()} tokens out`);
+    const cost = Number(msg.total_cost_usd || 0);
+    if (cost) bits.push(`$${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}`);
+    return bits.join(" · ");
+  }
+
+  /** Everything a running turn holds, put down. Called from every end event,
+   *  so a turn that dies without a result still stops looking alive. */
+  function endAgentTurn(tab) {
+    tab.streaming = null;
+    tab.thought = null;
+    tab.running = false;
+    tab.phase = "";
+    for (const turn of tab.turns) {
+      if (turn.role === "tool" && turn.state === "run") turn.state = "";
+    }
+  }
+
   // Codex names what it did as items on its thread rather than as tool calls,
   // so the same line is built from whichever field the item happens to carry.
   const CODEX_ITEM_ICONS = {
@@ -1618,19 +2120,57 @@
     });
   }
 
-  const isSaid = (turn) => turn.role !== "you" && turn.role !== "tool" && turn.role !== "error";
+  // Every role that is *not* something the agent said in prose. Written as
+  // what to exclude because the roles that are prose are one per agent kind,
+  // and a new kind should not have to be added here to be readable.
+  const NOT_SAID = new Set(["you", "tool", "error", "denied", "notice", "thought"]);
+  const isSaid = (turn) => !NOT_SAID.has(turn.role);
+
+  /** Text long enough that showing all of it would bury everything around it:
+   *  a pasted file, a long stretch of thinking. */
+  const isLong = (text, lines, chars) => text.split("\n").length > lines || text.length > chars;
+
+  /** A block that is clamped to its first few lines until it is opened. The
+   *  key is the turn's index, which never shifts - turns are only appended. */
+  function clampHtml(key, tab, body, openLabel, shutLabel) {
+    const open = tab.openTurns?.has(key);
+    return `${open ? body : `<div class="ws-clamp">${body}</div>`}<button type="button" class="ws-steps-more" data-more="${key}">${
+      icon(open ? "unfold_less" : "unfold_more")}${open ? shutLabel : openLabel}</button>`;
+  }
 
   /** How much of an answer has been written out so far. Every answer starts at
    *  nothing and is revealed towards its full text, so a reply that arrives in
    *  one piece reads the same way as one that arrives token by token. */
   const revealed = (turn) => turn.text.slice(0, turn.shown === undefined ? 0 : turn.shown);
 
-  function agentTurnHtml(turn) {
+  function agentTurnHtml(turn, key, tab) {
     if (turn.role === "you") {
-      return `<div class="ws-turn you"><div class="ws-turn-body">${esc(turn.text)}</div></div>`;
+      // A pasted file is a wall between the question above it and the answer
+      // below, so anything this long is folded down to its opening lines.
+      const body = `<div class="ws-turn-body">${esc(turn.text)}</div>`;
+      const lines = turn.text.split("\n").length;
+      return `<div class="ws-turn you">${
+        isLong(turn.text, 12, 900)
+          ? clampHtml(key, tab, body, `Show all ${lines} lines`, "Show less")
+          : body}</div>`;
     }
     if (turn.role === "error") {
       return `<div class="ws-turn error">${icon("error")}<span>${esc(turn.text)}</span></div>`;
+    }
+    if (turn.role === "notice") {
+      return `<div class="ws-turn denied">${icon("info")}<span>${esc(turn.text)}</span></div>`;
+    }
+    if (turn.role === "denied") {
+      return `<div class="ws-turn denied">${icon("lock")}
+        <span>${esc(turn.text)}</span>
+        <button type="button" class="ws-btn tiny" data-chat="terminal">${icon("terminal")}Approve in a terminal</button>
+      </div>`;
+    }
+    if (turn.role === "thought") {
+      if (!turn.text.trim()) return "";
+      const body = `<div class="ws-turn-body">${markdown(turn.text)}</div>`;
+      return `<div class="ws-turn thought">${icon("neurology")}${
+        isLong(turn.text, 6, 400) ? clampHtml(key, tab, body, "Show the whole thought", "Show less") : body}</div>`;
     }
     const text = revealed(turn);
     if (!text) return "";
@@ -1638,8 +2178,17 @@
     return `<div class="ws-turn claude ${esc(turn.role)}"${live}><div class="ws-turn-body">${markdown(text)}</div></div>`;
   }
 
-  const toolHtml = (turn) =>
-    `<div class="ws-turn tool">${icon(turn.icon || "build")}<span>${esc(turn.text)}</span></div>`;
+  /** One step: what it is doing, and - once it is over - how it went. A step
+   *  that only ever says it started cannot be told from one that hung. */
+  const toolHtml = (turn) => {
+    const state = turn.state === "run" ? " running" : turn.state === "err" ? " failed" : turn.state === "ok" ? " done" : "";
+    const mark = turn.state === "run"
+      ? '<span class="ws-step-run"></span>'
+      : turn.state === "err" ? icon("error") : turn.state === "ok" ? icon("check") : "";
+    const detail = turn.detail ? `<em class="ws-step-detail">${esc(turn.detail)}</em>` : "";
+    return `<div class="ws-turn tool${state}">${icon(turn.icon || "build")}<span class="ws-step-what">${
+      esc(turn.text)}</span>${detail}${mark}</div>`;
+  };
 
   /** A run of tool lines between two answers. Only the three most recent are
    *  worth reading - they are what the agent is doing now - so the rest fold
@@ -1664,34 +2213,46 @@
     // the bubble says that. Every other moment of a running turn gets the line.
     const writing = last && isSaid(last) && revealed(last).length < last.text.length;
     if (writing) return "";
-    const label = last?.role === "tool" ? "Working" : "Thinking";
+    // Whatever the agent last said it was doing beats a guess: the CLI's own
+    // phase, else the step still running, else the shape of the last turn.
+    const running = [...tab.turns].reverse().find((t) => t.role === "tool" && t.state === "run");
+    const label = tab.phase || (running ? running.text : last?.role === "tool" ? "Working" : "Thinking");
     const secs = Math.round((Date.now() - (tab.startedAt || Date.now())) / 1000);
+    // The token count is the only thing that moves while it thinks, so it goes
+    // beside the clock rather than nowhere.
+    const thought = tab.thinkingTokens ? `${tab.thinkingTokens.toLocaleString()} thinking tokens · ` : "";
     return `<div class="ws-turn thinking"><span class="ws-dots"><i></i><i></i><i></i></span>
-      <span>${label}…</span><span class="ws-thinking-for">${secs}s</span></div>`;
+      <span class="ws-thinking-what">${esc(label)}…</span><span class="ws-thinking-for">${thought}${secs}s</span></div>`;
   }
 
   function agentLogHtml(tab) {
     const parts = [];
     for (let i = 0; i < tab.turns.length; i++) {
-      if (tab.turns[i].role !== "tool") { parts.push(agentTurnHtml(tab.turns[i])); continue; }
+      if (tab.turns[i].role !== "tool") { parts.push(agentTurnHtml(tab.turns[i], i, tab)); continue; }
       let end = i;
       while (end + 1 < tab.turns.length && tab.turns[end + 1].role === "tool") end += 1;
       parts.push(agentStepsHtml(tab.turns.slice(i, end + 1), i, tab));
       i = end;
     }
-    if (tab.streaming) parts.push(agentThinkingHtml(tab));
+    if (isAgentBusy(tab)) parts.push(agentThinkingHtml(tab));
+    else if (tab.receipt) parts.push(`<div class="ws-turn receipt">${esc(tab.receipt)}</div>`);
     return parts.join("");
   }
+
+  /** Whether a turn is still in flight. Not the same question as whether text
+   *  is arriving: the gap between a tool finishing and the next token is the
+   *  longest silence in a turn, and the one that most needs a line saying so. */
+  function isAgentBusy(tab) { return Boolean(tab.running || tab.streaming); }
 
   /** The elapsed second on the thinking line, without redrawing the log for
    *  it - a turn that is only waiting produces no events of its own. */
   function syncThinkingClock(panel, tab) {
-    if (tab.streaming && !tab.clock) {
+    if (isAgentBusy(tab) && !tab.clock) {
       tab.clock = setInterval(() => {
         const el = tab.log?.querySelector(".ws-thinking-for");
         if (el) el.textContent = `${Math.round((Date.now() - (tab.startedAt || Date.now())) / 1000)}s`;
       }, 1000);
-    } else if (!tab.streaming && tab.clock) {
+    } else if (!isAgentBusy(tab) && tab.clock) {
       clearInterval(tab.clock);
       tab.clock = null;
     }
@@ -1718,6 +2279,67 @@
     });
   }
 
+  /** The raw stream, drawn. Newest at the bottom, each line stamped with how
+   *  far into the turn it arrived - a gap in that column is the silence the
+   *  panel could not explain - and marked with what this file made of it.
+   *  A line with no mark is one nothing here matched. */
+  function renderDebug(tab) {
+    if (!tab.debug || !tab.debugOpen) return;
+    const rows = tab.raw || [];
+    // Only lines nothing matched at all count as missing. A line this file
+    // deliberately passes over - the bookkeeping around a message, a signature
+    // - is not a hole in the panel, and counting it as one buries the ones
+    // that are.
+    const unknown = rows.filter((r) => r.kind === "out" && !r.tag).length;
+    const body = tab.debug.querySelector(".ws-debug-lines");
+    tab.debug.querySelector(".ws-debug-count").textContent =
+      `${rows.length} line${rows.length === 1 ? "" : "s"}${unknown ? ` · ${unknown} not rendered` : ""}`;
+    const stick = body.scrollTop + body.clientHeight >= body.scrollHeight - 40;
+    body.innerHTML = rows.length
+      ? rows.map((r) => `<div class="ws-debug-row ${r.kind}${r.tag ? (r.quiet ? " quiet" : "") : " unknown"}">` +
+          `<i>${debugWhen(r)}</i>` +
+          (r.tag ? `<b>${esc(r.tag)}${r.repeat > 1 ? ` ×${r.repeat}` : ""}</b>` : '<b class="none">not rendered</b>') +
+          `<code>${esc(r.line)}</code></div>`).join("")
+      : '<div class="ws-debug-empty">Nothing yet. Ask something, and every line the CLI sends lands here.</div>';
+    if (stick) body.scrollTop = body.scrollHeight;
+  }
+
+  /** When a line arrived, counted from the question. A run of tokens spans a
+   *  stretch of the turn rather than a moment, and the stretch is the point:
+   *  the gap between one row's end and the next row's start is the silence. */
+  const debugWhen = (r) => {
+    const at = (r.since / 1000).toFixed(1);
+    return r.repeat > 1 ? `${at}–${(r.until / 1000).toFixed(1)}s` : `${at}s`;
+  };
+
+  // Lines arrive one per token, so the view is redrawn on a frame like every
+  // other region rather than once per line.
+  const dirtyDebug = new Set();
+  let debugQueued = false;
+  function markDebugDirty(tab) {
+    dirtyDebug.add(tab);
+    if (debugQueued) return;
+    debugQueued = true;
+    requestAnimationFrame(() => {
+      debugQueued = false;
+      const tabs = [...dirtyDebug];
+      dirtyDebug.clear();
+      for (const t of tabs) renderDebug(t);
+    });
+  }
+
+  /** The record as text, for pasting into a bug report. */
+  const debugText = (tab) => (tab.raw || [])
+    .map((r) => `[${debugWhen(r)} ${r.kind}] ${r.tag || "(not rendered)"}${
+      r.repeat > 1 ? ` ×${r.repeat}` : ""}\n${r.line}`)
+    .join("\n");
+
+  function toggleDebug(panel, tab) {
+    tab.debugOpen = !tab.debugOpen;
+    tab.debug.hidden = !tab.debugOpen;
+    if (tab.debugOpen) renderDebug(tab);
+    renderAgentTabs(panel);
+  }
   // Every tab keeps its own log/ask/input, mounted once when the tab was
   // created and never rebuilt - only this tab's own innerHTML changes here,
   // so a conversation streaming in a background tab does not touch the one
@@ -1726,7 +2348,7 @@
     const spec = AGENTS[tab.kind];
     if (!spec || !tab.log) return;
 
-    const busy = Boolean(tab.streaming);
+    const busy = isAgentBusy(tab);
     syncThinkingClock(panel, tab);
     tab.input.placeholder = spec.placeholder;
     tab.ask.hidden = !tab.status?.installed;
@@ -1812,12 +2434,16 @@
     const spec = AGENTS[tab.kind];
     if (!spec) return;
 
+    // One terminal at a time, and it belongs to a conversation. Showing the
+    // one already open was right only when it was this tab's - for any other
+    // it silently handed over somebody else's session.
     const open = agentOverlay.session;
-    if (open) {
-      agentOverlay.el.hidden = false;
-      hideBrowser();
+    if (open && open.tabId === tab.id) {
+      showAgentOverlay(tab);
+      open.view.focus();
       return;
     }
+    if (open) await closeAgentTerminal();
 
     let launch;
     try {
@@ -1833,22 +2459,43 @@
       return say(String(err));
     }
 
-    agentOverlay.el.hidden = false;
-    hideBrowser();
-    agentOverlay.note.textContent = `${spec.label} is open in a terminal. Anything you do there is in the same conversation.`;
+    showAgentOverlay(tab);
 
     try {
       const info = await busy("Opening agent in a terminal", () => invoke("term_open", {
         args: { projectPath, projectName, command: launch.command || launch },
       }));
       const view = new window.TermView(agentOverlay.host, info.id);
-      agentOverlay.session = { id: info.id, view, tabId: tab.id };
+      agentOverlay.session = { id: info.id, view, tabId: tab.id, kind: tab.kind };
       await view.attach();
       view.fit();
+      // Nothing was giving it the keyboard, so it opened as something to look
+      // at rather than something to type into - and approving a command is
+      // the one thing this window exists to let you do.
+      view.focus();
+
+      // A terminal that cannot be resized with the window is a terminal drawn
+      // at whatever size it happened to open at.
+      agentOverlay.watcher = new ResizeObserver(() => view.fit());
+      agentOverlay.watcher.observe(agentOverlay.host);
+
+      // Quitting the CLI is how a conversation in a terminal ends, so that is
+      // the moment to come back to the chat rather than leaving a dead screen
+      // with a close button on it.
+      view.onExit = () => {
+        agentOverlay.note.textContent = `${spec.label} has finished. Closing…`;
+        setTimeout(() => {
+          if (agentOverlay.session?.id === info.id) closeAgentTerminal();
+        }, 900);
+      };
+      // A shell that died before this line was reached never fires the event,
+      // so the state `attach` already read is checked as well.
+      if (view.exited) view.onExit();
 
       // A conversation opened in a terminal must be resumed in the chat.
       if (tab.kind === "claude") tab.started = true;
       if (launch?.session) tab.session = launch.session;
+      saveAgentTabs(panel);
       say(`${spec.label} is open in a terminal`);
     } catch (err) {
       agentOverlay.host.innerHTML = `<div class="ws-term-error">${esc(String(err))}</div>`;
@@ -1856,9 +2503,27 @@
     }
   }
 
+  /** Puts the terminal on screen and says whose it is.
+   *
+   *  The header has to name the agent and the way back, because this window
+   *  covers everything and there is nothing else on it to read. */
+  function showAgentOverlay(tab) {
+    const spec = AGENTS[tab.kind];
+    agentOverlay.title.textContent = spec.product;
+    agentOverlay.note.textContent = tab.started
+      ? "The same conversation, in its own interface. Approve what it needs, then close this and carry on in the chat."
+      : "Its own interface. Anything you do here is in the conversation the chat picks up.";
+    agentOverlay.el.hidden = false;
+    hideBrowser();
+  }
   async function closeAgentTerminal() {
     const open = agentOverlay.session;
     agentOverlay.session = null;
+    agentOverlay.watcher?.disconnect();
+    agentOverlay.watcher = null;
+    // The view holds a place in the module's map of live terminals; dropping
+    // the element without saying so leaves it there being painted into.
+    open?.view?.dispose();
     agentOverlay.el.hidden = true;
     agentOverlay.host.replaceChildren();
     syncBrowser();
@@ -1873,14 +2538,24 @@
     const el = document.createElement("div");
     el.className = "ws-cursor-full";
     el.hidden = true;
-    el.innerHTML = `<header>${icon("auto_awesome")}<strong>Agent</strong>
+    el.innerHTML = `<header>${icon("auto_awesome")}<strong class="ws-agent-full-title">Agent</strong>
         <span class="ws-agent-note"></span>
         <button type="button" class="ws-btn" data-agent-full="close">${icon("close")}Back to the chat</button>
       </header>
       <div class="term-host"></div>`;
     document.body.appendChild(el);
     el.querySelector("[data-agent-full=close]").addEventListener("click", closeAgentTerminal);
-    return { el, host: el.querySelector(".term-host"), note: el.querySelector(".ws-agent-note"), session: null };
+    // Clicking anywhere on the terminal gives it the keyboard, the way
+    // clicking a terminal anywhere else does.
+    el.querySelector(".term-host").addEventListener("mousedown", () => agentOverlay.session?.view.focus());
+    return {
+      el,
+      host: el.querySelector(".term-host"),
+      note: el.querySelector(".ws-agent-note"),
+      title: el.querySelector(".ws-agent-full-title"),
+      session: null,
+      watcher: null,
+    };
   })();
 
   document.addEventListener("keydown", (e) => {
@@ -1893,6 +2568,11 @@
       pre.hidden = false;
       pre.textContent = "Installing…\n";
     }
+    // An install belongs to a kind, not to a conversation: the CLI it puts on
+    // the machine is the same one every tab of that kind runs, and the events
+    // it reports back say only which window asked. So the tab that asked is
+    // remembered here, because the events cannot say.
+    panel.installing.set(tab.kind, tab.id);
     try {
       await busy(`Installing ${AGENTS[tab.kind].label}`, () => invoke(AGENTS[tab.kind].installCmd, { window: label }));
     } catch (err) {
@@ -1904,15 +2584,28 @@
   async function sendToAgent(panel, tab) {
     const spec = AGENTS[tab.kind];
     const text = tab.input.value.trim();
-    if (!spec || !text || tab.streaming) return;
+    if (!spec || !text || isAgentBusy(tab)) return;
 
     tab.input.value = "";
     tab.input.style.height = "auto";
     tab.turns.push({ role: "you", text });
 
     tab.startedAt = Date.now();
-    tab.streaming = { role: tab.kind, text: "", shown: 0 };
-    tab.turns.push(tab.streaming);
+    tab.running = true;
+    tab.receipt = "";
+    tab.phase = "";
+    tab.thought = null;
+    tab.deniedSomething = false;
+    tab.sawDeltas = false;
+    tab.thinkingTokens = 0;
+    // The record starts fresh with the question, so what is kept is always
+    // this turn rather than an afternoon of them.
+    tab.raw = [];
+    recordRaw(tab, "meta", `sent · ${spec.label} · session ${tab.session || "new"} · ${tab.started ? "resume" : "create"} · ${projectPath}`);
+    tagRaw(tab, "the question");
+    // The bubble is not opened here any more: a turn that starts by running a
+    // tool would otherwise leave an empty answer sitting above its own steps.
+    tab.streaming = null;
     renderAgentTab(panel, tab);
     renderAgentTabs(panel);
 
@@ -1925,7 +2618,7 @@
           cwd: projectPath,
           session: tab.session || null,
           resume: tab.started,
-          permissionMode: "acceptEdits",
+          permissionMode: permissionMode(tab),
         });
         tab.started = true;
         say("Claude is working");
@@ -1940,7 +2633,7 @@
         say(`${spec.label} is working`);
       }
     } catch (err) {
-      tab.streaming = null;
+      endAgentTurn(tab);
       tab.turns.push({ role: "error", text: String(err) });
       renderAgentTab(panel, tab);
       renderAgentTabs(panel);
@@ -1964,7 +2657,7 @@
 
   const saveAgentTabs = (panel) => {
     try {
-      const tabs = [...panel.tabs.values()].map((t) => ({ id: t.id, kind: t.kind, pane: t.pane, session: t.session || null, started: Boolean(t.started), title: t.title || "" }));
+      const tabs = [...panel.tabs.values()].map((t) => ({ id: t.id, kind: t.kind, pane: t.pane, session: t.session || null, started: Boolean(t.started), title: t.title || "", mode: permissionMode(t) }));
       localStorage.setItem(AGENT_TABS_KEY, JSON.stringify({ tabs, active: panel.active, splitRatio: panel.splitRatio }));
     } catch {}
   };
@@ -1977,7 +2670,7 @@
         const spec = AGENTS[t.kind];
         const cls = ["ws-chat-tab"];
         if (t.id === panel.active) cls.push("on");
-        return `<div class="${cls.join(" ")}" data-tab="${t.id}" title="Drag to reorder or split · ${esc(spec.label)}">${icon(spec.icon)}<span>${esc(spec.label)}</span>${t.streaming ? '<span class="ws-chat-tab-live"></span>' : ""}<button type="button" class="ws-chat-tab-x" data-close="${t.id}" title="Close this conversation">${icon("close")}</button></div>`;
+        return `<div class="${cls.join(" ")}" data-tab="${t.id}" title="Drag to reorder or split · ${esc(spec.label)}">${icon(spec.icon)}<span>${esc(spec.label)}</span>${isAgentBusy(t) ? '<span class="ws-chat-tab-live"></span>' : ""}<button type="button" class="ws-chat-tab-x" data-close="${t.id}" title="Close this conversation">${icon("close")}</button></div>`;
       }).join("") : '<span class="ws-chat-tab-empty">No conversations</span>';
 
       const paneTab = panel.paneActive[pane] && panel.tabs.get(panel.paneActive[pane]);
@@ -2008,6 +2701,12 @@
     for (const button of actions.querySelectorAll("[data-dock]")) {
       const isHistory = button.dataset.dock === "history";
       button.disabled = !tab || (isHistory && !spec.sessionsCmd);
+      if (button.dataset.dock === "debug") button.classList.toggle("on", Boolean(tab?.debugOpen));
+      if (button.dataset.dock === "mode" && tab) {
+        const mode = PERMISSION_MODES[permissionMode(tab)];
+        button.title = `${mode.label} — ${mode.blurb}`;
+        button.classList.toggle("warn", permissionMode(tab) !== DEFAULT_PERMISSION_MODE);
+      }
       if (isHistory) {
         button.title = !tab || spec.sessionsCmd
           ? "Earlier conversations in this project"
@@ -2016,8 +2715,29 @@
     }
   }
 
+  // A popover in a panel is drawn by the page, so one that opens across the
+  // browser is not behind it by any z-index the page could raise - it is
+  // behind a webview of its own. The browser steps aside for as long as such a
+  // popover is open, and only when the two actually overlap: a chat panel wide
+  // enough to hold its own menu should not blank the page being browsed.
+  let menuHidBrowser = false;
+  const menuOpened = (menu) => {
+    if (!overlapsBrowser(menu)) return;
+    menuHidBrowser = true;
+    hideBrowser();
+  };
   const closeAgentMenus = (root) => {
-    root.querySelectorAll(".ws-chat-agent-menu,.ws-agent-history-menu").forEach((m) => { m.hidden = true; });
+    let closed = false;
+    root.querySelectorAll(".ws-chat-agent-menu,.ws-agent-history-menu").forEach((m) => {
+      if (!m.hidden) { m.hidden = true; closed = true; }
+    });
+    // A click that closes one menu often opens another, and showing the
+    // webview in between is a flash of the page under the popover. The frame
+    // after settles it: whatever opened by then has hidden it again.
+    if (closed && menuHidBrowser) {
+      menuHidBrowser = false;
+      requestAnimationFrame(() => { if (!menuHidBrowser) syncBrowser(); });
+    }
   };
 
   const whenAgo = (ms) => {
@@ -2033,6 +2753,23 @@
   /** Fills the history popover with this project's earlier conversations. The
    *  list is read every time it is opened - a conversation held in a terminal
    *  writes to the same place, so a cached list would go stale unseen. */
+  /** How much this conversation may do unasked, and what each answer means.
+   *
+   *  It is a per-conversation choice rather than a setting because the same
+   *  project wants different answers at once: a tab reading the code and a
+   *  tab changing it are not owed the same trust. */
+  function showModeMenu(tab, menu) {
+    const current = permissionMode(tab);
+    menu.innerHTML = `<div class="ws-chat-menu-label">What it may do without asking</div>`
+      + Object.entries(PERMISSION_MODES).map(([id, mode]) => `
+        <button type="button" data-mode="${id}" class="${id === current ? "on" : ""}" title="${esc(mode.blurb)}">
+          <strong>${icon(id === current ? "check" : mode.icon)}${esc(mode.label)}</strong>
+          <small>${esc(mode.blurb)}</small>
+        </button>`).join("")
+      + `<div class="ws-agent-history-note">Nothing here can answer a permission prompt, so whatever the mode
+         will not allow is refused rather than asked. Open the conversation in a terminal to approve it there.</div>`;
+  }
+
   async function showAgentHistory(panel, tab, menu) {
     const spec = AGENTS[tab.kind];
     if (!spec?.sessionsCmd) return;
@@ -2044,6 +2781,7 @@
     } catch (err) {
       menu.innerHTML = `<div class="ws-chat-menu-label">Earlier conversations</div>
         <div class="ws-agent-history-note">${esc(String(err))}</div>`;
+      menuOpened(menu);
       return;
     }
     if (menu.hidden) return;
@@ -2054,6 +2792,9 @@
             <small>${esc(whenAgo(s.modified))} · ${s.turns} ${s.turns === 1 ? "question" : "questions"}</small>
           </button>`).join("")
         : `<div class="ws-agent-history-note">Nothing here yet.</div>`);
+    // The list is taller than the note it replaced, so it can reach the
+    // browser where the note did not.
+    menuOpened(menu);
   }
 
   /** Replays a past conversation into this tab and carries on with it: the
@@ -2120,7 +2861,7 @@
     saveAgentTabs(panel);
   }
 
-  function createAgentTab(panel, kind, { pane = 0, id, session, started = false, title = "", activate = true } = {}) {
+  function createAgentTab(panel, kind, { pane = 0, id, session, started = false, title = "", mode = DEFAULT_PERMISSION_MODE, activate = true } = {}) {
     const fresh = freshAgentState(kind);
     const tab = {
       id: id || newSessionId(),
@@ -2133,9 +2874,28 @@
       title,
       turns: [],
       streaming: null,
+      // A turn is in flight (running) whether or not text is arriving; the
+      // live bubble (streaming) comes and goes within it, once per stretch
+      // of prose between tool calls.
+      running: false,
+      // What the agent last said it was doing, and the live thinking block.
+      phase: "",
+      thought: null,
+      // What the last finished turn cost, shown under it.
+      receipt: "",
       status: fresh.status,
       needsSignIn: fresh.needsSignIn,
       openSteps: new Set(),
+      // Which long blocks (a pasted wall of text, a stretch of thinking) the
+      // reader has opened, by turn index.
+      openTurns: new Set(),
+      // How much this conversation may do unasked. Per conversation, because
+      // one tab reading the code and one changing it want different answers.
+      mode: PERMISSION_MODES[mode] ? mode : DEFAULT_PERMISSION_MODE,
+      // Every line the CLI sent for the turn in flight, and whether the view
+      // over it is open.
+      raw: [],
+      debugOpen: false,
       startedAt: 0,
       clock: null,
     };
@@ -2143,6 +2903,13 @@
     const el = document.createElement("div");
     el.className = "ws-agent-conv";
     el.innerHTML = `<div class="ws-chat-log"></div>
+      <div class="ws-agent-debug" hidden>
+        <header>${icon("bug_report")}<strong>Raw stream</strong><span class="ws-debug-count"></span>
+          <button type="button" class="ws-btn tiny" data-debug="copy">${icon("content_copy")}Copy</button>
+          <button type="button" class="ws-btn tiny" data-debug="close">${icon("close")}Close</button>
+        </header>
+        <div class="ws-debug-lines"></div>
+      </div>
       <form class="ws-chat-ask" hidden>
         <div class="ws-chat-row">
           <textarea rows="1" placeholder="" spellcheck="false"></textarea>
@@ -2152,6 +2919,7 @@
       </form>`;
     tab.el = el;
     tab.log = el.querySelector(".ws-chat-log");
+    tab.debug = el.querySelector(".ws-agent-debug");
     tab.ask = el.querySelector(".ws-chat-ask");
     tab.input = el.querySelector("textarea");
     panel.views.appendChild(el);
@@ -2167,21 +2935,40 @@
     tab.ask.querySelector(".ws-chat-stop").addEventListener("click", () => {
       const spec = AGENTS[tab.kind];
       if (spec) invoke(spec.cancelCmd, { tab: tab.id }).catch(() => {});
-      tab.streaming = null;
+      recordRaw(tab, "meta", "stopped by you");
+      tagRaw(tab, "stopped");
+      endAgentTurn(tab);
+      tab.turns.push({ role: "tool", icon: "stop_circle", text: "Stopped", state: "err" });
       renderAgentTab(panel, tab);
       renderAgentTabs(panel);
     });
     tab.el.addEventListener("click", (e) => {
+      const debugAction = e.target.closest("[data-debug]")?.dataset.debug;
+      if (debugAction === "close") return toggleDebug(panel, tab);
+      if (debugAction === "copy") {
+        navigator.clipboard.writeText(debugText(tab)).then(
+          () => say("The raw stream is on the clipboard"),
+          () => say("Could not copy the raw stream"),
+        );
+        return;
+      }
       const steps = e.target.closest("[data-steps]");
       if (steps) {
         const key = Number(steps.dataset.steps);
         if (!tab.openSteps.delete(key)) tab.openSteps.add(key);
         return renderAgentTab(panel, tab);
       }
+      const more = e.target.closest("[data-more]");
+      if (more) {
+        const key = Number(more.dataset.more);
+        if (!tab.openTurns.delete(key)) tab.openTurns.add(key);
+        return renderAgentTab(panel, tab);
+      }
       const action = e.target.closest("[data-chat]")?.dataset.chat;
       if (action === "install") return installAgent(panel, tab).catch(() => {});
       if (action === "signin") return openAgentTerminal(panel, tab, { login: true }).catch(() => {});
       if (action === "recheck") return checkAgent(panel, tab, { force: true }).catch(() => {});
+      if (action === "terminal") return openAgentTerminal(panel, tab).catch(() => {});
     });
 
     panel.tabs.set(tab.id, tab);
@@ -2271,6 +3058,9 @@
       panel.active = null;
       panel.paneActive = [null, null];
       panel.splitRatio = 0.5;
+      // Which tab asked for a kind to be installed, so the install's own
+      // events - which name a window and nothing finer - can report back.
+      panel.installing = new Map();
 
       body.className += " ws-agent-dock";
       const agentMenu = (pane) => `<div class="ws-chat-tab-add" data-pane-add="${pane}">
@@ -2303,6 +3093,11 @@
                   <button type="button" data-dock="history" title="Earlier conversations in this project">${icon("history")}</button>
                   <div class="ws-agent-history-menu" hidden></div>
                 </div>
+                <div class="ws-agent-history ws-agent-modes" data-modes-for="${pane}">
+                  <button type="button" data-dock="mode" title="How much this conversation may do without asking">${icon("shield")}</button>
+                  <div class="ws-agent-history-menu" hidden></div>
+                </div>
+                <button type="button" data-dock="debug" title="What the CLI is actually sending">${icon("bug_report")}</button>
                 <button type="button" data-dock="terminal" title="Open in a terminal">${icon("terminal")}</button>
                 <button type="button" data-dock="close" title="Close this conversation">${icon("close")}</button>
               </div>
@@ -2337,14 +3132,18 @@
         if (addButton) {
           const menu = addButton.nextElementSibling;
           const wasHidden = menu.hidden;
-          body.querySelectorAll(".ws-chat-agent-menu").forEach((m) => { m.hidden = true; });
+          closeAgentMenus(body);
           menu.hidden = !wasHidden;
+          if (!menu.hidden) menuOpened(menu);
           return;
         }
         const newKind = e.target.closest("[data-new-kind]")?.dataset.newKind;
         if (newKind) {
-          const pane = Number(e.target.closest("[data-pane-actions]").dataset.paneActions);
-          e.target.closest(".ws-chat-agent-menu").hidden = true;
+          // The picker is inside a pane's actions, but a click can land on a
+          // node that has already been replaced by a redraw - so a missing
+          // pane means the first one rather than a thrown TypeError.
+          const pane = Number(e.target.closest("[data-pane-actions]")?.dataset.paneActions ?? 0) === 1 ? 1 : 0;
+          closeAgentMenus(body);
           createAgentTab(panel, newKind, { pane });
           return;
         }
@@ -2368,14 +3167,38 @@
           return loadAgentSession(panel, tab, pickedId, picked.dataset.sessionTitle || "").catch(() => {});
         }
         const dockAction = e.target.closest("[data-dock]")?.dataset.dock;
+        if (dockAction === "mode") {
+          const menu = e.target.closest(".ws-agent-modes").querySelector(".ws-agent-history-menu");
+          const wasHidden = menu.hidden;
+          closeAgentMenus(body);
+          menu.hidden = !wasHidden;
+          if (!menu.hidden) {
+            showModeMenu(tab, menu);
+            menuOpened(menu);
+          }
+          return;
+        }
+        const pickedMode = e.target.closest("[data-mode]")?.dataset.mode;
+        if (pickedMode) {
+          closeAgentMenus(body);
+          tab.mode = PERMISSION_MODES[pickedMode] ? pickedMode : DEFAULT_PERMISSION_MODE;
+          saveAgentTabs(panel);
+          renderAgentTabs(panel);
+          say(`This conversation is now ${PERMISSION_MODES[tab.mode].short}`);
+          return;
+        }
         if (dockAction === "history") {
           const menu = e.target.closest(".ws-agent-history").querySelector(".ws-agent-history-menu");
           const wasHidden = menu.hidden;
           closeAgentMenus(body);
           menu.hidden = !wasHidden;
-          if (!menu.hidden) showAgentHistory(panel, tab, menu).catch(() => {});
+          if (!menu.hidden) {
+            menuOpened(menu);
+            showAgentHistory(panel, tab, menu).catch(() => {});
+          }
           return;
         }
+        if (dockAction === "debug") return toggleDebug(panel, tab);
         if (dockAction === "terminal") openAgentTerminal(panel, tab).catch(() => {});
         else if (dockAction === "close") closeAgentTab(panel, tab.id);
       });
@@ -2475,7 +3298,7 @@
         panel.splitRatio = Math.min(0.75, Math.max(0.25, saved.splitRatio || 0.5));
         for (const t of saved.tabs) {
           if (!AGENTS[t.kind]) continue;
-          createAgentTab(panel, t.kind, { pane: t.pane === 1 ? 1 : 0, id: t.id, session: t.session, started: Boolean(t.started), title: t.title || "", activate: false });
+          createAgentTab(panel, t.kind, { pane: t.pane === 1 ? 1 : 0, id: t.id, session: t.session, started: Boolean(t.started), title: t.title || "", mode: t.mode, activate: false });
         }
         // Restoring with activate:false only sets paneActive for whichever
         // tab happened to land first overall - make sure a split's second
@@ -2522,9 +3345,24 @@
     return panel ? { panel, tab: panel.tabs.get(payload.tab) } : null;
   }
 
+  /** The tab an install is reporting to.
+   *
+   *  Install events name a window and nothing finer - there is one copy of a
+   *  CLI on the machine, so an install was never per conversation. Routing
+   *  them through `agentTabFor` meant every one of them was dropped, which is
+   *  why an install printed nothing and never noticed it had finished. */
+  function installTabFor(payload, kind) {
+    if (payload.window !== label) return null;
+    const panel = panels.get("agent");
+    if (!panel) return null;
+    const asked = panel.tabs.get(panel.installing.get(kind));
+    const tab = asked || [...panel.tabs.values()].find((t) => t.kind === kind);
+    return tab ? { panel, tab } : null;
+  }
+
   await listen("claude:install", ({ payload }) => {
-    const found = agentTabFor(payload);
-    if (!found?.tab) return;
+    const found = installTabFor(payload, "claude");
+    if (!found) return;
     const { panel, tab } = found;
     const pre = tab.log?.querySelector(".ws-chat-install");
     if (pre && payload.line) {
@@ -2532,6 +3370,8 @@
       pre.scrollTop = pre.scrollHeight;
     }
     if (!payload.done) return;
+    panel.installing.delete(tab.kind);
+    say(payload.ok ? `${AGENTS[tab.kind].product} installed` : `The ${AGENTS[tab.kind].label} install did not finish`);
     if (payload.ok) checkAgent(panel, tab, { force: true }).catch(() => {});
   }).catch(() => {});
 
@@ -2539,25 +3379,185 @@
     const found = agentTabFor(payload);
     if (!found?.tab) return;
     const { panel, tab } = found;
+    recordRaw(tab, "out", payload.line);
     let msg;
     try { msg = JSON.parse(payload.line); } catch { return; }
 
-    if (msg.session_id) tab.session = msg.session_id;
+    // The id is minted here and handed to the CLI, so the CLI naming it back
+    // is what says the session now exists on disk. From that moment on this
+    // conversation has to be resumed rather than created - and the command
+    // streaming it does not return until the whole turn is over, which is far
+    // too late to learn that from.
+    if (msg.session_id) {
+      tab.session = msg.session_id;
+      tab.started = true;
+    }
 
-    if (msg.type === "stream_event" && msg.event?.delta?.type === "text_delta") {
-      if (!tab.streaming) { tab.streaming = { role: "claude", text: "" }; tab.turns.push(tab.streaming); }
-      tab.streaming.text += msg.event.delta.text || "";
+    // A subagent's own stream carries the id of the Task that spawned it. Its
+    // steps belong under that Task, not interleaved with the main thread, and
+    // there is nothing here yet that can nest them - so only the fact that a
+    // subagent is working is kept, as the phase on the thinking line.
+    if (msg.parent_tool_use_id) {
+      tagRaw(tab, "subagent");
+      tab.phase = "Running a subagent";
       return markAgentTabDirty(panel, tab);
     }
+
+    if (msg.type === "stream_event") {
+      const event = msg.event || {};
+      // A tool is named the moment the block opens, before its arguments have
+      // finished streaming - which is the difference between a step appearing
+      // as it starts and appearing once it is already over.
+      if (event.type === "content_block_start" && event.content_block?.type === "tool_use") {
+        tab.streaming = null;
+        tab.phase = "";
+        tagRaw(tab, `tool starts · ${event.content_block.name || "?"}`);
+        beginToolTurn(tab, event.content_block);
+        return markAgentTabDirty(panel, tab);
+      }
+      if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
+        tab.phase = "";
+        tab.sawDeltas = true;
+        tagRaw(tab, "answer text");
+        if (!tab.streaming) { tab.streaming = { role: "claude", text: "", shown: 0 }; tab.turns.push(tab.streaming); }
+        tab.streaming.text += event.delta.text || "";
+        return markAgentTabDirty(panel, tab);
+      }
+      // Thinking is the longest silence in a turn, so it is shown as it
+      // happens - dimmed, clamped to a few lines, and openable in place.
+      if (event.type === "content_block_start" && event.content_block?.type === "thinking") {
+        tab.streaming = null;
+        tab.phase = "";
+        tagRaw(tab, "thinking starts");
+        tab.thought = { role: "thought", text: "" };
+        tab.turns.push(tab.thought);
+        return markAgentTabDirty(panel, tab);
+      }
+      if (event.type === "content_block_delta" && event.delta?.type === "thinking_delta") {
+        if (!tab.thought) { tab.thought = { role: "thought", text: "" }; tab.turns.push(tab.thought); }
+        tab.thought.text += event.delta.thinking || "";
+        tagRaw(tab, "thinking");
+        return markAgentTabDirty(panel, tab);
+      }
+      if (event.type === "content_block_stop") tab.thought = null;
+      // The rest of the stream is bookkeeping around the message rather than
+      // anything a reader wants: where a block began and ended, the
+      // signature on a thought, the arguments filling into a tool whose name
+      // is already on screen. Named anyway, so the debug view can tell them
+      // from a shape nothing here knows.
+      tagRaw(tab, `${event.type}${event.delta?.type ? ` · ${event.delta.type}` : ""}`, true);
+      return;
+    }
+
+    // The whole assistant message, once it is complete. The tool blocks were
+    // already opened from the stream; this is what fills in their arguments.
     if (msg.type === "assistant") {
       for (const block of msg.message?.content || []) {
-        if (block.type !== "tool_use") continue;
-        tab.turns.push({ role: "tool", icon: TOOL_ICONS[block.name] || "build", text: toolLine(block) });
+        tagRaw(tab, `assistant · ${block.type}`);
+        if (block.type === "tool_use") { beginToolTurn(tab, block); continue; }
+        // Text normally arrives as deltas and is already on screen. A CLI
+        // that will not stream them - an older one, or one built without
+        // partial messages - would otherwise answer into an empty panel.
+        if (block.type === "text" && !tab.sawDeltas && block.text) {
+          tab.streaming = null;
+          tab.turns.push({ role: "claude", text: block.text, shown: 0 });
+        }
       }
       return markAgentTabDirty(panel, tab);
     }
+
+    // What a tool actually did. A step that says only that it started is a
+    // step that cannot be told from one that hung.
+    if (msg.type === "user") {
+      const content = msg.message?.content;
+      if (!Array.isArray(content)) return;
+      let touched = false;
+      for (const block of content) {
+        if (block.type !== "tool_result") continue;
+        tagRaw(tab, block.is_error ? "tool failed" : "tool result");
+        touched = finishToolTurn(tab, block.tool_use_id, block.is_error, resultText(block.content), msg.tool_use_result) || touched;
+      }
+      return touched ? markAgentTabDirty(panel, tab) : undefined;
+    }
+
+    if (msg.type === "system") {
+      // Nothing can answer a permission prompt from here - the CLI is running
+      // without a host to ask - so a tool that needed approval is refused and
+      // says so on its own line, with the way to actually approve it next to
+      // it. Silence here is what made a denied turn look like a stuck one.
+      if (msg.subtype === "permission_denied") {
+        tagRaw(tab, `permission denied · ${msg.tool_name || "?"}`);
+        finishToolTurn(tab, msg.tool_use_id, true, msg.decision_reason || "needs your approval");
+        const name = msg.tool_name || "That tool";
+        const last = tab.turns[tab.turns.length - 1];
+        if (!(last?.role === "denied" && last.tool === name)) {
+          tab.turns.push({
+            role: "denied",
+            tool: name,
+            text: permissionMode(tab) === "auto"
+              ? `${name} needs your approval, and nothing here can ask for it.`
+              : `${name} needs your approval. This conversation is set to ${PERMISSION_MODES[permissionMode(tab)].short}.`,
+          });
+        }
+        tab.deniedSomething = true;
+        return markAgentTabDirty(panel, tab);
+      }
+      // The CLI's own account of which phase it is in, which is the only thing
+      // that moves during a long wait for the model.
+      if (msg.subtype === "status") {
+        tagRaw(tab, `status · ${msg.status || "?"}`);
+        tab.phase = STATUS_PHASES[msg.status] || "";
+        return markAgentTabDirty(panel, tab);
+      }
+      if (msg.subtype === "compact_boundary") {
+        tagRaw(tab, "compacted");
+        tab.turns.push({ role: "tool", icon: "compress", text: "Compacted the conversation", state: "ok" });
+        return markAgentTabDirty(panel, tab);
+      }
+      // Thinking arrives with its text withheld - the deltas are empty and
+      // only the running token count is real - so this is the only thing
+      // that moves during a long think, and the only honest way to say a
+      // silent minute is being spent rather than wasted.
+      if (msg.subtype === "thinking_tokens") {
+        tab.thinkingTokens = Number(msg.estimated_tokens) || 0;
+        tagRaw(tab, `thinking · ${tab.thinkingTokens} tokens`);
+        return markAgentTabDirty(panel, tab);
+      }
+      // Which model answered and under which permission mode, said once at
+      // the top of the conversation - the two facts that decide what every
+      // answer below is worth.
+      if (msg.subtype === "init") {
+        tagRaw(tab, `init · ${msg.model || "?"}`);
+        const mode = PERMISSION_MODES[msg.permissionMode]?.short || msg.permissionMode;
+        const setup = [msg.model, mode].filter(Boolean).join(" · ");
+        if (setup) tab.turns.push({ role: "tool", icon: "tune", text: setup, state: "ok" });
+        return markAgentTabDirty(panel, tab);
+      }
+      tagRaw(tab, `system · ${msg.subtype || "?"}`, true);
+      return;
+    }
+
+    // Only worth saying when it is about to cost something. A window that is
+    // merely being counted is not worth a line; one that has run out is why
+    // the next turn will not start.
+    if (msg.type === "rate_limit_event") {
+      const info = msg.rate_limit_info || {};
+      if (info.status && info.status !== "allowed") {
+        tagRaw(tab, `rate limit · ${info.status}`);
+        const last = tab.turns[tab.turns.length - 1];
+        if (last?.role !== "notice") {
+          tab.turns.push({ role: "notice", text: `The ${(info.rateLimitType || "usage").replace(/_/g, " ")} limit is ${info.status}.` });
+        }
+        return markAgentTabDirty(panel, tab);
+      }
+      return tagRaw(tab, "rate limit · allowed", true);
+    }
+
     if (msg.type === "result") {
       tab.streaming = null;
+      tab.thought = null;
+      tab.running = false;
+      tab.phase = "";
       const text = String(msg.result || "");
       if (msg.is_error || msg.subtype === "error_during_execution") {
         tab.turns.push({ role: "error", text: text || "That turn did not finish." });
@@ -2565,8 +3565,11 @@
       if (/log ?in|sign ?in|not authenticated|invalid api key|credit balance/i.test(text)) {
         tab.needsSignIn = true;
       }
+      tagRaw(tab, msg.is_error ? "result · error" : "result");
+      tab.receipt = turnReceipt(msg);
       renderAgentTab(panel, tab);
       renderAgentTabs(panel);
+      say(msg.is_error ? "Claude reported a problem" : "Claude answered");
     }
   }).catch(() => {});
 
@@ -2574,17 +3577,34 @@
     const found = agentTabFor(payload);
     if (!found?.tab) return;
     const { panel, tab } = found;
-    tab.streaming = null;
-    if (payload.code !== 0 && payload.error) {
-      tab.turns.push({ role: "error", text: payload.error.trim() });
+    recordRaw(tab, payload.code === 0 ? "meta" : "err", `exited ${payload.code}${payload.error ? ` · ${payload.error.trim()}` : ""}`);
+    tagRaw(tab, "the end");
+    endAgentTurn(tab);
+    const error = (payload.error || "").trim();
+    if (payload.code !== 0 && error) {
+      // The CLI refuses to create a session that already exists. A tab in that
+      // state would fail the same way forever, because nothing in it would
+      // ever learn that the conversation is already on disk - so the answer is
+      // to remember that it is and resume it, and to say so once rather than
+      // handing over the raw complaint about an id nobody typed.
+      if (/session id .* is already in use/i.test(error)) {
+        tab.started = true;
+        saveAgentTabs(panel);
+        tab.turns.push({ role: "tool", icon: "history", text: "Picked the conversation back up · ask again", state: "ok" });
+      } else {
+        tab.turns.push({ role: "error", text: error });
+      }
     }
     renderAgentTab(panel, tab);
     renderAgentTabs(panel);
+    // Whether this conversation exists on disk yet is the one thing a reload
+    // must not get wrong, so it is written down at the end of every turn.
+    saveAgentTabs(panel);
   }).catch(() => {});
 
   await listen("cursor:install", ({ payload }) => {
-    const found = agentTabFor(payload);
-    if (!found?.tab) return;
+    const found = installTabFor(payload, "cursor");
+    if (!found) return;
     const { panel, tab } = found;
     const pre = tab.log?.querySelector(".ws-chat-install");
     if (pre && payload.line) {
@@ -2592,6 +3612,8 @@
       pre.scrollTop = pre.scrollHeight;
     }
     if (!payload.done) return;
+    panel.installing.delete(tab.kind);
+    say(payload.ok ? `${AGENTS[tab.kind].product} installed` : `The ${AGENTS[tab.kind].label} install did not finish`);
     if (payload.ok) checkAgent(panel, tab, { force: true }).catch(() => {});
   }).catch(() => {});
 
@@ -2599,6 +3621,7 @@
     const found = agentTabFor(payload);
     if (!found?.tab) return;
     const { panel, tab } = found;
+    recordRaw(tab, "out", payload.line);
     let obj;
     try { obj = JSON.parse(payload.line); } catch { return; }
 
@@ -2629,11 +3652,24 @@
       return;
     }
 
-    if (obj.type === "tool_call" && obj.subtype === "completed") {
+    if (obj.type === "tool_call") {
       const summary = cursorToolSummary(obj);
       if (!summary) return;
-      tab.turns.push({ role: "tool", icon: "build", text: summary });
-      renderAgentTab(panel, tab);
+      // Cursor names a call twice, as it starts and as it ends. The id it
+      // carries is not in a fixed place across versions, so the summary -
+      // which is built from the call itself - stands in when there is none.
+      const id = obj.call_id || obj.callId || `cursor:${summary}`;
+      if (obj.subtype === "started") {
+        beginToolTurn(tab, { id, name: summary, input: {} });
+        return markAgentTabDirty(panel, tab);
+      }
+      if (obj.subtype === "completed" || obj.subtype === "failed") {
+        const turn = beginToolTurn(tab, { id, name: summary, input: {} });
+        turn.text = summary;
+        turn.state = obj.subtype === "failed" ? "err" : "ok";
+        turn.detail = resultSummary(obj.error?.message || obj.result || "");
+        return markAgentTabDirty(panel, tab);
+      }
     }
   }).catch(() => {});
 
@@ -2641,7 +3677,9 @@
     const found = agentTabFor(payload);
     if (!found?.tab) return;
     const { panel, tab } = found;
-    tab.streaming = null;
+    recordRaw(tab, payload.code === 0 ? "meta" : "err", `exited ${payload.code}${payload.error ? ` · ${payload.error.trim()}` : ""}`);
+    tagRaw(tab, "the end");
+    endAgentTurn(tab);
     if (payload.code !== 0 && payload.error) {
       tab.turns.push({ role: "error", text: payload.error.trim() });
     }
@@ -2650,8 +3688,8 @@
   }).catch(() => {});
 
   await listen("copilot:install", ({ payload }) => {
-    const found = agentTabFor(payload);
-    if (!found?.tab) return;
+    const found = installTabFor(payload, "copilot");
+    if (!found) return;
     const { panel, tab } = found;
     const pre = tab.log?.querySelector(".ws-chat-install");
     if (pre && payload.line) {
@@ -2659,6 +3697,8 @@
       pre.scrollTop = pre.scrollHeight;
     }
     if (!payload.done) return;
+    panel.installing.delete(tab.kind);
+    say(payload.ok ? `${AGENTS[tab.kind].product} installed` : `The ${AGENTS[tab.kind].label} install did not finish`);
     if (payload.ok) checkAgent(panel, tab, { force: true }).catch(() => {});
   }).catch(() => {});
 
@@ -2666,6 +3706,7 @@
     const found = agentTabFor(payload);
     if (!found?.tab) return;
     const { panel, tab } = found;
+    recordRaw(tab, "out", payload.line);
     let obj;
     try { obj = JSON.parse(payload.line); } catch { return; }
 
@@ -2696,7 +3737,9 @@
     const found = agentTabFor(payload);
     if (!found?.tab) return;
     const { panel, tab } = found;
-    tab.streaming = null;
+    recordRaw(tab, payload.code === 0 ? "meta" : "err", `exited ${payload.code}${payload.error ? ` · ${payload.error.trim()}` : ""}`);
+    tagRaw(tab, "the end");
+    endAgentTurn(tab);
     if (payload.code !== 0 && payload.error) {
       tab.turns.push({ role: "error", text: payload.error.trim() });
     }
@@ -2705,8 +3748,8 @@
   }).catch(() => {});
 
   await listen("gemini:install", ({ payload }) => {
-    const found = agentTabFor(payload);
-    if (!found?.tab) return;
+    const found = installTabFor(payload, "gemini");
+    if (!found) return;
     const { panel, tab } = found;
     const pre = tab.log?.querySelector(".ws-chat-install");
     if (pre && payload.line) {
@@ -2714,6 +3757,8 @@
       pre.scrollTop = pre.scrollHeight;
     }
     if (!payload.done) return;
+    panel.installing.delete(tab.kind);
+    say(payload.ok ? `${AGENTS[tab.kind].product} installed` : `The ${AGENTS[tab.kind].label} install did not finish`);
     if (payload.ok) checkAgent(panel, tab, { force: true }).catch(() => {});
   }).catch(() => {});
 
@@ -2721,6 +3766,7 @@
     const found = agentTabFor(payload);
     if (!found?.tab) return;
     const { panel, tab } = found;
+    recordRaw(tab, "out", payload.line);
     let obj;
     try { obj = JSON.parse(payload.line); } catch { return; }
 
@@ -2755,7 +3801,9 @@
     const found = agentTabFor(payload);
     if (!found?.tab) return;
     const { panel, tab } = found;
-    tab.streaming = null;
+    recordRaw(tab, payload.code === 0 ? "meta" : "err", `exited ${payload.code}${payload.error ? ` · ${payload.error.trim()}` : ""}`);
+    tagRaw(tab, "the end");
+    endAgentTurn(tab);
     if (payload.code !== 0 && payload.error) {
       tab.turns.push({ role: "error", text: payload.error.trim() });
     }
@@ -2764,8 +3812,8 @@
   }).catch(() => {});
 
   await listen("codex:install", ({ payload }) => {
-    const found = agentTabFor(payload);
-    if (!found?.tab) return;
+    const found = installTabFor(payload, "codex");
+    if (!found) return;
     const { panel, tab } = found;
     const pre = tab.log?.querySelector(".ws-chat-install");
     if (pre && payload.line) {
@@ -2773,6 +3821,8 @@
       pre.scrollTop = pre.scrollHeight;
     }
     if (!payload.done) return;
+    panel.installing.delete(tab.kind);
+    say(payload.ok ? `${AGENTS[tab.kind].product} installed` : `The ${AGENTS[tab.kind].label} install did not finish`);
     if (payload.ok) checkAgent(panel, tab, { force: true }).catch(() => {});
   }).catch(() => {});
 
@@ -2780,18 +3830,33 @@
     const found = agentTabFor(payload);
     if (!found?.tab) return;
     const { panel, tab } = found;
+    recordRaw(tab, "out", payload.line);
     let obj;
     try { obj = JSON.parse(payload.line); } catch { return; }
 
     if (obj.type === "thread.started" && obj.thread_id) tab.session = obj.thread_id;
 
-    if (obj.type === "item.completed" && obj.item && obj.item.type !== "agent_message" && obj.item.type !== "reasoning") {
+    // An item is announced when it starts and again when it ends; both are
+    // taken, so a command that takes a minute is on screen for that minute
+    // rather than appearing only once it is over. An id is what ties the two
+    // together - without one the second announcement opens its own step.
+    if ((obj.type === "item.started" || obj.type === "item.updated" || obj.type === "item.completed")
+        && obj.item && obj.item.type !== "agent_message" && obj.item.type !== "reasoning") {
       const line = codexToolLine(obj.item);
-      if (line) {
-        tab.turns.push({ role: "tool", icon: CODEX_ITEM_ICONS[obj.item.type] || "build", text: line });
-        markAgentTabDirty(panel, tab);
+      if (!line) return;
+      const turn = beginToolTurn(tab, {
+        id: obj.item.id || `codex:${line}`,
+        name: line,
+        input: {},
+      });
+      turn.text = line;
+      turn.icon = CODEX_ITEM_ICONS[obj.item.type] || "build";
+      if (obj.type === "item.completed") {
+        const failed = obj.item.status === "failed" || Number(obj.item.exit_code) > 0;
+        turn.state = failed ? "err" : "ok";
+        turn.detail = resultSummary(obj.item.aggregated_output || obj.item.output || obj.item.error || "");
       }
-      return;
+      return markAgentTabDirty(panel, tab);
     }
 
     if (obj.type === "item.completed" && obj.item?.type === "agent_message") {
@@ -2827,7 +3892,9 @@
     const found = agentTabFor(payload);
     if (!found?.tab) return;
     const { panel, tab } = found;
-    tab.streaming = null;
+    recordRaw(tab, payload.code === 0 ? "meta" : "err", `exited ${payload.code}${payload.error ? ` · ${payload.error.trim()}` : ""}`);
+    tagRaw(tab, "the end");
+    endAgentTurn(tab);
     if (payload.code !== 0 && payload.error) {
       tab.turns.push({ role: "error", text: payload.error.trim() });
     }
@@ -2850,6 +3917,17 @@
   // other project's terminal must not steer this workspace's browser. The dock
   // is the only thing that knows which terminals are this window's, and it does
   // not exist until the terminal panel has loaded terminals.js.
+  // Where the browser panel has got to on its own - a link followed, a
+  // redirect, a router rewriting the address. Broadcast to every window, so
+  // only this window's own events are worth anything, and the box is left
+  // alone while it is being typed in.
+  listen("workspace:browser-url", ({ payload }) => {
+    if (payload?.window !== label || !payload.url) return;
+    browserUrl = payload.url;
+    const panel = panels.get("browser");
+    if (panel?.address && document.activeElement !== panel.address) panel.address.value = payload.url;
+  }).catch(() => {});
+
   listen("term:serving", ({ payload }) => {
     const dock = window.wintTermDock;
     if (!dock?.has(payload.id)) return;

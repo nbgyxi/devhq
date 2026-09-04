@@ -1370,6 +1370,41 @@ function closeTerminal(id) {
   closeTerminalAndWatch(id);
 }
 
+/** Every shell this dock is showing, closed for good, and what each one left
+ *  running handed back to the caller.
+ *
+ *  A workspace calls this as its window goes. Without it those sessions stay
+ *  alive in Rust with no terminal anywhere in the app showing them - a build
+ *  or a dev server nobody can see and nobody can stop until WinT itself
+ *  closes. Terminals popped out into their own windows are not this dock's to
+ *  close: they have a window of their own and it is still on screen.
+ *
+ *  What comes back is the same process snapshot the tab × takes, so the caller
+ *  can have it checked the same way. Prefs are frozen while this runs for the
+ *  same reason restoring freezes them: what this window should open next time
+ *  is what it was showing, not the empty strip it is being torn down into. */
+async function closeDockTerminals() {
+  terms.restoring = true;
+  const expected = [];
+  for (const id of [...terms.sessions.keys()]) {
+    const processes = await term_dock_invoke("term_close_snapshot", { id }).catch(async () => {
+      await term_dock_invoke("term_close", { id }).catch(() => {});
+      return [];
+    });
+    expected.push(...(processes || []));
+    disownTerminal(id);
+  }
+  return expected;
+}
+
+/** A dock that has just closed its shells asks WinT's own window to watch what
+ *  they left behind: the "still running" warning lives in the status bar, and
+ *  the window that did the closing is the one that no longer has one. */
+term_dock_listen("term:orphan-watch", (event) => {
+  if (embedded) return;
+  scheduleOrphanCheck(event.payload?.expected);
+});
+
 /** The `cols,rows` a popped-out window should open with, or null when the
  *  view never measured itself. Kept inside what the screen can show, since the
  *  panel can be wider than a free-standing window is allowed to be. */
@@ -1772,6 +1807,7 @@ window.wintTermDock = {
   has: (id) => terms.sessions.has(id),
   label: (id) => terms.known.get(id)?.projectName || "The terminal",
   newTerminal: openNewTerminal,
+  closeAll: closeDockTerminals,
   write: (data) => {
     const session = terms.sessions.get(terms.active);
     if (!session) return false;

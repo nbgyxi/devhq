@@ -2,6 +2,7 @@ mod ai;
 pub mod analytics;
 mod assistant;
 mod cli_registration;
+pub mod clipboard;
 #[cfg(windows)]
 pub mod conpty;
 mod cwd;
@@ -1295,6 +1296,22 @@ fn inspect_project(path: &Path, group: &str) -> Project {
     }
 }
 
+/// How one project is started, for a window that has a path and nothing else.
+///
+/// The workspace opens on a folder, not on a scan result, so it cannot read
+/// the run command off the row that opened it. This is the same answer the Run
+/// button on the project list gets, worked out the same way and off the main
+/// thread, and it is empty when the folder says nothing about how it runs.
+#[tauri::command]
+async fn project_run_command(path: String) -> String {
+    off_thread(move || {
+        let dir = Path::new(&path);
+        detect_run(dir, &tech::inspect(dir))
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// Node scripts that mean "start this thing", best first.
 const RUN_SCRIPTS: &[&str] = &["dev", "start", "develop", "serve", "watch"];
 
@@ -2100,6 +2117,49 @@ async fn active_window_snapshot() -> Result<windows_tools::ActiveWindow, String>
         .unwrap_or_else(|| Err("The active-window check did not finish.".into()))
 }
 
+/* ----------------------------------------------------------- the clipboard
+
+The history itself is recorded by a Windows clipboard listener that runs from
+startup (see `clipboard.rs`); these commands only read and edit what it kept.
+
+*/
+
+#[cfg(windows)]
+#[tauri::command]
+async fn clipboard_history() -> Vec<clipboard::Clip> {
+    off_thread(clipboard::history).await.unwrap_or_default()
+}
+
+#[cfg(windows)]
+#[tauri::command]
+async fn clipboard_capture() -> Result<Option<clipboard::Clip>, String> {
+    off_thread(clipboard::capture)
+        .await
+        .unwrap_or_else(|| Err("The clipboard could not be read.".into()))
+}
+
+#[cfg(windows)]
+#[tauri::command]
+async fn clipboard_pin(id: String, pinned: bool) -> Vec<clipboard::Clip> {
+    off_thread(move || clipboard::set_pinned(&id, pinned))
+        .await
+        .unwrap_or_default()
+}
+
+#[cfg(windows)]
+#[tauri::command]
+async fn clipboard_forget(id: String) -> Vec<clipboard::Clip> {
+    off_thread(move || clipboard::forget(&id))
+        .await
+        .unwrap_or_default()
+}
+
+#[cfg(windows)]
+#[tauri::command]
+async fn clipboard_clear() -> Vec<clipboard::Clip> {
+    off_thread(clipboard::clear).await.unwrap_or_default()
+}
+
 #[tauri::command]
 fn keep_awake_set(
     system: bool,
@@ -2222,6 +2282,7 @@ pub fn run() {
 
             let args: Vec<String> = std::env::args().collect();
             start_wt_request_queue(app.handle().clone());
+            clipboard::start(app.handle().clone());
             if let Some(id) = tool_arg(&args) {
                 if let Ok(mut pending) = app.state::<PendingTool>().0.lock() {
                     *pending = Some(id);
@@ -2292,6 +2353,7 @@ pub fn run() {
             assistant_chat,
             assistant_chat_cancel,
             app_version,
+            project_run_command,
             app_is_official_build,
             app_build_checksum,
             disk_space_drives,
@@ -2431,6 +2493,11 @@ pub fn run() {
             repair_target_run,
             active_window_snapshot,
             keep_awake_set,
+            clipboard_history,
+            clipboard_capture,
+            clipboard_pin,
+            clipboard_forget,
+            clipboard_clear,
             github::github_status,
             github::github_api
         ])
@@ -2474,6 +2541,7 @@ pub fn run() {
         assistant_chat,
         assistant_chat_cancel,
         app_version,
+        project_run_command,
         app_is_official_build,
         app_build_checksum,
         disk_space_drives,
