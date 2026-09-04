@@ -474,8 +474,8 @@
   }).catch(() => {});
 
   /** Closes every shell this workspace had - the terminal panel's tabs, and a
-   *  conversation the chat handed to a terminal of its own - and has whatever
-   *  they leave behind watched.
+   *  conversation the agent panel handed to a terminal of its own - and has
+   *  whatever they leave behind watched.
    *
    *  Closing a terminal tab already checks that what was running under it
    *  really ended; closing the window those tabs live in is the same act on
@@ -484,10 +484,9 @@
    *  one is about to be gone. */
   async function closeWorkspaceTerminals() {
     const expected = [];
-    for (const overlay of [claudeOverlay, agentOverlay]) {
-      const open = overlay?.session;
-      if (!open) continue;
-      overlay.session = null;
+    const open = agentOverlay?.session;
+    if (open) {
+      agentOverlay.session = null;
       const processes = await invoke("term_close_snapshot", { id: open.id }).catch(async () => {
         await invoke("term_close", { id: open.id }).catch(() => {});
         return [];
@@ -520,29 +519,11 @@
     invoke("workspace_browser_hide", { window: label }).catch(() => {});
   };
 
-  /** The full-window overlays are page elements, so the browser must stay away
-   *  while one of them is up. Asked of the DOM rather than of the overlays
-   *  themselves so this holds for a sync from anywhere, at any point in the
-   *  window's life. */
+  /** The full-window overlay is a page element, so the browser must stay away
+   *  while it is up. Asked of the DOM rather than of the overlay itself so this
+   *  holds for a sync from anywhere, at any point in the window's life. */
   const fullOverlayOpen = () =>
-    !!document.querySelector(".ws-claude-full:not([hidden]),.ws-cursor-full:not([hidden])");
-
-  /** Whether something the page is drawing lands on the browser. A native
-   *  child webview is a window over the window, not a layer in the page: it is
-   *  in front of everything the page can draw, and no z-index reaches past it.
-   *  Anything that would be covered has to move the webview out of the way. */
-  const overlapsBrowser = (el) => {
-    // Asked of where the webview belongs, not of where it is: something that
-    // hid it a moment ago is still covering it, and answering no there would
-    // hand the ground back to a webview that must stay away.
-    if (!el || el.hidden || !browserUrl) return false;
-    const hole = browserRect();
-    if (!hole) return false;
-    const rect = el.getBoundingClientRect();
-    if (!rect.width || !rect.height) return false;
-    return rect.left < hole.right && rect.right > hole.left
-      && rect.top < hole.bottom && rect.bottom > hole.top;
-  };
+    !!document.querySelector(".ws-cursor-full:not([hidden])");
 
   /** Puts the webview exactly over the hole, creating it the first time. */
   const syncBrowser = () => {
@@ -1387,231 +1368,18 @@
     },
     resized() { window.wintTermDock?.fit(); },
   });
-  /* ------------------------------------------------------- panel: Claude */
 
-  // A chat, not a terminal. The CLI has a machine-readable mode - one JSON
-  // object per line - so the conversation is rendered here rather than folding
-  // a full-screen terminal program into a narrow pane, which is how this panel
-  // used to open onto theme pickers and wrapped ASCII art.
-  //
-  // The schema is Anthropic's and it grows. Every line is matched on the few
-  // fields this needs and anything else is ignored rather than dropped, so a
-  // newer CLI adding an event type cannot break the panel.
-  definePanel("chat", {
-    label: "Claude",
-    icon: "forum",
-    mount(body, panel) {
-      // The workspace mints the conversation's id rather than reading one back
-      // off the stream, so a terminal can be pointed at the same conversation
-      // before the chat has said anything. `--session-id` names it on the first
-      // turn; every turn after that resumes it.
-      panel.session = newSessionId();
-      panel.started = false;
-      panel.turns = [];
-      panel.streaming = null;
-      body.className += " ws-chat";
-      body.innerHTML = `<div class="ws-chat-log"></div>
-        <form class="ws-chat-ask" hidden>
-          <div class="ws-chat-row">
-            <textarea rows="1" placeholder="Ask Claude about this project…" spellcheck="false"></textarea>
-            <button type="submit" class="ws-chat-send" title="Send (Enter)">${icon("send")}</button>
-            <button type="button" class="ws-chat-stop" title="Stop" hidden>${icon("stop_circle")}</button>
-          </div>
-        </form>`;
-      panel.log = body.querySelector(".ws-chat-log");
-      panel.ask = body.querySelector(".ws-chat-ask");
-      panel.input = panel.ask.querySelector("textarea");
-      panel.tools.innerHTML = `
-        <button class="ws-mini" data-chat="terminal" type="button" title="Open this conversation in a terminal">${icon("terminal")}</button>
-        <button class="ws-mini" data-chat="new" type="button" title="Start a new conversation">${icon("refresh")}</button>`;
-      panel.tools.addEventListener("click", (e) => {
-        const action = e.target.closest("[data-chat]")?.dataset.chat;
-        if (action === "terminal") return openClaudeTerminal(panel);
-        if (action !== "new") return;
-        panel.session = newSessionId();
-        panel.started = false;
-        panel.turns = [];
-        renderChat(panel);
-        say("Started a new conversation");
-      });
+  /* ------------------------------------ shared by the agent panel below */
 
-      // Enter sends, Shift+Enter is a newline - the same bargain every chat
-      // makes, and the one people's hands already expect.
-      panel.input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); panel.ask.requestSubmit(); }
-      });
-      panel.input.addEventListener("input", () => {
-        panel.input.style.height = "auto";
-        panel.input.style.height = `${Math.min(160, panel.input.scrollHeight)}px`;
-      });
-      panel.ask.addEventListener("submit", (e) => { e.preventDefault(); sendToClaude(panel); });
-      panel.ask.querySelector(".ws-chat-stop").addEventListener("click", () => {
-        invoke("claude_cancel", { window: label }).catch(() => {});
-        say("Stopped");
-      });
-      body.addEventListener("click", (e) => {
-        const action = e.target.closest("[data-chat]")?.dataset.chat;
-        if (action === "install") installClaude(panel);
-        if (action === "signin") signInToClaude(panel);
-        if (action === "recheck") checkClaude(panel);
-        if (action === "terminal") openClaudeTerminal(panel);
-      });
-      checkClaude(panel);
-    },
-  });
-
-  /** A conversation's name, minted here so both surfaces can use it.
-   *  `--session-id` requires a UUID. */
+  /** A conversation's name, minted by the window rather than read back off the
+   *  stream, so a terminal can be pointed at a conversation before it has said
+   *  anything. `--session-id` requires a UUID. */
   const newSessionId = () => (crypto.randomUUID
     ? crypto.randomUUID()
     : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
         const r = (Math.random() * 16) | 0;
         return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
       }));
-
-  /** The whole conversation, in the CLI's own interface, over the window.
-   *
-   *  This is the way out of everything the chat cannot do: approving a command
-   *  Claude wants to run, signing in, a slash command, plan mode. It is the
-   *  same conversation because both surfaces name it - `--resume` takes a
-   *  session id interactively as well as in print mode - so an answer given
-   *  here is in the history the chat picks up again afterwards.
-   *
-   *  Full window, because the CLI's interface is a full-screen program and
-   *  cramming it into a pane is what this panel exists to stop. */
-  async function openClaudeTerminal(panel) {
-    if (claudeOverlay.session) { claudeOverlay.el.hidden = false; hideBrowser(); return; }
-    let command;
-    try {
-      command = await invoke("claude_terminal_command", { session: panel.session || null });
-    } catch (err) {
-      return say(String(err));
-    }
-    claudeOverlay.el.hidden = false;
-    // The browser panel is a native webview drawn over the page, so it would
-    // sit on top of this overlay rather than behind it.
-    hideBrowser();
-    claudeOverlay.note.textContent = panel.started
-      ? "The same conversation, in Claude's own interface. Answer here, then close this and carry on in the chat."
-      : "Claude's own interface. Anything you do here is in the conversation the chat picks up.";
-    try {
-      const info = await busy("Opening Claude in a terminal", () => invoke("term_open", {
-        args: { projectPath, projectName, command },
-      }));
-      const view = new window.TermView(claudeOverlay.host, info.id);
-      claudeOverlay.session = { id: info.id, view };
-      await view.attach();
-      view.fit();
-      // A conversation the chat had not started yet has been started now, by
-      // the terminal - so the next chat turn must resume rather than claim it.
-      panel.started = true;
-      say("Claude is open in a terminal");
-    } catch (err) {
-      claudeOverlay.host.innerHTML = `<div class="ws-term-error">${esc(String(err))}</div>`;
-      say(String(err));
-    }
-  }
-
-  /** Closing puts the chat back in charge. The session in Rust is ended: two
-   *  processes holding the same conversation open is how a session file ends up
-   *  written by whichever exits last. */
-  async function closeClaudeTerminal() {
-    const open = claudeOverlay.session;
-    claudeOverlay.session = null;
-    claudeOverlay.el.hidden = true;
-    claudeOverlay.host.replaceChildren();
-    syncBrowser();
-    if (open) await invoke("term_close", { id: open.id }).catch(() => {});
-    const panel = panels.get("chat");
-    if (panel) renderChat(panel);
-    say("Back to the chat");
-  }
-
-  const claudeOverlay = (() => {
-    const el = document.createElement("div");
-    el.className = "ws-claude-full";
-    el.hidden = true;
-    el.innerHTML = `<header>${icon("forum")}<strong>Claude Code</strong>
-        <span class="ws-claude-note"></span>
-        <button type="button" class="ws-btn" data-claude-full="close">${icon("close")}Back to the chat</button>
-      </header>
-      <div class="term-host"></div>`;
-    document.body.appendChild(el);
-    el.querySelector("[data-claude-full=close]").addEventListener("click", closeClaudeTerminal);
-    return { el, host: el.querySelector(".term-host"), note: el.querySelector(".ws-claude-note"), session: null };
-  })();
-
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !claudeOverlay.el.hidden) closeClaudeTerminal();
-  });
-
-  async function checkClaude(panel) {
-    panel.status = await invoke("claude_status").catch(() => ({ installed: false }));
-    renderChat(panel);
-  }
-
-  /** The whole panel: the install card, the sign-in card, or the conversation.
-   *  One function so the panel can never show two of those at once. */
-  function renderChat(panel) {
-    const busy = Boolean(panel.streaming);
-    panel.ask.hidden = !panel.status?.installed;
-    panel.ask.querySelector(".ws-chat-send").hidden = busy;
-    panel.ask.querySelector(".ws-chat-stop").hidden = !busy;
-
-    if (!panel.status?.installed) {
-      panel.log.innerHTML = `<div class="ws-chat-card">${icon("forum")}
-        <strong>Claude Code isn't installed</strong>
-        <p>WinT doesn't ship it and holds no key for it. You install Anthropic's CLI and sign in as
-           yourself; this panel gives it somewhere to talk.</p>
-        <div class="ws-chat-card-actions">
-          <button class="ws-btn primary" data-chat="install" type="button">${icon("download")}Install with npm</button>
-          <button class="ws-btn" data-chat="recheck" type="button">${icon("refresh")}Check again</button>
-        </div>
-        <pre class="ws-chat-install" hidden></pre></div>`;
-      return;
-    }
-    if (panel.needsSignIn) {
-      panel.log.innerHTML = `<div class="ws-chat-card">${icon("account_circle")}
-        <strong>Sign in to Claude Code</strong>
-        <p>The CLI is installed but not signed in. Signing in happens in a terminal, once —
-           it opens your browser and the account it signs in as is yours, not WinT's.</p>
-        <div class="ws-chat-card-actions">
-          <button class="ws-btn primary" data-chat="signin" type="button">${icon("terminal")}Open a terminal to sign in</button>
-          <button class="ws-btn" data-chat="recheck" type="button">${icon("refresh")}I've signed in</button>
-        </div></div>`;
-      return;
-    }
-    if (!panel.turns.length) {
-      panel.log.innerHTML = `<div class="ws-chat-card quiet">${icon("forum")}
-        <strong>Claude Code ${esc(panel.status.version || "")}</strong>
-        <p>Working in <code>${esc(projectName)}</code>. Ask it anything about this project.</p></div>`;
-      return;
-    }
-    // A turn that ended badly is nearly always a tool Claude was not allowed to
-    // run: in this mode there is nobody to ask, so it declines. The way to say
-    // yes is the CLI's own interface, on this same conversation.
-    const stuck = !busy && panel.turns[panel.turns.length - 1]?.role === "error";
-    panel.log.innerHTML = panel.turns.map(turnHtml).join("")
-      + (stuck ? `<div class="ws-chat-rescue">${icon("terminal")}
-          <span>Claude may have wanted permission to run something. It can only ask you in its own
-                interface — this opens the same conversation there.</span>
-          <button class="ws-btn primary" data-chat="terminal" type="button">Continue in a terminal</button>
-        </div>` : "");
-    panel.log.scrollTop = panel.log.scrollHeight;
-  }
-
-  const turnHtml = (turn) => {
-    if (turn.role === "you") {
-      return `<div class="ws-turn you"><div class="ws-turn-body">${esc(turn.text)}</div></div>`;
-    }
-    if (turn.role === "tool") {
-      return `<div class="ws-turn tool">${icon(turn.icon || "build")}<span>${esc(turn.text)}</span></div>`;
-    }
-    if (turn.role === "error") {
-      return `<div class="ws-turn error">${icon("error")}<span>${esc(turn.text)}</span></div>`;
-    }
-    return `<div class="ws-turn claude"><div class="ws-turn-body">${markdown(turn.text)}</div></div>`;
-  };
 
   /** Enough markdown for what a chat answer actually contains: fenced code,
    *  inline code, bold, and paragraphs. Everything is escaped first, so this
@@ -1629,133 +1397,6 @@
       .replace(/\n{2,}/g, "</p><p>")
       .replace(/\n/g, "<br>");
     return `<p>${out}</p>`.replace(/\u0000(\d+)\u0000/g, (_, i) => fences[Number(i)]);
-  }
-
-  async function sendToClaude(panel) {
-    const text = panel.input.value.trim();
-    if (!text || panel.streaming) return;
-    panel.input.value = "";
-    panel.input.style.height = "auto";
-    panel.turns.push({ role: "you", text });
-    panel.streaming = { role: "claude", text: "" };
-    panel.turns.push(panel.streaming);
-    renderChat(panel);
-    try {
-      await invoke("claude_send", {
-        window: label,
-        prompt: text,
-        cwd: projectPath,
-        session: panel.session || null,
-        resume: panel.started,
-        // Edits land without a prompt; anything else Claude Code would have
-        // asked about, it still asks about - and in this mode there is nobody
-        // to ask, so it declines and says so in the conversation.
-        permissionMode: "acceptEdits",
-      });
-      panel.started = true;
-      say("Claude is working");
-    } catch (err) {
-      panel.streaming = null;
-      panel.turns.push({ role: "error", text: String(err) });
-      renderChat(panel);
-      say(String(err));
-    }
-  }
-
-  async function installClaude(panel) {
-    const pre = panel.log.querySelector(".ws-chat-install");
-    if (pre) { pre.hidden = false; pre.textContent = "Installing…\n"; }
-    try {
-      await busy("Installing Claude Code", () => invoke("claude_install", { window: label }));
-    } catch (err) {
-      if (pre) pre.textContent += `\n${err}`;
-      say(String(err));
-    }
-  }
-
-  /** Signing in needs a real terminal - it is an interactive prompt and a
-   *  browser round trip - so it borrows the terminal panel rather than
-   *  pretending this one can do it. */
-  async function signInToClaude(panel) {
-    const terminal = panels.get("terminal");
-    const slot = slotOf("terminal");
-    if (slot) layout.hidden[slot] = false;
-    render();
-    try {
-      await invoke("term_write", { id: terminal?.info?.id, data: "claude\r" });
-      say("Sign in to Claude in the terminal below");
-    } catch {
-      say("Run `claude` in the terminal below to sign in");
-    }
-  }
-
-  await listen("claude:install", ({ payload }) => {
-    if (payload.window !== label) return;
-    const panel = panels.get("chat");
-    const pre = panel?.log?.querySelector(".ws-chat-install");
-    if (pre && payload.line) { pre.textContent += `${payload.line}\n`; pre.scrollTop = pre.scrollHeight; }
-    if (!payload.done) return;
-    say(payload.ok ? "Claude Code installed" : "The install did not finish");
-    if (payload.ok && panel) checkClaude(panel);
-  }).catch(() => {});
-
-  // One line of the CLI's stream. Matched on the few fields the panel needs;
-  // anything else is ignored rather than treated as an error.
-  await listen("claude:line", ({ payload }) => {
-    if (payload.window !== label) return;
-    const panel = panels.get("chat");
-    if (!panel) return;
-    let msg;
-    try { msg = JSON.parse(payload.line); } catch { return; }
-
-    if (msg.session_id) panel.session = msg.session_id;
-
-    if (msg.type === "stream_event" && msg.event?.delta?.type === "text_delta") {
-      if (!panel.streaming) { panel.streaming = { role: "claude", text: "" }; panel.turns.push(panel.streaming); }
-      panel.streaming.text += msg.event.delta.text || "";
-      return markChatDirty(panel);
-    }
-    if (msg.type === "assistant") {
-      for (const block of msg.message?.content || []) {
-        if (block.type !== "tool_use") continue;
-        panel.turns.push({ role: "tool", icon: TOOL_ICONS[block.name] || "build", text: toolLine(block) });
-      }
-      return markChatDirty(panel);
-    }
-    if (msg.type === "result") {
-      panel.streaming = null;
-      // A run that could not authenticate reports it as the result rather than
-      // as a failure, so the text is what says whether to offer signing in.
-      const text = String(msg.result || "");
-      if (msg.is_error || msg.subtype === "error_during_execution") {
-        panel.turns.push({ role: "error", text: text || "That turn did not finish." });
-      }
-      if (/log ?in|sign ?in|not authenticated|invalid api key|credit balance/i.test(text)) {
-        panel.needsSignIn = true;
-      }
-      renderChat(panel);
-      say(msg.is_error ? "Claude reported a problem" : "Claude answered");
-    }
-  }).catch(() => {});
-
-  await listen("claude:end", ({ payload }) => {
-    if (payload.window !== label) return;
-    const panel = panels.get("chat");
-    if (!panel) return;
-    panel.streaming = null;
-    if (payload.code !== 0 && payload.error) {
-      panel.turns.push({ role: "error", text: payload.error.trim() });
-    }
-    renderChat(panel);
-  }).catch(() => {});
-
-  /** Streaming text arrives a token at a time; the log is redrawn on a frame
-   *  rather than per token, the way everything else in this window paints. */
-  let chatDirty = false;
-  function markChatDirty(panel) {
-    if (chatDirty) return;
-    chatDirty = true;
-    requestAnimationFrame(() => { chatDirty = false; renderChat(panel); });
   }
 
   const TOOL_ICONS = {
@@ -1789,6 +1430,12 @@
     line.includes('"text_delta"') ? "text"
     : line.includes('"thinking_delta"') ? "thinking"
     : line.includes('"input_json_delta"') ? "arguments"
+    // Cursor streams a whole message envelope per token rather than a delta,
+    // and closes each message by repeating it in full with a model_call_id -
+    // so the repeat is an event of its own, not one more of the run.
+    : line.includes('"thinking"') && line.includes('"subtype":"delta"') ? "thinking"
+    : line.includes('"type":"assistant"') && line.includes('"timestamp_ms"')
+      && !line.includes('"model_call_id"') ? "text"
     : "";
 
   function recordRaw(tab, kind, line) {
@@ -2715,29 +2362,30 @@
     }
   }
 
-  // A popover in a panel is drawn by the page, so one that opens across the
-  // browser is not behind it by any z-index the page could raise - it is
-  // behind a webview of its own. The browser steps aside for as long as such a
-  // popover is open, and only when the two actually overlap: a chat panel wide
-  // enough to hold its own menu should not blank the page being browsed.
-  let menuHidBrowser = false;
-  const menuOpened = (menu) => {
-    if (!overlapsBrowser(menu)) return;
-    menuHidBrowser = true;
-    hideBrowser();
+  /** Keeps a popover inside the panel it belongs to.
+   *
+   *  The browser panel is a native child webview - a window over the window,
+   *  not a layer in the page - so it is in front of everything the page draws
+   *  and no z-index reaches past it. A popover that leaves its own panel is
+   *  therefore simply gone wherever it crosses the browser, and moving the
+   *  webview out of its way is not something the page can do reliably: it is
+   *  put back by a resize, a layout pass, an observer, any of which know
+   *  nothing about a popover. So the popover stays home instead. The width is
+   *  held inside the panel by the stylesheet; the height is measured, because
+   *  only the panel knows how much room is under the bar.
+   *
+   *  This runs when the popover opens and its content can only grow after -
+   *  the cap is what the panel allows, not what the list wants, so a longer
+   *  list scrolls rather than reaching past the panel. */
+  const fitMenu = (menu) => {
+    const panel = menu.closest(".ws-panel");
+    if (!panel) return;
+    const room = panel.getBoundingClientRect().bottom - menu.getBoundingClientRect().top - 8;
+    menu.style.maxHeight = `${Math.max(120, room)}px`;
   };
+
   const closeAgentMenus = (root) => {
-    let closed = false;
-    root.querySelectorAll(".ws-chat-agent-menu,.ws-agent-history-menu").forEach((m) => {
-      if (!m.hidden) { m.hidden = true; closed = true; }
-    });
-    // A click that closes one menu often opens another, and showing the
-    // webview in between is a flash of the page under the popover. The frame
-    // after settles it: whatever opened by then has hidden it again.
-    if (closed && menuHidBrowser) {
-      menuHidBrowser = false;
-      requestAnimationFrame(() => { if (!menuHidBrowser) syncBrowser(); });
-    }
+    root.querySelectorAll(".ws-chat-agent-menu,.ws-agent-history-menu").forEach((m) => { m.hidden = true; });
   };
 
   const whenAgo = (ms) => {
@@ -2781,7 +2429,6 @@
     } catch (err) {
       menu.innerHTML = `<div class="ws-chat-menu-label">Earlier conversations</div>
         <div class="ws-agent-history-note">${esc(String(err))}</div>`;
-      menuOpened(menu);
       return;
     }
     if (menu.hidden) return;
@@ -2792,9 +2439,6 @@
             <small>${esc(whenAgo(s.modified))} · ${s.turns} ${s.turns === 1 ? "question" : "questions"}</small>
           </button>`).join("")
         : `<div class="ws-agent-history-note">Nothing here yet.</div>`);
-    // The list is taller than the note it replaced, so it can reach the
-    // browser where the note did not.
-    menuOpened(menu);
   }
 
   /** Replays a past conversation into this tab and carries on with it: the
@@ -3134,7 +2778,7 @@
           const wasHidden = menu.hidden;
           closeAgentMenus(body);
           menu.hidden = !wasHidden;
-          if (!menu.hidden) menuOpened(menu);
+          if (!menu.hidden) fitMenu(menu);
           return;
         }
         const newKind = e.target.closest("[data-new-kind]")?.dataset.newKind;
@@ -3174,7 +2818,7 @@
           menu.hidden = !wasHidden;
           if (!menu.hidden) {
             showModeMenu(tab, menu);
-            menuOpened(menu);
+            fitMenu(menu);
           }
           return;
         }
@@ -3193,7 +2837,7 @@
           closeAgentMenus(body);
           menu.hidden = !wasHidden;
           if (!menu.hidden) {
-            menuOpened(menu);
+            fitMenu(menu);
             showAgentHistory(panel, tab, menu).catch(() => {});
           }
           return;
@@ -3627,26 +3271,60 @@
 
     if (obj.session_id && !tab.session) tab.session = obj.session_id;
 
+    if (obj.type === "system") return tagRaw(tab, `system · ${obj.subtype || "?"}`, true);
+    // The question, handed straight back at the start of the turn. It is
+    // already the bubble the turn was sent from.
+    if (obj.type === "user") return tagRaw(tab, "the question, echoed", true);
+
+    // Cursor thinks a token at a time, the same way it answers. Thinking is
+    // the longest silence in a turn, so it is shown as it happens rather than
+    // dropped - dimmed and clamped, like every other agent's.
+    if (obj.type === "thinking") {
+      if (obj.subtype !== "delta") {
+        tab.thought = null;
+        return tagRaw(tab, "thinking ends", true);
+      }
+      if (!obj.text) return tagRaw(tab, "thinking", true);
+      // A thought ends whatever was being said: what comes after it is a
+      // paragraph of its own, below the steps, not more of the bubble above.
+      tab.streaming = null;
+      if (!tab.thought) { tab.thought = { role: "thought", text: "" }; tab.turns.push(tab.thought); }
+      tab.thought.text += obj.text;
+      tagRaw(tab, "thinking");
+      return markAgentTabDirty(panel, tab);
+    }
+
     if (obj.type === "assistant") {
       const text = cursorAssistantText(obj);
-      if (!text) return;
+      if (!text) return tagRaw(tab, "assistant · no text", true);
 
       const hasTs = obj.timestamp_ms !== undefined && obj.timestamp_ms !== null;
       const hasModelCallId = obj.model_call_id !== undefined && obj.model_call_id !== null;
       if (hasTs && hasModelCallId) {
-        // Buffered flush before a tool call: duplicates the token stream.
-        return;
+        // The finished message, repeated in full as the turn moves on. Its
+        // tokens are already on screen, so it is not appended again - but it
+        // is what says the message is over, and the next one is its own
+        // paragraph rather than the same sentence continuing.
+        if (tab.streaming) tab.streaming.text = text;
+        tab.streaming = null;
+        tagRaw(tab, "answer ends");
+        return markAgentTabDirty(panel, tab);
       }
       if (hasTs) {
-        if (!tab.streaming) { tab.streaming = { role: "cursor", text: "" }; tab.turns.push(tab.streaming); }
+        tab.thought = null;
+        if (!tab.streaming) { tab.streaming = { role: "cursor", text: "", shown: 0 }; tab.turns.push(tab.streaming); }
         tab.streaming.text += text;
+        tagRaw(tab, "answer text");
         return markAgentTabDirty(panel, tab);
       }
 
-      // Final assistant message chunk between tool calls.
+      // A whole message with no token stream behind it - an older CLI, or one
+      // that buffered the lot.
+      tab.thought = null;
       if (tab.streaming) tab.streaming.text = text;
-      else tab.turns.push({ role: "cursor", text });
+      else tab.turns.push({ role: "cursor", text, shown: 0 });
       tab.streaming = null;
+      tagRaw(tab, "answer");
       renderAgentTab(panel, tab);
       renderAgentTabs(panel);
       return;
@@ -3654,13 +3332,19 @@
 
     if (obj.type === "tool_call") {
       const summary = cursorToolSummary(obj);
-      if (!summary) return;
+      if (!summary) return tagRaw(tab, "tool · unnamed", true);
       // Cursor names a call twice, as it starts and as it ends. The id it
       // carries is not in a fixed place across versions, so the summary -
       // which is built from the call itself - stands in when there is none.
       const id = obj.call_id || obj.callId || `cursor:${summary}`;
       if (obj.subtype === "started") {
+        // The step goes after whatever was just said, so the answer stops
+        // growing here. Left running, every later answer folded back into the
+        // first bubble and every step piled up below it, in no order at all.
+        tab.streaming = null;
+        tab.thought = null;
         beginToolTurn(tab, { id, name: summary, input: {} });
+        tagRaw(tab, `tool starts · ${summary}`);
         return markAgentTabDirty(panel, tab);
       }
       if (obj.subtype === "completed" || obj.subtype === "failed") {
@@ -3668,9 +3352,13 @@
         turn.text = summary;
         turn.state = obj.subtype === "failed" ? "err" : "ok";
         turn.detail = resultSummary(obj.error?.message || obj.result || "");
+        tagRaw(tab, obj.subtype === "failed" ? "tool failed" : "tool result");
         return markAgentTabDirty(panel, tab);
       }
+      return tagRaw(tab, `tool · ${obj.subtype || "?"}`, true);
     }
+
+    tagRaw(tab, `${obj.type || "?"}`, true);
   }).catch(() => {});
 
   await listen("cursor:end", ({ payload }) => {

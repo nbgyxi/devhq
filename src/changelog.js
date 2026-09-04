@@ -16,6 +16,34 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.81.3",
+      date: "2026-09-04",
+      title: "A Cursor conversation reads in the order it happened",
+      changes: [
+        ["fix", "Cursor's answers and its steps are back in the order they happened. Everything it said was folded into the first bubble of the turn and every step piled up underneath, because nothing closed the answer when a tool started - so a turn that read a file, said something, then read another one came out as one paragraph with a stack of tools below it."],
+        ["fix", "Two things Cursor said one after the other are two paragraphs again, not one sentence running into the next."],
+        ["new", "Cursor's thinking is shown while it thinks, dimmed and clamped to a few lines like every other agent's. It was streaming all along and being thrown away."],
+        ["better", "The raw stream view names what it did with each of Cursor's lines instead of marking every one of them \"not rendered\", and its token-by-token lines collapse into one counted row the way Claude's do."],
+      ],
+    },
+    {
+      version: "0.81.2",
+      date: "2026-09-04",
+      title: "A workspace window stops building the panel it replaced",
+      changes: [
+        ["better", "Opening a workspace no longer sets up the old single-conversation Claude panel behind the one that replaced it. It could not be shown any more, but every window still built it, hung a second full-screen overlay off the page and listened to the same conversation twice - so every line the CLI said was read and thrown away a second time."],
+      ],
+    },
+    {
+      version: "0.81.1",
+      date: "2026-09-04",
+      title: "The lists in a workspace's chat stay where you can see them",
+      changes: [
+        ["fix", "The earlier-conversations list, the permission menu and the new-conversation picker no longer vanish behind the browser panel. They opened wider than the panel they belong to, and the browser is drawn by Windows on top of the window, so whatever crossed it was simply not there. They now open inside the panel: never wider than it, and never taller than the room under the bar - a long list scrolls instead."],
+        ["better", "Opening one of those lists no longer blanks the page in the browser panel while it is up."],
+      ],
+    },
+    {
       version: "0.81.0",
       date: "2026-09-04",
       title: "Clipboard history that was already there when you opened it",
