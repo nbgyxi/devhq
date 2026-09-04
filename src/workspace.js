@@ -179,11 +179,14 @@
     root.setProperty("--ws-bottom", shown("bottom") ? `${layout.size.bottom}px` : "0px");
     // Save & upload is sized to its own content, not a draggable fraction of
     // the column - wherever it sits, the other panel in that column gets what
-    // is left over and the divider between them cannot be dragged.
-    const gitLeftBottom = layout.slots["left-bottom"] === "git";
-    const gitLeftTop = layout.slots["left-top"] === "git";
-    const gitRightBottom = layout.slots["right-bottom"] === "git";
-    const gitRightTop = layout.slots["right-top"] === "git";
+    // is left over and the divider between them cannot be dragged. Only while
+    // it is actually showing, though: a row held open at its height with the
+    // panel hidden is a gap the other panel cannot have.
+    const gitAt = (slot) => layout.slots[slot] === "git" && shown(slot);
+    const gitLeftBottom = gitAt("left-bottom");
+    const gitLeftTop = gitAt("left-top");
+    const gitRightBottom = gitAt("right-bottom");
+    const gitRightTop = gitAt("right-top");
     leftColEl.classList.toggle("ws-git-fixed", gitLeftBottom);
     leftColEl.classList.toggle("ws-git-fixed-top", gitLeftTop);
     rightColEl.classList.toggle("ws-git-fixed", gitRightBottom);
@@ -884,12 +887,42 @@
   // child stretched to fill whatever the column gives it, so its own box
   // can't be measured for this - state and form are natural-height children
   // of that box, so they are what gets measured instead.
+  /** Keeps the row Save & upload lives in exactly as tall as what it is
+   *  showing, so the panel never has to scroll.
+   *
+   *  Everything is measured rather than added up from constants. Narrowing the
+   *  column is what makes this panel taller - the header wraps its buttons
+   *  onto a second line, the branch line wraps, the three buttons stack - and
+   *  a hardcoded header height is wrong by a whole row exactly when it matters.
+   *  The content is measured child by child rather than from `scrollHeight`,
+   *  because `scrollHeight` can never report less than the box it is in and
+   *  the row would then only ever grow. */
   const syncGitHeight = (panel) => {
-    if (!panel.state || !panel.form) return;
-    const h = panel.state.getBoundingClientRect().height + panel.form.getBoundingClientRect().height
-      + 24 // .ws-git padding (8+8) and the gap between state and form (8)
-      + 40; // panel header (30), slot margin (4+4) and slot border (1+1)
-    document.body.style.setProperty("--ws-git-h", `${Math.max(90, Math.ceil(h))}px`);
+    const body = panel.body;
+    const slot = panel.el?.parentElement;
+    if (!body || !slot || slot.hidden) return;
+    const box = getComputedStyle(body);
+    const gap = parseFloat(box.rowGap) || 0;
+    const kids = [...body.children];
+    const content = kids.reduce((sum, el) => sum + el.getBoundingClientRect().height, 0)
+      + gap * Math.max(0, kids.length - 1)
+      + parseFloat(box.paddingTop) + parseFloat(box.paddingBottom);
+    const head = panel.el.querySelector(".ws-head");
+    const slotBox = getComputedStyle(slot);
+    // The slot border (and a scrollbar, if one is somehow still there) plus
+    // the gap the slot keeps from its neighbours.
+    const chrome = slot.offsetHeight - slot.clientHeight
+      + parseFloat(slotBox.marginTop) + parseFloat(slotBox.marginBottom);
+    const want = content + (head?.getBoundingClientRect().height || 0) + chrome;
+    // The panel above it still has to exist: past this the row stops growing
+    // and this panel scrolls after all, rather than squeezing its neighbour
+    // out of the column.
+    const column = slot.parentElement;
+    const ceiling = Math.max(90, (column?.clientHeight || 0) - 120);
+    const px = `${Math.min(ceiling, Math.max(90, Math.ceil(want)))}px`;
+    if (document.body.style.getPropertyValue("--ws-git-h") !== px) {
+      document.body.style.setProperty("--ws-git-h", px);
+    }
   };
 
   definePanel("git", {
@@ -920,9 +953,16 @@
       // Catches everything that can change the content's height - the state
       // line wrapping to two lines, a longer branch name, an error message -
       // without having to call this from every place that updates them.
+      // Observing the body catches both kinds of change: the content growing
+      // (a longer branch name, an error line) and the column being narrowed,
+      // which is what makes the content wrap in the first place. The header is
+      // watched too - it wraps its own buttons and is part of the height.
       const heightObserver = new ResizeObserver(() => syncGitHeight(panel));
+      heightObserver.observe(body);
+      heightObserver.observe(panel.el.querySelector(".ws-head"));
       heightObserver.observe(panel.state);
       heightObserver.observe(panel.form);
+      panel.resized = () => syncGitHeight(panel);
       loadGit(panel);
     },
   });
@@ -1011,6 +1051,14 @@
         autoOpen: true,
         // A terminal popped out of this workspace comes back to this
         // workspace, and the panel opens for it if it had been put away.
+        // A terminal that printed its address before this panel existed - a
+        // restored one, or one whose server was already up - never fires the
+        // event, so each terminal is asked what it serves as it is mounted.
+        onSession: (id) => {
+          invoke("term_serving", { id }).then((url) => {
+            if (url && !browserUrl) goTo(url, `${window.wintTermDock?.label(id) || "The terminal"} is serving ${url}`);
+          }).catch(() => {});
+        },
         onDock: () => {
           const slot = slotOf("terminal");
           if (slot && layout.hidden[slot]) {
@@ -1054,9 +1102,11 @@
       body.className += " ws-chat";
       body.innerHTML = `<div class="ws-chat-log"></div>
         <form class="ws-chat-ask" hidden>
-          <textarea rows="1" placeholder="Ask Claude about this project…" spellcheck="false"></textarea>
-          <button type="submit" class="ws-chat-send" title="Send (Enter)">${icon("send")}</button>
-          <button type="button" class="ws-chat-stop" title="Stop" hidden>${icon("stop_circle")}</button>
+          <div class="ws-chat-row">
+            <textarea rows="1" placeholder="Ask Claude about this project…" spellcheck="false"></textarea>
+            <button type="submit" class="ws-chat-send" title="Send (Enter)">${icon("send")}</button>
+            <button type="button" class="ws-chat-stop" title="Stop" hidden>${icon("stop_circle")}</button>
+          </div>
         </form>`;
       panel.log = body.querySelector(".ws-chat-log");
       panel.ask = body.querySelector(".ws-chat-ask");
@@ -1411,6 +1461,27 @@
     return short ? `${block.name} · ${short.slice(0, 120)}` : block.name;
   };
 
+  // Codex names what it did as items on its thread rather than as tool calls,
+  // so the same line is built from whichever field the item happens to carry.
+  const CODEX_ITEM_ICONS = {
+    command_execution: "terminal", file_change: "edit", mcp_tool_call: "build",
+    web_search: "travel_explore", todo_list: "checklist",
+  };
+
+  const CODEX_ITEM_NAMES = {
+    command_execution: "Bash", file_change: "Edit", mcp_tool_call: "Tool",
+    web_search: "Search", todo_list: "Todos",
+  };
+
+  const codexToolLine = (item) => {
+    const changed = Array.isArray(item.changes) ? item.changes.map((c) => c.path || c).join(", ") : "";
+    const what = item.command || item.path || changed || item.query || item.title || item.name || "";
+    const short = String(what).replace(projectPath, "").replace(/^[\\/]/, "").replace(/\s+/g, " ");
+    const name = CODEX_ITEM_NAMES[item.type] || String(item.type || "").replace(/_/g, " ");
+    if (!name && !short) return "";
+    return short ? `${name} · ${short.slice(0, 120)}` : name;
+  };
+
   /* ------------------------------------------------------- panel: Agent */
 
   const AGENT_STATUS_KEY = (kind) => `wint.workspace.agent.status.v1:${kind}`;
@@ -1443,6 +1514,12 @@
       cancelCmd: "claude_cancel",
       installCmd: "claude_install",
       terminalCmd: "claude_terminal_command",
+      // Only Claude Code keeps its conversations somewhere WinT can read them
+      // back, so it is the only kind whose history button has anything to
+      // open. The others get the button disabled rather than hidden, so the
+      // title line does not change shape from one tab to the next.
+      sessionsCmd: "claude_sessions",
+      transcriptCmd: "claude_transcript",
       mintSession: true,
       installHint: `WinT doesn't ship it and holds no key for it. You install Anthropic's CLI and sign in as
            yourself; this panel gives it somewhere to talk.`,
@@ -1541,17 +1618,104 @@
     });
   }
 
+  const isSaid = (turn) => turn.role !== "you" && turn.role !== "tool" && turn.role !== "error";
+
+  /** How much of an answer has been written out so far. Every answer starts at
+   *  nothing and is revealed towards its full text, so a reply that arrives in
+   *  one piece reads the same way as one that arrives token by token. */
+  const revealed = (turn) => turn.text.slice(0, turn.shown === undefined ? 0 : turn.shown);
+
   function agentTurnHtml(turn) {
     if (turn.role === "you") {
       return `<div class="ws-turn you"><div class="ws-turn-body">${esc(turn.text)}</div></div>`;
     }
-    if (turn.role === "tool") {
-      return `<div class="ws-turn tool">${icon(turn.icon || "build")}<span>${esc(turn.text)}</span></div>`;
-    }
     if (turn.role === "error") {
       return `<div class="ws-turn error">${icon("error")}<span>${esc(turn.text)}</span></div>`;
     }
-    return `<div class="ws-turn claude"><div class="ws-turn-body">${markdown(turn.text)}</div></div>`;
+    const text = revealed(turn);
+    if (!text) return "";
+    const live = text.length < turn.text.length ? " data-live" : "";
+    return `<div class="ws-turn claude ${esc(turn.role)}"${live}><div class="ws-turn-body">${markdown(text)}</div></div>`;
+  }
+
+  const toolHtml = (turn) =>
+    `<div class="ws-turn tool">${icon(turn.icon || "build")}<span>${esc(turn.text)}</span></div>`;
+
+  /** A run of tool lines between two answers. Only the three most recent are
+   *  worth reading - they are what the agent is doing now - so the rest fold
+   *  behind a line that opens them in place. */
+  function agentStepsHtml(steps, key, tab) {
+    const open = tab.openSteps?.has(key);
+    const folded = steps.length - 3;
+    const shown = open || folded <= 0 ? steps : steps.slice(-3);
+    const more = folded > 0
+      ? `<button type="button" class="ws-steps-more" data-steps="${key}">${icon("expand_more")}${
+          open ? "Show fewer steps" : `Show ${folded} earlier step${folded === 1 ? "" : "s"}`}</button>`
+      : "";
+    return `<div class="ws-steps${open ? " open" : ""}">${more}${shown.map(toolHtml).join("")}</div>`;
+  }
+
+  /** The line that says the turn is still running. It is drawn from the turn
+   *  being in flight rather than from text arriving, so it is there in the
+   *  moment it matters most: right after the question was sent. */
+  function agentThinkingHtml(tab) {
+    const last = tab.turns[tab.turns.length - 1];
+    // Hidden only while an answer is actually being written out - the caret on
+    // the bubble says that. Every other moment of a running turn gets the line.
+    const writing = last && isSaid(last) && revealed(last).length < last.text.length;
+    if (writing) return "";
+    const label = last?.role === "tool" ? "Working" : "Thinking";
+    const secs = Math.round((Date.now() - (tab.startedAt || Date.now())) / 1000);
+    return `<div class="ws-turn thinking"><span class="ws-dots"><i></i><i></i><i></i></span>
+      <span>${label}…</span><span class="ws-thinking-for">${secs}s</span></div>`;
+  }
+
+  function agentLogHtml(tab) {
+    const parts = [];
+    for (let i = 0; i < tab.turns.length; i++) {
+      if (tab.turns[i].role !== "tool") { parts.push(agentTurnHtml(tab.turns[i])); continue; }
+      let end = i;
+      while (end + 1 < tab.turns.length && tab.turns[end + 1].role === "tool") end += 1;
+      parts.push(agentStepsHtml(tab.turns.slice(i, end + 1), i, tab));
+      i = end;
+    }
+    if (tab.streaming) parts.push(agentThinkingHtml(tab));
+    return parts.join("");
+  }
+
+  /** The elapsed second on the thinking line, without redrawing the log for
+   *  it - a turn that is only waiting produces no events of its own. */
+  function syncThinkingClock(panel, tab) {
+    if (tab.streaming && !tab.clock) {
+      tab.clock = setInterval(() => {
+        const el = tab.log?.querySelector(".ws-thinking-for");
+        if (el) el.textContent = `${Math.round((Date.now() - (tab.startedAt || Date.now())) / 1000)}s`;
+      }, 1000);
+    } else if (!tab.streaming && tab.clock) {
+      clearInterval(tab.clock);
+      tab.clock = null;
+    }
+  }
+
+  /** Writes out whatever text has arrived but not yet been shown, a frame at a
+   *  time, catching up faster the further behind it is. */
+  function revealAgentText(panel, tab) {
+    if (tab.revealing) return;
+    const behind = () => tab.turns.some((t) => isSaid(t) && (t.shown === undefined ? 0 : t.shown) < t.text.length);
+    if (!behind()) return;
+    tab.revealing = true;
+    requestAnimationFrame(function step() {
+      for (const turn of tab.turns) {
+        if (!isSaid(turn)) continue;
+        if (turn.shown === undefined) turn.shown = 0;
+        if (turn.shown >= turn.text.length) continue;
+        turn.shown = Math.min(turn.text.length, turn.shown + Math.max(3, Math.ceil((turn.text.length - turn.shown) / 10)));
+      }
+      const more = behind();
+      tab.revealing = more;
+      renderAgentTab(panel, tab);
+      if (more) requestAnimationFrame(step);
+    });
   }
 
   // Every tab keeps its own log/ask/input, mounted once when the tab was
@@ -1563,6 +1727,7 @@
     if (!spec || !tab.log) return;
 
     const busy = Boolean(tab.streaming);
+    syncThinkingClock(panel, tab);
     tab.input.placeholder = spec.placeholder;
     tab.ask.hidden = !tab.status?.installed;
     tab.ask.querySelector(".ws-chat-send").hidden = busy;
@@ -1604,8 +1769,10 @@
       return;
     }
 
-    tab.log.innerHTML = tab.turns.map(agentTurnHtml).join("");
-    tab.log.scrollTop = tab.log.scrollHeight;
+    const stick = tab.log.scrollTop + tab.log.clientHeight >= tab.log.scrollHeight - 40;
+    tab.log.innerHTML = agentLogHtml(tab);
+    if (stick) tab.log.scrollTop = tab.log.scrollHeight;
+    revealAgentText(panel, tab);
   }
 
   // Install/sign-in status is a fact about the kind, not the conversation, so
@@ -1743,7 +1910,8 @@
     tab.input.style.height = "auto";
     tab.turns.push({ role: "you", text });
 
-    tab.streaming = { role: tab.kind, text: "" };
+    tab.startedAt = Date.now();
+    tab.streaming = { role: tab.kind, text: "", shown: 0 };
     tab.turns.push(tab.streaming);
     renderAgentTab(panel, tab);
     renderAgentTabs(panel);
@@ -1796,7 +1964,7 @@
 
   const saveAgentTabs = (panel) => {
     try {
-      const tabs = [...panel.tabs.values()].map((t) => ({ id: t.id, kind: t.kind, pane: t.pane, session: t.session || null }));
+      const tabs = [...panel.tabs.values()].map((t) => ({ id: t.id, kind: t.kind, pane: t.pane, session: t.session || null, started: Boolean(t.started), title: t.title || "" }));
       localStorage.setItem(AGENT_TABS_KEY, JSON.stringify({ tabs, active: panel.active, splitRatio: panel.splitRatio }));
     } catch {}
   };
@@ -1812,13 +1980,108 @@
         return `<div class="${cls.join(" ")}" data-tab="${t.id}" title="Drag to reorder or split · ${esc(spec.label)}">${icon(spec.icon)}<span>${esc(spec.label)}</span>${t.streaming ? '<span class="ws-chat-tab-live"></span>' : ""}<button type="button" class="ws-chat-tab-x" data-close="${t.id}" title="Close this conversation">${icon("close")}</button></div>`;
       }).join("") : '<span class="ws-chat-tab-empty">No conversations</span>';
 
-      const actions = panel.el.querySelector(`[data-pane-actions="${pane}"]`);
       const paneTab = panel.paneActive[pane] && panel.tabs.get(panel.paneActive[pane]);
-      for (const button of actions.querySelectorAll('[data-dock="terminal"],[data-dock="close"]')) {
-        button.disabled = !paneTab;
-      }
+      renderAgentTitle(panel, pane, paneTab || null);
     }
     syncAgentBarHeight(panel);
+  }
+
+  /** What a conversation is called on the title line: the name it was opened
+   *  from history under, else the first thing asked in it, else nothing yet. */
+  function agentTabTitle(tab) {
+    if (tab.title) return tab.title;
+    const first = tab.turns.find((t) => t.role === "you");
+    if (!first) return "New conversation";
+    const text = first.text.split(/\s+/).join(" ");
+    return text.length > 90 ? `${text.slice(0, 90)}…` : text;
+  }
+
+  // The line under the tabs: which conversation the pane is showing, and the
+  // buttons that act on that one conversation.
+  function renderAgentTitle(panel, pane, tab) {
+    const title = panel.el.querySelector(`[data-title="${pane}"]`);
+    const actions = panel.el.querySelector(`[data-title-actions="${pane}"]`);
+    const spec = tab && AGENTS[tab.kind];
+    title.innerHTML = spec
+      ? `${icon(spec.icon)}<strong>${esc(spec.product)}</strong><span>${esc(agentTabTitle(tab))}</span>`
+      : `<span class="quiet">No conversation open</span>`;
+    for (const button of actions.querySelectorAll("[data-dock]")) {
+      const isHistory = button.dataset.dock === "history";
+      button.disabled = !tab || (isHistory && !spec.sessionsCmd);
+      if (isHistory) {
+        button.title = !tab || spec.sessionsCmd
+          ? "Earlier conversations in this project"
+          : `${spec.product} does not keep conversations WinT can read back`;
+      }
+    }
+  }
+
+  const closeAgentMenus = (root) => {
+    root.querySelectorAll(".ws-chat-agent-menu,.ws-agent-history-menu").forEach((m) => { m.hidden = true; });
+  };
+
+  const whenAgo = (ms) => {
+    const mins = Math.max(0, Math.round((Date.now() - ms) / 60000));
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins} min ago`;
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return `${hours} h ago`;
+    const days = Math.round(hours / 24);
+    return days < 7 ? `${days} d ago` : new Date(ms).toLocaleDateString();
+  };
+
+  /** Fills the history popover with this project's earlier conversations. The
+   *  list is read every time it is opened - a conversation held in a terminal
+   *  writes to the same place, so a cached list would go stale unseen. */
+  async function showAgentHistory(panel, tab, menu) {
+    const spec = AGENTS[tab.kind];
+    if (!spec?.sessionsCmd) return;
+    menu.innerHTML = `<div class="ws-chat-menu-label">Earlier conversations</div>
+      <div class="ws-agent-history-note">${icon("progress_activity")}Reading transcripts…</div>`;
+    let sessions = [];
+    try {
+      sessions = await invoke(spec.sessionsCmd, { cwd: projectPath });
+    } catch (err) {
+      menu.innerHTML = `<div class="ws-chat-menu-label">Earlier conversations</div>
+        <div class="ws-agent-history-note">${esc(String(err))}</div>`;
+      return;
+    }
+    if (menu.hidden) return;
+    menu.innerHTML = `<div class="ws-chat-menu-label">Earlier conversations</div>`
+      + (sessions.length
+        ? sessions.map((s) => `<button type="button" data-session="${esc(s.id)}" data-session-title="${esc(s.title || "")}" title="${esc(s.title || s.id)}">
+            <strong>${esc(s.title || "Untitled conversation")}</strong>
+            <small>${esc(whenAgo(s.modified))} · ${s.turns} ${s.turns === 1 ? "question" : "questions"}</small>
+          </button>`).join("")
+        : `<div class="ws-agent-history-note">Nothing here yet.</div>`);
+  }
+
+  /** Replays a past conversation into this tab and carries on with it: the
+   *  next question sent resumes that session rather than starting a new one. */
+  async function loadAgentSession(panel, tab, id, title = "") {
+    const spec = AGENTS[tab.kind];
+    if (!spec?.transcriptCmd || tab.streaming) return;
+    tab.log.innerHTML = `<div class="ws-chat-card checking">${icon("progress_activity")}Opening that conversation…</div>`;
+    let turns;
+    try {
+      turns = await invoke(spec.transcriptCmd, { cwd: projectPath, session: id });
+    } catch (err) {
+      tab.turns.push({ role: "error", text: String(err) });
+      return renderAgentTab(panel, tab);
+    }
+    tab.session = id;
+    tab.started = true;
+    tab.openSteps = new Set();
+    // Nothing here is arriving live, so every answer is already fully written
+    // out rather than typing itself back in a week later.
+    tab.turns = turns.map((t) => ({ ...t, shown: t.text.length }));
+    // The name the list showed it under, so the title line agrees with what
+    // was clicked; the first question stands in when it has no name yet.
+    tab.title = title;
+    tab.title = agentTabTitle(tab);
+    renderAgentTab(panel, tab);
+    renderAgentTabs(panel);
+    saveAgentTabs(panel);
   }
 
   // Tabs wrap instead of scrolling, so the bar has to grow with them. A split
@@ -1834,8 +2097,8 @@
     const split = [...panel.tabs.values()].some((t) => t.pane === 1);
     panel.views.classList.toggle("split", split);
     panel.bar.classList.toggle("split", split);
-    panel.views.style.setProperty("--agent-split", `${panel.splitRatio * 100}%`);
-    panel.bar.style.setProperty("--agent-split", `${panel.splitRatio * 100}%`);
+    panel.titles.classList.toggle("split", split);
+    for (const el of [panel.views, panel.bar, panel.titles]) el.style.setProperty("--agent-split", `${panel.splitRatio * 100}%`);
     for (const tab of panel.tabs.values()) {
       tab.el.dataset.pane = tab.pane;
       tab.el.classList.toggle("on", panel.paneActive[tab.pane] === tab.id);
@@ -1857,7 +2120,7 @@
     saveAgentTabs(panel);
   }
 
-  function createAgentTab(panel, kind, { pane = 0, id, session, started = false, activate = true } = {}) {
+  function createAgentTab(panel, kind, { pane = 0, id, session, started = false, title = "", activate = true } = {}) {
     const fresh = freshAgentState(kind);
     const tab = {
       id: id || newSessionId(),
@@ -1865,19 +2128,27 @@
       pane,
       session: session ?? fresh.session,
       started,
+      // Set once a conversation has a name of its own - opened from history, or
+      // the first thing asked in it. Empty reads as "New conversation".
+      title,
       turns: [],
       streaming: null,
       status: fresh.status,
       needsSignIn: fresh.needsSignIn,
+      openSteps: new Set(),
+      startedAt: 0,
+      clock: null,
     };
 
     const el = document.createElement("div");
     el.className = "ws-agent-conv";
     el.innerHTML = `<div class="ws-chat-log"></div>
       <form class="ws-chat-ask" hidden>
-        <textarea rows="1" placeholder="" spellcheck="false"></textarea>
-        <button type="submit" class="ws-chat-send" title="Send (Enter)">${icon("send")}</button>
-        <button type="button" class="ws-chat-stop" title="Stop" hidden>${icon("stop_circle")}</button>
+        <div class="ws-chat-row">
+          <textarea rows="1" placeholder="" spellcheck="false"></textarea>
+          <button type="submit" class="ws-chat-send" title="Send (Enter)">${icon("send")}</button>
+          <button type="button" class="ws-chat-stop" title="Stop" hidden>${icon("stop_circle")}</button>
+        </div>
       </form>`;
     tab.el = el;
     tab.log = el.querySelector(".ws-chat-log");
@@ -1901,6 +2172,12 @@
       renderAgentTabs(panel);
     });
     tab.el.addEventListener("click", (e) => {
+      const steps = e.target.closest("[data-steps]");
+      if (steps) {
+        const key = Number(steps.dataset.steps);
+        if (!tab.openSteps.delete(key)) tab.openSteps.add(key);
+        return renderAgentTab(panel, tab);
+      }
       const action = e.target.closest("[data-chat]")?.dataset.chat;
       if (action === "install") return installAgent(panel, tab).catch(() => {});
       if (action === "signin") return openAgentTerminal(panel, tab, { login: true }).catch(() => {});
@@ -1924,6 +2201,7 @@
       const spec = AGENTS[tab.kind];
       if (spec) invoke(spec.cancelCmd, { tab: tab.id }).catch(() => {});
     }
+    if (tab.clock) clearInterval(tab.clock);
     tab.el.remove();
     panel.tabs.delete(id);
 
@@ -2002,12 +2280,29 @@
             ${Object.values(AGENTS).map((spec) => `<button type="button" data-new-kind="${spec.id}">${icon(spec.icon)}${spec.label}</button>`).join("")}
           </div>
         </div>`;
+      // Two rows, not one: the top row is nothing but the open conversations,
+      // and the row under it names whichever of them the pane is showing and
+      // carries the buttons that act on that one conversation. On a single
+      // row the buttons sat beside every tab and read as if they belonged to
+      // the strip rather than to the tab on screen.
       body.innerHTML = `<div class="ws-agent-bar">
           ${[0, 1].map((pane) => `
             <div class="ws-agent-tab-pane" data-tab-pane="${pane}">
               <div class="ws-agent-tabs"></div>
               <div class="ws-agent-pane-actions" data-pane-actions="${pane}">
                 ${agentMenu(pane)}
+              </div>
+            </div>`).join("")}
+        </div>
+        <div class="ws-agent-titles">
+          ${[0, 1].map((pane) => `
+            <div class="ws-agent-title-pane" data-title-pane="${pane}">
+              <span class="ws-agent-title" data-title="${pane}"></span>
+              <div class="ws-agent-title-actions" data-title-actions="${pane}">
+                <div class="ws-agent-history" data-history-for="${pane}">
+                  <button type="button" data-dock="history" title="Earlier conversations in this project">${icon("history")}</button>
+                  <div class="ws-agent-history-menu" hidden></div>
+                </div>
                 <button type="button" data-dock="terminal" title="Open in a terminal">${icon("terminal")}</button>
                 <button type="button" data-dock="close" title="Close this conversation">${icon("close")}</button>
               </div>
@@ -2023,12 +2318,13 @@
           </div>
         </div>`;
       panel.bar = body.querySelector(".ws-agent-bar");
+      panel.titles = body.querySelector(".ws-agent-titles");
       panel.views = body.querySelector(".ws-agent-views");
       // A column resize can change how many tabs fit per row, so the wrapped
       // bar height has to be re-measured whenever this panel's box changes.
       panel.resized = () => syncAgentBarHeight(panel);
 
-      const paneOf = (el) => Number(el.closest("[data-pane-actions]")?.dataset.paneActions ?? 0);
+      const paneOf = (el) => Number(el.closest("[data-title-actions]")?.dataset.titleActions ?? 0);
       // Set true for the duration of a tab drag, so the click that a pointerup
       // generates right after releasing it does not also switch tabs.
       let suppressTabClick = false;
@@ -2056,17 +2352,36 @@
         if (closeId) return closeAgentTab(panel, closeId);
         const tabEl = e.target.closest("[data-tab]");
         if (tabEl) return setActiveAgentTab(panel, tabEl.dataset.tab);
-        const dockAction = e.target.closest("[data-dock]")?.dataset.dock;
-        if (dockAction === "terminal" || dockAction === "close") {
-          const pane = paneOf(e.target);
-          const tab = panel.paneActive[pane] && panel.tabs.get(panel.paneActive[pane]);
-          if (!tab) return;
-          if (dockAction === "terminal") openAgentTerminal(panel, tab).catch(() => {});
-          else closeAgentTab(panel, tab.id);
+      });
+
+      // The title line acts on one conversation only: whichever this pane is
+      // showing. Picking an earlier conversation from the history list drops
+      // it into that same tab rather than opening another one.
+      panel.titles.addEventListener("click", (e) => {
+        const pickedId = e.target.closest("[data-session]")?.dataset.session;
+        const pane = paneOf(e.target);
+        const tab = panel.paneActive[pane] && panel.tabs.get(panel.paneActive[pane]);
+        if (!tab) return;
+        if (pickedId) {
+          const picked = e.target.closest("[data-session]");
+          closeAgentMenus(body);
+          return loadAgentSession(panel, tab, pickedId, picked.dataset.sessionTitle || "").catch(() => {});
         }
+        const dockAction = e.target.closest("[data-dock]")?.dataset.dock;
+        if (dockAction === "history") {
+          const menu = e.target.closest(".ws-agent-history").querySelector(".ws-agent-history-menu");
+          const wasHidden = menu.hidden;
+          closeAgentMenus(body);
+          menu.hidden = !wasHidden;
+          if (!menu.hidden) showAgentHistory(panel, tab, menu).catch(() => {});
+          return;
+        }
+        if (dockAction === "terminal") openAgentTerminal(panel, tab).catch(() => {});
+        else if (dockAction === "close") closeAgentTab(panel, tab.id);
       });
       document.addEventListener("click", (e) => {
-        if (!e.target.closest(".ws-chat-tab-add")) body.querySelectorAll(".ws-chat-agent-menu").forEach((m) => { m.hidden = true; });
+        if (e.target.closest(".ws-chat-tab-add") || e.target.closest(".ws-agent-history")) return;
+        closeAgentMenus(body);
       });
 
       // Drag to reorder within a pane, or drag onto a drop zone to split into
@@ -2160,7 +2475,7 @@
         panel.splitRatio = Math.min(0.75, Math.max(0.25, saved.splitRatio || 0.5));
         for (const t of saved.tabs) {
           if (!AGENTS[t.kind]) continue;
-          createAgentTab(panel, t.kind, { pane: t.pane === 1 ? 1 : 0, id: t.id, session: t.session, activate: false });
+          createAgentTab(panel, t.kind, { pane: t.pane === 1 ? 1 : 0, id: t.id, session: t.session, started: Boolean(t.started), title: t.title || "", activate: false });
         }
         // Restoring with activate:false only sets paneActive for whichever
         // tab happened to land first overall - make sure a split's second
@@ -2470,6 +2785,15 @@
 
     if (obj.type === "thread.started" && obj.thread_id) tab.session = obj.thread_id;
 
+    if (obj.type === "item.completed" && obj.item && obj.item.type !== "agent_message" && obj.item.type !== "reasoning") {
+      const line = codexToolLine(obj.item);
+      if (line) {
+        tab.turns.push({ role: "tool", icon: CODEX_ITEM_ICONS[obj.item.type] || "build", text: line });
+        markAgentTabDirty(panel, tab);
+      }
+      return;
+    }
+
     if (obj.type === "item.completed" && obj.item?.type === "agent_message") {
       const text = String(obj.item?.text || "");
       if (!tab.streaming) {
@@ -2522,9 +2846,14 @@
   // The one line of terminal output the rest of the window acts on. A
   // subscription that cannot be set up costs the browser panel its automatic
   // address and nothing else, so it is not allowed to take the window with it.
+  // The event is broadcast to every window, so a dev server started in some
+  // other project's terminal must not steer this workspace's browser. The dock
+  // is the only thing that knows which terminals are this window's, and it does
+  // not exist until the terminal panel has loaded terminals.js.
   listen("term:serving", ({ payload }) => {
-    if (!sessions.has(payload.id)) return;
-    goTo(payload.url, `${sessions.get(payload.id).label} is serving ${payload.url}`);
+    const dock = window.wintTermDock;
+    if (!dock?.has(payload.id)) return;
+    goTo(payload.url, `${dock.label(payload.id)} is serving ${payload.url}`);
   }).catch((err) => say(`Cannot watch the terminals for a dev server: ${err}`));
 
   window.wintTrackPageView?.("/workspace");

@@ -1303,6 +1303,9 @@ async function mountSession(id, historyKey = "", restoredPane = 0, focus = true)
   setActive(id, focus);
   view.fit();
   termsSavePrefs();
+  // A host may want to know what this terminal is already doing - a dev server
+  // it announced before the host was listening says nothing a second time.
+  dockHost?.onSession?.(id);
 }
 
 /** Moves on after a session leaves the panel, whichever way it left.

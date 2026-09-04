@@ -16,6 +16,79 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.76.1",
+      date: "2026-09-04",
+      title: "Save & upload keeps its own height",
+      changes: [
+        ["fix", "Narrowing the sidebar no longer squeezes Save & upload into a scrollbar. Save, Upload and Get wrap onto more rows when they no longer fit side by side, and the panel is given exactly the height everything it is showing needs - header included, whether or not that header has wrapped."],
+        ["better", "The panel re-measures itself when the window is resized as well as when a divider is dragged, and stops growing before it would squeeze the panel above it out of the column."],
+      ],
+    },
+    {
+      version: "0.76.0",
+      date: "2026-09-04",
+      title: "Every agent tab can reopen an earlier conversation",
+      changes: [
+        ["new", "The Agent panel keeps the conversations this project has had before. The history button on a tab opens the list - what it was about, when it was last touched, how many questions it took - and picking one replays it into that tab and carries on with it."],
+        ["better", "The tabs now sit on a row of their own, and the row underneath names the conversation on screen and carries the buttons that act on it. Before, those buttons sat beside the whole strip and it was not clear which conversation they would hit."],
+        ["fix", "A conversation opened from history is still the same conversation after the window is reloaded, instead of the next question starting over."],
+      ],
+    },
+    {
+      version: "0.75.1",
+      date: "2026-09-04",
+      title: "All / Changed survives a narrow sidebar",
+      changes: [
+        ["fix", "Squeezing the files panel no longer puts a scrollbar inside the All / Changed switch and hides half of it. The switch drops whole onto a second line of the panel header instead, with both words still readable."],
+      ],
+    },
+    {
+      version: "0.75.0",
+      date: "2026-09-04",
+      title: "The agent chat shows its work",
+      changes: [
+        ["new", "A chat that is working says so: a line with a spinner and the seconds it has been running appears the moment you send, and stays up between steps instead of leaving the panel blank."],
+        ["new", "Steps the agent takes - files read, edits made, commands run, searches - are grouped into one block between answers. The three most recent stay visible and the rest fold behind a line that opens them in place."],
+        ["better", "Answers are written out rather than pasted in, with a caret on the line being written, so a reply that arrives in one piece reads the same way as one that arrives token by token."],
+        ["better", "Codex now names what it did - the commands it ran and the files it changed - the way the other agents already did."],
+        ["fix", "Scrolling back through a conversation is no longer yanked to the bottom by every new token; the log follows along only when it was already at the end."],
+      ],
+    },
+    {
+      version: "0.74.5",
+      date: "2026-09-03",
+      title: "The browser follows the dev server again",
+      changes: [
+        ["fix", "Starting a dev server in a workspace terminal points the browser panel at it again. The panel was watching for the announcement but threw the moment one arrived, so it sat on its empty page no matter what the terminal printed."],
+        ["better", "The address is now found however the server spells it - https, 0.0.0.0 and [::1] as well as localhost and 127.0.0.1 - and a 0.0.0.0 is turned into localhost, which is the one a browser can actually open."],
+        ["better", "Opening a workspace whose dev server is already running points the browser at it straight away, instead of waiting for a restart to hear the address."],
+      ],
+    },
+    {
+      version: "0.74.4",
+      date: "2026-09-03",
+      title: "The gap under Save & upload is gone",
+      changes: [
+        ["fix", "The blank strip under Save & upload in a workspace is gone, and the Files panel above it now really does take the rest of the column. 0.74.2 only looked like it fixed this."],
+      ],
+    },
+    {
+      version: "0.74.3",
+      date: "2026-09-03",
+      title: "Send button back on the row",
+      changes: [
+        ["fix", "The agent chat's Send button sits beside the message box again, instead of wrapping onto its own line below it."],
+      ],
+    },
+    {
+      version: "0.74.2",
+      date: "2026-09-03",
+      title: "Files fills the column again",
+      changes: [
+        ["fix", "The Files panel in a workspace now fills the rest of the left column below Save & upload, instead of leaving a blank gap at the bottom of the column."],
+      ],
+    },
+    {
       version: "0.74.1",
       date: "2026-09-03",
       title: "Open in VS Code opens the right project",

@@ -3255,6 +3255,13 @@ body.workspace.ws-no-center.ws-no-left #ws-grid{grid-template-columns:0 0 0 0 mi
 body.workspace.ws-no-center.ws-no-right #ws-grid{grid-template-columns:var(--ws-left) auto minmax(0,1fr) 0 0}
 body.workspace.ws-no-center.ws-no-left.ws-no-right #ws-grid{grid-template-columns:minmax(0,1fr) 0 0 0 0}
 .ws-col{display:grid; grid-template-rows:minmax(0,var(--ws-left-split)) auto minmax(0,1fr); min-width:0; overflow:hidden}
+/* Placed by hand, never auto-placed. A hidden panel or a hidden divider is
+   `display:none` and stops being a grid item, and auto-placement then walks
+   what is left up into the first free rows - the bottom panel lands in the
+   divider's row and the row meant for it is left behind as a gap. */
+.ws-col>.ws-slot:first-child{grid-row:1}
+.ws-col>.ws-grip{grid-row:2}
+.ws-col>.ws-slot:last-child{grid-row:3}
 /* With Save & upload underneath it, the file list takes the whole column bar
    that panel's own height - there is nothing a taller Save & upload would
    show, and the divider between the two has nothing left to decide. */
@@ -3283,11 +3290,14 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 #ws-bottom-dock>.ws-bottom{height:var(--ws-bottom); min-height:0}
 
 .ws-panel{display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; position:relative}
-.ws-head{display:flex; align-items:center; gap:6px; padding:0 6px 0 7px; height:30px; flex:0 0 auto;
+.ws-head{display:flex; align-items:center; flex-wrap:wrap; gap:3px 6px; padding:2px 6px 2px 7px; min-height:30px; flex:0 0 auto;
   border-bottom:1px solid var(--line); background:var(--bg2); border-radius:7px 7px 0 0; font-size:12px}
 .ws-head strong{font-weight:600; font-size:12px; white-space:nowrap}
 .ws-head .ms{font-size:16px; color:var(--dim)}
-.ws-head-tools{display:flex; align-items:center; gap:4px; flex:1; min-width:0; margin-left:6px}
+/* No `min-width:0` here on purpose: the tools are allowed to be as wide as
+   they need, so a header too narrow to hold them beside the title wraps them
+   whole onto a second line rather than squeezing them into a scrollbar. */
+.ws-head-tools{display:flex; align-items:center; flex-wrap:wrap; gap:4px; flex:1 1 auto; margin-left:6px}
 .ws-head-end{display:flex; align-items:center; gap:4px; flex:0 0 auto; padding-right:2px}
 .ws-panel-body{flex:1; min-height:0; position:relative; overflow:auto}
 
@@ -3391,8 +3401,12 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 
 /* Two words rather than one ambiguous icon: which of the two you are looking
    at should be readable without hovering anything. */
-.ws-seg{display:flex; align-items:center; flex:0 1 auto; min-width:0; padding:1px; gap:1px;
-  border:1px solid var(--line); border-radius:6px; background:var(--bg); overflow-x:auto}
+/* It never scrolls and never breaks up: a scrollbar inside a two-button
+   control hides half of a choice that has to stay readable. The box keeps
+   both words side by side at its full width and drops to the next line of
+   the header when the panel is too narrow to hold it beside the title. */
+.ws-seg{display:flex; align-items:center; flex:0 0 auto; padding:1px; gap:1px;
+  border:1px solid var(--line); border-radius:6px; background:var(--bg); overflow:visible}
 .ws-seg button{display:flex; align-items:center; gap:4px; background:none; border:0; cursor:pointer;
   color:var(--dim); font:inherit; font-size:10.5px; line-height:1; padding:3px 7px; border-radius:4px; white-space:nowrap; flex:0 0 auto}
 .ws-seg button:hover{color:var(--text)}
@@ -3423,8 +3437,13 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-git-form input{background:var(--bg); border:1px solid var(--line); color:var(--text);
   border-radius:6px; padding:6px 9px; font:inherit; font-size:12px}
 .ws-git-form input:focus{outline:none; border-color:var(--accent)}
-.ws-git-buttons{display:flex; gap:6px}
-.ws-btn{display:flex; align-items:center; gap:4px; flex:1; justify-content:center; background:var(--bg3);
+/* The three buttons wrap rather than squeeze: a column narrow enough that
+   Save, Upload and Get no longer fit side by side puts them onto more rows
+   and the panel is given the extra height (syncGitHeight), instead of the
+   labels being clipped into a scrollbar. */
+.ws-git-buttons{display:flex; flex-wrap:wrap; gap:6px}
+.ws-btn{display:flex; align-items:center; gap:4px; flex:1 1 84px; min-width:84px; justify-content:center;
+  white-space:nowrap; background:var(--bg3);
   border:1px solid var(--line); color:var(--text); border-radius:6px; padding:5px 8px; font:inherit; font-size:11px; cursor:pointer}
 .ws-btn:hover{border-color:var(--dim2)}
 .ws-btn.primary{background:var(--accent); border-color:var(--accent); color:#fff}
@@ -3509,6 +3528,42 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-agent-pane-actions button[data-dock]:hover{color:var(--text); background:var(--bg3)}
 .ws-agent-pane-actions button[data-dock]:disabled{opacity:.35; pointer-events:none}
 .ws-agent-pane-actions .ms{font-size:15px}
+
+/* The row under the tabs: the conversation the pane is showing, named, with
+   the buttons that act on that one conversation. Its panes follow the tab
+   strip above it so a split reads as two columns all the way down. */
+.ws-agent-titles{--agent-split:50%; flex:0 0 auto; height:28px; display:flex; align-items:stretch;
+  position:relative; background:var(--bg); border-bottom:1px solid var(--line)}
+.ws-agent-title-pane{display:none; min-width:0; align-items:center; gap:6px; padding:0 2px 0 9px}
+.ws-agent-title-pane[data-title-pane="0"]{display:flex; flex:1}
+.ws-agent-titles.split .ws-agent-title-pane{display:flex; position:absolute; top:0; bottom:0}
+.ws-agent-titles.split .ws-agent-title-pane[data-title-pane="0"]{left:0; width:var(--agent-split); border-right:3px solid var(--line)}
+.ws-agent-titles.split .ws-agent-title-pane[data-title-pane="1"]{left:var(--agent-split); right:0; border-left:3px solid var(--line)}
+.ws-agent-title{flex:1; min-width:0; display:flex; align-items:center; gap:6px; font-size:11.5px;
+  white-space:nowrap; overflow:hidden}
+.ws-agent-title strong{flex:0 0 auto; color:var(--text); font-weight:600}
+.ws-agent-title>span{min-width:0; color:var(--dim); overflow:hidden; text-overflow:ellipsis}
+.ws-agent-title .quiet{color:var(--dim2)}
+.ws-agent-title .ms{flex:0 0 auto; font-size:14px; color:var(--accent)}
+.ws-agent-title-actions{flex:0 0 auto; display:flex; align-items:stretch}
+.ws-agent-title-actions button[data-dock]{width:26px; display:grid; place-items:center; border:0; padding:0;
+  background:none; color:var(--dim); cursor:pointer}
+.ws-agent-title-actions button[data-dock]:hover{color:var(--text); background:var(--bg3)}
+.ws-agent-title-actions button[data-dock]:disabled{opacity:.35; pointer-events:none}
+.ws-agent-title-actions .ms{font-size:15px}
+.ws-agent-history{position:relative; display:flex; align-items:stretch}
+.ws-agent-history-menu{position:absolute; right:0; top:28px; z-index:12; width:290px; max-height:330px;
+  overflow-y:auto; padding:5px; border:1px solid var(--line); border-radius:8px; background:var(--bg2);
+  box-shadow:0 10px 30px rgba(0,0,0,.45)}
+.ws-agent-history-menu[hidden]{display:none}
+.ws-agent-history-menu button{display:flex; flex-direction:column; align-items:flex-start; gap:2px; width:100%;
+  padding:5px 8px; border:0; border-radius:5px; background:none; color:var(--text); text-align:left; cursor:pointer}
+.ws-agent-history-menu button:hover{background:var(--bg3)}
+.ws-agent-history-menu strong{max-width:100%; font-size:11.5px; font-weight:500; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis}
+.ws-agent-history-menu small{color:var(--dim2); font-size:10px}
+.ws-agent-history-note{display:flex; align-items:center; gap:6px; padding:6px 8px; color:var(--dim); font-size:11.5px}
+.ws-agent-history-note .ms{font-size:14px; animation:spin 1s linear infinite}
 .ws-agent-views{flex:1; min-height:0; position:relative}
 .ws-agent-conv{position:absolute; inset:0; display:none; min-width:0; flex-direction:column}
 .ws-agent-conv.on{display:flex}
