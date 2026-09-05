@@ -371,6 +371,9 @@ struct Session {
     /// workspace opened after the server started can still find out where it is,
     /// and so the same address announced on every rebuild is only acted on once.
     served: Mutex<Option<String>>,
+    /// The port a program in this terminal last said it could not have, so the
+    /// same complaint repainted on the screen is only acted on once.
+    port_taken: Mutex<Option<u16>>,
 }
 
 fn registry() -> &'static Mutex<HashMap<String, Arc<Session>>> {
@@ -1055,6 +1058,7 @@ fn term_open_sync(app: AppHandle, args: OpenArgs) -> Result<TermInfo, String> {
         log: Mutex::new(log),
         history_key,
         served: Mutex::new(None),
+        port_taken: Mutex::new(None),
     });
     registry()
         .lock()
@@ -1435,6 +1439,16 @@ pub struct Serving {
     pub url: String,
 }
 
+/// A program in this terminal saying the port it wanted was taken. `fallback`
+/// is the port it settled for, when it names one.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortTaken {
+    pub id: String,
+    pub port: u16,
+    pub fallback: Option<u16>,
+}
+
 /// The printable text of one screen row, with the marker that holds the second
 /// half of a double-width glyph dropped.
 fn row_text(cells: &[Cell]) -> String {
@@ -1512,6 +1526,66 @@ fn scan_local_url(text: &str) -> Option<String> {
     best.map(|(_, url)| url)
 }
 
+/// The first port number after `needle` in an already-lowercased line, where
+/// the needle starts a word. Anything that is not a port - a build's file
+/// count, a version, a number too long to be a port - parses to nothing rather
+/// than to a wrong answer.
+fn port_after(lower: &str, needle: &str) -> Option<u16> {
+    let mut from = 0;
+    while from < lower.len() {
+        let at = from + lower[from..].find(needle)?;
+        let before = lower[..at].chars().next_back();
+        from = (at + needle.len()).min(lower.len());
+        while from < lower.len() && !lower.is_char_boundary(from) {
+            from += 1;
+        }
+        if before.is_some_and(|c| c.is_alphanumeric()) {
+            continue;
+        }
+        let digits: String = lower[from..]
+            .trim_start()
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if let Some(port) = digits.parse::<u16>().ok().filter(|&port| port > 0) {
+            return Some(port);
+        }
+    }
+    None
+}
+
+/// A program saying the port it asked for was taken, as the port it wanted and
+/// the port it settled for. Read off the screen row for the same reason
+/// `scan_local_url` is: the pseudoconsole repaints, and the row is the only
+/// place the sentence is one contiguous run of characters.
+///
+/// Deliberately narrow, and only the shapes a dev server actually prints:
+/// Vite's "Port 5173 is in use", Next's "Port 3000 is in use, trying 3001
+/// instead", the Firebase/Angular style "Unable to find an available port
+/// (tried 41823 ...). Using alternative port 3000.", and a bare
+/// `EADDRINUSE` from Node. Everything else is left alone - a false positive
+/// here offers to kill somebody's process.
+fn scan_port_conflict(text: &str) -> Option<(u16, Option<u16>)> {
+    let lower = text.to_ascii_lowercase();
+    let in_use = lower.contains("in use") || lower.contains("eaddrinuse");
+    if !in_use && !lower.contains("available port") {
+        return None;
+    }
+    let wanted = port_after(&lower, "available port (tried ")
+        .or_else(|| port_after(&lower, "port "))
+        // Node says it in an address rather than a sentence:
+        // `listen EADDRINUSE: address already in use :::3000`.
+        .or_else(|| lower.rsplit(':').next().and_then(|tail| {
+            let digits: String = tail.trim().chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<u16>().ok().filter(|&port| port > 0)
+        }))?;
+    let fallback = port_after(&lower, "alternative port ")
+        .or_else(|| port_after(&lower, "trying "))
+        .or_else(|| port_after(&lower, "using port "))
+        .filter(|&port| port != wanted);
+    Some((wanted, fallback))
+}
+
 fn spawn_reader(app: AppHandle, session: Arc<Session>) {
     let handle = session.pty.lock().unwrap().output();
     std::thread::spawn(move || {
@@ -1523,7 +1597,7 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
             // Where the parser stands after this chunk is what says whether the
             // stream may later be cut here, so the bytes are kept alongside the
             // feed rather than before it.
-            let (update, settled, reply, serving) = {
+            let (update, settled, reply, serving, taken) = {
                 let mut grid = session.grid.lock().unwrap();
                 grid.feed(&buf[..n]);
                 let settled = grid.at_ground() && grid.cx == 0 && !grid.alt;
@@ -1538,6 +1612,9 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
                 let serving = touched
                     .iter()
                     .find_map(|&y| scan_local_url(&row_text(grid.row(y))));
+                let taken = touched
+                    .iter()
+                    .find_map(|&y| scan_port_conflict(&row_text(grid.row(y))));
                 let rows = touched
                     .into_iter()
                     .map(|y| RowUpdate {
@@ -1562,6 +1639,7 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
                     settled,
                     reply,
                     serving,
+                    taken,
                 )
             };
             if !reply.is_empty() {
@@ -1592,6 +1670,30 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
                         Serving {
                             id: session.id.clone(),
                             url,
+                        },
+                    );
+                }
+            }
+            // A port a program could not have is the other line worth acting
+            // on: the window offers to free it. Announced once per port, for
+            // the same reason an address is - the sentence is repainted every
+            // time the screen scrolls past it.
+            if let Some((port, fallback)) = taken {
+                let announced = {
+                    let mut last = session.port_taken.lock().unwrap();
+                    let changed = *last != Some(port);
+                    if changed {
+                        *last = Some(port);
+                    }
+                    changed
+                };
+                if announced {
+                    let _ = app.emit(
+                        "term:port-taken",
+                        PortTaken {
+                            id: session.id.clone(),
+                            port,
+                            fallback,
                         },
                     );
                 }
@@ -1951,7 +2053,7 @@ pub fn shutdown() {
 
 #[cfg(test)]
 mod serving_tests {
-    use super::{row_text, scan_local_url};
+    use super::{row_text, scan_local_url, scan_port_conflict};
     use crate::vt::Grid;
 
     /// The address as the screen holds it, which is the only place it is
@@ -1965,6 +2067,37 @@ mod serving_tests {
             .map(|y| row_text(grid.row(y)))
             .find(|line| line.contains("http"))
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn finds_the_port_a_server_could_not_have() {
+        assert_eq!(
+            scan_port_conflict(
+                "Unable to find an available port (tried 41823 on host \"localhost\"). Using alternative port 3000."
+            ),
+            Some((41823, Some(3000)))
+        );
+        assert_eq!(
+            scan_port_conflict("  ⚠ Port 3000 is in use, trying 3001 instead."),
+            Some((3000, Some(3001)))
+        );
+        assert_eq!(
+            scan_port_conflict("Port 5173 is in use, trying another one..."),
+            Some((5173, None))
+        );
+        assert_eq!(
+            scan_port_conflict("Error: listen EADDRINUSE: address already in use :::3000"),
+            Some((3000, None))
+        );
+    }
+
+    /// A false positive here offers to kill somebody's process, so ordinary
+    /// output that happens to mention a port says nothing.
+    #[test]
+    fn leaves_ordinary_output_alone() {
+        assert_eq!(scan_port_conflict("  Local:   http://localhost:5173/"), None);
+        assert_eq!(scan_port_conflict("export const port = 3000;"), None);
+        assert_eq!(scan_port_conflict("Listening on port 8080"), None);
     }
 
     #[test]

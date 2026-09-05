@@ -89,7 +89,8 @@ code,.mono{font-family:'Cascadia Mono','Cascadia Code',Consolas,ui-monospace,mon
 .assistant-layer{position:absolute;inset:0;z-index:5;background:rgba(0,0,0,.5);display:flex;justify-content:flex-end}.assistant-layer[hidden]{display:none}.assistant-models,.assistant-history{width:100%;height:100%;overflow:auto;background:var(--bg1)}.assistant-models>h3{padding:12px 12px 6px;color:var(--dim2);font-size:9.5px;text-transform:uppercase;letter-spacing:.06em}.assistant-model-row,.assistant-provider,.assistant-runtime{display:flex;align-items:center;gap:9px;padding:9px 11px;border-top:1px solid var(--line)}.assistant-model-row>.ms,.assistant-provider>.ms,.assistant-runtime>.ms{color:var(--accent);font-size:18px}.assistant-model-row>div,.assistant-provider>div,.assistant-runtime>div{flex:1;display:flex;flex-direction:column;gap:2px}.assistant-model-row strong,.assistant-provider strong,.assistant-runtime strong{font-size:11.5px}.assistant-model-row small,.assistant-provider small,.assistant-runtime p{color:var(--dim2);font-size:9.5px;line-height:1.4}.assistant-model-row button,.assistant-pull button{padding:5px 8px;border:1px solid var(--line);border-radius:6px;color:var(--text);font-size:10px}.assistant-provider{margin:10px;border:1px solid var(--line);border-radius:9px;background:var(--bg)}.assistant-runtime{margin:10px;border:1px solid color-mix(in srgb,var(--amber) 35%,var(--line));border-radius:9px}.assistant-soon,.assistant-clouds i{color:var(--dim2);font-size:9px;font-style:normal}.assistant-none{padding:8px 12px;color:var(--dim2);font-size:10.5px}.assistant-pull{position:sticky;bottom:0;display:flex;align-items:center;gap:8px;padding:9px 11px;border-block:1px solid var(--line);background:var(--bg2)}.assistant-pull span{font-size:10.5px;font-weight:650}.assistant-pull small{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim2);font-size:9.5px}.assistant-clouds{display:flex;gap:6px;padding:0 11px 14px}.assistant-clouds span{display:flex;flex-direction:column;gap:2px;flex:1;padding:8px;border:1px solid var(--line);border-radius:7px;color:var(--dim);font-size:10.5px}.assistant-history>button{width:100%;display:flex;flex-direction:column;gap:2px;padding:9px 12px;border-bottom:1px solid var(--line)}.assistant-history>button.on{background:color-mix(in srgb,var(--accent) 12%,transparent)}.assistant-history>button small{color:var(--dim2);font-size:9.5px}
 @media(max-width:620px){.assistant-panel{width:100%}}
 .assistant-pinned .assistant-panel{box-shadow:none}.assistant-pinned #root>.summary,.assistant-pinned #root>.filters,.assistant-pinned #root>#banner-host,.assistant-pinned #root>.scroll,.assistant-pinned #root>main,.assistant-pinned #root>.pins-panel,.assistant-pinned #root>#detail-host{margin-right:min(410px,100vw);transition:margin-right .16s ease}.assistant-open:not(.assistant-pinned) .assistant-panel{animation:slidein .14s ease-out}@media(max-width:760px){.assistant-pinned #root>.summary,.assistant-pinned #root>.filters,.assistant-pinned #root>#banner-host,.assistant-pinned #root>.scroll,.assistant-pinned #root>main,.assistant-pinned #root>.pins-panel,.assistant-pinned #root>#detail-host{margin-right:0}.assistant-pinned .assistant-panel{box-shadow:-20px 0 50px rgba(0,0,0,.35)}}
-.assistant-pull{display:grid;grid-template-columns:auto 1fr auto;gap:7px 8px}.assistant-pull>i{grid-column:1/3;height:4px;overflow:hidden;border-radius:3px;background:var(--line)}.assistant-pull>i>em{display:block;height:100%;border-radius:3px;background:var(--accent);transition:width .15s}.assistant-pull>button{grid-column:3;grid-row:1/3}.assistant-pull>small{flex:none}
+.assistant-pull{display:grid;grid-template-columns:auto 1fr auto;gap:5px 8px}.assistant-pull>i{grid-column:1/3;height:4px;overflow:hidden;border-radius:3px;background:var(--line)}.assistant-pull>i>em{display:block;height:100%;border-radius:3px;background:var(--accent);transition:width .15s}.assistant-pull>button{grid-column:3;grid-row:1/4}.assistant-pull>small{flex:none}.assistant-pull>small.assistant-rate{grid-column:1/3;color:var(--dim2);font-variant-numeric:tabular-nums}
+.assistant-model-row small.assistant-partial{display:flex;align-items:center;gap:4px;color:var(--amber)}.assistant-model-row small.assistant-partial .ms{font-size:13px;color:var(--amber)}
 .assistant-tool-limit{display:flex;align-items:center;gap:12px;margin:0 10px 10px;padding:9px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg)}.assistant-tool-limit>span{display:flex;flex:1;flex-direction:column;gap:3px}.assistant-tool-limit strong{font-size:11.5px}.assistant-tool-limit small{color:var(--dim2);font-size:9.5px}.assistant-tool-limit input{width:66px;height:29px;padding:0 7px;border:1px solid var(--line);border-radius:6px;background:var(--bg2);color:var(--text);font:11px 'Cascadia Mono',Consolas,monospace}
 .assistant-cloud-config{display:flex;align-items:center;gap:9px;margin:0 10px 8px;padding:9px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg)}.assistant-cloud-config>.ms{color:var(--accent)}.assistant-cloud-config>div{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}.assistant-cloud-config strong{font-size:11.5px}.assistant-cloud-config small,.assistant-key-note{color:var(--dim2);font-size:9.5px}.assistant-cloud-config input{height:29px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg2);color:var(--text);font:10.5px 'Cascadia Mono',Consolas,monospace}.assistant-cloud-config button{padding:6px 9px;border:1px solid var(--line);border-radius:6px;color:var(--text);font-size:10px}.assistant-key-note{display:flex;align-items:flex-start;gap:6px;margin:2px 11px 14px;padding:8px;border:1px solid color-mix(in srgb,var(--amber) 32%,var(--line));border-radius:7px;background:color-mix(in srgb,var(--amber) 5%,transparent);line-height:1.45}.assistant-key-note .ms{flex:none;color:var(--amber);font-size:14px}
 .assistant-message.failed>div{color:var(--red)}.assistant-empty-error{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:650}.assistant-empty-error .ms{font-size:15px}
@@ -3307,6 +3308,11 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-address{flex:1; min-width:60px; background:var(--bg); border:1px solid var(--line); color:var(--text);
   border-radius:5px; padding:2px 7px; font-size:11px; font-family:inherit}
 .ws-address:focus{outline:none; border-color:var(--accent)}
+/* The page-width buttons sit at the very end of the address bar, fenced off
+   from the actions beside them: they change how the page is drawn, not what
+   it does. They never wrap away from each other. */
+.ws-widths{display:flex; align-items:center; gap:2px; flex:0 0 auto;
+  padding-left:5px; margin-left:1px; border-left:1px solid var(--line)}
 
 .ws-grip{position:relative; background:transparent; flex:0 0 auto; z-index:2}
 /* The line is thin because a fat one looks like a gap; the thing you grab is
@@ -3327,7 +3333,13 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 
 /* The hole the native browser webview is positioned over. It must stay empty:
    anything drawn here is simply covered by the webview and never seen. */
-.ws-browser-hole{position:absolute; inset:0}
+.ws-browser-hole{position:absolute; inset:0; margin:0 auto}
+/* Narrowed, the hole keeps the webview off the panel edges and the strip of
+   panel either side becomes a visible margin - so it is drawn as one, dimmer
+   than the page and ruled off from it. The rule is an outline, not a border:
+   the webview covers the hole exactly, and a border would be under it. */
+.ws-browser-hole.narrow{outline:1px solid var(--line)}
+.ws-panel-body:has(>.ws-browser-hole.narrow){background:var(--bg1)}
 .ws-browser-empty{position:absolute; inset:0; display:grid; place-content:center; justify-items:center;
   gap:8px; padding:24px; text-align:center; color:var(--dim); background:var(--bg1)}
 .ws-browser-empty p{max-width:340px; margin:0; font-size:12px; line-height:1.5}
@@ -3460,7 +3472,17 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-git-saved li{display:flex; align-items:baseline; gap:6px; font-size:11px; line-height:1.35; color:var(--text)}
 .ws-git-saved-subject{flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 .ws-git-saved-when{flex:0 0 auto; font-size:10px; color:var(--dim2)}
-.ws-git-state,.ws-git-branchline,.ws-git-note,.ws-git-form{flex:0 0 auto}
+.ws-git-state,.ws-git-branchline,.ws-git-note,.ws-git-form,.ws-git-operation,.ws-git-jobs{flex:0 0 auto}
+.ws-git-operation{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;background:var(--bg3);color:var(--text);font-size:11px;font-weight:600}
+.ws-git-operation[hidden]{display:none}.ws-git-operation .ms{font-size:15px;color:var(--accent)}
+.ws-git-operation.working .ms{animation:spin 1s linear infinite}.ws-git-operation.done .ms{color:var(--green)}.ws-git-operation.error .ms{color:var(--red)}
+.ws-git-jobs{padding:6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);overflow-y:auto;min-height:0}
+.ws-git-jobs[hidden]{display:none}.ws-git-jobs-head{display:flex;align-items:center;gap:5px;margin:0 0 5px;font-size:10.5px;font-weight:600;color:var(--dim)}
+.ws-git-jobs-head .ms{font-size:14px}.ws-git-job{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:6px;min-width:0}
+.ws-git-job>.ms{font-size:15px;color:var(--dim2)}.ws-git-job.running>.ms{color:var(--accent);animation:spin 1s linear infinite}
+.ws-git-job.ok>.ms{color:var(--green)}.ws-git-job.failed>.ms{color:var(--red)}.ws-git-job>span:nth-child(2){min-width:0}
+.ws-git-jobs strong,.ws-git-jobs small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-git-jobs strong{font-size:10.5px;font-weight:600}.ws-git-jobs small{font-size:9.5px;color:var(--dim2)}
 /* One button: move this work off the shared branch, or put it back on it. */
 .ws-git-branchline{display:flex}
 .ws-git-branchline[hidden]{display:none}
@@ -3492,10 +3514,29 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-btn:hover{border-color:var(--dim2)}
 .ws-btn.primary{background:var(--accent); border-color:var(--accent); color:#fff}
 .ws-btn .ms{font-size:15px}
+.ws-btn.working .ms{animation:spin 1s linear infinite}
+.ws-btn:disabled,.ws-git-form input:disabled{opacity:.55;cursor:not-allowed}
 
 .ws-term{padding:0}
 .ws-term .term-host{position:absolute; inset:0}
 .ws-term-error{padding:12px; color:var(--red); font-size:12px}
+/* The offer to free a port a dev server could not have. It floats over the
+   bottom right of the workspace, clear of the terminal's own scrollbar, and
+   never takes the keyboard away from what is being typed. */
+.ws-port-offer{position:fixed; right:16px; bottom:16px; z-index:60; width:330px;
+  display:grid; grid-template-columns:auto 1fr; gap:6px 10px; padding:12px 14px;
+  background:var(--bg2); border:1px solid var(--line); border-radius:10px;
+  box-shadow:0 10px 30px rgba(0,0,0,.35); font-size:12px}
+.ws-port-offer-icon .ms{font-size:20px; color:var(--accent)}
+.ws-port-offer-copy strong{display:block; margin-bottom:3px; font-size:12.5px}
+.ws-port-offer-copy p{margin:0; color:var(--dim); line-height:1.45}
+.ws-port-offer-status{margin-top:6px !important; color:var(--text) !important}
+.ws-port-offer-status.bad{color:var(--red) !important}
+.ws-port-offer-actions{grid-column:2; display:flex; gap:6px; margin-top:9px}
+.ws-port-offer-mute{grid-column:2; display:flex; align-items:center; gap:6px;
+  margin-top:2px; color:var(--dim); cursor:pointer}
+.ws-port-offer-mute input{margin:0; accent-color:var(--accent)}
+
 
 .ws-maturity{display:flex; align-items:center; flex:0 0 auto; margin-right:6px; -webkit-app-region:no-drag}
 .ws-toggles{display:flex; align-items:center; gap:2px; -webkit-app-region:no-drag}
@@ -3510,7 +3551,8 @@ body.workspace>#ws-bottom-dock{grid-row:3}
    This renders the conversation from the CLI's JSON stream instead. */
 
 .ws-chat{display:flex; flex-direction:column; overflow:hidden}
-.ws-chat-log{flex:1; min-height:0; overflow-y:auto; padding:10px 12px; display:flex; flex-direction:column; gap:10px}
+.ws-chat-log{flex:1; min-height:0; overflow-y:auto; padding:10px 12px; display:flex; flex-direction:column; gap:10px;
+  user-select:text; cursor:text}
 
 /* The strip of open conversations, read the same way as the terminal's tabs:
    which agent each one is, which is on screen, which is still answering. */
@@ -3726,9 +3768,47 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-turn.you .ws-clamp{-webkit-line-clamp:8}
 .ws-turn.you .ws-steps-more{color:rgba(255,255,255,.8); margin-top:4px}
 .ws-turn.you .ws-steps-more:hover{color:#fff}
-
 /* What the turn that just finished cost. */
 .ws-turn.receipt{font-size:10.5px; color:var(--dim2); font-variant-numeric:tabular-nums}
+
+/* How much of the account's usage has been spent, sat on top of the box the
+   next question goes into - the one place where knowing it changes what you
+   do next. It never moves and never repeats itself: only the numbers change. */
+.ws-agent-limit{flex:0 0 auto; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  padding:5px 9px; border-top:1px solid var(--line); background:var(--bg2);
+  font-size:10.5px; color:var(--dim2); font-variant-numeric:tabular-nums}
+.ws-agent-limit[hidden]{display:none}
+.ws-limit-w{display:flex; align-items:center; gap:6px; min-width:0}
+.ws-limit-k{color:var(--dim)}
+.ws-limit-meter{position:relative; width:54px; height:4px; border-radius:2px;
+  background:color-mix(in srgb,var(--text) 14%,transparent); overflow:hidden}
+.ws-limit-meter>i{position:absolute; inset:0 auto 0 0; background:var(--accent);
+  transition:width .3s ease}
+.ws-limit-v{color:var(--text); min-width:30px}
+.ws-limit-r{color:var(--dim2)}
+.ws-limit-note{color:var(--amber)}
+/* Close enough to matter, and past it. The bar is the only thing that changes
+   colour, so a glance at the strip says which of the two it is. */
+.ws-agent-limit.warn .ws-limit-meter>i{background:var(--amber)}
+.ws-agent-limit.warn .ws-limit-v{color:var(--amber)}
+.ws-agent-limit.out{background:color-mix(in srgb,var(--red) 12%,var(--bg2))}
+.ws-agent-limit.out .ws-limit-meter>i{background:var(--red)}
+.ws-agent-limit.out .ws-limit-v{color:var(--red)}
+
+/* The model is a session-start decision, so it sits directly above the first
+   message instead of being hidden among global settings or icon-only actions. */
+.ws-agent-model{display:flex; align-items:center; gap:12px; padding:9px 10px;
+  border-top:1px solid var(--line); background:color-mix(in srgb,var(--accent) 8%,var(--bg2))}
+.ws-agent-model[hidden]{display:none}
+.ws-agent-model>span{flex:1; min-width:0; display:grid; grid-template-columns:auto 1fr; align-items:center;
+  column-gap:6px; row-gap:2px}
+.ws-agent-model .ms{grid-row:1/3; color:var(--accent); font-size:20px}
+.ws-agent-model strong{font-size:11.5px; font-weight:650; color:var(--text)}
+.ws-agent-model small{font-size:9.5px; color:var(--dim2)}
+.ws-agent-model select{flex:0 1 330px; min-width:180px; height:30px; padding:0 28px 0 9px;
+  border:1px solid color-mix(in srgb,var(--accent) 45%,var(--line)); border-radius:7px;
+  background:var(--bg1); color:var(--text); font-family:inherit; font-size:11px; font-weight:600}
+.ws-agent-model select:disabled{opacity:.65; border-color:var(--line)}
 
 /* Everything the CLI actually sent, under the conversation it was read into.
    It sits below the log rather than over it, because the point of opening it
@@ -3771,9 +3851,36 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-steps-more:hover{color:var(--text)}
 .ws-steps-more .ms{font-size:15px; transition:transform .12s ease}
 .ws-steps.open .ws-steps-more .ms{transform:rotate(180deg)}
-.ws-code{margin:8px 0; padding:9px 11px; border:1px solid var(--line); border-radius:8px;
+/* What an edit did, under the step that did it: the changed lines, three of
+   them, and the rest a click away. A change nobody can see is a change nobody
+   can check, and leaving the panel to see it is the same as not seeing it. */
+.ws-step-with-change{display:flex; flex-direction:column; gap:3px}
+.ws-step-change{display:flex; flex-direction:column; margin:0 0 2px 20px;
+  border-left:2px solid var(--line); padding-left:7px}
+.ws-step-change>code{overflow:hidden; text-overflow:ellipsis; white-space:pre;
+  font:10.5px/1.6 'Cascadia Mono',ui-monospace,Consolas,monospace; color:var(--dim2)}
+.ws-step-change>code.add{color:var(--green)}
+.ws-step-change>code.del{color:var(--red)}
+.ws-step-change .ws-steps-more{margin:2px 0 0 -3px; font-size:10.5px}
+
+/* Thinking whose text the CLI withheld, kept with the steps it happened
+   between. The count is all there is of it, and it is still worth a line. */
+.ws-turn.tool.thought-step>.ms{opacity:.75}
+.ws-turn.tool.thought-step .ws-step-what{font-style:italic}
+
+.ws-code{position:relative; display:flex; flex-direction:column; align-items:flex-start; gap:5px;
+  margin:8px 0; padding:7px 8px 9px 11px; border:1px solid var(--line); border-radius:8px;
   background:var(--term-bg); overflow-x:auto; font-size:11.5px; line-height:1.5}
-.ws-code code{background:none!important; padding:0!important; font-family:ui-monospace,Consolas,monospace}
+.ws-code code{display:block; min-width:max-content; background:none!important; padding:0!important;
+  font-family:ui-monospace,Consolas,monospace}
+.ws-code-copy{position:sticky; left:100%; z-index:1; align-self:flex-end; display:flex; align-items:center; gap:4px;
+  padding:3px 6px; border:1px solid var(--line); border-radius:5px;
+  background:var(--bg2); color:var(--dim); font:10px 'Segoe UI Variable','Segoe UI',system-ui,sans-serif;
+  user-select:none; cursor:pointer}
+.ws-code-copy:hover{color:var(--text); border-color:var(--dim2)}
+.ws-code-copy.copy-confirmed{color:var(--green)}
+.ws-code-copy.copy-failed{color:var(--red)}
+.ws-code-copy .ms{font-size:13px}
 
 /* The line that says something is happening. It is drawn from the turn being
    in flight, not from text arriving - the moment it is needed most is the one
@@ -3855,6 +3962,10 @@ body.workspace>#ws-bottom-dock{grid-row:3}
   border:0; border-radius:8px; cursor:pointer; background:var(--accent); color:#fff}
 .ws-chat-stop{background:var(--bg3); color:var(--text)}
 .ws-chat-send[hidden],.ws-chat-stop[hidden]{display:none}
+/* The outlined send button says that Enter will interrupt the live turn and
+   deliver the new message, rather than quietly adding it to a queue. */
+.ws-chat-send.interrupting{background:transparent; color:var(--accent);
+  box-shadow:inset 0 0 0 1px var(--accent)}
 .ws-chat-send .ms,.ws-chat-stop .ms{font-size:17px}
 
 /* The agent's own interface, over the whole window. It is a full-screen

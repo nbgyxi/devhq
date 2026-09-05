@@ -437,6 +437,50 @@
   // own resize event, so the native side reports it too.
   win.onResized(() => queueSyncBrowser()).catch(() => {});
 
+  /* ------------------------------------------------------ window geometry */
+
+  // A workspace reopens where it was left — same screen, same size, and
+  // maximized if it was maximized. Rust applies this while building the
+  // window, so the geometry is written where the main window can read it back:
+  // both pages share one origin, and the main window is what asks for the
+  // workspace to open.
+  //
+  // While maximized the size and place kept are the *restored* ones, so
+  // un-maximizing a reopened window lands on the box it had before, not on the
+  // screen-sized one.
+  const GEOM_KEY = `wint.workspace.geom:${projectPath.toLowerCase()}`;
+  const readGeometry = () => {
+    try { return JSON.parse(localStorage.getItem(GEOM_KEY) || "null") || {}; } catch { return {}; }
+  };
+  let geomTimer = 0;
+  const saveGeometry = async () => {
+    try {
+      const maximized = await win.isMaximized();
+      const geometry = { ...readGeometry(), maximized };
+      if (!maximized) {
+        const scale = await win.scaleFactor();
+        const size = (await win.innerSize()).toLogical(scale);
+        const position = (await win.outerPosition()).toLogical(scale);
+        geometry.width = Math.round(size.width);
+        geometry.height = Math.round(size.height);
+        geometry.x = Math.round(position.x);
+        geometry.y = Math.round(position.y);
+      }
+      localStorage.setItem(GEOM_KEY, JSON.stringify(geometry));
+    } catch { /* A window that cannot be measured simply reopens at the default. */ }
+  };
+  // Windows resizes and moves in a loop of its own, so this fires constantly
+  // while a window is dragged. Only the value it comes to rest at matters.
+  const queueSaveGeometry = () => {
+    clearTimeout(geomTimer);
+    geomTimer = setTimeout(saveGeometry, 250);
+  };
+  win.onResized(() => queueSaveGeometry()).catch(() => {});
+  win.onMoved(() => queueSaveGeometry()).catch(() => {});
+  // Nothing is saved on load: the window Rust just placed is still settling —
+  // a restored maximize arrives as a resize of its own — and a page that saved
+  // first would write the un-maximized state back over the one it was given.
+
   /* --------------------------------------------------------- window chrome */
 
   // The window has no native frame, so the title bar has to move it itself.
@@ -467,6 +511,10 @@
     if (closing) return;
     closing = true;
     event.preventDefault();
+    // The last resize or move may still be waiting out its debounce, and where
+    // the window was when it closed is exactly where it should come back.
+    clearTimeout(geomTimer);
+    await saveGeometry();
     await panels.get("browser")?.settlePreviewEdit?.();
     await invoke("workspace_browser_close", { window: label }).catch(() => {});
     await closeWorkspaceTerminals();
@@ -576,6 +624,47 @@
     say(reason || `Browsing ${target}`);
   };
 
+  /* --------------------------------------- how wide the page is drawn */
+
+  // A page is often worth seeing at a phone's width, and dragging the panel
+  // splitter to get there rearranges the whole workspace - the terminal and
+  // the file tree pay for a look at a narrow layout. So the page is narrowed
+  // inside the panel instead: the hole the webview is positioned over gets a
+  // max width and is centred, the splitters never move, and the site sees a
+  // genuinely narrower viewport because the webview really is that wide.
+  const WIDTHS = [
+    { width: 0, icon: "desktop_windows", title: "Fill the panel" },
+    { width: 1024, icon: "laptop_windows", title: "Laptop width (1024px)" },
+    { width: 768, icon: "tablet", title: "Tablet width (768px)" },
+    { width: 390, icon: "mobile", title: "Phone width (390px)" },
+  ];
+  const WIDTH_KEY = `wint.workspace.browser-width:${projectPath.toLowerCase()}`;
+  const savedWidth = () => {
+    try {
+      const saved = Number(localStorage.getItem(WIDTH_KEY));
+      return WIDTHS.some((w) => w.width === saved) ? saved : 0;
+    } catch { return 0; }
+  };
+  let browserWidth = savedWidth();
+
+  /** Draws the current choice: the hole is capped and centred, and the button
+   *  that did it is lit. The hole's ResizeObserver moves the webview to match,
+   *  so nothing else has to be told. */
+  const applyWidth = (panel) => {
+    if (!panel?.hole) return;
+    panel.hole.style.maxWidth = browserWidth ? `${browserWidth}px` : "";
+    panel.hole.classList.toggle("narrow", Boolean(browserWidth));
+    for (const button of panel.widths?.querySelectorAll("[data-width]") || [])
+      button.classList.toggle("on", Number(button.dataset.width) === browserWidth);
+  };
+
+  const setWidth = (width) => {
+    browserWidth = WIDTHS.some((w) => w.width === width) ? width : 0;
+    try { localStorage.setItem(WIDTH_KEY, String(browserWidth)); } catch {}
+    applyWidth(panels.get("browser"));
+    say(browserWidth ? `Page drawn ${browserWidth}px wide` : "Page fills the panel");
+  };
+
   /* ------------------------------------------------ the run button */
 
   // An empty browser panel is one command away from not being empty, so that
@@ -619,8 +708,11 @@
       panel.tools.innerHTML = `
         <button class="ws-mini" data-browser="reload" type="button" title="Reload">${icon("refresh")}</button>
         <input class="ws-address" data-browser="address" placeholder="Type an address" spellcheck="false" />
-        <button class="ws-mini" data-browser="external" type="button" title="Open in your real browser">${icon("open_in_new")}</button>`;
+        <button class="ws-mini" data-browser="external" type="button" title="Open in your real browser">${icon("open_in_new")}</button>
+        <span class="ws-widths" role="group" aria-label="Page width">${WIDTHS.map((w) => `
+          <button class="ws-mini" data-width="${w.width}" type="button" title="${esc(w.title)}">${icon(w.icon)}</button>`).join("")}</span>`;
       panel.address = panel.tools.querySelector("[data-browser=address]");
+      panel.widths = panel.tools.querySelector(".ws-widths");
       body.innerHTML = `<div class="ws-browser-hole"></div>
         <div class="ws-browser-empty">
           <button class="ws-run" data-browser="run" type="button" title="Run this command in the terminal below">${icon("play_arrow")}</button>
@@ -646,6 +738,7 @@
       // webview - drawn over the page, not in it - stayed the size it was and
       // sat on top of the terminal until something else happened to sync it.
       new ResizeObserver(() => queueSyncBrowser()).observe(panel.hole);
+      applyWidth(panel);
       panel.empty = body.querySelector(".ws-browser-empty");
       panel.command = body.querySelector(".ws-run-cmd");
       panel.command.value = savedRunCommand();
@@ -786,6 +879,8 @@
         const action = e.target.closest("[data-browser]")?.dataset.browser;
         if (action === "reload" && browserUrl) invoke("workspace_browser_reload", { window: label }).catch(() => {});
         if (action === "external" && browserUrl) invoke("plugin:opener|open_url", { url: browserUrl }).catch(() => {});
+        const width = e.target.closest("[data-width]")?.dataset.width;
+        if (width !== undefined) setWidth(Number(width));
       });
       panel.address.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && panel.address.value.trim()) goTo(panel.address.value.trim());
@@ -1006,18 +1101,23 @@
       || `<div class="ws-tree-note">Nothing has changed since your last save.</div>`;
   }
 
-  async function loadDir(panel, host, path, depth) {
+  async function loadDir(panel, host, path, depth, options = {}) {
     host.dataset.loaded = "1";
-    host.innerHTML = `<div class="ws-tree-note">Reading…</div>`;
+    if (!options.silent) host.innerHTML = `<div class="ws-tree-note">Reading…</div>`;
     try {
       const rows = await busy(depth ? `Reading ${path.split(/[\\/]/).pop()}` : "Reading the project folder", () => invoke("workspace_list_dir", { path }));
-      host.innerHTML = rows.map((row) => `
+      const html = rows.map((row) => `
         <button class="ws-tree-row${row.directory ? " dir" : ""}" data-path="${esc(row.path)}" data-name="${esc(row.name)}"
                 data-directory="${row.directory}" data-depth="${depth}" style="--ws-depth:${depth}">
           <span class="ms ws-tree-caret" aria-hidden="true">${row.directory ? "chevron_right" : "description"}</span>
           <span class="ws-tree-name">${esc(row.name)}</span>
         </button>${row.directory ? `<div class="ws-tree" hidden></div>` : ""}`).join("")
         || `<div class="ws-tree-note">This folder is empty.</div>`;
+      const signature = JSON.stringify(rows.map(({ name, path, directory }) => [name, path, directory]));
+      if (host.dataset.signature !== signature) {
+        host.innerHTML = html;
+        host.dataset.signature = signature;
+      }
       if (!depth) say(`${rows.length} item${rows.length === 1 ? "" : "s"} in ${projectName}`);
     } catch (err) {
       host.innerHTML = `<div class="ws-tree-note">${esc(String(err))}</div>`;
@@ -1090,16 +1190,20 @@
         <div class="ws-git-branchline" hidden></div>
         <div class="ws-git-saved" hidden></div>
         <div class="ws-git-note" hidden></div>
+        <div class="ws-git-operation" role="status" aria-live="polite" hidden></div>
         <form class="ws-git-form"><input name="message" placeholder="What did you change?" autocomplete="off" />
           <div class="ws-git-buttons">
             <button type="submit" class="ws-btn primary" data-git="save">${icon("bookmark_add")}Save</button>
             <button type="button" class="ws-btn" data-git="push">${icon("cloud_upload")}Upload</button>
             <button type="button" class="ws-btn" data-git="pull">${icon("cloud_download")}Get</button>
-          </div></form>`;
+          </div></form>
+        <div class="ws-git-jobs" hidden></div>`;
       panel.state = body.querySelector(".ws-git-state");
       panel.branchline = body.querySelector(".ws-git-branchline");
       panel.saved = body.querySelector(".ws-git-saved");
+      panel.jobs = body.querySelector(".ws-git-jobs");
       panel.note = body.querySelector(".ws-git-note");
+      panel.operation = body.querySelector(".ws-git-operation");
       panel.form = body.querySelector(".ws-git-form");
       panel.tools.addEventListener("click", () => loadGit(panel));
       panel.form.addEventListener("submit", (e) => { e.preventDefault(); saveVersion(panel); });
@@ -1112,6 +1216,10 @@
         if (action === "branch-make") makeBranch(panel);
         if (action === "merge-main") mergeToMain(panel);
         if (action === "note-close") gitNote(panel, "");
+        if (action === "open-run") {
+          const url = e.target.closest("[data-run-url]")?.dataset.runUrl;
+          if (url) invoke("plugin:opener|open_url", { url }).catch(() => {});
+        }
       });
       panel.branchline.addEventListener("submit", (e) => { e.preventDefault(); makeBranch(panel); });
       // Catches everything that can change the content's height - the state
@@ -1127,14 +1235,19 @@
       heightObserver.observe(panel.state);
       heightObserver.observe(panel.branchline);
       heightObserver.observe(panel.saved);
+      heightObserver.observe(panel.jobs);
       heightObserver.observe(panel.note);
+      heightObserver.observe(panel.operation);
       heightObserver.observe(panel.form);
       panel.resized = () => syncGitHeight(panel);
       loadGit(panel);
     },
   });
 
-  async function loadGit(panel) {
+  let gitLoading = false;
+  async function loadGit(panel, options = {}) {
+    if (gitLoading || panel.working) return;
+    gitLoading = true;
     try {
       const data = await busy("Checking what changed", () => invoke("git_workspace", { path: projectPath }));
       panel.data = data;
@@ -1158,12 +1271,54 @@
       renderUnpushed(panel, data.unpushed || []);
       renderBranchLine(panel);
       publishChanged(changed);
+      if (!options.skipJobs) loadGithubJobs(panel);
       say(changed.length ? `${changed.length} file${changed.length === 1 ? "" : "s"} changed` : "Nothing to save");
     } catch (err) {
       panel.state.innerHTML = `<p class="ws-git-line">${esc(String(err))}</p>`;
       renderUnpushed(panel, []);
       say(String(err));
+    } finally {
+      gitLoading = false;
     }
+  }
+
+  const githubSlug = (remote = "") => {
+    const value = String(remote).trim().replace(/\.git$/i, "");
+    return value.match(/github\.com(?::|\/)([^/]+\/[^/]+)$/i)?.[1] || "";
+  };
+
+  async function loadGithubJobs(panel) {
+    if (panel.jobsLoading) return;
+    const slug = githubSlug(panel.data?.info?.remote);
+    if (!slug) { panel.jobs.hidden = true; return; }
+    panel.jobsLoading = true;
+    try {
+      panel.githubStatus ||= await invoke("github_status");
+      if (!panel.githubStatus?.authenticated) { panel.jobs.hidden = true; return; }
+      const result = await invoke("github_api", { method: "GET", endpoint: `repos/${slug}/actions/runs?per_page=10`, body: null });
+      const runs = result?.workflow_runs || [];
+      // One useful answer: an active run takes precedence; otherwise show the
+      // newest run GitHub returned. Older runs belong on GitHub's own page.
+      const run = runs.find((item) => item.status !== "completed") || runs[0];
+      panel.jobs.hidden = false;
+      if (!run) {
+        panel.jobs.innerHTML = `<p class="ws-git-jobs-head">${icon("rocket_launch")}GitHub action</p><small>No runs yet.</small>`;
+      } else {
+        const running = run.status !== "completed";
+        const ok = run.conclusion === "success";
+        const glyph = running ? "progress_activity" : ok ? "check_circle" : run.conclusion === "cancelled" ? "cancel" : "error";
+        const status = running ? run.status : run.conclusion || "completed";
+        panel.jobs.innerHTML = `<p class="ws-git-jobs-head">${icon("rocket_launch")}GitHub action</p>
+          <div class="ws-git-job ${running ? "running" : ok ? "ok" : "failed"}">
+            <span class="ms">${glyph}</span>
+            <span><strong>${esc(run.name || run.display_title || "Workflow")}</strong><small>${esc(String(status).replaceAll("_", " "))} · ${esc(run.head_branch || "")}${running ? "" : ` · ${esc(whenAgo(Date.parse(run.updated_at)))}`}</small></span>
+            <button class="ws-mini" type="button" data-git="open-run" data-run-url="${esc(run.html_url || "")}" title="View this run on GitHub" aria-label="View this run on GitHub">${icon("open_in_new")}</button>
+          </div>`;
+      }
+      syncGitHeight(panel);
+    } catch (_) {
+      panel.jobs.hidden = true;
+    } finally { panel.jobsLoading = false; }
   }
 
   /** Lists what has been saved here but not uploaded yet - one line per
@@ -1280,13 +1435,43 @@
   }
 
   async function gitAct(panel, action, label) {
+    if (panel.working) return;
+    setGitOperation(panel, true, label, "working", action);
     try {
       const result = await busy(label, () => invoke("git_action", { request: { path: projectPath, action, value: "", amend: false } }));
       say(result.ok ? result.output?.trim().split("\n").pop() || "Done" : String(result.output));
+      if (!result.ok) gitNote(panel, result.output || `${label} failed.`);
+      setGitOperation(panel, false, result.ok ? `${label} complete` : `${label} failed`, result.ok ? "done" : "error", action);
     } catch (err) {
       say(String(err));
+      gitNote(panel, String(err));
+      setGitOperation(panel, false, `${label} failed`, "error", action);
     }
     await loadGit(panel);
+  }
+
+  function setGitOperation(panel, working, text, kind = "working", action = "") {
+    panel.working = working;
+    const actionButton = action ? panel.body.querySelector(`button[data-git="${action}"]`) : null;
+    if (actionButton) {
+      actionButton.dataset.idleHtml ||= actionButton.innerHTML;
+      const activeLabels = { save: "Saving", push: "Uploading", pull: "Getting changes" };
+      actionButton.innerHTML = working
+        ? `${icon("progress_activity")}<span>${activeLabels[action] || text}…</span>`
+        : actionButton.dataset.idleHtml;
+      actionButton.classList.toggle("working", working);
+    }
+    for (const control of panel.form.querySelectorAll("button,input")) control.disabled = working;
+    for (const button of panel.body.querySelectorAll("button[data-git]")) button.disabled = working;
+    panel.operation.hidden = !text;
+    panel.operation.className = `ws-git-operation ${kind}`;
+    panel.operation.innerHTML = text ? `${icon(working ? "progress_activity" : kind === "error" ? "error" : "check_circle")}<span>${esc(text)}${working ? "…" : ""}</span>` : "";
+    clearTimeout(panel.operationTimer);
+    if (!working && kind === "done") panel.operationTimer = setTimeout(() => {
+      panel.operation.hidden = true;
+      syncGitHeight(panel);
+    }, 3000);
+    syncGitHeight(panel);
   }
 
   /** Stage everything, commit it, and say plainly that it is not uploaded yet
@@ -1297,6 +1482,8 @@
     if (!message) { input.focus(); return say("Say what you changed first"); }
     const changed = panel.data?.info?.changed || [];
     if (!changed.length) return say("There is nothing to save");
+    if (panel.working) return;
+    setGitOperation(panel, true, `Saving ${changed.length} file${changed.length === 1 ? "" : "s"}`, "working", "save");
     try {
       await busy(`Saving ${changed.length} file${changed.length === 1 ? "" : "s"}`, async () => {
         for (const file of changed) {
@@ -1307,11 +1494,29 @@
       });
       input.value = "";
       say("Saved on this computer. Not uploaded yet — press Upload when you're ready.");
+      setGitOperation(panel, false, "Save complete — ready to upload", "done", "save");
     } catch (err) {
       say(String(err));
+      gitNote(panel, String(err));
+      setGitOperation(panel, false, "Save failed", "error", "save");
     }
     await loadGit(panel);
   }
+
+  // Editors and agents change this folder without going through the workspace.
+  // Keep Git and the top-level file overview close to disk automatically.
+  setInterval(() => {
+    if (document.hidden) return;
+    const git = panels.get("git");
+    if (git?.state) loadGit(git, { skipJobs: true });
+    const files = panels.get("files");
+    if (files?.tree && !files.changedOnly) loadDir(files, files.tree, projectPath, 0, { silent: true });
+  }, 1200);
+  setInterval(() => {
+    if (document.hidden) return;
+    const git = panels.get("git");
+    if (git?.jobs) loadGithubJobs(git);
+  }, 5000);
 
   /** Load a script file and wait for it to load. */
   const loadScript = (src) => new Promise((ok, fail) => {
@@ -1387,7 +1592,8 @@
   function markdown(text) {
     const fences = [];
     let out = esc(text).replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-      fences.push(`<pre class="ws-code"${lang ? ` data-lang="${esc(lang)}"` : ""}><code>${code.replace(/\n$/, "")}</code></pre>`);
+      fences.push(`<pre class="ws-code"${lang ? ` data-lang="${esc(lang)}"` : ""}><button type="button" class="ws-code-copy" data-copy-code title="Copy code" aria-label="Copy code">${
+        icon("content_copy")}<span>Copy</span></button><code>${code.replace(/\n$/, "")}</code></pre>`);
       return `\u0000${fences.length - 1}\u0000`;
     });
     out = out
@@ -1404,6 +1610,10 @@
     Glob: "search", Grep: "search", WebFetch: "public", WebSearch: "travel_explore",
     Task: "account_tree", TodoWrite: "checklist",
   };
+
+  // The tools that change a file, and so have a change worth showing under
+  // the step rather than a one-line outcome beside it.
+  const CHANGE_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 
   const toolLine = (block) => {
     const input = block.input || {};
@@ -1551,6 +1761,48 @@
     return resultSummary(text);
   }
 
+  // A change is only worth showing the lines of; a file written whole is
+  // worth showing the top of. Beyond this it is a file, not a change, and
+  // belongs in an editor rather than in a chat log.
+  const CHANGE_KEEP = 400;
+
+  /** The lines an edit changed, read off the arguments the tool was called
+   *  with. Written as a diff - what left, what arrived - because that is the
+   *  only form in which three lines say anything useful. */
+  function changeFromInput(name, input = {}) {
+    const lines = [];
+    const push = (sign, text) => {
+      for (const line of String(text ?? "").split(/\r?\n/)) lines.push({ sign, text: line.slice(0, 400) });
+    };
+    if (name === "Write") push("+", input.content);
+    else if (name === "NotebookEdit") push("+", input.new_source);
+    else {
+      // MultiEdit passes its edits in a list; Edit is the same shape, once.
+      for (const edit of Array.isArray(input.edits) ? input.edits : [input]) {
+        if (typeof edit?.old_string === "string") push("-", edit.old_string);
+        if (typeof edit?.new_string === "string") push("+", edit.new_string);
+      }
+    }
+    return lines.length > CHANGE_KEEP ? lines.slice(0, CHANGE_KEEP) : lines;
+  }
+
+  /** The same lines, but as the CLI itself worked them out: a real patch, with
+   *  the context around the change. Better than reading the arguments when it
+   *  is there, which is whenever an edit actually landed. */
+  function changeFromPatch(result) {
+    const hunks = result && typeof result === "object" ? result.structuredPatch : null;
+    if (!Array.isArray(hunks) || !hunks.length) return null;
+    const lines = [];
+    for (const hunk of hunks) {
+      for (const line of hunk?.lines || []) {
+        const text = String(line);
+        lines.push({ sign: "+-".includes(text[0]) ? text[0] : " ", text: text.slice(1, 401) });
+        if (lines.length >= CHANGE_KEEP) return lines;
+      }
+    }
+    return lines.length ? lines : null;
+  }
+
   /** Opens a step, or fills in the arguments of one already open.
    *
    *  A tool is announced twice - once as its block opens, with only a name,
@@ -1559,8 +1811,12 @@
   function beginToolTurn(tab, block) {
     const existing = block.id && tab.turns.find((t) => t.role === "tool" && t.id === block.id);
     const line = toolLine(block);
+    // The arguments only arrive with the finished message, so the change is
+    // read on that second pass rather than when the step opened empty.
+    const change = CHANGE_TOOLS.has(block.name) && block.input ? changeFromInput(block.name, block.input) : null;
     if (existing) {
       if (line) existing.text = line;
+      if (change?.length && !existing.patched) existing.change = change;
       return existing;
     }
     const turn = {
@@ -1570,6 +1826,7 @@
       text: line || block.name || "Tool",
       state: "run",
       detail: "",
+      change: change?.length ? change : null,
     };
     tab.turns.push(turn);
     return turn;
@@ -1582,6 +1839,8 @@
     turn.state = isError ? "err" : "ok";
     // A failure is always its own words; only a success is worth counting.
     turn.detail = isError ? resultSummary(text) : toolOutcome(result, text);
+    const patch = isError ? null : changeFromPatch(result);
+    if (patch) { turn.change = patch; turn.patched = true; }
     return true;
   }
 
@@ -1608,6 +1867,11 @@
     for (const turn of tab.turns) {
       if (turn.role === "tool" && turn.state === "run") turn.state = "";
     }
+  }
+
+  function growAgentInput(tab) {
+    tab.input.style.height = "auto";
+    if (tab.input.value) tab.input.style.height = `${Math.min(160, tab.input.scrollHeight)}px`;
   }
 
   // Codex names what it did as items on its thread rather than as tool calls,
@@ -1663,13 +1927,15 @@
       cancelCmd: "claude_cancel",
       installCmd: "claude_install",
       terminalCmd: "claude_terminal_command",
-      // Only Claude Code keeps its conversations somewhere WinT can read them
-      // back, so it is the only kind whose history button has anything to
-      // open. The others get the button disabled rather than hidden, so the
-      // title line does not change shape from one tab to the next.
       sessionsCmd: "claude_sessions",
       transcriptCmd: "claude_transcript",
       mintSession: true,
+      models: [
+        { id: "sonnet", label: "Sonnet", note: "Recommended for everyday coding" },
+        { id: "opus", label: "Opus", note: "Most capable, uses more of your allowance" },
+        { id: "haiku", label: "Haiku", note: "Fastest for small tasks" },
+      ],
+      defaultModel: "sonnet",
       installHint: `WinT doesn't ship it and holds no key for it. You install Anthropic's CLI and sign in as
            yourself; this panel gives it somewhere to talk.`,
     },
@@ -1684,6 +1950,8 @@
       cancelCmd: "cursor_cancel",
       installCmd: "cursor_install",
       terminalCmd: "cursor_terminal_command",
+      sessionsCmd: "cursor_sessions",
+      transcriptCmd: "cursor_transcript",
       mintSession: false,
       installHint: `WinT doesn't ship it and holds no key for it. You install Cursor Agent and sign in as
            yourself; this panel gives it somewhere to talk.`,
@@ -1699,6 +1967,8 @@
       cancelCmd: "copilot_cancel",
       installCmd: "copilot_install",
       terminalCmd: "copilot_terminal_command",
+      sessionsCmd: "copilot_sessions",
+      transcriptCmd: "copilot_transcript",
       mintSession: false,
       installHint: `WinT doesn't ship it and holds no key for it. You install GitHub Copilot CLI and sign in as
            yourself; this panel gives it somewhere to talk.`,
@@ -1714,6 +1984,8 @@
       cancelCmd: "codex_cancel",
       installCmd: "codex_install",
       terminalCmd: "codex_terminal_command",
+      sessionsCmd: "codex_sessions",
+      transcriptCmd: "codex_transcript",
       mintSession: false,
       installHint: `WinT doesn't ship it and holds no key for it. You install OpenAI Codex CLI and sign in as
            yourself; this panel gives it somewhere to talk.`,
@@ -1729,10 +2001,44 @@
       cancelCmd: "gemini_cancel",
       installCmd: "gemini_install",
       terminalCmd: "gemini_terminal_command",
+      sessionsCmd: "gemini_sessions",
+      transcriptCmd: "gemini_transcript",
       mintSession: false,
       installHint: `WinT doesn't ship it and holds no key for it. You install Gemini CLI and sign in as
            yourself; this panel gives it somewhere to talk.`,
     },
+    qwen: {
+      id: "qwen",
+      label: "Qwen",
+      product: "Local Qwen coding agent",
+      icon: "memory",
+      placeholder: "Ask local Qwen to work on this projectâ€¦",
+      statusCmd: "assistant_status",
+      sendCmd: "assistant_chat",
+      cancelCmd: "assistant_chat_cancel",
+      installCmd: "assistant_pull",
+      terminalCmd: null,
+      localModel: "qwen2.5-coder-7b-q4",
+      localModels: [
+        { id: "qwen2.5-coder-7b-q4", label: "Qwen2.5-Coder 7B · 4.7 GB · 8 GB RAM" },
+        { id: "qwen3-coder-30b-a3b-q4", label: "Qwen3-Coder 30B-A3B · 18.6 GB · 24 GB RAM" },
+      ],
+      localHistory: true,
+      mintSession: false,
+      installHint: `Runs privately through WinT's existing llama.cpp runtime. Choose the 4.7 GB model for an 8 GB machine, or the stronger 18.6 GB model when 24 GB of memory is available.`,
+    },
+  };
+
+  // Settings owns local model downloads and the user's active-model choice.
+  // A Qwen workspace follows that choice when it is one of the coding models
+  // this staged agent supports; otherwise it uses the smaller default.
+  const workspaceLocalModel = (spec) => {
+    if (!spec?.localModel) return "";
+    try {
+      const selected = JSON.parse(localStorage.getItem("wint.assistant.v1") || "{}").model;
+      if (spec.localModels?.some((model) => model.id === selected)) return selected;
+    } catch {}
+    return spec.localModel;
   };
 
   const freshAgentState = (kind) => {
@@ -1745,6 +2051,7 @@
       streaming: null,
       status,
       needsSignIn: kind === "cursor" && Boolean(status?.installed && !status?.signedIn),
+      model: AGENTS[kind].defaultModel || "",
     };
   };
 
@@ -1814,7 +2121,9 @@
       </div>`;
     }
     if (turn.role === "thought") {
-      if (!turn.text.trim()) return "";
+      // Thinking the CLI counted but would not send the text of. On its own -
+      // no steps around it to sit with - it is still worth its one line.
+      if (!turn.text.trim()) return turn.tokens ? `<div class="ws-steps">${toolHtml(turn, key, tab)}</div>` : "";
       const body = `<div class="ws-turn-body">${markdown(turn.text)}</div>`;
       return `<div class="ws-turn thought">${icon("neurology")}${
         isLong(turn.text, 6, 400) ? clampHtml(key, tab, body, "Show the whole thought", "Show less") : body}</div>`;
@@ -1825,30 +2134,66 @@
     return `<div class="ws-turn claude ${esc(turn.role)}"${live}><div class="ws-turn-body">${markdown(text)}</div></div>`;
   }
 
+  /** What an edit did to a file, as the few lines that changed. A step saying
+   *  only 'Edit · workspace.js' is a step whose change nobody can see without
+   *  leaving the panel, so the change comes with it - three lines of it, and
+   *  the rest a click away. */
+  function changeHtml(turn, key, tab) {
+    const lines = turn.change;
+    if (!lines?.length) return "";
+    const open = tab.openChanges?.has(key);
+    // Unopened, only the lines that actually changed are worth the room -
+    // context lines are there to read the change by, not to preview it.
+    const preview = lines.filter((line) => line.sign !== " ").slice(0, 3);
+    const shown = open ? lines : preview;
+    const rest = lines.length - shown.length;
+    const body = shown.map((line) => `<code class="${
+      line.sign === "+" ? "add" : line.sign === "-" ? "del" : "same"}">${esc(`${line.sign} ${line.text}`)}</code>`).join("");
+    const more = rest > 0 || open
+      ? `<button type="button" class="ws-steps-more" data-change="${esc(key)}">${icon(open ? "unfold_less" : "unfold_more")}${
+          open ? "Show less" : `and ${rest.toLocaleString()} more line${rest === 1 ? "" : "s"}`}</button>`
+      : "";
+    return `<div class="ws-step-change">${body}${more}</div>`;
+  }
+
   /** One step: what it is doing, and - once it is over - how it went. A step
    *  that only ever says it started cannot be told from one that hung. */
-  const toolHtml = (turn) => {
+  function toolHtml(turn, key, tab) {
+    // Thinking whose text the CLI withheld: the count is all there is, and it
+    // is still the difference between a silent minute and a wasted one.
+    if (turn.role === "thought") {
+      return `<div class="ws-turn tool thought-step">${icon("neurology")}<span class="ws-step-what">Thought for ${
+        turn.tokens.toLocaleString()} tokens</span><em class="ws-step-detail">text withheld</em></div>`;
+    }
     const state = turn.state === "run" ? " running" : turn.state === "err" ? " failed" : turn.state === "ok" ? " done" : "";
     const mark = turn.state === "run"
       ? '<span class="ws-step-run"></span>'
       : turn.state === "err" ? icon("error") : turn.state === "ok" ? icon("check") : "";
     const detail = turn.detail ? `<em class="ws-step-detail">${esc(turn.detail)}</em>` : "";
-    return `<div class="ws-turn tool${state}">${icon(turn.icon || "build")}<span class="ws-step-what">${
+    const line = `<div class="ws-turn tool${state}">${icon(turn.icon || "build")}<span class="ws-step-what">${
       esc(turn.text)}</span>${detail}${mark}</div>`;
-  };
+    const change = changeHtml(turn, key, tab);
+    return change ? `<div class="ws-step-with-change">${line}${change}</div>` : line;
+  }
 
-  /** A run of tool lines between two answers. Only the three most recent are
-   *  worth reading - they are what the agent is doing now - so the rest fold
-   *  behind a line that opens them in place. */
+  /** A run of steps between two answers. Only the three most recent are worth
+   *  reading - they are what the agent is doing now - so the rest fold behind
+   *  a line that opens them in place. */
   function agentStepsHtml(steps, key, tab) {
     const open = tab.openSteps?.has(key);
-    const folded = steps.length - 3;
-    const shown = open || folded <= 0 ? steps : steps.slice(-3);
-    const more = folded > 0
+    // Folded, the three lines go to the tools: what is being done beats how
+    // much was thought before doing it. The thinking is still there, counted
+    // into the fold and shown the moment the run is opened - and the one
+    // happening right now is on the line below the log anyway.
+    const tools = steps.filter((step) => step.turn.role === "tool");
+    const shown = open || !tools.length ? steps : tools.slice(-3);
+    const folded = steps.length - shown.length;
+    const more = folded > 0 || open
       ? `<button type="button" class="ws-steps-more" data-steps="${key}">${icon("expand_more")}${
-          open ? "Show fewer steps" : `Show ${folded} earlier step${folded === 1 ? "" : "s"}`}</button>`
+          open ? "Show fewer" : `and ${folded.toLocaleString()} more`}</button>`
       : "";
-    return `<div class="ws-steps${open ? " open" : ""}">${more}${shown.map(toolHtml).join("")}</div>`;
+    return `<div class="ws-steps${open ? " open" : ""}">${more}${
+      shown.map((step) => toolHtml(step.turn, step.key, tab)).join("")}</div>`;
   }
 
   /** The line that says the turn is still running. It is drawn from the turn
@@ -1856,14 +2201,17 @@
    *  moment it matters most: right after the question was sent. */
   function agentThinkingHtml(tab) {
     const last = tab.turns[tab.turns.length - 1];
-    // Hidden only while an answer is actually being written out - the caret on
-    // the bubble says that. Every other moment of a running turn gets the line.
-    const writing = last && isSaid(last) && revealed(last).length < last.text.length;
-    if (writing) return "";
-    // Whatever the agent last said it was doing beats a guess: the CLI's own
-    // phase, else the step still running, else the shape of the last turn.
+    // Keep this line for the whole turn, including while prose is streaming.
+    // The animated caret says text is arriving, but it does not answer the
+    // more useful question of what the agent is doing right now.
     const running = [...tab.turns].reverse().find((t) => t.role === "tool" && t.state === "run");
-    const label = tab.phase || (running ? running.text : last?.role === "tool" ? "Working" : "Thinking");
+    const writing = last && isSaid(last) && revealed(last).length < last.text.length;
+    const label = tab.phase
+      || (running ? running.text
+        : tab.thought ? "Thinking"
+        : writing || tab.streaming ? "Writing an answer"
+        : last?.role === "tool" ? "Working"
+        : "Thinking");
     const secs = Math.round((Date.now() - (tab.startedAt || Date.now())) / 1000);
     // The token count is the only thing that moves while it thinks, so it goes
     // beside the clock rather than nowhere.
@@ -1872,14 +2220,42 @@
       <span class="ws-thinking-what">${esc(label)}…</span><span class="ws-thinking-for">${thought}${secs}s</span></div>`;
   }
 
+  /** A turn that draws nothing at all: a thought the CLI never sent the text
+   *  of and never counted, an answer whose first token has not been revealed
+   *  yet. It must not break a run of steps in two - one of these between every
+   *  pair of tools is what turned a fold of ten steps into ten unfolded ones. */
+  function drawsNothing(turn) {
+    if (turn.role === "thought") return !turn.text.trim() && !turn.tokens;
+    if (NOT_SAID.has(turn.role)) return false;
+    return !revealed(turn);
+  }
+
+  /** Whether a turn belongs inside the run of steps being collected rather
+   *  than after it. Thinking sits with the steps it happened between - it is
+   *  the same work - unless its text arrived, which is worth reading on its
+   *  own. */
+  const joinsRun = (turn) => turn.role === "tool" || drawsNothing(turn)
+    || (turn.role === "thought" && !turn.text.trim());
+
   function agentLogHtml(tab) {
     const parts = [];
     for (let i = 0; i < tab.turns.length; i++) {
-      if (tab.turns[i].role !== "tool") { parts.push(agentTurnHtml(tab.turns[i], i, tab)); continue; }
-      let end = i;
-      while (end + 1 < tab.turns.length && tab.turns[end + 1].role === "tool") end += 1;
-      parts.push(agentStepsHtml(tab.turns.slice(i, end + 1), i, tab));
-      i = end;
+      const turn = tab.turns[i];
+      if (!joinsRun(turn)) {
+        if (!drawsNothing(turn)) parts.push(agentTurnHtml(turn, i, tab));
+        continue;
+      }
+      // Everything from here until something the agent said out loud is one
+      // run, whatever mixture of steps and silent thinking it is made of.
+      const steps = [];
+      let last = i - 1;
+      for (let at = i; at < tab.turns.length && joinsRun(tab.turns[at]); at++) {
+        if (drawsNothing(tab.turns[at])) continue;
+        steps.push({ turn: tab.turns[at], key: tab.turns[at].id || `${i}:${at}` });
+        last = at;
+      }
+      if (steps.length) parts.push(agentStepsHtml(steps, i, tab));
+      if (last > i) i = last;
     }
     if (isAgentBusy(tab)) parts.push(agentThinkingHtml(tab));
     else if (tab.receipt) parts.push(`<div class="ws-turn receipt">${esc(tab.receipt)}</div>`);
@@ -1897,7 +2273,10 @@
     if (isAgentBusy(tab) && !tab.clock) {
       tab.clock = setInterval(() => {
         const el = tab.log?.querySelector(".ws-thinking-for");
-        if (el) el.textContent = `${Math.round((Date.now() - (tab.startedAt || Date.now())) / 1000)}s`;
+        if (el) {
+          const thought = tab.thinkingTokens ? `${tab.thinkingTokens.toLocaleString()} thinking tokens · ` : "";
+          el.textContent = `${thought}${Math.round((Date.now() - (tab.startedAt || Date.now())) / 1000)}s`;
+        }
       }, 1000);
     } else if (!isAgentBusy(tab) && tab.clock) {
       clearInterval(tab.clock);
@@ -1981,6 +2360,51 @@
       r.repeat > 1 ? ` ×${r.repeat}` : ""}\n${r.line}`)
     .join("\n");
 
+  /** The windows the CLI counts usage against, in the order they run out. */
+  const LIMIT_WINDOWS = { five_hour: "5-hour", seven_day: "7-day", seven_day_opus: "7-day Opus", opus_week: "Opus week" };
+
+  /** When a window comes back, said the shortest way that is still true: a
+   *  clock for today, a day and a clock for anything further out. */
+  function limitResets(at) {
+    const when = Number(at) ? new Date(Number(at) * 1000) : null;
+    if (!when || Number.isNaN(when.getTime())) return "";
+    const clock = when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const soon = when.getTime() - Date.now() < 20 * 60 * 60 * 1000;
+    return soon ? `resets ${clock}` : `resets ${when.toLocaleDateString([], { weekday: "short" })} ${clock}`;
+  }
+
+  /** How much of the account's usage this conversation has spent, as a bar
+   *  that is rewritten in place. The CLI says this on nearly every turn, so
+   *  saying it in the log meant saying the same sentence again and again -
+   *  and a percentage that only ever grows is worth a meter, not a message. */
+  function renderAgentLimit(tab) {
+    if (!tab.limitBar) return;
+    const info = tab.limit;
+    const unified = info?.unifiedWindows;
+    const windows = unified
+      ? Object.entries(unified).map(([key, w]) => ({ key, ...w }))
+      : info ? [{ key: info.rateLimitType || "five_hour", utilization: info.utilization, resetsAt: info.resetsAt }] : [];
+    if (!windows.length) { tab.limitBar.hidden = true; return; }
+    const order = Object.keys(LIMIT_WINDOWS);
+    windows.sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
+    const worst = Math.max(...windows.map((w) => Number(w.utilization) || 0));
+    const out = info.status === "rejected" || worst >= 1;
+    // The CLI's own word for it beats the number: it is what decides whether
+    // the next turn starts.
+    const warn = !out && (worst >= 0.8 || (info.status && info.status !== "allowed"));
+    tab.limitBar.className = `ws-agent-limit${out ? " out" : warn ? " warn" : ""}`;
+    tab.limitBar.hidden = false;
+    tab.limitBar.innerHTML = windows.map((w) => {
+      const pct = Math.round(Math.min(1, Math.max(0, Number(w.utilization) || 0)) * 100);
+      return `<span class="ws-limit-w">
+        <span class="ws-limit-k">${esc(LIMIT_WINDOWS[w.key] || String(w.key).replace(/_/g, " "))}</span>
+        <span class="ws-limit-meter"><i style="width:${pct}%"></i></span>
+        <span class="ws-limit-v">${pct}%</span>
+        <span class="ws-limit-r">${esc(limitResets(w.resetsAt))}</span>
+      </span>`;
+    }).join("") + (info.isUsingOverage ? '<span class="ws-limit-note">on extra usage</span>' : "");
+  }
+
   function toggleDebug(panel, tab) {
     tab.debugOpen = !tab.debugOpen;
     tab.debug.hidden = !tab.debugOpen;
@@ -1997,10 +2421,23 @@
 
     const busy = isAgentBusy(tab);
     syncThinkingClock(panel, tab);
-    tab.input.placeholder = spec.placeholder;
+    // The box stays live while a turn runs. A new question interrupts that
+    // turn and starts at once, so its wording must not imply a hidden queue.
+    tab.input.placeholder = busy ? `Interrupt ${spec.label} with a new message` : spec.placeholder;
     tab.ask.hidden = !tab.status?.installed;
-    tab.ask.querySelector(".ws-chat-send").hidden = busy;
+    const send = tab.ask.querySelector(".ws-chat-send");
+    send.hidden = false;
+    send.classList.toggle("interrupting", busy);
+    send.title = busy ? "Interrupt and send now (Enter)" : "Send (Enter)";
     tab.ask.querySelector(".ws-chat-stop").hidden = !busy;
+    if (tab.modelPicker) {
+      tab.modelPicker.hidden = tab.kind !== "claude";
+      tab.modelSelect.disabled = tab.started || busy;
+      tab.modelSelect.value = tab.model;
+      tab.modelPicker.querySelector("small").textContent = tab.started
+        ? `${AGENTS.claude.models.find((model) => model.id === tab.model)?.label || tab.model} is locked for this session`
+        : "Choose before you send the first message";
+    }
 
     if (tab.status === null) {
       tab.log.innerHTML = `<div class="ws-chat-card checking">${icon("progress_activity")}Checking if ${esc(spec.label)} is installed...</div>`;
@@ -2064,6 +2501,14 @@
     let status;
     try {
       status = await invoke(spec.statusCmd);
+      if (spec.localModel) {
+        const model = status.models?.find((item) => item.name === workspaceLocalModel(spec));
+        status = {
+          installed: Boolean(status.available && model),
+          path: "",
+          version: model?.displayName || model?.name || status.version || "",
+        };
+      }
     } catch {
       status = { installed: false, path: "", version: "" };
     }
@@ -2080,6 +2525,10 @@
   async function openAgentTerminal(panel, tab, { login = false } = {}) {
     const spec = AGENTS[tab.kind];
     if (!spec) return;
+    if (isAgentBusy(tab)) {
+      say(`Wait for ${spec.label} to finish, or stop it before opening the same conversation in a terminal`);
+      return;
+    }
 
     // One terminal at a time, and it belongs to a conversation. Showing the
     // one already open was right only when it was this tab's - for any other
@@ -2095,7 +2544,7 @@
     let launch;
     try {
       if (tab.kind === "claude") {
-        const command = await invoke(spec.terminalCmd, { session: tab.session || null });
+        const command = await invoke(spec.terminalCmd, { session: tab.session || null, model: tab.model || null });
         launch = { command, session: tab.session || null };
       } else if (tab.kind === "cursor") {
         launch = await invoke(spec.terminalCmd, { cwd: projectPath, session: tab.session || null, login });
@@ -2221,30 +2670,49 @@
     // remembered here, because the events cannot say.
     panel.installing.set(tab.kind, tab.id);
     try {
-      await busy(`Installing ${AGENTS[tab.kind].label}`, () => invoke(AGENTS[tab.kind].installCmd, { window: label }));
+      const spec = AGENTS[tab.kind];
+      const args = spec.localModel ? { model: workspaceLocalModel(spec) } : { window: label };
+      await busy(`Installing ${spec.label}`, () => invoke(spec.installCmd, args));
     } catch (err) {
       if (pre) pre.textContent += `\n${err}`;
       say(String(err));
     }
   }
 
+  /** Sends what is in the box. A message submitted during a running turn
+   *  replaces that turn immediately: these CLIs consume one closed stdin per
+   *  turn, so interruption plus a resumed turn is their live follow-up path. */
   async function sendToAgent(panel, tab) {
     const spec = AGENTS[tab.kind];
     const text = tab.input.value.trim();
-    if (!spec || !text || isAgentBusy(tab)) return;
-
+    if (!spec || !text) return;
+    if (agentOverlay.session?.tabId === tab.id) {
+      say(`Close the ${spec.label} terminal before continuing the same conversation here`);
+      return;
+    }
+    const replacing = isAgentBusy(tab);
+    const replacedRun = tab.runId || tab.id;
     tab.input.value = "";
-    tab.input.style.height = "auto";
+    growAgentInput(tab);
+    if (replacing) {
+      endAgentTurn(tab);
+      tab.turns.push({ role: "tool", icon: "stop_circle", text: "Interrupted by your next message", state: "err" });
+    }
     tab.turns.push({ role: "you", text });
 
     tab.startedAt = Date.now();
     tab.running = true;
     tab.receipt = "";
-    tab.phase = "";
+    tab.phase = `Starting ${spec.label}`;
     tab.thought = null;
     tab.deniedSomething = false;
     tab.sawDeltas = false;
     tab.thinkingTokens = 0;
+    tab.localSteps = new Map();
+    // Every run has its own routing id. Output from the process just replaced
+    // can still be crossing the event queue; it must not finish or write into
+    // the new turn that is already on screen.
+    tab.runId = `${tab.id}:${newSessionId()}`;
     // The record starts fresh with the question, so what is kept is always
     // this turn rather than an afternoon of them.
     tab.raw = [];
@@ -2257,22 +2725,66 @@
     renderAgentTabs(panel);
 
     try {
-      if (tab.kind === "claude") {
+      if (replacing) {
+        await invoke(spec.cancelCmd, spec.localModel ? undefined : { tab: replacedRun });
+      }
+      if (spec.localModel) {
+        const history = tab.turns
+          .filter((turn) => turn.role === "you" || isSaid(turn))
+          .slice(0, -1)
+          .map((turn) => `${turn.role === "you" ? "User" : "Assistant"}: ${turn.text}`)
+          .join("\n\n");
+        const mode = permissionMode(tab);
+        const canEdit = ["auto", "acceptEdits"].includes(mode);
+        const area = mode === "auto" ? "project-agent" : canEdit ? "project-write" : "project";
+        const prompt = `You are Qwen, a private local coding agent working in ${projectPath}. Inspect relevant files before acting.${mode === "auto" ? " You may edit files and run project checks. Evaluate the result and iterate when checks fail." : canEdit ? " You may edit project files, but do not run commands." : " Plan and inspect only; do not change files or run commands."}\n\nConversation:\n${history}\n\nAssistant:`;
+        const args = {
+          requestId: tab.runId,
+          model: workspaceLocalModel(spec),
+          question: text,
+          prompt,
+          projectContext: `Project: ${projectName}\nRoot: ${projectPath}`,
+          roots: [projectPath],
+          areas: [{ id: area, name: "Project coding agent", description: "Inspect, change, and evaluate the open project" }],
+          // A workspace agent must be able to inspect first and decide its next
+          // action from each result. The normal assistant loop does that for up
+          // to toolCallCap calls; the separate Think pipeline only permits one
+          // tool call per pre-written step and adds a costly model pass before
+          // Qwen can read the project at all.
+          think: false,
+          toolCallCap: 100,
+        };
+        // Cancelling llama.cpp is cooperative: its command returns as soon as
+        // the stop is requested, while the model thread may need another
+        // moment to release the single local-agent slot. Retry only that brief
+        // handoff; all other launch errors still surface immediately.
+        for (let attempt = 0; ; attempt++) {
+          try {
+            await invoke(spec.sendCmd, args);
+            break;
+          } catch (err) {
+            if (!replacing || attempt >= 100 || !/already answering/i.test(String(err))) throw err;
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+        }
+        say("Local Qwen is working");
+      } else if (tab.kind === "claude") {
         await invoke(spec.sendCmd, {
           window: label,
-          tab: tab.id,
+          tab: tab.runId,
           prompt: text,
           cwd: projectPath,
           session: tab.session || null,
           resume: tab.started,
           permissionMode: permissionMode(tab),
+          model: tab.model || null,
         });
         tab.started = true;
         say("Claude is working");
       } else {
         await invoke(spec.sendCmd, {
           window: label,
-          tab: tab.id,
+          tab: tab.runId,
           prompt: text,
           cwd: projectPath,
           session: tab.session || null,
@@ -2292,6 +2804,12 @@
   // though the turns inside them do not - matching the pre-tabs limitation
   // that a chat's own history was never persisted either.
   const AGENT_TABS_KEY = `wint.workspace.agent.tabs.v1:${projectPath.toLowerCase()}`;
+  const QWEN_HISTORY_KEY = `wint.workspace.agent.qwen-history.v1:${projectPath.toLowerCase()}`;
+
+  const loadQwenHistory = () => {
+    try { return JSON.parse(localStorage.getItem(QWEN_HISTORY_KEY) || "[]"); }
+    catch { return []; }
+  };
 
   const loadAgentTabs = () => {
     try {
@@ -2304,8 +2822,13 @@
 
   const saveAgentTabs = (panel) => {
     try {
-      const tabs = [...panel.tabs.values()].map((t) => ({ id: t.id, kind: t.kind, pane: t.pane, session: t.session || null, started: Boolean(t.started), title: t.title || "", mode: permissionMode(t) }));
+      const tabs = [...panel.tabs.values()].map((t) => ({ id: t.id, kind: t.kind, pane: t.pane, session: t.session || null, started: Boolean(t.started), title: t.title || "", mode: permissionMode(t), model: t.model || "", ...(t.kind === "qwen" ? { turns: t.turns } : {}) }));
       localStorage.setItem(AGENT_TABS_KEY, JSON.stringify({ tabs, active: panel.active, splitRatio: panel.splitRatio }));
+      const history = new Map(loadQwenHistory().map((item) => [item.id, item]));
+      for (const tab of tabs.filter((item) => item.kind === "qwen" && item.turns?.length)) {
+        history.set(tab.id, { id: tab.id, title: tab.title || agentTabTitle(tab), turns: tab.turns, modified: Date.now() });
+      }
+      localStorage.setItem(QWEN_HISTORY_KEY, JSON.stringify([...history.values()].sort((a, b) => b.modified - a.modified).slice(0, 50)));
     } catch {}
   };
 
@@ -2347,7 +2870,8 @@
       : `<span class="quiet">No conversation open</span>`;
     for (const button of actions.querySelectorAll("[data-dock]")) {
       const isHistory = button.dataset.dock === "history";
-      button.disabled = !tab || (isHistory && !spec.sessionsCmd);
+      const isTerminal = button.dataset.dock === "terminal";
+      button.disabled = !tab || (isHistory && !spec.sessionsCmd && !spec.localHistory) || (isTerminal && !spec.terminalCmd);
       if (button.dataset.dock === "debug") button.classList.toggle("on", Boolean(tab?.debugOpen));
       if (button.dataset.dock === "mode" && tab) {
         const mode = PERMISSION_MODES[permissionMode(tab)];
@@ -2355,7 +2879,7 @@
         button.classList.toggle("warn", permissionMode(tab) !== DEFAULT_PERMISSION_MODE);
       }
       if (isHistory) {
-        button.title = !tab || spec.sessionsCmd
+        button.title = !tab || spec.sessionsCmd || spec.localHistory
           ? "Earlier conversations in this project"
           : `${spec.product} does not keep conversations WinT can read back`;
       }
@@ -2420,6 +2944,17 @@
 
   async function showAgentHistory(panel, tab, menu) {
     const spec = AGENTS[tab.kind];
+    if (spec?.localHistory) {
+      const sessions = loadQwenHistory();
+      menu.innerHTML = `<div class="ws-chat-menu-label">Earlier conversations</div>`
+        + (sessions.length
+          ? sessions.map((s) => `<button type="button" data-session="${esc(s.id)}" data-session-title="${esc(s.title || "")}" title="${esc(s.title || s.id)}">
+              <strong>${esc(s.title || "Untitled conversation")}</strong>
+              <small>${esc(whenAgo(s.modified))} Â· ${s.turns.filter((t) => t.role === "you").length} questions</small>
+            </button>`).join("")
+          : `<div class="ws-agent-history-note">Nothing here yet.</div>`);
+      return;
+    }
     if (!spec?.sessionsCmd) return;
     menu.innerHTML = `<div class="ws-chat-menu-label">Earlier conversations</div>
       <div class="ws-agent-history-note">${icon("progress_activity")}Reading transcripts…</div>`;
@@ -2445,6 +2980,15 @@
    *  next question sent resumes that session rather than starting a new one. */
   async function loadAgentSession(panel, tab, id, title = "") {
     const spec = AGENTS[tab.kind];
+    if (spec?.localHistory) {
+      const saved = loadQwenHistory().find((session) => session.id === id);
+      if (!saved) return;
+      tab.turns = saved.turns.map((turn) => ({ ...turn, shown: turn.text?.length || 0 }));
+      tab.title = title || saved.title || "";
+      tab.localSteps = new Map();
+      saveAgentTabs(panel);
+      return renderAgentTab(panel, tab);
+    }
     if (!spec?.transcriptCmd || tab.streaming) return;
     tab.log.innerHTML = `<div class="ws-chat-card checking">${icon("progress_activity")}Opening that conversation…</div>`;
     let turns;
@@ -2457,6 +3001,7 @@
     tab.session = id;
     tab.started = true;
     tab.openSteps = new Set();
+    tab.openChanges = new Set();
     // Nothing here is arriving live, so every answer is already fully written
     // out rather than typing itself back in a week later.
     tab.turns = turns.map((t) => ({ ...t, shown: t.text.length }));
@@ -2505,7 +3050,7 @@
     saveAgentTabs(panel);
   }
 
-  function createAgentTab(panel, kind, { pane = 0, id, session, started = false, title = "", mode = DEFAULT_PERMISSION_MODE, activate = true } = {}) {
+  function createAgentTab(panel, kind, { pane = 0, id, session, started = false, title = "", turns = [], mode = DEFAULT_PERMISSION_MODE, model = "", activate = true } = {}) {
     const fresh = freshAgentState(kind);
     const tab = {
       id: id || newSessionId(),
@@ -2516,7 +3061,7 @@
       // Set once a conversation has a name of its own - opened from history, or
       // the first thing asked in it. Empty reads as "New conversation".
       title,
-      turns: [],
+      turns: turns.map((turn) => ({ ...turn, shown: turn.text?.length || 0 })),
       streaming: null,
       // A turn is in flight (running) whether or not text is arriving; the
       // live bubble (streaming) comes and goes within it, once per stretch
@@ -2529,7 +3074,11 @@
       receipt: "",
       status: fresh.status,
       needsSignIn: fresh.needsSignIn,
+      model: AGENTS[kind].models?.some((item) => item.id === model) ? model : fresh.model,
       openSteps: new Set(),
+      // Which file changes the reader has opened past their first lines, by
+      // the id of the step that made them.
+      openChanges: new Set(),
       // Which long blocks (a pasted wall of text, a stretch of thinking) the
       // reader has opened, by turn index.
       openTurns: new Set(),
@@ -2540,6 +3089,9 @@
       // over it is open.
       raw: [],
       debugOpen: false,
+      // The last usage the CLI reported, drawn as a bar above the box rather
+      // than as a line in the log: it is one fact that changes, not news.
+      limit: null,
       startedAt: 0,
       clock: null,
     };
@@ -2554,7 +3106,12 @@
         </header>
         <div class="ws-debug-lines"></div>
       </div>
+      <div class="ws-agent-limit" hidden></div>
       <form class="ws-chat-ask" hidden>
+        <label class="ws-agent-model" hidden>
+          <span>${icon("neurology")}<strong>Model for this session</strong><small></small></span>
+          <select aria-label="Model for this session">${(AGENTS[kind].models || []).map((item) => `<option value="${esc(item.id)}">${esc(item.label)} — ${esc(item.note)}</option>`).join("")}</select>
+        </label>
         <div class="ws-chat-row">
           <textarea rows="1" placeholder="" spellcheck="false"></textarea>
           <button type="submit" class="ws-chat-send" title="Send (Enter)">${icon("send")}</button>
@@ -2565,20 +3122,26 @@
     tab.log = el.querySelector(".ws-chat-log");
     tab.debug = el.querySelector(".ws-agent-debug");
     tab.ask = el.querySelector(".ws-chat-ask");
+    tab.limitBar = el.querySelector(".ws-agent-limit");
     tab.input = el.querySelector("textarea");
+    tab.modelPicker = el.querySelector(".ws-agent-model");
+    tab.modelSelect = tab.modelPicker.querySelector("select");
     panel.views.appendChild(el);
 
     tab.input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); tab.ask.requestSubmit(); }
     });
-    tab.input.addEventListener("input", () => {
-      tab.input.style.height = "auto";
-      tab.input.style.height = `${Math.min(160, tab.input.scrollHeight)}px`;
+    tab.input.addEventListener("input", () => growAgentInput(tab));
+    tab.modelSelect.addEventListener("change", () => {
+      if (tab.started || !AGENTS[tab.kind].models?.some((item) => item.id === tab.modelSelect.value)) return;
+      tab.model = tab.modelSelect.value;
+      saveAgentTabs(panel);
+      renderAgentTab(panel, tab);
     });
     tab.ask.addEventListener("submit", (e) => { e.preventDefault(); sendToAgent(panel, tab); });
     tab.ask.querySelector(".ws-chat-stop").addEventListener("click", () => {
       const spec = AGENTS[tab.kind];
-      if (spec) invoke(spec.cancelCmd, { tab: tab.id }).catch(() => {});
+      if (spec) invoke(spec.cancelCmd, spec.localModel ? undefined : { tab: tab.runId || tab.id }).catch(() => {});
       recordRaw(tab, "meta", "stopped by you");
       tagRaw(tab, "stopped");
       endAgentTurn(tab);
@@ -2587,6 +3150,12 @@
       renderAgentTabs(panel);
     });
     tab.el.addEventListener("click", (e) => {
+      const copyCode = e.target.closest("[data-copy-code]");
+      if (copyCode) {
+        const code = copyCode.closest(".ws-code")?.querySelector("code")?.textContent || "";
+        window.wintCopy.copy(code, copyCode, "Code copied").catch(() => say("Could not copy the code"));
+        return;
+      }
       const debugAction = e.target.closest("[data-debug]")?.dataset.debug;
       if (debugAction === "close") return toggleDebug(panel, tab);
       if (debugAction === "copy") {
@@ -2600,6 +3169,12 @@
       if (steps) {
         const key = Number(steps.dataset.steps);
         if (!tab.openSteps.delete(key)) tab.openSteps.add(key);
+        return renderAgentTab(panel, tab);
+      }
+      const change = e.target.closest("[data-change]");
+      if (change) {
+        const key = change.dataset.change;
+        if (!tab.openChanges.delete(key)) tab.openChanges.add(key);
         return renderAgentTab(panel, tab);
       }
       const more = e.target.closest("[data-more]");
@@ -2628,9 +3203,9 @@
   function closeAgentTab(panel, id) {
     const tab = panel.tabs.get(id);
     if (!tab) return;
-    if (tab.streaming) {
+    if (isAgentBusy(tab)) {
       const spec = AGENTS[tab.kind];
-      if (spec) invoke(spec.cancelCmd, { tab: tab.id }).catch(() => {});
+      if (spec) invoke(spec.cancelCmd, spec.localModel ? undefined : { tab: tab.runId || tab.id }).catch(() => {});
     }
     if (tab.clock) clearInterval(tab.clock);
     tab.el.remove();
@@ -2942,7 +3517,7 @@
         panel.splitRatio = Math.min(0.75, Math.max(0.25, saved.splitRatio || 0.5));
         for (const t of saved.tabs) {
           if (!AGENTS[t.kind]) continue;
-          createAgentTab(panel, t.kind, { pane: t.pane === 1 ? 1 : 0, id: t.id, session: t.session, started: Boolean(t.started), title: t.title || "", mode: t.mode, activate: false });
+          createAgentTab(panel, t.kind, { pane: t.pane === 1 ? 1 : 0, id: t.id, session: t.session, started: Boolean(t.started), title: t.title || "", turns: t.kind === "qwen" ? (t.turns || []) : [], mode: t.mode, model: t.model, activate: false });
         }
         // Restoring with activate:false only sets paneActive for whichever
         // tab happened to land first overall - make sure a split's second
@@ -2986,7 +3561,9 @@
   function agentTabFor(payload) {
     if (payload.window !== label) return null;
     const panel = panels.get("agent");
-    return panel ? { panel, tab: panel.tabs.get(payload.tab) } : null;
+    if (!panel) return null;
+    const tab = panel.tabs.get(payload.tab) || [...panel.tabs.values()].find((candidate) => candidate.runId === payload.tab);
+    return tab ? { panel, tab } : null;
   }
 
   /** The tab an install is reporting to.
@@ -3153,6 +3730,21 @@
         tab.phase = STATUS_PHASES[msg.status] || "";
         return markAgentTabDirty(panel, tab);
       }
+      // Connection failures can spend minutes in exponential backoff. These
+      // are progress events, not debug-only bookkeeping: keep the latest
+      // attempt and its wait visible on the always-present activity line.
+      if (msg.subtype === "api_retry") {
+        const attempt = Number(msg.attempt) || 0;
+        const maximum = Number(msg.max_retries) || 0;
+        const delay = Number(msg.retry_delay_ms) || 0;
+        const count = attempt ? `attempt ${attempt}${maximum ? ` of ${maximum}` : ""}` : "request";
+        const wait = delay > 0
+          ? ` in ${delay >= 1000 ? `${Math.ceil(delay / 1000)}s` : `${delay}ms`}`
+          : "";
+        tab.phase = `Retrying ${count}${wait}`;
+        tagRaw(tab, `API retry · ${count}${wait}`);
+        return markAgentTabDirty(panel, tab);
+      }
       if (msg.subtype === "compact_boundary") {
         tagRaw(tab, "compacted");
         tab.turns.push({ role: "tool", icon: "compress", text: "Compacted the conversation", state: "ok" });
@@ -3163,7 +3755,13 @@
       // that moves during a long think, and the only honest way to say a
       // silent minute is being spent rather than wasted.
       if (msg.subtype === "thinking_tokens") {
-        tab.thinkingTokens = Number(msg.estimated_tokens) || 0;
+        // Some CLI versions report zero (or restart their estimate) between
+        // thinking blocks. Keep the best count seen for the whole turn so the
+        // status does not flash between a count and nothing.
+        tab.thinkingTokens = Math.max(tab.thinkingTokens || 0, Number(msg.estimated_tokens) || 0);
+        // Counted against the thought it belongs to as well as against the
+        // turn, so the log keeps a line for a think that left no words.
+        if (tab.thought) tab.thought.tokens = tab.thinkingTokens;
         tagRaw(tab, `thinking · ${tab.thinkingTokens} tokens`);
         return markAgentTabDirty(panel, tab);
       }
@@ -3181,20 +3779,16 @@
       return;
     }
 
-    // Only worth saying when it is about to cost something. A window that is
-    // merely being counted is not worth a line; one that has run out is why
-    // the next turn will not start.
+    // Usage arrives with nearly every turn and only ever climbs, so it is one
+    // bar above the box that is rewritten in place - never a line in the log,
+    // which is where the same warning used to be repeated turn after turn.
     if (msg.type === "rate_limit_event") {
       const info = msg.rate_limit_info || {};
-      if (info.status && info.status !== "allowed") {
-        tagRaw(tab, `rate limit · ${info.status}`);
-        const last = tab.turns[tab.turns.length - 1];
-        if (last?.role !== "notice") {
-          tab.turns.push({ role: "notice", text: `The ${(info.rateLimitType || "usage").replace(/_/g, " ")} limit is ${info.status}.` });
-        }
-        return markAgentTabDirty(panel, tab);
-      }
-      return tagRaw(tab, "rate limit · allowed", true);
+      tab.limit = info;
+      const quiet = !info.status || info.status === "allowed";
+      tagRaw(tab, `rate limit · ${info.status || "?"}`, quiet);
+      renderAgentLimit(tab);
+      return;
     }
 
     if (msg.type === "result") {
@@ -3590,6 +4184,195 @@
     renderAgentTabs(panel);
   }).catch(() => {});
 
+  // The local Qwen coding agent reuses the assistant runtime. Its request id
+  // is the workspace tab id, which keeps the shared assistant event stream
+  // isolated from the docked assistant and from other workspace tabs.
+  await listen("assistant:chunk", ({ payload }) => {
+    const panel = panels.get("agent");
+    const tab = panel && [...panel.tabs.values()].find((candidate) => candidate.runId === payload.requestId);
+    if (!tab || tab.kind !== "qwen") return;
+    if (!tab.streaming) {
+      tab.streaming = { role: "qwen", text: "", shown: 0 };
+      tab.turns.push(tab.streaming);
+    }
+    if (payload.kind === "replace") tab.streaming.text = payload.text || "";
+    else tab.streaming.text += payload.text || "";
+    if (payload.done) {
+      if (payload.error) tab.turns.push({ role: "error", text: payload.error });
+      tab.streaming = null;
+      endAgentTurn(tab);
+      saveAgentTabs(panel);
+      say(payload.error ? "Local Qwen reported a problem" : "Local Qwen answered");
+    }
+    renderAgentTab(panel, tab);
+    renderAgentTabs(panel);
+  }).catch(() => {});
+
+  await listen("assistant:step", ({ payload }) => {
+    const panel = panels.get("agent");
+    const tab = panel && [...panel.tabs.values()].find((candidate) => candidate.runId === payload.requestId);
+    if (!tab || tab.kind !== "qwen") return;
+    tab.localSteps ||= new Map();
+    let turn = tab.localSteps.get(payload.id);
+    if (!turn) {
+      turn = { role: "tool", icon: "build", text: payload.name, detail: "", state: "run" };
+      tab.localSteps.set(payload.id, turn);
+      tab.turns.push(turn);
+    }
+    turn.text = payload.name || turn.text;
+    turn.detail = payload.detail || turn.detail;
+    turn.state = payload.status === "error" ? "err" : payload.status === "done" ? "ok" : "run";
+    markAgentTabDirty(panel, tab);
+  }).catch(() => {});
+
+  await listen("assistant:step-chunk", ({ payload }) => {
+    const panel = panels.get("agent");
+    const tab = panel && [...panel.tabs.values()].find((candidate) => candidate.runId === payload.requestId);
+    const turn = tab?.localSteps?.get(payload.id);
+    if (!tab || tab.kind !== "qwen" || !turn) return;
+    turn.detail = `${turn.detail || ""}${payload.text || ""}`;
+    markAgentTabDirty(panel, tab);
+  }).catch(() => {});
+
+  await listen("assistant:model-progress", ({ payload }) => {
+    if (!AGENTS.qwen.localModels.some((model) => model.id === payload.model)) return;
+    const panel = panels.get("agent");
+    const id = panel?.installing.get("qwen");
+    const tab = id && panel.tabs.get(id);
+    const pre = tab?.log?.querySelector(".ws-chat-install");
+    if (pre) pre.textContent = payload.error || payload.detail || `${payload.phase || "Downloading"} ${payload.downloaded || 0} / ${payload.total || 0}`;
+    if (!payload.done || !panel || !tab) return;
+    panel.installing.delete("qwen");
+    if (payload.error) say(payload.error);
+    else checkAgent(panel, tab, { force: true }).catch(() => {});
+  }).catch(() => {});
+
+  /* ------------------------------------ the port a server could not have */
+
+  // A dev server that asks for a port, finds it taken and quietly settles for
+  // another one leaves the developer with the wrong address to open and a
+  // second copy of yesterday's server still running. The terminal says it in
+  // one line; this is the offer to do something about it - free the port and
+  // start the command over.
+  //
+  // A card rather than a dialog on purpose: nothing here is urgent, and a
+  // modal over a terminal that is still printing would be in the way. Anyone
+  // who never wants the offer can say so on the card itself.
+  const PORT_OFFER_KEY = "wint.workspace.portOffer";
+  const portOfferMuted = () => { try { return localStorage.getItem(PORT_OFFER_KEY) === "off"; } catch { return false; } };
+  const mutePortOffer = (muted) => { try { localStorage.setItem(PORT_OFFER_KEY, muted ? "off" : "on"); } catch {} };
+
+  /** The card on screen, if there is one: the port it is about and the
+   *  terminal that complained, so the retry goes back where it came from. */
+  let portOffer = null;
+
+  const closePortOffer = () => { portOffer?.el.remove(); portOffer = null; };
+
+  const portOfferStatus = (text, bad = false) => {
+    const line = portOffer?.el.querySelector(".ws-port-offer-status");
+    if (!line) return;
+    line.textContent = text;
+    line.classList.toggle("bad", bad);
+    line.hidden = !text;
+  };
+
+  const portHolderName = (row) => row?.process || row?.executablePath?.split(/[\/]/).pop() || "a process";
+
+  /** Whatever is listening on the port now. Read at the moment it is needed
+   *  rather than kept: between the server complaining and the click, the thing
+   *  holding the port may well have gone on its own. */
+  const holderOfPort = (port) => invoke("port_list")
+    .then((rows) => (rows || []).find((row) => (row.ports || []).some((binding) => binding.port === port)) || null)
+    .catch(() => null);
+
+  /** Frees the port and runs the same command again: interrupt whatever the
+   *  terminal is running now, then recall the last command from the shell's
+   *  own history and press Enter. The shell is the one that knows what was
+   *  typed, so the shell is the one asked. */
+  const freePortAndRetry = async () => {
+    if (!portOffer) return;
+    const { port, id } = portOffer;
+    const button = portOffer.el.querySelector('[data-port-offer="kill"]');
+    button.disabled = true;
+    portOfferStatus(`Looking for what is holding ${port}…`);
+    const holder = await holderOfPort(port);
+    if (!holder) {
+      portOfferStatus(`Nothing is listening on ${port} any more.`, true);
+      button.disabled = false;
+      return;
+    }
+    portOfferStatus(`Stopping ${portHolderName(holder)} (PID ${holder.pid})…`);
+    try {
+      await invoke("port_kill", {
+        pid: holder.pid,
+        expectedExecutable: holder.executablePath || "",
+        expectedProcess: holder.process || "",
+        tree: true,
+      });
+    } catch (err) {
+      portOfferStatus(`Could not stop PID ${holder.pid}: ${String(err)}`, true);
+      button.disabled = false;
+      return;
+    }
+    if (!window.wintTermDock?.writeTo(id, "\x03")) {
+      portOfferStatus(`Freed ${port}, but that terminal has gone - start the command again yourself.`, true);
+      return;
+    }
+    portOfferStatus(`Freed ${port}. Running it again…`);
+    // The interrupt has to reach the program and the shell has to draw its
+    // prompt again before a recalled command means anything, and neither of
+    // those is something the terminal reports. This is the one place in the
+    // window that waits on a guess; guessing short costs a line of gibberish
+    // in the terminal rather than anything broken.
+    setTimeout(() => {
+      window.wintTermDock?.writeTo(id, "\x1b[A");
+      setTimeout(() => window.wintTermDock?.writeTo(id, "\r"), 150);
+      setTimeout(closePortOffer, 1800);
+    }, 800);
+  };
+
+  /** Puts the offer on screen for a port a terminal in this window could not
+   *  have. The same port complaining twice does not stack a second card. */
+  const showPortOffer = ({ id, port, fallback }) => {
+    if (portOfferMuted() || portOffer?.port === port) return;
+    closePortOffer();
+    const who = window.wintTermDock?.label(id) || "The terminal";
+    const el = document.createElement("section");
+    el.className = "ws-port-offer";
+    el.setAttribute("role", "status");
+    el.innerHTML = `
+      <span class="ws-port-offer-icon">${icon("lan")}</span>
+      <div class="ws-port-offer-copy">
+        <strong>Port ${port} was already taken</strong>
+        <p>${esc(who)} asked for ${port}${fallback ? ` and settled for ${fallback}` : ""}. Free ${port} and start it again?</p>
+        <p class="ws-port-offer-status" hidden></p>
+      </div>
+      <div class="ws-port-offer-actions">
+        <button class="ws-btn primary" type="button" data-port-offer="kill">Free ${port} and retry</button>
+        <button class="ws-btn" type="button" data-port-offer="dismiss">Not now</button>
+      </div>
+      <label class="ws-port-offer-mute"><input type="checkbox" data-port-offer="mute" /> Don't show this again</label>`;
+    document.body.appendChild(el);
+    portOffer = { el, id, port };
+    el.addEventListener("click", (event) => {
+      const action = event.target.closest("[data-port-offer]")?.dataset.portOffer;
+      if (action === "kill") freePortAndRetry().catch((err) => portOfferStatus(String(err), true));
+      if (action === "dismiss") closePortOffer();
+    });
+    el.querySelector('[data-port-offer="mute"]').addEventListener("change", (event) => {
+      mutePortOffer(event.target.checked);
+      if (event.target.checked) portOfferStatus("Offers about taken ports are off for every workspace.");
+    });
+    // Say what is on the port while it is being read, so the button is never a
+    // leap in the dark. A lookup that finds nothing changes nothing - the
+    // click looks again anyway.
+    holderOfPort(port).then((holder) => {
+      if (portOffer?.el !== el || !holder) return;
+      const line = el.querySelector(".ws-port-offer-copy p");
+      line.textContent = `${line.textContent} It is held by ${portHolderName(holder)} (PID ${holder.pid}).`;
+    });
+  };
+
   /* ----------------------------------------------------------------- go */
 
   // Drawn before anything is subscribed to or awaited. This window has no
@@ -3614,6 +4397,13 @@
     browserUrl = payload.url;
     const panel = panels.get("browser");
     if (panel?.address && document.activeElement !== panel.address) panel.address.value = payload.url;
+  }).catch(() => {});
+
+  // The other line the window acts on: a port a program in one of this
+  // window's terminals asked for and could not have.
+  listen("term:port-taken", ({ payload }) => {
+    if (!payload?.port || !window.wintTermDock?.has(payload.id)) return;
+    showPortOffer(payload);
   }).catch(() => {});
 
   listen("term:serving", ({ payload }) => {

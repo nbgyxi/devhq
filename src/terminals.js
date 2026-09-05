@@ -1815,6 +1815,18 @@ window.wintTermDock = {
     session.view.focus();
     return true;
   },
+  // Writing to one named terminal rather than to whichever is in front: the
+  // window acts on what a *particular* terminal printed, and the answer has to
+  // go back to that terminal even if the user has since changed tabs. The tab
+  // is brought forward first, so the keystrokes are visibly landing somewhere.
+  writeTo: (id, data) => {
+    const session = terms.sessions.get(id);
+    if (!session) return false;
+    if (terms.active !== id) setActive(id);
+    session.view.send(data);
+    session.view.focus();
+    return true;
+  },
   fit: fitVisible,
 };
 

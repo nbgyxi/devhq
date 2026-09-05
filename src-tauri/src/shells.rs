@@ -294,14 +294,23 @@ fn run(app: &AppHandle, entry: &Entry) -> Result<(), String> {
         entry.size,
     );
     let profile = entry.profile;
-    let mut report = |n: u64, total: u64| {
+    let mut report = |t: &download::Tick| {
+        let rate = if t.speed > 1.0 {
+            format!(" · {:.1} MB/s", t.speed / 1e6)
+        } else {
+            String::new()
+        };
         emit(
             app,
             profile,
             "download",
-            format!("{} of {}", megabytes(n), megabytes(total)),
-            n,
-            total,
+            format!(
+                "{} of {}{rate}",
+                megabytes(t.done),
+                megabytes(t.total)
+            ),
+            t.done,
+            t.total,
         )
     };
     download::fetch(

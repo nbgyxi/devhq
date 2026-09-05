@@ -16,9 +16,107 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.86.2",
+      date: "2026-09-05",
+      title: "Copy and redirect an agent",
+      changes: [
+        ["fix", "Text in a workspace agent conversation can now be selected and copied, including answers, code, and other transcript output."],
+        ["new", "Every code block in a workspace agent answer now has its own Copy button, with confirmation when the code reaches the clipboard."],
+        ["better", "Sending another message while any workspace agent, including Codex, is working now interrupts the current turn and delivers the new message immediately instead of holding it in a queue."],
+      ],
+    },
+    {
+      version: "0.86.1",
+      date: "2026-09-05",
+      title: "Usage sits above the box, not in the conversation",
+      changes: [
+        ["better", "How much of your five-hour and weekly usage is spent now shows as a small bar above the question box, with the percentage and when each window comes back. It is rewritten in place as the numbers move."],
+        ["fix", "The warning about being near the five-hour limit no longer drops into the conversation as a new message on turn after turn."],
+      ],
+    },
+    {
+      version: "0.86.0",
+      date: "2026-09-05",
+      title: "See the page at phone width",
+      changes: [
+        ["new", "The browser panel can now draw the page at a laptop, tablet or phone width. The buttons sit at the end of the address bar, and they narrow the page inside the panel - the splitters stay exactly where you put them, so the terminal and the file tree do not have to shrink for a look at a narrow layout."],
+        ["better", "The site really is that narrow, not scaled down: the browser is genuinely resized, so media queries and responsive layouts behave as they would on the device. The width you picked is remembered per project."],
+      ],
+    },
+    {
+      version: "0.85.0",
+      date: "2026-09-05",
+      title: "Keep typing while the agent works",
+      changes: [
+        ["new", "You can now write the next message to a workspace agent while it is still working. Enter no longer does nothing: the message is queued in the conversation, shown where it will land, and sent the instant the running turn finishes - so a follow-up you thought of halfway through does not wait for you to notice the agent stopped."],
+        ["better", "A queued message can be taken back out with the cross on it, which puts the text back in the box. Pressing Stop does the same for everything still waiting, and a turn that ends in an error hands the queue back rather than firing it at a CLI that just failed."],
+      ],
+    },
+    {
+      version: "0.84.0",
+      date: "2026-09-05",
+      title: "Each workspace browses as itself",
+      changes: [
+        ["new", "The browser panel now keeps its own cookies, logins and site storage per workspace. Signing in to a site in one project no longer signs you in everywhere, and two projects can be signed in as two different accounts at once. Sign-ins survive closing the panel and quitting the app - but the first open after this update starts fresh, so expect to sign in once more per workspace."],
+        ["fix", "Opening a workspace that is already open focuses that window instead of failing. Once its browser panel was open the window stopped being recognised as open at all, so the second attempt tried to build it again and reported an error."],
+      ],
+    },
+    {
+      version: "0.83.0",
+      date: "2026-09-05",
+      title: "The workspace offers to free a port that was taken",
+      changes: [
+        ["new", "A dev server that cannot have the port it asked for - Vite, Next, and the 'Using alternative port' line - now gets an offer in the corner of the workspace: free that port and start the command again. It names what is holding the port and which process it kills."],
+        ["new", "The offer carries a 'Don't show this again' box for anyone who would rather deal with taken ports themselves."],
+      ],
+    },
+    {
+      version: "0.82.3",
+      date: "2026-09-05",
+      title: "Agent steps fold, and edits show what they changed",
+      changes: [
+        ["fix", "A long run of agent steps folds down to the three most recent again, behind an 'and 7 more' line that opens the rest. Thinking between two tools was quietly breaking the run apart, so ten steps were drawn as ten unfolded lines."],
+        ["new", "A step that edits or writes a file shows the first three changed lines under it, added and removed, and opens the whole change in place."],
+        ["new", "Thinking the CLI counts but will not send the text of keeps its own line among the steps, with the number of tokens it took, instead of vanishing."],
+      ],
+    },
+    {
+      version: "0.82.2",
+      date: "2026-09-05",
+      title: "Model downloads resume where they stopped",
+      changes: [
+        ["new", "A model download that is cancelled or interrupted keeps the megabytes it already fetched, and starting it again continues from that point instead of from zero. The model list shows how much is kept, offers Resume, and can discard it."],
+        ["better", "Downloads report the exact megabytes transferred, the percentage, the current speed and the time remaining, updated several times a second — a multi-gigabyte model no longer sits on the same rounded figure for minutes."],
+        ["better", "Shell downloads show their current speed alongside the megabytes transferred, and resume the same way."],
+        ["fix", "Deleting a model also removes any partial download left on disk, so cancelled downloads cannot quietly hold gigabytes."],
+      ],
+    },
+    {
+      version: "0.82.1",
+      date: "2026-09-05",
+      title: "Local Qwen fits on a smaller machine",
+      changes: [
+        ["new", "The Qwen workspace agent now offers Qwen2.5-Coder 7B as its default local model: a verified 4.7 GB download recommended for machines with 8 GB of memory, while the stronger 30B model remains available."],
+        ["better", "Settings › Models shows downloaded models by their friendly names and gives each one an explicit Delete action with confirmation."],
+        ["fix", "Deleting a downloaded model clears it from every saved assistant conversation that selected it, so an old chat cannot remain pointed at a file that no longer exists."],
+      ],
+    },
+    {
+      version: "0.82.0",
+      date: "2026-09-04",
+      title: "Local Qwen can work through a project safely",
+      changes: [
+        ["new", "The Qwen workspace agent can inspect project files, make permission-scoped edits, and run declared checks through a repeated tool loop grounded in the open project."],
+        ["better", "Qwen starts investigating immediately instead of loading the large local model once just to create a plan before it can read a file."],
+        ["better", "Project writes stay below the open root, replace files atomically, reject files over 1 MB, and block repository metadata, dependency trees, build output, environment files, and private-key formats."],
+        ["better", "Only declared npm scripts or fixed Cargo test, check, clippy, and build commands can be used to verify Qwen's changes."],
+      ],
+    },
+    {
       version: "0.81.3",
       date: "2026-09-04",
       title: "A Cursor conversation reads in the order it happened",
+      buildChecksum: "24a51f0e9d5f30537dec46c78b63ae6c02d1d03de0c96eea653be2f0e0a4b34c",
       changes: [
         ["fix", "Cursor's answers and its steps are back in the order they happened. Everything it said was folded into the first bubble of the turn and every step piled up underneath, because nothing closed the answer when a tool started - so a turn that read a file, said something, then read another one came out as one paragraph with a stack of tools below it."],
         ["fix", "Two things Cursor said one after the other are two paragraphs again, not one sentence running into the next."],

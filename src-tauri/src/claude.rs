@@ -147,6 +147,7 @@ pub async fn claude_send(
     session: Option<String>,
     resume: bool,
     permission_mode: Option<String>,
+    model: Option<String>,
 ) -> Result<(), String> {
     let Some(path) = claude_path() else {
         return Err("Claude Code is not installed.".into());
@@ -182,6 +183,12 @@ pub async fn claude_send(
             .filter(|mode| matches!(*mode, "acceptEdits" | "auto" | "dontAsk" | "plan"))
         {
             cmd.arg("--permission-mode").arg(mode);
+        }
+        if let Some(model) = model
+            .as_deref()
+            .filter(|model| matches!(*model, "sonnet" | "opus" | "haiku"))
+        {
+            cmd.arg("--model").arg(model);
         }
 
         let mut child = cmd
@@ -258,7 +265,7 @@ pub async fn claude_send(
 /// conversations. The way out of anything the chat cannot do is the CLI itself:
 /// approving a command it wants to run, signing in, a slash command, plan mode.
 #[tauri::command]
-pub fn claude_terminal_command(session: Option<String>) -> Result<String, String> {
+pub fn claude_terminal_command(session: Option<String>, model: Option<String>) -> Result<String, String> {
     let path = claude_path().ok_or("Claude Code is not installed.")?;
     let quoted = format!("\"{}\"", path.display());
     let program = if path
@@ -271,9 +278,14 @@ pub fn claude_terminal_command(session: Option<String>) -> Result<String, String
     } else {
         quoted
     };
+    let model_arg = model
+        .as_deref()
+        .filter(|model| matches!(*model, "sonnet" | "opus" | "haiku"))
+        .map(|model| format!(" --model {model}"))
+        .unwrap_or_default();
     match session.as_deref().filter(|id| is_session_id(id)) {
-        Some(id) => Ok(format!("{program} --resume {id}")),
-        None => Ok(program),
+        Some(id) => Ok(format!("{program} --resume {id}{model_arg}")),
+        None => Ok(format!("{program}{model_arg}")),
     }
 }
 

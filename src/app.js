@@ -3934,17 +3934,17 @@ function skeletonView(p) {
   const note = p.stopped
     ? `${icon("do_not_disturb_on")}not read - the scan was stopped`
     : `${icon("hourglass_top")}reading git status...`;
-  const tech = state.compactTechOverview
-    ? `<div class="sk sk-line" style="width:62%"></div>`
+  const details = state.compactTechOverview
+    ? ""
     : `<div class="sk-row">
       <span class="sk sk-pill" style="width:58px"></span>
       <span class="sk sk-pill" style="width:44px"></span>
       <span class="sk sk-pill" style="width:70px"></span>
-    </div>`;
+    </div>
+    <div class="sk sk-line" style="width:72%"></div>`;
   return `<article class="card skeleton${p.stopped ? " stopped" : ""}" data-path="${esc(p.path)}">
     <div class="card-top"><div class="card-name">${esc(p.name)}</div></div>
-    ${tech}
-    <div class="sk sk-line" style="width:72%"></div>
+    ${details}
     <div class="sk-row">
       <span class="sk sk-pill" style="width:86px"></span>
       <span class="sk sk-pill" style="width:52px"></span>
@@ -4065,8 +4065,8 @@ function cardView(p) {
       }</div>
       <div class="card-top-end">${live}${fav}</div>
     </div>
-    ${p.tech.length ? `<div class="tags${state.compactTechOverview ? " compact" : ""}">${tags}${more}</div>` : ""}
-    ${p.description ? `<div class="desc">${esc(p.description)}</div>` : ""}
+    ${!state.compactTechOverview && p.tech.length ? `<div class="tags">${tags}${more}</div>` : ""}
+    ${!state.compactTechOverview && p.description ? `<div class="desc">${esc(p.description)}</div>` : ""}
     <div class="stats">${stats.join("")}</div>
     ${commit}
     ${cardActions(p)}
@@ -5305,7 +5305,7 @@ function renderSettings() {
             </div>
           </div>
           <label class="settings-row" for="setting-compact-tech">
-            <span><strong>Compact tech in overview</strong><small>Show technologies in a single neutral line instead of colored tags.</small></span>
+            <span><strong>Compact overview</strong><small>Hide technologies and descriptions so project cards stay compact and the same size.</small></span>
             <input class="setting-check" id="setting-compact-tech" type="checkbox" />
           </label>
           <label class="settings-row" for="setting-git-wording">

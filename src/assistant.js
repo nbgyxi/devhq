@@ -87,6 +87,9 @@
     return models;
   }
   function humanSize(bytes) { return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`; }
+  // Megabytes, grouped. A paused download is quoted in the same unit the live
+  // readout uses, so the two can be compared at a glance.
+  function megabytes(bytes) { return `${Math.round(bytes / 1e6).toLocaleString()} MB`; }
   async function send(text) {
     const current = chat();
     text = text.trim();
@@ -174,16 +177,17 @@
     layer.innerHTML = `<section class="assistant-models"><header><div><strong>Local AI models</strong><small>Downloads require your explicit action</small></div><button data-layer-close><span class="ms">close</span></button></header>
       <h3>Agent limits</h3><label class="assistant-tool-limit"><span><strong>Tool-call limit</strong><small>Maximum calls per answer (1-100)</small></span><input type="number" min="1" max="100" step="1" value="${data.toolCallCap}" data-ai-tool-cap aria-label="Tool-call limit"></label>
       ${!status?.available ? `<div class="assistant-runtime"><span class="ms">download</span><div><strong>Runtime downloads with your first model</strong><p>The 18 MB verified runtime is fetched on demand. It is not packaged in WinT, and nothing downloads until you choose a model.</p></div></div>` : ""}
-      <h3>Installed models</h3>${status?.models?.length ? status.models.map(m => `<div class="assistant-model-row"><span class="ms">check_circle</span><div><strong>${esc(m.name)}</strong><small>${esc(m.size)} · ${esc(m.modified)}</small></div><button data-use-model="${esc(m.name)}">Use</button><button data-delete-model="${esc(m.name)}" title="Delete model"><span class="ms">delete</span></button></div>`).join("") : `<p class="assistant-none">No local models installed.</p>`}
-      <h3>Available models</h3>${(status?.catalog || []).map(m => `<div class="assistant-model-row"><span class="ms">neurology</span><div><strong>${esc(m.displayName)}</strong><small>${humanSize(m.size)} · ${esc(m.recommendedMemory)} RAM · ${esc(m.license)}${m.toolCallingSupport ? " · tools" : ""}</small></div>${installed(m.id) ? `<button data-use-model="${m.id}">Use</button>` : `<button data-pull-model="${m.id}" ${pull ? "disabled" : ""}>Download</button>`}</div>`).join("")}
-      ${pull ? `<div class="assistant-pull"><span>${esc(pull.phase === "runtime" ? "Runtime" : pull.model)}</span><small>${esc(pull.detail || "Starting download…")}</small><i><em style="width:${pull.total ? Math.min(100, pull.downloaded / pull.total * 100) : 0}%"></em></i><button data-cancel-pull>Cancel</button></div>` : ""}
+      <h3>Installed models</h3>${status?.models?.length ? status.models.map(m => `<div class="assistant-model-row"><span class="ms">check_circle</span><div><strong>${esc(m.displayName || m.name)}</strong><small>${esc(m.size)} · ${esc(m.modified)}</small></div><button data-use-model="${esc(m.name)}">Use</button><button data-delete-model="${esc(m.name)}" title="Delete ${esc(m.displayName || m.name)} from this PC"><span class="ms">delete</span> Delete</button></div>`).join("") : `<p class="assistant-none">No local models installed.</p>`}
+      <h3>Available models</h3>${(status?.catalog || []).map(m => `<div class="assistant-model-row"><span class="ms">neurology</span><div><strong>${esc(m.displayName)}</strong><small>${humanSize(m.size)} · ${esc(m.recommendedMemory)} RAM · ${esc(m.license)}${m.toolCallingSupport ? " · tools" : ""}</small>${!installed(m.id) && m.partial ? `<small class="assistant-partial"><span class="ms">pause_circle</span>${megabytes(m.partial)} downloaded and kept · ${Math.round(m.partial / m.size * 100)}% · continues from here</small>` : ""}</div>${installed(m.id) ? `<button data-use-model="${m.id}">Use</button>` : `<button data-pull-model="${m.id}" ${pull ? "disabled" : ""}>${m.partial ? "Resume" : "Download"}</button>`}${!installed(m.id) && m.partial ? `<button data-discard-partial="${m.id}" ${pull ? "disabled" : ""} title="Delete the partial download of ${esc(m.displayName)}"><span class="ms">delete</span></button>` : ""}</div>`).join("")}
+      ${pull ? `<div class="assistant-pull"><span>${esc(pull.phase === "runtime" ? "Runtime" : pull.model)}</span><small>${esc(pull.detail || "Starting download…")}</small><i><em style="width:${pull.total ? Math.min(100, pull.downloaded / pull.total * 100) : 0}%"></em></i><button data-cancel-pull>Cancel</button><small class="assistant-rate">${esc(pull.rate || "")}</small></div>` : ""}
       <h3>Cloud providers</h3>${providerConfig("claude", "Claude", cloud?.claudeConfigured, "Anthropic API key", "sk-ant-…")}${providerConfig("openai", "Codex & GPT", cloud?.openaiConfigured, "OpenAI API key", "sk-…")}${providerConfig("cursor", "Cursor Agent", cloud?.cursorConfigured, "Cursor API key · requires cursor-agent", "key_…")}<p class="assistant-key-note"><span class="ms">shield_lock</span><span>Keys are stored in ${esc(cloud?.credentialStorage || "Windows Credential Manager")}, not IndexedDB. This protects them at rest, but it is not absolute security: malware, an administrator, or a compromised WinT process running as you may still access them.</span></p></section>`;
   }
   function providerConfig(id, name, configured, label, placeholder) {
     return `<form class="assistant-cloud-config" data-cloud-provider="${id}"><span class="ms">${configured ? "cloud_done" : "cloud_off"}</span><div><strong>${name}</strong><small>${configured ? "Saved in Windows Credential Manager" : label}</small>${configured ? "" : `<input type="password" name="key" required autocomplete="off" spellcheck="false" placeholder="${placeholder}" aria-label="${label}">`}</div>${configured ? `<button type="button" data-remove-cloud="${id}">Remove</button>` : `<button type="submit">Save</button>`}</form>`;
   }
   async function pullModel(model) {
-    pull = { model, detail: "Starting download…" }; modelLayer();
+    const kept = (status?.catalog || []).find(m => m.id === model)?.partial || 0;
+    pull = { model, detail: kept ? `Resuming at ${megabytes(kept)}…` : "Starting download…" }; modelLayer();
     try { await invoke("assistant_pull", { model }); }
     catch (error) { pull.detail = String(error); modelLayer(); }
   }
@@ -200,6 +204,7 @@
       const use = event.target.closest("[data-use-model]")?.dataset.useModel; if (use) { data.model = use; if (chat()) chat().model = use; save(); render(); }
       const pullId = event.target.closest("[data-pull-model]")?.dataset.pullModel; if (pullId) pullModel(pullId);
       const remove = event.target.closest("[data-delete-model]")?.dataset.deleteModel; if (remove) deleteModel(remove);
+      const discard = event.target.closest("[data-discard-partial]")?.dataset.discardPartial; if (discard) discardPartial(discard);
       const removeCloud = event.target.closest("[data-remove-cloud]")?.dataset.removeCloud; if (removeCloud) configureCloud(removeCloud, "");
       if (event.target.closest("[data-cancel-pull]")) invoke("assistant_pull_cancel");
       const pick = event.target.closest("[data-chat-id]")?.dataset.chatId; if (pick) { data.active = pick; save(); render(); }
@@ -211,13 +216,22 @@
     listen("assistant:step", ({ payload }) => { if (payload.requestId !== running) return; const activity = [...(chat()?.messages || [])].reverse().find(message => message.role === "activity"); if (!activity) return; const existing = activity.steps.find(step => step.id === payload.id); if (existing) { const streamed = existing.detail; Object.assign(existing, payload); if (!payload.detail && streamed) existing.detail = streamed; } else activity.steps.push(payload); save(); render(); });
     listen("assistant:step-chunk", ({ payload }) => { if (payload.requestId !== running) return; const activity = [...(chat()?.messages || [])].reverse().find(message => message.role === "activity"); const step = activity?.steps.find(item => item.id === payload.id); if (!step) return; step.detail = (step.detail || "") + (payload.text || ""); save(); render(); });
     listen("assistant:open-tool", ({ payload }) => { if (payload?.id) window.dispatchEvent(new CustomEvent("wint:open-tool", { detail: payload })); });
-    listen("assistant:model-progress", ({ payload }) => { if (!pull || payload.model !== pull.model) return; pull.detail = payload.detail || pull.detail; pull.phase = payload.phase; pull.downloaded = payload.downloaded; pull.total = payload.total; if (payload.done) { const error = payload.error; pull = null; refresh().then(() => { modelLayer(); if (error) { pull = { model: payload.model, detail: error, phase: "error" }; modelLayer(); } }); } else modelLayer(); });
+    listen("assistant:model-progress", ({ payload }) => { if (!pull || payload.model !== pull.model) return; pull.detail = payload.detail || pull.detail; pull.phase = payload.phase; pull.downloaded = payload.downloaded; pull.total = payload.total; pull.rate = payload.rate; if (payload.done) { const error = payload.error; pull = null; refresh().then(() => { modelLayer(); if (error) { pull = { model: payload.model, detail: error, phase: "error" }; modelLayer(); } }); } else modelLayer(); });
     if (data.open) requestAnimationFrame(() => toggle(true));
   }
   async function deleteModel(model) {
     const allowed = await (window.wintConfirm?.({ title: "Delete local model?", message: `${model} will be removed from this PC. Conversation history stays.`, confirmLabel: "Delete model", tone: "danger", icon: "delete" }) ?? Promise.resolve(false));
     if (!allowed) return;
-    try { await invoke("assistant_model_delete", { model }); if (data.model === model) data.model = ""; if (chat()?.model === model) chat().model = ""; save(); await refresh(); modelLayer(); }
+    try { await invoke("assistant_model_delete", { model }); if (data.model === model) data.model = ""; for (const item of data.chats) if (item.model === model) item.model = ""; save(); await refresh(); modelLayer(); }
+    catch (error) { pull = { model, detail: String(error) }; modelLayer(); }
+  }
+  // Throwing away a paused download is the one way those bytes leave the disk,
+  // so it asks first and says how much is being given up.
+  async function discardPartial(model) {
+    const kept = (status?.catalog || []).find(m => m.id === model)?.partial || 0;
+    const allowed = await (window.wintConfirm?.({ title: "Discard partial download?", message: `${megabytes(kept)} already downloaded for ${model} will be deleted. Downloading again starts from zero.`, confirmLabel: "Discard", tone: "danger", icon: "delete" }) ?? Promise.resolve(false));
+    if (!allowed) return;
+    try { await invoke("assistant_model_delete", { model }); await refresh(); modelLayer(); }
     catch (error) { pull = { model, detail: String(error) }; modelLayer(); }
   }
   async function configureCloud(provider, key) {

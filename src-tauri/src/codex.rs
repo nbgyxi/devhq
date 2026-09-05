@@ -17,6 +17,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
@@ -27,9 +28,20 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-fn running() -> &'static Mutex<std::collections::HashMap<String, Child>> {
-    static RUNNING: OnceLock<Mutex<std::collections::HashMap<String, Child>>> = OnceLock::new();
+struct RunningChild {
+    generation: u64,
+    child: Child,
+}
+
+fn running() -> &'static Mutex<std::collections::HashMap<String, RunningChild>> {
+    static RUNNING: OnceLock<Mutex<std::collections::HashMap<String, RunningChild>>> =
+        OnceLock::new();
     RUNNING.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+fn next_generation() -> u64 {
+    static GENERATION: AtomicU64 = AtomicU64::new(1);
+    GENERATION.fetch_add(1, Ordering::Relaxed)
 }
 
 fn codex_home() -> Option<PathBuf> {
@@ -158,16 +170,22 @@ pub async fn codex_send(
     let _ = codex_cancel(tab.clone()).await;
 
     tauri::async_runtime::spawn_blocking(move || {
+        let generation = next_generation();
         let mut cmd = command(&path);
-        cmd.current_dir(&cwd).arg("exec");
+        cmd.current_dir(&cwd)
+            .arg("exec")
+            .arg("--json")
+            // `--sandbox` belongs to `codex exec`, so it must precede the
+            // `resume` subcommand. Putting it after the session id makes
+            // resumed turns fail before Codex reads their prompt.
+            .arg("--sandbox")
+            .arg("workspace-write");
         if let Some(id) = session.as_deref().filter(|id| is_session_id(id)) {
             cmd.arg("resume").arg(id);
         }
-        cmd.arg("--json")
+        cmd
             // Edits land without a prompt, because in this mode there is
             // nobody to ask. The way to be asked is the CLI itself.
-            .arg("--sandbox")
-            .arg("workspace-write")
             // `-` tells exec that stdin is the prompt, not extra context for a
             // prompt that was passed as an argument.
             .arg("-")
@@ -185,7 +203,10 @@ pub async fn codex_send(
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        running().lock().unwrap().insert(tab.clone(), child);
+        running()
+            .lock()
+            .unwrap()
+            .insert(tab.clone(), RunningChild { generation, child });
 
         let errors = std::thread::spawn(move || {
             let mut text = String::new();
@@ -214,10 +235,22 @@ pub async fn codex_send(
             }
         }
 
-        let code = running()
-            .lock()
-            .unwrap()
-            .remove(&tab)
+        // A cancelled turn may finish its stdout loop after a replacement has
+        // already been put under the same tab id. Only reap the process this
+        // invocation inserted; otherwise the old cleanup steals and waits on
+        // the new turn, leaving process ownership out of sync.
+        let own_child = {
+            let mut running = running().lock().unwrap();
+            if running
+                .get(&tab)
+                .is_some_and(|entry| entry.generation == generation)
+            {
+                running.remove(&tab).map(|entry| entry.child)
+            } else {
+                None
+            }
+        };
+        let code = own_child
             .and_then(|mut child| child.wait().ok())
             .and_then(|status| status.code())
             .unwrap_or(-1);
@@ -300,9 +333,9 @@ fn is_session_id(value: &str) -> bool {
 #[tauri::command]
 pub async fn codex_cancel(tab: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        if let Some(mut child) = running().lock().unwrap().remove(&tab) {
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Some(mut entry) = running().lock().unwrap().remove(&tab) {
+            let _ = entry.child.kill();
+            let _ = entry.child.wait();
         }
     })
     .await
@@ -495,25 +528,67 @@ fn summarise(path: &Path) -> (String, u32) {
 fn is_user_line(value: &serde_json::Value) -> bool {
     let kind = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
     let payload = value.get("payload").unwrap_or(value);
-    let inner = payload
-        .get("type")
-        .or_else(|| payload.get("role"))
-        .and_then(|t| t.as_str())
-        .unwrap_or("");
+    let inner = payload.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    let role = payload.get("role").and_then(|r| r.as_str()).unwrap_or("");
     matches!(kind, "event_msg" | "response_item")
-        && (inner == "user_message" || inner == "user")
+        && (inner == "user_message" || inner == "user" || role == "user")
 }
 
 fn is_agent_line(value: &serde_json::Value) -> bool {
     let kind = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
     let payload = value.get("payload").unwrap_or(value);
-    let inner = payload
-        .get("type")
-        .or_else(|| payload.get("role"))
-        .and_then(|t| t.as_str())
-        .unwrap_or("");
+    let inner = payload.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    let role = payload.get("role").and_then(|r| r.as_str()).unwrap_or("");
     matches!(kind, "event_msg" | "response_item")
-        && matches!(inner, "agent_message" | "assistant")
+        && (matches!(inner, "agent_message" | "assistant") || role == "assistant")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_agent_line, is_user_line, payload_text};
+    use serde_json::json;
+
+    #[test]
+    fn recognises_current_response_item_messages_by_role() {
+        let user = json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Fix the history"}]
+            }
+        });
+        let assistant = json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Fixed"}]
+            }
+        });
+
+        assert!(is_user_line(&user));
+        assert!(!is_agent_line(&user));
+        assert!(is_agent_line(&assistant));
+        assert!(!is_user_line(&assistant));
+        assert_eq!(payload_text(&user["payload"]), "Fix the history");
+        assert_eq!(payload_text(&assistant["payload"]), "Fixed");
+    }
+
+    #[test]
+    fn still_recognises_legacy_event_messages_by_type() {
+        let user = json!({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "Hello"}
+        });
+        let assistant = json!({
+            "type": "event_msg",
+            "payload": {"type": "agent_message", "message": "Hi"}
+        });
+
+        assert!(is_user_line(&user));
+        assert!(is_agent_line(&assistant));
+    }
 }
 
 fn rollout_files() -> Vec<PathBuf> {

@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::{
     collections::HashSet,
     fs,
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -10,6 +11,8 @@ use tauri::{AppHandle, Emitter};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Risk {
     Read,
+    Write,
+    Execute,
 }
 pub struct ToolRegistry {
     roots: Vec<PathBuf>,
@@ -21,7 +24,10 @@ impl ToolRegistry {
     pub fn routed(app: Option<AppHandle>, roots: Vec<String>, areas: &[String]) -> Self {
         let mut enabled = HashSet::new();
         let mut area_tools = Vec::new();
-        if areas.iter().any(|area| area == "project") {
+        if areas
+            .iter()
+            .any(|area| matches!(area.as_str(), "project" | "project-write" | "project-agent"))
+        {
             enabled.extend(
                 [
                     "list_project_files",
@@ -30,6 +36,15 @@ impl ToolRegistry {
                 ]
                 .map(str::to_string),
             );
+        }
+        if areas
+            .iter()
+            .any(|area| area == "project-write" || area == "project-agent")
+        {
+            enabled.insert("write_project_file".into());
+        }
+        if areas.iter().any(|area| area == "project-agent") {
+            enabled.insert("run_project_check".into());
         }
         if areas
             .iter()
@@ -62,7 +77,10 @@ impl ToolRegistry {
             enabled.extend(names.iter().copied().map(str::to_string));
         }
         for area in areas {
-            if area == "text" || area == "general" || area == "project" {
+            if matches!(
+                area.as_str(),
+                "text" | "general" | "project" | "project-write" | "project-agent"
+            ) {
                 continue;
             }
             let tool_id = area
@@ -106,6 +124,16 @@ impl ToolRegistry {
                 description: "Search text files below a WinT project root for a literal query."
                     .into(),
                 parameters: json!({"type":"object","properties":{"path":{"type":"string"},"query":{"type":"string"}},"required":["path","query"],"additionalProperties":false}),
+            },
+            ToolDefinition {
+                name: "write_project_file".into(),
+                description: "Create or replace one UTF-8 file below the open project root.".into(),
+                parameters: json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}),
+            },
+            ToolDefinition {
+                name: "run_project_check".into(),
+                description: "Run a test, lint, check, or build task in a project. Uses only a matching package.json script or Cargo command.".into(),
+                parameters: json!({"type":"object","properties":{"path":{"type":"string","description":"Project directory"},"check":{"enum":["test","lint","check","build"]}},"required":["path","check"],"additionalProperties":false}),
             },
         ];
         tools.push(ToolDefinition {
@@ -237,7 +265,11 @@ impl ToolRegistry {
             "project.search" | "search_files" => "search_project_text",
             other => other,
         };
-        self.enabled.contains(canonical).then_some(Risk::Read)
+        self.enabled.contains(canonical).then_some(match canonical {
+            "write_project_file" => Risk::Write,
+            "run_project_check" => Risk::Execute,
+            _ => Risk::Read,
+        })
     }
     fn allowed(&self, value: &Value, file: bool) -> Result<PathBuf, String> {
         let raw = value
@@ -257,6 +289,148 @@ impl ToolRegistry {
         }
         Ok(path)
     }
+    fn safe_write_target(&self, raw: &str) -> Result<PathBuf, String> {
+        let requested = PathBuf::from(raw);
+        let path = if requested.is_absolute() {
+            requested
+        } else {
+            self.roots
+                .first()
+                .ok_or("No project root is available.")?
+                .join(requested)
+        };
+        let parent = path
+            .parent()
+            .ok_or("The requested file has no parent folder.")?;
+        let parent = fs::canonicalize(parent)
+            .map_err(|_| "The requested file's parent folder does not exist.")?;
+        if !self.roots.iter().any(|root| parent.starts_with(root)) {
+            return Err("Tool path is outside WinT's project roots.".into());
+        }
+        let target = parent.join(path.file_name().ok_or("The requested file has no name.")?);
+        let relative = self
+            .roots
+            .iter()
+            .find_map(|root| target.strip_prefix(root).ok())
+            .ok_or("Tool path is outside WinT's project roots.")?;
+        let sensitive = relative.components().any(|part| {
+            let name = part.as_os_str().to_string_lossy();
+            name.eq_ignore_ascii_case(".git")
+                || name.eq_ignore_ascii_case(".hg")
+                || name.eq_ignore_ascii_case(".svn")
+                || name.eq_ignore_ascii_case("node_modules")
+                || name.eq_ignore_ascii_case("target")
+        });
+        let file_name = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        let secret = file_name.eq_ignore_ascii_case(".env")
+            || file_name.to_ascii_lowercase().starts_with(".env.")
+            || [".pem", ".key", ".pfx", ".p12"]
+                .iter()
+                .any(|suffix| file_name.to_ascii_lowercase().ends_with(suffix));
+        if sensitive || secret {
+            return Err(
+                "Writes to metadata, dependency, build-output, and secret files are blocked."
+                    .into(),
+            );
+        }
+        if target.exists() {
+            let existing = fs::canonicalize(&target)
+                .map_err(|_| "The requested project file cannot be resolved.")?;
+            if !self.roots.iter().any(|root| existing.starts_with(root)) || !existing.is_file() {
+                return Err("Tool path is not a file inside a WinT project root.".into());
+            }
+        }
+        Ok(target)
+    }
+
+    fn write_project_file(&self, args: &Value) -> Result<Value, String> {
+        let target = self.safe_write_target(required_str(args, "path")?)?;
+        let content = args
+            .get("content")
+            .and_then(Value::as_str)
+            .filter(|value| value.len() <= 1_048_576)
+            .ok_or("content must be a string no larger than 1 MB.")?;
+        let parent = target
+            .parent()
+            .ok_or("The requested file has no parent folder.")?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|e| format!("Could not prepare the project file: {e}"))?;
+        temporary
+            .write_all(content.as_bytes())
+            .and_then(|_| temporary.flush())
+            .map_err(|e| format!("Could not write the project file: {e}"))?;
+        temporary
+            .persist(&target)
+            .map_err(|e| format!("Could not replace the project file: {}", e.error))?;
+        Ok(json!({"path":target,"bytes":content.len()}))
+    }
+    fn run_project_check(&self, args: &Value) -> Result<Value, String> {
+        let dir = self.allowed(args, false)?;
+        let check = required_str(args, "check")?;
+        if !matches!(check, "test" | "lint" | "check" | "build") {
+            return Err("check must be test, lint, check, or build.".into());
+        }
+        let (program, command_args): (PathBuf, Vec<String>) = if dir.join("Cargo.toml").is_file() {
+            let cargo = crate::term::find_program_on_path(&["cargo.exe", "cargo"])
+                .ok_or("Cargo is not installed or is not on PATH.")?;
+            (
+                cargo,
+                vec![if check == "lint" {
+                    "clippy".into()
+                } else {
+                    check.into()
+                }],
+            )
+        } else if dir.join("package.json").is_file() {
+            let package: Value = serde_json::from_slice(
+                &fs::read(dir.join("package.json"))
+                    .map_err(|e| format!("Could not read package.json: {e}"))?,
+            )
+            .map_err(|e| format!("Could not parse package.json: {e}"))?;
+            let script = if check == "check"
+                && package.pointer("/scripts/check").is_none()
+                && package.pointer("/scripts/typecheck").is_some()
+            {
+                "typecheck"
+            } else {
+                check
+            };
+            if package
+                .pointer(&format!("/scripts/{script}"))
+                .and_then(Value::as_str)
+                .is_none()
+            {
+                return Err(format!("package.json has no {script} script."));
+            }
+            let npm = crate::term::find_program_on_path(&["npm.cmd", "npm.exe", "npm"])
+                .ok_or("npm is not installed or is not on PATH.")?;
+            (npm, vec!["run".into(), script.into()])
+        } else {
+            return Err(
+                "No Cargo.toml or package.json was found in that project directory.".into(),
+            );
+        };
+        let mut command = Command::new(program);
+        command.current_dir(&dir).args(command_args);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let output = command
+            .output()
+            .map_err(|e| format!("Could not start project check: {e}"))?;
+        let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        if text.len() > 32_000 {
+            text.truncate(32_000);
+            text.push_str("\nâ€¦[truncated]");
+        }
+        Ok(json!({"success":output.status.success(),"exitCode":output.status.code(),"output":text}))
+    }
     pub fn execute(&self, call: &ToolCall) -> Result<Value, String> {
         if !call.arguments.is_object() {
             return Err("Tool arguments must be a JSON object.".into());
@@ -271,6 +445,8 @@ impl ToolRegistry {
             return Err("That tool is not available for the routed request.".into());
         }
         match name {
+            "run_project_check" => self.run_project_check(&call.arguments),
+            "write_project_file" => self.write_project_file(&call.arguments),
             name if name.starts_with("open_") => {
                 let (_, id) = self
                     .area_tools
@@ -573,7 +749,11 @@ mod tests {
         let dir = root();
         let file = dir.join("README.md");
         fs::write(&file, "hello WinT").unwrap();
-        let registry = ToolRegistry::routed(None, vec![dir.display().to_string()], &["project".to_string()]);
+        let registry = ToolRegistry::routed(
+            None,
+            vec![dir.display().to_string()],
+            &["project".to_string()],
+        );
         let call = ToolCall {
             id: "1".into(),
             name: "read_project_file".into(),
@@ -585,13 +765,55 @@ mod tests {
     #[test]
     fn rejects_paths_outside_registered_root() {
         let dir = root();
-        let registry = ToolRegistry::routed(None, vec![dir.display().to_string()], &["project".to_string()]);
+        let registry = ToolRegistry::routed(
+            None,
+            vec![dir.display().to_string()],
+            &["project".to_string()],
+        );
         let call = ToolCall {
             id: "1".into(),
             name: "read_project_file".into(),
             arguments: json!({"path":std::env::current_exe().unwrap()}),
         };
         assert!(registry.execute(&call).unwrap_err().contains("outside"));
+        let _ = fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn write_route_is_scoped_and_atomic() {
+        let dir = root();
+        let file = dir.join("app.txt");
+        fs::write(&file, "before").unwrap();
+        let registry = ToolRegistry::routed(
+            None,
+            vec![dir.display().to_string()],
+            &["project-write".to_string()],
+        );
+        let call = ToolCall {
+            id: "1".into(),
+            name: "write_project_file".into(),
+            arguments: json!({"path":file,"content":"after"}),
+        };
+        registry.execute(&call).unwrap();
+        assert_eq!(fs::read_to_string(file).unwrap(), "after");
+        let _ = fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn write_route_blocks_repository_metadata_and_secrets() {
+        let dir = root();
+        fs::create_dir(dir.join(".git")).unwrap();
+        let registry = ToolRegistry::routed(
+            None,
+            vec![dir.display().to_string()],
+            &["project-write".to_string()],
+        );
+        for path in [dir.join(".git/config"), dir.join(".env")] {
+            let call = ToolCall {
+                id: "1".into(),
+                name: "write_project_file".into(),
+                arguments: json!({"path":path,"content":"unsafe"}),
+            };
+            assert!(registry.execute(&call).unwrap_err().contains("blocked"));
+        }
         let _ = fs::remove_dir_all(dir);
     }
     #[test]

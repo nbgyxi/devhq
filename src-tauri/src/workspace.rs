@@ -45,13 +45,22 @@ pub async fn workspace_open(
     path: String,
     name: Option<String>,
     theme: Option<String>,
+    // Where this project's workspace was last left. Applied while the window
+    // is built rather than after it appears, so it never shows at the default
+    // size and then jumps.
+    geometry: Option<WindowGeometry>,
 ) -> Result<String, String> {
     let dir = PathBuf::from(&path);
     if !dir.is_dir() {
         return Err("That folder no longer exists.".into());
     }
     let label = window_label(&path);
-    if let Some(existing) = app.get_webview_window(&label) {
+    // `get_webview_window` only answers for a window holding exactly one
+    // webview, and a workspace stops being one the moment its browser panel is
+    // added as a child. Asking for the *window* is the question that stays true
+    // either way - otherwise opening an already-open workspace looked closed,
+    // fell through to the builder, and failed on the label it had itself taken.
+    if let Some(existing) = app.get_window(&label) {
         let _ = existing.unminimize();
         let _ = existing.set_focus();
         return Ok(label);
@@ -82,6 +91,7 @@ pub async fn workspace_open(
         if light { "light" } else { "dark" }
     );
     let opened = label.clone();
+    let geometry = geometry.filter(WindowGeometry::is_usable);
     // Building a webview pumps the event loop, so it cannot happen on the
     // thread that owns it - the window would appear with a webview that never
     // loads, and this command would never answer.
@@ -93,21 +103,76 @@ pub async fn workspace_open(
             .decorations(false)
             .background_color(background)
             .initialization_script(&init_theme);
+        if let Some(geometry) = &geometry {
+            if let (Some(width), Some(height)) = (geometry.width, geometry.height) {
+                builder = builder.inner_size(width.max(760.0), height.max(480.0));
+            }
+            if let (Some(x), Some(y)) = (geometry.x, geometry.y) {
+                builder = builder.position(x, y);
+            }
+        }
         if let Some(icon) = crate::tool_window::taskbar_icon_for_tool("workspace") {
             builder = builder
                 .icon(icon)
                 .map_err(|e| format!("Could not set the window icon: {e}"))?;
         }
-        builder
-            .build()
-            .map(|window| {
+        match builder.build() {
+            Ok(window) => {
+                if geometry.as_ref().is_some_and(|geometry| geometry.maximized) {
+                    let _ = window.maximize();
+                }
                 let _ = window.set_focus();
-            })
-            .map_err(|e| format!("Could not open the workspace: {e}"))
+                Ok(())
+            }
+            // Two clicks in the same breath both find nothing open and both
+            // build; the second loses. It asked for a window that is now there,
+            // so give it that window rather than an error about a taken label.
+            Err(e) => match app.get_window(&label) {
+                Some(existing) => {
+                    let _ = existing.unminimize();
+                    let _ = existing.set_focus();
+                    Ok(())
+                }
+                None => Err(format!("Could not open the workspace: {e}")),
+            },
+        }
     })
     .await
     .unwrap_or_else(|| Err("Could not open the workspace.".to_string()))?;
     Ok(opened)
+}
+
+/// The size, place and maximized state a workspace window was last left in.
+/// The front end owns it — it is saved beside that project's panel layout —
+/// so the only job here is to refuse numbers that would put the window
+/// somewhere it could not be found again.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct WindowGeometry {
+    width: Option<f64>,
+    height: Option<f64>,
+    x: Option<f64>,
+    y: Option<f64>,
+    #[serde(default)]
+    maximized: bool,
+}
+
+impl WindowGeometry {
+    /// A monitor that is gone takes its coordinates with it, and a size saved
+    /// on a screen that no longer exists can be bigger than every screen left.
+    /// Rather than track monitors, keep the numbers plausible and let Windows
+    /// do the rest — it already pulls a placed window back onto a screen.
+    fn is_usable(geometry: &Self) -> bool {
+        let sane_size = |value: Option<f64>| {
+            value.is_none_or(|value| value.is_finite() && (200.0..=20_000.0).contains(&value))
+        };
+        let sane_pos = |value: Option<f64>| {
+            value.is_none_or(|value| value.is_finite() && value.abs() <= 40_000.0)
+        };
+        sane_size(geometry.width)
+            && sane_size(geometry.height)
+            && sane_pos(geometry.x)
+            && sane_pos(geometry.y)
+    }
 }
 
 fn urlencode(value: &str) -> String {
@@ -161,25 +226,78 @@ pub async fn workspace_browser_show(
     // knows only the address it was told to open, so the box above the page
     // says one thing while the page shows another, and Back has nothing to
     // put in the box when it lands.
+    // A profile of its own, keyed by the window label - which is the project
+    // path hashed, so it is the same folder every time this project is opened.
+    // Without it every workspace shares the app's one WebView2 profile: one
+    // cookie jar, one localStorage, so signing in to a site in one workspace
+    // signs you in everywhere, and two projects can never hold two accounts.
+    let data_directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("workspace-browsers")
+        .join(profile_dir_name(&window));
     let reporter = app.clone();
     let owner = window.clone();
     let watcher = app.clone();
     let watched = window.clone();
     off_thread(move || {
-        host.add_child(
-            WebviewBuilder::new(&label, WebviewUrl::External(target)).on_navigation(move |url| {
-                report_url(&reporter, &owner, url.as_str());
-                true
-            }),
-            position,
-            size,
-        )
-        .map(|_| ())
-        .map_err(|e| format!("Could not open the browser panel: {e}"))
+        let make_builder = || {
+            let reporter = reporter.clone();
+            let owner = owner.clone();
+            WebviewBuilder::new(&label, WebviewUrl::External(target.clone()))
+                .data_directory(data_directory.clone())
+                .on_navigation(move |url| {
+                    report_url(&reporter, &owner, url.as_str());
+                    true
+                })
+        };
+        match host.add_child(make_builder(), position, size) {
+            Ok(_) => Ok(()),
+            Err(first_err) => {
+                // A profile left half-written - by a killed process, say - fails
+                // every later open of this same workspace's browser in exactly
+                // the same way, and nothing else ever clears it. Wipe it and try
+                // once more: the sign-ins kept there are worth less than a
+                // browser panel that can never be opened again.
+                let _ = std::fs::remove_dir_all(&data_directory);
+                host.add_child(make_builder(), position, size)
+                    .map(|_| ())
+                    .map_err(|second_err| {
+                        format!(
+                            "Could not open the browser panel: {first_err} \
+                             (also failed after clearing its saved profile: {second_err})"
+                        )
+                    })
+            }
+        }
         .inspect(|()| watch_url(watcher, watched))
     })
     .await
     .unwrap_or_else(|| Err("Could not open the browser panel.".to_string()))
+}
+
+/// The folder a workspace's browser profile lives in.
+///
+/// The label arrives from the front end, and a folder name is not the place to
+/// trust a string that came from a page - anything that is not plainly a label
+/// is folded away, so no caller can steer this out of the profiles directory.
+fn profile_dir_name(window: &str) -> String {
+    let cleaned: String = window
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        "workspace".to_string()
+    } else {
+        cleaned
+    }
 }
 
 /// Where the browser panel has got to, whether or not anyone steered it there.

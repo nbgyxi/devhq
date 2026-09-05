@@ -35,6 +35,8 @@ const CATALOG:&[Manifest]=&[
  Manifest{id:"qwen2.5-0.5b-q4",name:"Qwen 2.5 0.5B",file:"qwen2.5-0.5b-q4.gguf",url:"https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf?download=true",size:397808192,hash:"6eb923e7d26e9cea28811e1a8e852009b21242fb157b26149d3b188f3a8c8653",memory:"2 GB",tools:false},
  Manifest{id:"qwen2.5-1.5b-q4",name:"Qwen 2.5 1.5B",file:"qwen2.5-1.5b-q4.gguf",url:"https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf?download=true",size:986048768,hash:"1adf0b11065d8ad2e8123ea110d1ec956dab4ab038eab665614adba04b6c3370",memory:"4 GB",tools:true},
  Manifest{id:"qwen2.5-3b-q4",name:"Qwen 2.5 3B",file:"qwen2.5-3b-q4.gguf",url:"https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q4_K_M.gguf?download=true",size:1929903264,hash:"9c9f56a391a3abbd5b89d0245bf6106081bcc3173119d4229235dd9d23253f94",memory:"6 GB",tools:true},
+ Manifest{id:"qwen2.5-coder-7b-q4",name:"Qwen2.5-Coder 7B",file:"qwen2.5-coder-7b-q4.gguf",url:"https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf?download=true",size:4683073536,hash:"509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c",memory:"8 GB",tools:true},
+ Manifest{id:"qwen3-coder-30b-a3b-q4",name:"Qwen3-Coder 30B-A3B",file:"qwen3-coder-30b-a3b-q4.gguf",url:"https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/main/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf?download=true",size:18556689568,hash:"fadc3e5f8d42bf7e894a785b05082e47daee4df26680389817e2093056f088ad",memory:"24 GB",tools:true},
 ];
 
 #[derive(Default, Serialize)]
@@ -64,6 +66,9 @@ struct CatalogItem {
     tool_calling_support: bool,
     recommended_memory: String,
     installed: bool,
+    /// Bytes an interrupted download left on disk. The row says so, because a
+    /// paused 12 GB model that looks untouched is one the user starts over.
+    partial: u64,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,6 +80,9 @@ struct Progress {
     downloaded: u64,
     total: u64,
     phase: String,
+    /// Throughput and time left, already worded - "12.4 MB/s · 3m 07s left".
+    /// Empty while there is nothing measured to say.
+    rate: String,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,6 +149,28 @@ fn size(n: u64) -> String {
         format!("{} MB", n / 1_000_000)
     }
 }
+/// Megabytes with digit grouping, for the readout that moves while a download
+/// runs. `size` rounds a multi-gigabyte model to a tenth of a gigabyte, and
+/// that figure stands still for a hundred megabytes at a time - long enough to
+/// look stuck on exactly the downloads that take longest.
+fn mb(n: u64) -> String {
+    let digits = (n / 1_000_000).to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',')
+        }
+        out.push(c)
+    }
+    format!("{out} MB")
+}
+fn seconds(n: u64) -> String {
+    match n {
+        0..=59 => format!("{n}s"),
+        60..=3599 => format!("{}m {:02}s", n / 60, n % 60),
+        _ => format!("{}h {:02}m", n / 3600, n % 3600 / 60),
+    }
+}
 pub fn status(root: PathBuf) -> Status {
     let (r, m) = dirs(&root);
     let models = CATALOG
@@ -173,15 +203,18 @@ pub fn status(root: PathBuf) -> Status {
                 tool_calling_support: x.tools,
                 recommended_memory: x.memory.into(),
                 installed: m.join(x.file).is_file(),
+                partial: crate::download::partial(&m.join(x.file), x.size),
             })
             .collect(),
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn progress(
     app: &AppHandle,
     model: &str,
     phase: &str,
     detail: String,
+    rate: String,
     n: u64,
     total: u64,
     done: bool,
@@ -197,6 +230,7 @@ fn progress(
             downloaded: n,
             total,
             phase: phase.into(),
+            rate,
         },
     );
 }
@@ -210,14 +244,40 @@ fn download(
     hash: &str,
     target: &Path,
 ) -> Result<(), String> {
-    let mut report = |n: u64, total: u64| {
+    let mut report = |t: &crate::download::Tick| {
+        let pct = if t.total > 0 {
+            t.done as f64 / t.total as f64 * 100.0
+        } else {
+            0.0
+        };
+        let detail = if t.resumed > 0 {
+            format!(
+                "{} of {} · {pct:.1}% · resumed at {}",
+                mb(t.done),
+                mb(t.total),
+                mb(t.resumed)
+            )
+        } else {
+            format!("{} of {} · {pct:.1}%", mb(t.done), mb(t.total))
+        };
+        // A rate needs a measured interval before it means anything, and the
+        // first report happens before any bytes have moved.
+        let rate = if t.speed > 1.0 {
+            match t.eta {
+                Some(eta) => format!("{:.1} MB/s · {} left", t.speed / 1e6, seconds(eta)),
+                None => format!("{:.1} MB/s", t.speed / 1e6),
+            }
+        } else {
+            "Measuring speed…".into()
+        };
         progress(
             app,
             model,
             phase,
-            format!("{} of {}", size(n), size(total)),
-            n,
-            total,
+            detail,
+            rate,
+            t.done,
+            t.total,
             false,
             String::new(),
         )
@@ -235,6 +295,7 @@ fn runtime(app: &AppHandle, model: &str, root: &Path) -> Result<(), String> {
         model,
         "runtime",
         "Downloading the local runtime on demand…".into(),
+        String::new(),
         0,
         18506923,
         false,
@@ -273,7 +334,11 @@ pub fn pull(app: AppHandle, root: PathBuf, model: String) -> Result<(), String> 
                     &app,
                     &model,
                     "model",
-                    format!("Downloading {}…", x.name),
+                    match crate::download::partial(&target, x.size) {
+                        0 => format!("Downloading {}…", x.name),
+                        n => format!("Resuming {} at {}…", x.name, mb(n)),
+                    },
+                    String::new(),
                     0,
                     x.size,
                     false,
@@ -293,6 +358,7 @@ pub fn pull(app: AppHandle, root: PathBuf, model: String) -> Result<(), String> 
             } else {
                 String::new()
             },
+            String::new(),
             x.size,
             x.size,
             true,
@@ -305,11 +371,20 @@ pub fn cancel_pull() {
     CANCEL.store(true, Ordering::SeqCst)
 }
 pub fn delete_model(root: PathBuf, model: String) -> Result<(), String> {
+    if AGENT_ACTIVE.load(Ordering::SeqCst) {
+        return Err("Stop the local assistant before deleting one of its models.".into());
+    }
+    if DOWNLOADING.load(Ordering::SeqCst) {
+        return Err("Finish or cancel the model download before deleting a model.".into());
+    }
     let x = item(&model)?;
     let p = dirs(&root).1.join(x.file);
     if p.exists() {
-        fs::remove_file(p).map_err(|e| e.to_string())?
+        fs::remove_file(&p).map_err(|e| e.to_string())?
     }
+    // Whatever a stopped download kept is part of what "delete" means here;
+    // leaving it behind would hold gigabytes nothing on screen mentions.
+    let _ = fs::remove_file(p.with_extension("part"));
     Ok(())
 }
 
@@ -348,7 +423,14 @@ impl ProtocolGate {
             return Some(text.into());
         }
         self.buffer.push_str(text);
-        let controls = ["WINT_TOOL_CALL", "WINT_QUESTION"];
+        let controls = [
+            "WINT_TOOL_CALL",
+            "WINT_QUESTION",
+            "WINT_INVESTIGATION_PLAN",
+            "WINT_RESEARCH_DONE",
+            "WINT_CHANGE_PLAN",
+            "WINT_IMPLEMENTATION_DONE",
+        ];
         let candidate = self.buffer.trim_start();
         let upper = candidate.to_ascii_uppercase();
         if controls.iter().any(|p| p.starts_with(&upper)) {
@@ -364,9 +446,7 @@ impl ProtocolGate {
     }
     fn finish(&mut self) -> Option<String> {
         let candidate = self.buffer.trim_start();
-        let upper = candidate.to_ascii_uppercase();
-        if self.plain || upper.starts_with("WINT_TOOL_CALL") || upper.starts_with("WINT_QUESTION")
-        {
+        if self.plain || is_control_output(candidate) {
             None
         } else {
             self.plain = true;
@@ -381,7 +461,49 @@ impl ProtocolGate {
 }
 fn is_control_output(text: &str) -> bool {
     let text = text.trim_start().to_ascii_uppercase();
-    text.starts_with("WINT_TOOL_CALL") || text.starts_with("WINT_QUESTION")
+    [
+        "WINT_TOOL_CALL",
+        "WINT_QUESTION",
+        "WINT_INVESTIGATION_PLAN",
+        "WINT_RESEARCH_DONE",
+        "WINT_CHANGE_PLAN",
+        "WINT_IMPLEMENTATION_DONE",
+    ]
+    .iter()
+    .any(|marker| text.starts_with(marker))
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum AgentStage {
+    Understand,
+    Investigate,
+    ChangePlan,
+    Implement,
+    Evaluate,
+}
+
+impl AgentStage {
+    fn allows(self, risk: crate::ai::tools::Risk) -> bool {
+        use crate::ai::tools::Risk;
+        match self {
+            Self::Understand | Self::ChangePlan => false,
+            Self::Investigate => risk == Risk::Read,
+            Self::Implement => matches!(risk, Risk::Read | Risk::Write),
+            Self::Evaluate => true,
+        }
+    }
+}
+
+fn stage_payload(text: &str, marker: &str) -> Result<Option<String>, String> {
+    let Some(raw) = control_payload(text, marker) else {
+        return Ok(None);
+    };
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|_| format!("The model returned malformed {marker} JSON."))?;
+    if !value.is_object() {
+        return Err(format!("The model returned malformed {marker} JSON."));
+    }
+    Ok(Some(value.to_string()))
 }
 fn control_payload<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
     let text = text.trim();
@@ -659,6 +781,8 @@ fn route_intent(
 fn area_instruction(area: &RouteOption) -> String {
     let guidance = match area.id.as_str() {
         "project" => "Use the attached project roots and project file tools. Ground setup, code, dependency, script, and Git claims in project evidence.",
+        "project-write" => "Act as a coding agent for the attached project. Inspect relevant files before changing them, keep edits scoped to the request, and report the files changed and verification performed.",
+        "project-agent" => "Act as an autonomous coding agent for the attached project. Inspect before editing, use project checks to evaluate changes, iterate on failures, keep edits scoped, and report changed files plus verification.",
         "terminal" => "Treat shell text as terminal evidence. Identify the shell and working-directory assumptions, explain failures precisely, and give commands appropriate for Windows unless context says otherwise.",
         "ports" => "Focus on listeners, owning processes, address families, conflicts, and safe port diagnostics.",
         "dns" => "Focus on record types, resolvers, caching, authoritative versus recursive answers, and concrete DNS diagnostics.",
@@ -744,6 +868,7 @@ pub fn chat(
             .collect::<Vec<_>>();
         let registry = ToolRegistry::routed(Some(app.clone()), roots, &selected_ids);
         let tools = registry.definitions();
+        let staged = selected_ids.iter().any(|id| id == "project-agent");
         let protocol = if tools.is_empty() {
             "\n\nNo callable tools are needed for this routed request. Ask a necessary question with WINT_QUESTION plus its JSON only when required; never ask for a value already present in the user's request. Otherwise answer in clean Markdown.".into()
         } else {
@@ -754,13 +879,60 @@ pub fn chat(
             .trim_end()
             .strip_suffix("Assistant:")
             .unwrap_or(prompt.trim_end());
-        let scoped_context = if selected_ids.iter().any(|id| id == "project") {
+        let scoped_context = if selected_ids
+            .iter()
+            .any(|id| matches!(id.as_str(), "project" | "project-write" | "project-agent"))
+        {
             format!("\n\nWinT project context:\n{project_context}")
         } else {
             String::new()
         };
         let base = format!("{base_prompt}{scoped_context}\n\nSelected WinT focus areas:\n{focus}\nUse only this routed context and these area-specific instructions for the response.");
-        let mut working = format!("{base}{protocol}\n\nAssistant:");
+        let stage_protocol = if staged {
+            "\n\nFollow this backend-enforced workflow. First output WINT_INVESTIGATION_PLAN plus a JSON object describing what you need to understand and inspect. During investigation use only read tools, and call as many as evidence requires. Then output WINT_RESEARCH_DONE plus JSON summarizing evidence. Next output WINT_CHANGE_PLAN plus JSON with concrete, evidence-based edits. During implementation, read and write tools are available but checks are not. When edits are complete output WINT_IMPLEMENTATION_DONE plus JSON listing changed files. During evaluation, review files, run the available checks, and fix and re-check failures before the final Markdown answer. Never skip a stage or combine a workflow marker with prose."
+        } else {
+            ""
+        };
+        let mut working = format!("{base}{protocol}{stage_protocol}\n\nAssistant:");
+        let mut agent_stage = AgentStage::Understand;
+        if staged {
+            for (id, name, detail) in [
+                (
+                    "agent-understand",
+                    "Understand request",
+                    "Form an investigation plan",
+                ),
+                (
+                    "agent-investigate",
+                    "Investigate project",
+                    "Gather project evidence",
+                ),
+                (
+                    "agent-plan",
+                    "Plan changes",
+                    "Turn evidence into scoped edits",
+                ),
+                ("agent-implement", "Make changes", "Apply the planned scope"),
+                (
+                    "agent-evaluate",
+                    "Evaluate changes",
+                    "Review and run project checks",
+                ),
+            ] {
+                step(
+                    &app,
+                    &request_id,
+                    id,
+                    name,
+                    if id == "agent-understand" {
+                        "running"
+                    } else {
+                        "queued"
+                    },
+                    detail.into(),
+                );
+            }
+        }
         step(
             &app,
             &request_id,
@@ -1043,13 +1215,24 @@ pub fn chat(
             }
             working=format!("{base}{protocol}\n\nCompleted plan: {plan_json}\nStep results:{results}\nSynthesize the final answer now in polished Markdown. Do not output another plan.\nAssistant:");
         }
-        for turn in 0..=tool_call_cap {
+        for turn in 0..=(tool_call_cap + if staged { 8 } else { 0 }) {
             let inference_id = format!("model-{turn}");
+            let inference_name = if staged {
+                match agent_stage {
+                    AgentStage::Understand => "Understand request",
+                    AgentStage::Investigate => "Investigate project",
+                    AgentStage::ChangePlan => "Plan changes",
+                    AgentStage::Implement => "Make changes",
+                    AgentStage::Evaluate => "Evaluate changes",
+                }
+            } else {
+                "Final answer"
+            };
             step(
                 &app,
                 &request_id,
                 &inference_id,
-                "Final answer",
+                inference_name,
                 "running",
                 format!("{} · synthesis pass {}", x.name, turn + 1),
             );
@@ -1128,10 +1311,100 @@ pub fn chat(
                 &app,
                 &request_id,
                 &inference_id,
-                "Final answer",
+                inference_name,
                 "done",
                 format!("{} characters received", output.len()),
             );
+            if staged {
+                let transition = match agent_stage {
+                    AgentStage::Understand => stage_payload(&output, "WINT_INVESTIGATION_PLAN")
+                        .map(|value| {
+                            value.map(|payload| {
+                                (
+                                    AgentStage::Investigate,
+                                    "agent-understand",
+                                    "agent-investigate",
+                                    payload,
+                                )
+                            })
+                        }),
+                    AgentStage::Investigate => {
+                        stage_payload(&output, "WINT_RESEARCH_DONE").map(|value| {
+                            value.map(|payload| {
+                                (
+                                    AgentStage::ChangePlan,
+                                    "agent-investigate",
+                                    "agent-plan",
+                                    payload,
+                                )
+                            })
+                        })
+                    }
+                    AgentStage::ChangePlan => {
+                        stage_payload(&output, "WINT_CHANGE_PLAN").map(|value| {
+                            value.map(|payload| {
+                                (
+                                    AgentStage::Implement,
+                                    "agent-plan",
+                                    "agent-implement",
+                                    payload,
+                                )
+                            })
+                        })
+                    }
+                    AgentStage::Implement => stage_payload(&output, "WINT_IMPLEMENTATION_DONE")
+                        .map(|value| {
+                            value.map(|payload| {
+                                (
+                                    AgentStage::Evaluate,
+                                    "agent-implement",
+                                    "agent-evaluate",
+                                    payload,
+                                )
+                            })
+                        }),
+                    AgentStage::Evaluate => Ok(None),
+                };
+                match transition {
+                    Ok(Some((next, completed_id, next_id, payload))) => {
+                        step(
+                            &app,
+                            &request_id,
+                            completed_id,
+                            inference_name,
+                            "done",
+                            payload.clone(),
+                        );
+                        let next_name = match next {
+                            AgentStage::Investigate => "Investigate project",
+                            AgentStage::ChangePlan => "Plan changes",
+                            AgentStage::Implement => "Make changes",
+                            AgentStage::Evaluate => "Evaluate changes",
+                            AgentStage::Understand => "Understand request",
+                        };
+                        step(
+                            &app,
+                            &request_id,
+                            next_id,
+                            next_name,
+                            "running",
+                            String::new(),
+                        );
+                        agent_stage = next;
+                        let before = working
+                            .trim_end()
+                            .strip_suffix("Assistant:")
+                            .unwrap_or(working.trim_end());
+                        working = format!("{before}\nWorkflow result: {payload}\nContinue with the next required workflow stage.\nAssistant:");
+                        continue;
+                    }
+                    Err(e) => {
+                        final_error = e;
+                        break;
+                    }
+                    Ok(None) => {}
+                }
+            }
             if let Some(raw) = control_payload(&output, "WINT_TOOL_CALL") {
                 if tool_calls_used >= tool_call_cap {
                     final_error =
@@ -1154,6 +1427,14 @@ pub fn chat(
                         "The model requested an unknown tool; nothing was executed.".into();
                     break;
                 };
+                if staged && !agent_stage.allows(risk) {
+                    let before = working
+                        .trim_end()
+                        .strip_suffix("Assistant:")
+                        .unwrap_or(working.trim_end());
+                    working = format!("{before}\nThe backend rejected {} because it is not allowed in the current workflow stage. Complete the required stage marker first.\nAssistant:", call.name);
+                    continue;
+                }
                 let mut args = call.arguments.to_string();
                 if args.len() > 240 {
                     args.truncate(240);
@@ -1186,7 +1467,7 @@ pub fn chat(
                             .trim_end()
                             .strip_suffix("Assistant:")
                             .unwrap_or(working.trim_end());
-                        working=format!("{before}Assistant requested tool {} with {}.\nTool result: {}\nRequest another tool only if essential; otherwise give the final Markdown answer.\nAssistant:",call.name,call.arguments,result);
+                        working=format!("{before}Assistant requested tool {} with {}.\nTool result: {}\nContinue the current workflow stage; request another tool when the evidence or verification requires it.\nAssistant:",call.name,call.arguments,result);
                         continue;
                     }
                     Err(e) => {
@@ -1222,6 +1503,24 @@ pub fn chat(
                     break;
                 }
                 Ok(None) => {}
+            }
+            if staged && agent_stage != AgentStage::Evaluate {
+                let before = working
+                    .trim_end()
+                    .strip_suffix("Assistant:")
+                    .unwrap_or(working.trim_end());
+                working = format!("{before}\nYou attempted to finish before evaluation. Continue the required staged workflow and output its exact next marker.\nAssistant:");
+                continue;
+            }
+            if staged {
+                step(
+                    &app,
+                    &request_id,
+                    "agent-evaluate",
+                    "Evaluate changes",
+                    "done",
+                    "Reviewed the result and completed verification".into(),
+                );
             }
             let _ = app.emit(
                 "assistant:chunk",
