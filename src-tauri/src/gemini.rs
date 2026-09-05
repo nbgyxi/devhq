@@ -123,6 +123,7 @@ pub async fn gemini_send(
     prompt: String,
     cwd: String,
     session: Option<String>,
+    model: Option<String>,
 ) -> Result<(), String> {
     let Some(path) = gemini_path() else {
         return Err("Gemini CLI is not installed.".into());
@@ -145,6 +146,9 @@ pub async fn gemini_send(
             .stderr(Stdio::piped());
         if let Some(id) = session.as_deref().filter(|id| is_session_id(id)) {
             cmd.arg("--resume").arg(id);
+        }
+        if let Some(model) = model.as_deref().filter(|model| is_model_id(model)) {
+            cmd.arg("--model").arg(model);
         }
 
         let mut child = cmd
@@ -237,16 +241,19 @@ fn terminal_command(path: &Path, args: &str) -> String {
 pub async fn gemini_terminal_command(
     session: Option<String>,
     login: bool,
+    model: Option<String>,
 ) -> Result<GeminiLaunch, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let path = gemini_path().ok_or("Gemini CLI is not installed.")?;
         // Auth is interactive inside the CLI (`/auth` or first-run login).
         // Opening the CLI itself is the sign-in path.
         let id = session.filter(|id| is_session_id(id)).unwrap_or_default();
+        let model_arg = model.as_deref().filter(|model| is_model_id(model))
+            .map(|model| format!("--model {model}")).unwrap_or_default();
         let command = if login || id.is_empty() {
-            terminal_command(&path, "")
+            terminal_command(&path, &model_arg)
         } else {
-            terminal_command(&path, &format!("--resume {id}"))
+            terminal_command(&path, &format!("--resume {id} {model_arg}").trim().to_string())
         };
         Ok(GeminiLaunch {
             command,
@@ -255,6 +262,11 @@ pub async fn gemini_terminal_command(
     })
     .await
     .unwrap_or_else(|_| Err("Could not prepare Gemini's terminal.".into()))
+}
+
+fn is_model_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 100
+        && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 fn is_session_id(value: &str) -> bool {

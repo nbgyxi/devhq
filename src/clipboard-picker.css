@@ -1,0 +1,137 @@
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg1);
+  color: var(--text);
+}
+.picker {
+  height: 100%;
+  display: grid;
+  grid-template-rows: 18px 52px minmax(0, 1fr) 34px;
+  border: 1px solid var(--line);
+  box-sizing: border-box;
+  background: var(--bg1);
+}
+.drag {
+  display: grid;
+  place-items: center;
+  background: var(--bg2);
+  cursor: move;
+}
+.drag i {
+  width: 44px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--line2);
+}
+header {
+  display: grid;
+  grid-template-columns: 26px auto 1fr auto;
+  align-items: center;
+  gap: 9px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+}
+header > .ms {
+  font-size: 21px;
+  color: var(--accent);
+}
+header strong {
+  font-size: 14px;
+}
+header small {
+  text-align: right;
+  color: var(--dim2);
+  font-size: 10.5px;
+}
+kbd {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg3);
+  color: var(--dim);
+  font-size: 10px;
+}
+.clips {
+  min-height: 0;
+  overflow: auto;
+  padding: 7px;
+}
+.clip {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 48px;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: var(--text);
+  text-align: left;
+}
+.clip:hover,
+.clip.on {
+  background: var(--bg3);
+}
+.clip > .ms {
+  color: var(--accent);
+  font-size: 19px;
+}
+.clip span:not(.ms) {
+  min-width: 0;
+}
+.clip strong,
+.clip small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.clip strong {
+  font-size: 12.5px;
+}
+.clip small {
+  margin-top: 3px;
+  color: var(--dim2);
+  font-size: 10px;
+}
+.clip img {
+  width: 25px;
+  height: 25px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+.clip > time {
+  color: var(--dim2);
+  font-size: 10px;
+}
+.empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--dim2);
+  font-size: 13px;
+}
+footer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 13px;
+  border-top: 1px solid var(--line);
+  color: var(--dim2);
+  font-size: 10.5px;
+}
+footer span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+footer button {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 10.5px;
+}

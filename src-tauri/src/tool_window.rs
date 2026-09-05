@@ -7,15 +7,31 @@
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+#[cfg(windows)]
+use std::sync::atomic::{AtomicIsize, Ordering};
 
 use tauri::image::Image;
 use tauri::webview::WebviewBuilder;
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::off_thread;
 
 const SEARCH_LABEL: &str = "global-search";
+const CLIPBOARD_LABEL: &str = "clipboard-picker";
 const CHANGELOG_LABEL: &str = "version-history";
+
+#[cfg(windows)]
+static CLIPBOARD_RETURN_HWND: AtomicIsize = AtomicIsize::new(0);
+
+#[cfg(windows)]
+fn remember_clipboard_return_window(window: &tauri::WebviewWindow) {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    let foreground = unsafe { GetForegroundWindow() };
+    let picker = window.hwnd().ok();
+    if !foreground.0.is_null() && picker.is_none_or(|hwnd| hwnd != foreground) {
+        CLIPBOARD_RETURN_HWND.store(foreground.0 as isize, Ordering::Relaxed);
+    }
+}
 
 #[cfg(windows)]
 fn foreground_search_window(window: &tauri::WebviewWindow) -> Result<(), String> {
@@ -114,6 +130,19 @@ pub(crate) fn focus_search_from_global(app: &AppHandle) {
         let _ = foreground_search_window(&window);
         #[cfg(not(windows))]
         let _ = focus_search_window(&window);
+    }
+}
+
+pub(crate) fn focus_clipboard_from_global(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(CLIPBOARD_LABEL) {
+        let already_open = window.is_visible().unwrap_or(false);
+        #[cfg(windows)]
+        if !already_open { remember_clipboard_return_window(&window); }
+        #[cfg(windows)]
+        let _ = foreground_search_window(&window);
+        #[cfg(not(windows))]
+        let _ = focus_search_window(&window);
+        let _ = window.emit("clipboard-picker:activate", serde_json::json!({ "cycle": already_open }));
     }
 }
 
@@ -232,6 +261,79 @@ pub fn search_hide(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(SEARCH_LABEL) {
         window.hide().map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn clipboard_picker_prepare(app: AppHandle, theme: Option<String>) -> Result<(), String> {
+    if app.get_webview_window(CLIPBOARD_LABEL).is_some() { return Ok(()); }
+    let light = theme.as_deref() == Some("light");
+    let page = format!("clipboard-picker.html?prepared=1&theme={}", if light { "light" } else { "dark" });
+    let background = if light { tauri::webview::Color(244, 245, 248, 255) } else { tauri::webview::Color(12, 13, 17, 255) };
+    off_thread(move || {
+        WebviewWindowBuilder::new(&app, CLIPBOARD_LABEL, WebviewUrl::App(page.into()))
+            .title("Clipboard history").inner_size(520.0, 430.0).min_inner_size(420.0, 280.0)
+            .decorations(false).resizable(true).always_on_top(true).skip_taskbar(true)
+            .visible(false).center().background_color(background)
+            .build().map(|_| ()).map_err(|e| format!("Could not prepare Clipboard history: {e}"))
+    }).await.unwrap_or_else(|| Err("Could not prepare Clipboard history.".into()))
+}
+
+#[tauri::command]
+pub async fn clipboard_picker_show(app: AppHandle, theme: Option<String>, binding: Option<String>, activate: Option<bool>) -> Result<(), String> {
+    if app.get_webview_window(CLIPBOARD_LABEL).is_none() {
+        clipboard_picker_prepare(app.clone(), theme.clone()).await?;
+    }
+    let window = app.get_webview_window(CLIPBOARD_LABEL).ok_or("Clipboard history was not created.")?;
+    let already_open = window.is_visible().unwrap_or(false);
+    #[cfg(windows)]
+    if !already_open { remember_clipboard_return_window(&window); }
+    let light = theme.as_deref() == Some("light");
+    let binding = serde_json::to_string(&binding.unwrap_or_else(|| "Ctrl+Shift+V".into())).map_err(|e| e.to_string())?;
+    window.eval(&format!(r#"document.documentElement.dataset.theme="{}";"#, if light { "light" } else { "dark" })).map_err(|e| e.to_string())?;
+    window.eval(&format!("window.wintClipboardBinding={binding};")).map_err(|e| e.to_string())?;
+    if !already_open { window.center().map_err(|e| e.to_string())?; }
+    focus_search_window(&window)?;
+    if activate.unwrap_or(true) {
+        window.emit("clipboard-picker:activate", serde_json::json!({ "cycle": already_open })).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn clipboard_picker_hide(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(CLIPBOARD_LABEL) { window.hide().map_err(|e| e.to_string())?; }
+    Ok(())
+}
+
+/// Return focus to the window that owned the caret before the picker opened,
+/// then send its ordinary Ctrl+V gesture. The picker keeps focus while it is
+/// open so arrows and Enter remain normal keyboard controls.
+#[tauri::command]
+pub async fn clipboard_picker_paste(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(CLIPBOARD_LABEL) {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    #[cfg(windows)]
+    off_thread(move || -> Result<(), String> {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL,
+            VK_V,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+        let raw = CLIPBOARD_RETURN_HWND.load(Ordering::Relaxed);
+        if raw == 0 { return Err("The previous window is no longer available.".into()); }
+        let target = HWND(raw as *mut core::ffi::c_void);
+        if !unsafe { SetForegroundWindow(target) }.as_bool() {
+            return Err("Windows could not return focus to the previous window.".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(45));
+        let key = |code, flags| INPUT { r#type: INPUT_KEYBOARD, Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: code, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: 0 } } };
+        let inputs = [key(VK_CONTROL, Default::default()), key(VK_V, Default::default()), key(VK_V, KEYEVENTF_KEYUP), key(VK_CONTROL, KEYEVENTF_KEYUP)];
+        let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+        if sent == inputs.len() as u32 { Ok(()) } else { Err("Windows could not send the paste command.".into()) }
+    }).await.unwrap_or_else(|| Err("The paste command could not run.".into()))?;
     Ok(())
 }
 

@@ -16,6 +16,80 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.88.7",
+      date: "2026-09-05",
+      title: "Escape closes clipboard history",
+      changes: [
+        ["fix", "Escape now closes the clipboard picker even when one of its history rows has keyboard focus."],
+      ],
+    },
+    {
+      version: "0.88.6",
+      date: "2026-09-05",
+      title: "Click a clip to paste it",
+      changes: [
+        ["fix", "Clicking an item in the clipboard picker now returns to the original application and pastes it there, matching Enter."],
+      ],
+    },
+    {
+      version: "0.88.5",
+      date: "2026-09-05",
+      title: "Full clipboard history comes to the front",
+      changes: [
+        ["fix", "Open full history from the clipboard picker now restores and focuses the main WinT window before opening the Clipboard History tool."],
+      ],
+    },
+    {
+      version: "0.88.4",
+      date: "2026-09-05",
+      title: "Clipboard picker stays open through focus handoff",
+      changes: [
+        ["fix", "The clipboard picker no longer closes itself during the brief native-window-to-keyboard focus transition after its shortcut opens it."],
+      ],
+    },
+    {
+      version: "0.88.3",
+      date: "2026-09-05",
+      title: "Keyboard focus reaches the clipboard picker",
+      changes: [
+        ["fix", "Clipboard History opened by its system-wide shortcut now transfers keyboard focus into the picker, so arrows, repeated shortcut presses, Escape, and Enter work."],
+      ],
+    },
+    {
+      version: "0.88.2",
+      date: "2026-09-05",
+      title: "Pick with focus, paste at the original cursor",
+      changes: [
+        ["better", "The clipboard picker keeps keyboard focus for arrow-key navigation, then Enter returns to the window and cursor that opened it and pastes the selected entry there."],
+      ],
+    },
+    {
+      version: "0.88.1",
+      date: "2026-09-05",
+      title: "A separate shortcut for the full clipboard tool",
+      changes: [
+        ["better", "Hotkey settings now offer a separate, unbound action for opening the full Clipboard History tool, independently of the compact clipboard picker."],
+      ],
+    },
+    {
+      version: "0.88.0",
+      date: "2026-09-05",
+      title: "Clipboard history at the shortcut",
+      changes: [
+        ["better", "The Clipboard History shortcut now opens a compact picker instead of navigating away to the full tool."],
+        ["new", "Pressing the Clipboard History shortcut again while its picker is open selects the next saved item."],
+      ],
+    },
+    {
+      version: "0.87.0",
+      date: "2026-09-05",
+      title: "GitHub workflows in every workspace",
+      changes: [
+        ["new", "The Save & upload panel now shows every GitHub Actions workflow in the repository, including the latest result for each one."],
+        ["new", "Workflows that support manual runs now have a Run button beside their status."],
+      ],
+    },
+    {
       version: "0.86.2",
       date: "2026-09-05",
       title: "Copy and redirect an agent",

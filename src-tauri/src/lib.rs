@@ -76,6 +76,8 @@ struct PendingTool(Mutex<Option<String>>);
 
 #[derive(Default)]
 struct SearchGlobalShortcut(Mutex<Option<u32>>);
+#[derive(Default)]
+struct ClipboardGlobalShortcut(Mutex<Option<u32>>);
 
 #[tauri::command]
 fn search_global_binding_set(
@@ -93,6 +95,16 @@ fn search_global_binding_set(
         )
     };
     *state.0.lock().map_err(|_| "Search shortcut state is unavailable.".to_string())? = id;
+    Ok(())
+}
+
+#[tauri::command]
+fn clipboard_global_binding_set(state: tauri::State<'_, ClipboardGlobalShortcut>, binding: String) -> Result<(), String> {
+    let id = if binding.trim().is_empty() { None } else {
+        Some(binding.parse::<tauri_plugin_global_shortcut::Shortcut>()
+            .map_err(|e| format!("That Clipboard shortcut is invalid: {e}"))?.id)
+    };
+    *state.0.lock().map_err(|_| "Clipboard shortcut state is unavailable.".to_string())? = id;
     Ok(())
 }
 
@@ -2253,6 +2265,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .manage(PendingTool::default())
         .manage(SearchGlobalShortcut::default())
+        .manage(ClipboardGlobalShortcut::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             deliver_tool_arg(app, &args);
         }))
@@ -2271,6 +2284,11 @@ pub fn run() {
                         .and_then(|value| *value);
                     if search_id == Some(shortcut.id) {
                         tool_window::focus_search_from_global(app);
+                        return;
+                    }
+                    let clipboard_id = app.state::<ClipboardGlobalShortcut>().0.lock().ok().and_then(|value| *value);
+                    if clipboard_id == Some(shortcut.id) {
+                        tool_window::focus_clipboard_from_global(app);
                     }
                 })
                 .build(),
@@ -2459,6 +2477,11 @@ pub fn run() {
             tool_window::changelog_show,
             tool_window::changelog_hide,
             search_global_binding_set,
+            clipboard_global_binding_set,
+            tool_window::clipboard_picker_prepare,
+            tool_window::clipboard_picker_show,
+            tool_window::clipboard_picker_hide,
+            tool_window::clipboard_picker_paste,
             dns_lookup,
             dns_compare,
             dns_reverse,

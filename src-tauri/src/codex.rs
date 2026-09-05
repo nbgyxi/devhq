@@ -160,6 +160,7 @@ pub async fn codex_send(
     prompt: String,
     cwd: String,
     session: Option<String>,
+    model: Option<String>,
 ) -> Result<(), String> {
     let Some(path) = codex_path() else {
         return Err("Codex CLI is not installed.".into());
@@ -180,6 +181,9 @@ pub async fn codex_send(
             // resumed turns fail before Codex reads their prompt.
             .arg("--sandbox")
             .arg("workspace-write");
+        if let Some(model) = model.as_deref().filter(|model| is_model_id(model)) {
+            cmd.arg("--model").arg(model);
+        }
         if let Some(id) = session.as_deref().filter(|id| is_session_id(id)) {
             cmd.arg("resume").arg(id);
         }
@@ -298,6 +302,7 @@ fn terminal_command(path: &Path, args: &str) -> String {
 pub async fn codex_terminal_command(
     session: Option<String>,
     login: bool,
+    model: Option<String>,
 ) -> Result<CodexLaunch, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let path = codex_path().ok_or("Codex CLI is not installed.")?;
@@ -308,10 +313,12 @@ pub async fn codex_terminal_command(
             });
         }
         let id = session.filter(|id| is_session_id(id)).unwrap_or_default();
+        let model_arg = model.as_deref().filter(|model| is_model_id(model))
+            .map(|model| format!("--model {model}")).unwrap_or_default();
         let command = if id.is_empty() {
-            terminal_command(&path, "")
+            terminal_command(&path, &model_arg)
         } else {
-            terminal_command(&path, &format!("resume {id}"))
+            terminal_command(&path, &format!("{model_arg} resume {id}").trim().to_string())
         };
         Ok(CodexLaunch {
             command,
@@ -532,6 +539,11 @@ fn is_user_line(value: &serde_json::Value) -> bool {
     let role = payload.get("role").and_then(|r| r.as_str()).unwrap_or("");
     matches!(kind, "event_msg" | "response_item")
         && (inner == "user_message" || inner == "user" || role == "user")
+}
+
+fn is_model_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 100
+        && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 fn is_agent_line(value: &serde_json::Value) -> bool {

@@ -200,6 +200,7 @@ pub async fn cursor_send(
     prompt: String,
     cwd: String,
     session: Option<String>,
+    model: Option<String>,
 ) -> Result<(), String> {
     if find_agent().is_none() {
         return Err("Cursor Agent is not installed.".into());
@@ -231,6 +232,9 @@ pub async fn cursor_send(
             .stderr(Stdio::piped());
         if let Some(id) = session.as_deref() {
             cmd.arg("--resume").arg(id);
+        }
+        if let Some(model) = model.as_deref().filter(|model| is_model_id(model)) {
+            cmd.arg("--model").arg(model);
         }
 
         let mut child = cmd
@@ -351,6 +355,7 @@ pub async fn cursor_terminal_command(
     cwd: String,
     session: Option<String>,
     login: bool,
+    model: Option<String>,
 ) -> Result<CursorLaunch, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if login {
@@ -363,13 +368,20 @@ pub async fn cursor_terminal_command(
             .filter(|id| is_session_id(id))
             .map(Ok)
             .unwrap_or_else(|| create_chat(&cwd))?;
+        let model_arg = model.as_deref().filter(|model| is_model_id(model))
+            .map(|model| format!(" --model {model}")).unwrap_or_default();
         Ok(CursorLaunch {
-            command: terminal_command(&format!("--resume {id}"))?,
+            command: terminal_command(&format!("--resume {id}{model_arg}"))?,
             session: id,
         })
     })
     .await
     .unwrap_or_else(|_| Err("Could not prepare Cursor's terminal.".into()))
+}
+
+fn is_model_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 100
+        && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 /// A command line ConPTY can start. Extra arguments have to live *inside*

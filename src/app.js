@@ -3697,6 +3697,14 @@ function openSearchCommands({ fresh = false, initialQuery = "", position = null 
     });
 }
 
+function openClipboardPicker({ activate = true } = {}) {
+  invoke("clipboard_picker_show", { theme: state.theme === "light" ? "light" : "dark", binding: hotkeyBinding("tool:clipboard"), activate })
+    .catch((error) => {
+      beginWork("clipboard-picker-fail", "Clipboard history could not open", String(error));
+      setTimeout(() => endWork("clipboard-picker-fail"), 4000);
+    });
+}
+
 function renderSearchCommands() {
   const menu = el["search-menu"];
   const input = el["search-input"];
@@ -3809,7 +3817,8 @@ function hotkeyCatalog() {
     if (project.git) add("pull", "Pull —", "download", project.git.upstream || project.git.branch || "git pull");
   }
   return [
-    ...TOOLS.map((tool) => ({ id: `tool:${tool.id}`, kind: "tool", name: tool.name, icon: tool.icon, hint: tool.hint, action: () => openTool(tool.id) })),
+    ...TOOLS.map((tool) => ({ id: `tool:${tool.id}`, kind: "tool", name: tool.name, icon: tool.icon, hint: tool.hint, action: () => tool.id === "clipboard" ? openClipboardPicker() : openTool(tool.id) })),
+    { id: "command:clipboard-tool", kind: "global", name: "Open Clipboard History tool", icon: "inventory_2", hint: "Open the full history for searching, pinning and removing entries", action: () => openTool("clipboard") },
     { id: "command:palette", kind: "global", name: "Command palette", icon: "search", hint: "Find any command, tool or action", action: () => openSearchCommands({ fresh: true }) },
     { id: "command:rescan", kind: "global", name: "Rescan projects", icon: "refresh", hint: "Scan every configured project folder again", action: () => rescan() },
     { id: "command:terminal-panel", kind: "global", name: "Toggle terminal panel", icon: "terminal", hint: "Show or hide docked terminals", action: () => setDockOpen(!window.termsState.open) },
@@ -3858,12 +3867,20 @@ async function syncGlobalHotkeys() {
   try { await api.unregisterAll(); } catch { /* nothing registered yet */ }
   const catalog = hotkeyCatalog();
   const paletteBinding = state.hotkeyGlobals.has("command:palette") ? hotkeyBinding("command:palette") : "";
+  const clipboardBinding = state.hotkeyGlobals.has("tool:clipboard") ? hotkeyBinding("tool:clipboard") : "";
   if (paletteBinding) {
     try { await invoke("search_prepare"); }
     catch (error) { globalHotkeyErrors.set("command:palette", String(error)); }
   }
   await invoke("search_global_binding_set", { binding: paletteBinding }).catch((error) => {
     globalHotkeyErrors.set("command:palette", String(error));
+  });
+  if (clipboardBinding) {
+    try { await invoke("clipboard_picker_prepare", { theme: state.theme === "light" ? "light" : "dark" }); }
+    catch (error) { globalHotkeyErrors.set("tool:clipboard", String(error)); }
+  }
+  await invoke("clipboard_global_binding_set", { binding: clipboardBinding }).catch((error) => {
+    globalHotkeyErrors.set("tool:clipboard", String(error));
   });
   for (const command of catalog) {
     if (!state.hotkeyGlobals.has(command.id)) continue;
@@ -3872,6 +3889,13 @@ async function syncGlobalHotkeys() {
     try {
       await api.register(binding, async (event) => {
         if (event.state && event.state !== "Pressed") return;
+        // Registration is still done here, but the native callback owns this
+        // picker so the main window never steals focus and repeated presses
+        // can advance the selection synchronously.
+        if (command.id === "tool:clipboard") {
+          openClipboardPicker({ activate: false });
+          return;
+        }
         // The native palette is intentionally usable without surfacing the
         // main window. Other global commands still bring their working context
         // forward before executing.
@@ -6558,6 +6582,12 @@ window.wintWork = { beginWork, updateWork, endWork };
 
 async function wireToolPopoutEvents() {
   await listen("search:ready", activateNativeSearch);
+  await listen("clipboard-picker:open-full", async () => {
+    await appWindow.show().catch(() => {});
+    await appWindow.unminimize().catch(() => {});
+    await appWindow.setFocus().catch(() => {});
+    openTool("clipboard");
+  });
   await listen("search:query", (event) => {
     const query = typeof event.payload?.query === "string" ? event.payload.query : "";
     if (/\bkill\b/i.test(query) && !state.ports.length && !state.portsLoading) loadPorts();

@@ -152,6 +152,7 @@ pub async fn copilot_send(
     prompt: String,
     cwd: String,
     session: Option<String>,
+    model: Option<String>,
 ) -> Result<(), String> {
     let Some(path) = copilot_path() else {
         return Err("GitHub Copilot CLI is not installed.".into());
@@ -175,6 +176,9 @@ pub async fn copilot_send(
             .stderr(Stdio::piped());
         if let Some(id) = session.as_deref().filter(|id| is_session_id(id)) {
             cmd.arg(format!("--resume={id}"));
+        }
+        if let Some(model) = model.as_deref().filter(|model| is_model_id(model)) {
+            cmd.arg(format!("--model={model}"));
         }
 
         let mut child = cmd
@@ -268,6 +272,7 @@ fn terminal_command(path: &Path, args: &str) -> String {
 pub async fn copilot_terminal_command(
     session: Option<String>,
     login: bool,
+    model: Option<String>,
 ) -> Result<CopilotLaunch, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let path = copilot_path().ok_or("GitHub Copilot CLI is not installed.")?;
@@ -278,10 +283,12 @@ pub async fn copilot_terminal_command(
             });
         }
         let id = session.filter(|id| is_session_id(id)).unwrap_or_default();
+        let model_arg = model.as_deref().filter(|model| is_model_id(model))
+            .map(|model| format!("--model={model}")).unwrap_or_default();
         let command = if id.is_empty() {
-            terminal_command(&path, "")
+            terminal_command(&path, &model_arg)
         } else {
-            terminal_command(&path, &format!("--resume={id}"))
+            terminal_command(&path, &format!("--resume={id} {model_arg}").trim().to_string())
         };
         Ok(CopilotLaunch {
             command,
@@ -290,6 +297,11 @@ pub async fn copilot_terminal_command(
     })
     .await
     .unwrap_or_else(|_| Err("Could not prepare Copilot's terminal.".into()))
+}
+
+fn is_model_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 100
+        && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 fn is_session_id(value: &str) -> bool {

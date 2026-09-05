@@ -1220,6 +1220,10 @@
           const url = e.target.closest("[data-run-url]")?.dataset.runUrl;
           if (url) invoke("plugin:opener|open_url", { url }).catch(() => {});
         }
+        if (action === "dispatch-workflow") {
+          const id = e.target.closest("[data-workflow-id]")?.dataset.workflowId;
+          if (id) dispatchGithubWorkflow(panel, id);
+        }
       });
       panel.branchline.addEventListener("submit", (e) => { e.preventDefault(); makeBranch(panel); });
       // Catches everything that can change the content's height - the state
@@ -1295,30 +1299,68 @@
     try {
       panel.githubStatus ||= await invoke("github_status");
       if (!panel.githubStatus?.authenticated) { panel.jobs.hidden = true; return; }
-      const result = await invoke("github_api", { method: "GET", endpoint: `repos/${slug}/actions/runs?per_page=10`, body: null });
-      const runs = result?.workflow_runs || [];
-      // One useful answer: an active run takes precedence; otherwise show the
-      // newest run GitHub returned. Older runs belong on GitHub's own page.
-      const run = runs.find((item) => item.status !== "completed") || runs[0];
+      if (!panel.githubWorkflows) {
+        const result = await invoke("github_api", { method: "GET", endpoint: `repos/${slug}/actions/workflows?per_page=100`, body: null });
+        panel.githubWorkflows = await Promise.all((result?.workflows || []).map(async (workflow) => {
+          let manual = false;
+          try {
+            const path = String(workflow.path || "").split("/").map(encodeURIComponent).join("/");
+            const file = await invoke("github_api", { method: "GET", endpoint: `repos/${slug}/contents/${path}`, body: null });
+            const yaml = atob(String(file?.content || "").replace(/\s/g, ""));
+            manual = /^\s*workflow_dispatch\s*:/m.test(yaml)
+              || /^\s*on\s*:\s*workflow_dispatch\s*(?:#.*)?$/m.test(yaml)
+              || /^\s*on\s*:\s*\[[^\]]*\bworkflow_dispatch\b[^\]]*\]/m.test(yaml);
+          } catch (_) {}
+          return { ...workflow, manual };
+        }));
+      }
+      const rows = await Promise.all(panel.githubWorkflows.map(async (workflow) => {
+        try {
+          const result = await invoke("github_api", { method: "GET", endpoint: `repos/${slug}/actions/workflows/${workflow.id}/runs?per_page=10`, body: null });
+          const runs = result?.workflow_runs || [];
+          return { workflow, run: runs.find((item) => item.status !== "completed") || runs[0] || null };
+        } catch (_) { return { workflow, run: null }; }
+      }));
       panel.jobs.hidden = false;
-      if (!run) {
-        panel.jobs.innerHTML = `<p class="ws-git-jobs-head">${icon("rocket_launch")}GitHub action</p><small>No runs yet.</small>`;
+      if (!rows.length) {
+        panel.jobs.innerHTML = `<p class="ws-git-jobs-head">${icon("rocket_launch")}GitHub workflows</p><small>No workflows found.</small>`;
       } else {
-        const running = run.status !== "completed";
-        const ok = run.conclusion === "success";
-        const glyph = running ? "progress_activity" : ok ? "check_circle" : run.conclusion === "cancelled" ? "cancel" : "error";
-        const status = running ? run.status : run.conclusion || "completed";
-        panel.jobs.innerHTML = `<p class="ws-git-jobs-head">${icon("rocket_launch")}GitHub action</p>
-          <div class="ws-git-job ${running ? "running" : ok ? "ok" : "failed"}">
+        panel.jobs.innerHTML = `<p class="ws-git-jobs-head">${icon("rocket_launch")}GitHub workflows</p>${rows.map(({ workflow, run }) => {
+          const runButton = workflow.manual ? `<button class="ws-mini" type="button" data-git="dispatch-workflow" data-workflow-id="${esc(workflow.id)}" title="Run this workflow" aria-label="Run ${esc(workflow.name || "workflow")}">${icon("play_arrow")}</button>` : "";
+          if (!run) return `<div class="ws-git-job"><span class="ms">schedule</span><span><strong>${esc(workflow.name || "Workflow")}</strong><small>No runs yet</small></span><span class="ws-git-job-actions">${runButton}</span></div>`;
+          const running = run.status !== "completed";
+          const ok = run.conclusion === "success";
+          const glyph = running ? "progress_activity" : ok ? "check_circle" : run.conclusion === "cancelled" ? "cancel" : "error";
+          const status = running ? run.status : run.conclusion || "completed";
+          return `<div class="ws-git-job ${running ? "running" : ok ? "ok" : "failed"}">
             <span class="ms">${glyph}</span>
-            <span><strong>${esc(run.name || run.display_title || "Workflow")}</strong><small>${esc(String(status).replaceAll("_", " "))} · ${esc(run.head_branch || "")}${running ? "" : ` · ${esc(whenAgo(Date.parse(run.updated_at)))}`}</small></span>
-            <button class="ws-mini" type="button" data-git="open-run" data-run-url="${esc(run.html_url || "")}" title="View this run on GitHub" aria-label="View this run on GitHub">${icon("open_in_new")}</button>
+            <span><strong>${esc(workflow.name || run.name || "Workflow")}</strong><small>${esc(String(status).replaceAll("_", " "))} · ${esc(run.head_branch || "")}${running ? "" : ` · ${esc(whenAgo(Date.parse(run.updated_at)))}`}</small></span>
+            <span class="ws-git-job-actions">${runButton}<button class="ws-mini" type="button" data-git="open-run" data-run-url="${esc(run.html_url || "")}" title="View this run on GitHub" aria-label="View this run on GitHub">${icon("open_in_new")}</button></span>
           </div>`;
+        }).join("")}`;
       }
       syncGitHeight(panel);
     } catch (_) {
       panel.jobs.hidden = true;
     } finally { panel.jobsLoading = false; }
+  }
+
+  async function dispatchGithubWorkflow(panel, id) {
+    if (panel.dispatching) return;
+    const slug = githubSlug(panel.data?.info?.remote);
+    const ref = panel.data?.info?.branch;
+    if (!slug || !ref) return;
+    panel.dispatching = true;
+    try {
+      await busy("Starting GitHub workflow", () => invoke("github_api", {
+        method: "POST", endpoint: `repos/${slug}/actions/workflows/${id}/dispatches`, body: { ref },
+      }));
+      say("GitHub workflow started");
+      setTimeout(() => loadGithubJobs(panel), 1500);
+    } catch (err) {
+      gitNote(panel, `The workflow could not be started.\n\n${String(err)}`);
+      say(String(err));
+    } finally { panel.dispatching = false; }
   }
 
   /** Lists what has been saved here but not uploaded yet - one line per
@@ -1953,6 +1995,10 @@
       sessionsCmd: "cursor_sessions",
       transcriptCmd: "cursor_transcript",
       mintSession: false,
+      models: [
+        { id: "", label: "Cursor default", note: "Use your Cursor account setting" },
+        { id: "gpt-5", label: "GPT-5", note: "Explicit Cursor model" },
+      ],
       installHint: `WinT doesn't ship it and holds no key for it. You install Cursor Agent and sign in as
            yourself; this panel gives it somewhere to talk.`,
     },
@@ -1970,6 +2016,16 @@
       sessionsCmd: "copilot_sessions",
       transcriptCmd: "copilot_transcript",
       mintSession: false,
+      models: [
+        { id: "auto", label: "Auto", note: "Let Copilot choose" },
+        { id: "claude-sonnet-4.6", label: "Claude Sonnet 4.6", note: "General-purpose coding" },
+        { id: "gpt-5.4", label: "GPT-5.4", note: "Complex reasoning" },
+        { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", note: "Code-focused tasks" },
+        { id: "claude-haiku-4.5", label: "Claude Haiku 4.5", note: "Fast, lightweight tasks" },
+        { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", note: "Gemini reasoning" },
+        { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", note: "Fast Gemini responses" },
+      ],
+      defaultModel: "auto",
       installHint: `WinT doesn't ship it and holds no key for it. You install GitHub Copilot CLI and sign in as
            yourself; this panel gives it somewhere to talk.`,
     },
@@ -1987,6 +2043,10 @@
       sessionsCmd: "codex_sessions",
       transcriptCmd: "codex_transcript",
       mintSession: false,
+      models: [
+        { id: "", label: "Codex default", note: "Use your Codex configuration" },
+        { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", note: "Optimized for agentic coding" },
+      ],
       installHint: `WinT doesn't ship it and holds no key for it. You install OpenAI Codex CLI and sign in as
            yourself; this panel gives it somewhere to talk.`,
     },
@@ -2004,6 +2064,13 @@
       sessionsCmd: "gemini_sessions",
       transcriptCmd: "gemini_transcript",
       mintSession: false,
+      models: [
+        { id: "auto", label: "Auto", note: "Recommended; route by task" },
+        { id: "pro", label: "Pro", note: "Complex reasoning" },
+        { id: "flash", label: "Flash", note: "Fast, balanced work" },
+        { id: "flash-lite", label: "Flash Lite", note: "Fastest for simple tasks" },
+      ],
+      defaultModel: "auto",
       installHint: `WinT doesn't ship it and holds no key for it. You install Gemini CLI and sign in as
            yourself; this panel gives it somewhere to talk.`,
     },
@@ -2431,11 +2498,11 @@
     send.title = busy ? "Interrupt and send now (Enter)" : "Send (Enter)";
     tab.ask.querySelector(".ws-chat-stop").hidden = !busy;
     if (tab.modelPicker) {
-      tab.modelPicker.hidden = tab.kind !== "claude";
+      tab.modelPicker.hidden = !spec.models?.length;
       tab.modelSelect.disabled = tab.started || busy;
       tab.modelSelect.value = tab.model;
       tab.modelPicker.querySelector("small").textContent = tab.started
-        ? `${AGENTS.claude.models.find((model) => model.id === tab.model)?.label || tab.model} is locked for this session`
+        ? `${spec.models.find((model) => model.id === tab.model)?.label || "CLI default"} is locked for this session`
         : "Choose before you send the first message";
     }
 
@@ -2547,9 +2614,9 @@
         const command = await invoke(spec.terminalCmd, { session: tab.session || null, model: tab.model || null });
         launch = { command, session: tab.session || null };
       } else if (tab.kind === "cursor") {
-        launch = await invoke(spec.terminalCmd, { cwd: projectPath, session: tab.session || null, login });
+        launch = await invoke(spec.terminalCmd, { cwd: projectPath, session: tab.session || null, login, model: tab.model || null });
       } else {
-        launch = await invoke(spec.terminalCmd, { session: tab.session || null, login });
+        launch = await invoke(spec.terminalCmd, { session: tab.session || null, login, model: tab.model || null });
       }
     } catch (err) {
       return say(String(err));
@@ -2788,6 +2855,7 @@
           prompt: text,
           cwd: projectPath,
           session: tab.session || null,
+          model: tab.model || null,
         });
         say(`${spec.label} is working`);
       }

@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capabilities for the WinT window and any popped-out terminal, tool or workspace. A window label absent from this list gets no core permissions at all - not even event listening - so its page dies on its first call.",
-  "windows": ["main", "term-*", "tool-*", "workspace-*", "global-search", "version-history"],
+  "windows": ["main", "term-*", "tool-*", "workspace-*", "global-search", "clipboard-picker", "version-history"],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",

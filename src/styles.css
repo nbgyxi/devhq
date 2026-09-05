@@ -3483,6 +3483,7 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .ws-git-job.ok>.ms{color:var(--green)}.ws-git-job.failed>.ms{color:var(--red)}.ws-git-job>span:nth-child(2){min-width:0}
 .ws-git-jobs strong,.ws-git-jobs small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ws-git-jobs strong{font-size:10.5px;font-weight:600}.ws-git-jobs small{font-size:9.5px;color:var(--dim2)}
+.ws-git-job+.ws-git-job{margin-top:5px;padding-top:5px;border-top:1px solid var(--line)}.ws-git-job-actions{display:flex;align-items:center;gap:2px}
 /* One button: move this work off the shared branch, or put it back on it. */
 .ws-git-branchline{display:flex}
 .ws-git-branchline[hidden]{display:none}
