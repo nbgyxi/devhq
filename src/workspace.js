@@ -66,11 +66,16 @@
   const KEY = `wint.workspace.v3:${projectPath.toLowerCase()}`;
   const KEY_V2 = `wint.workspace.v2:${projectPath.toLowerCase()}`;
   const DEFAULT_LAYOUT = {
-    slots: { "left-top": "files", "left-bottom": "git", center: "browser", "right-top": "agent", "right-bottom": null, bottom: "terminal" },
+    slots: { "left-top": "git", "left-bottom": "files", center: "browser", "right-top": "agent", "right-bottom": null, bottom: "terminal" },
     hidden: {},
-    // The save-and-upload panel is a message box and three buttons, so it gets
-    // what that needs and the file list gets the rest of the column.
+    // Save & upload sits at the top of the left column, where the eye lands
+    // first and where it does not move as the file list grows. It is sized to
+    // its own content either way (--ws-git-h), so the file list below gets
+    // everything it does not need and leftSplit does not apply to that column.
     size: { left: 280, right: 420, bottom: 260, leftSplit: 0.78, rightSplit: 0.5 },
+    // Marks a layout that has already been through the move of Save & upload
+    // to the top, so someone who puts it back at the bottom keeps it there.
+    gitOnTop: true,
     centerHidden: 0, // Width given up when center panel was hidden, so it can be restored.
   };
 
@@ -86,6 +91,16 @@
     if (slots["right-top"] === "chat") slots["right-top"] = "agent";
     delete slots.right;
     delete hidden.right;
+    // Save & upload used to live under the file list. It is above it now -
+    // once, for layouts saved before the move, and only if they were still
+    // in the arrangement this shipped with.
+    if (!saved.gitOnTop && slots["left-top"] === "files" && slots["left-bottom"] === "git") {
+      slots["left-top"] = "git";
+      slots["left-bottom"] = "files";
+      const top = hidden["left-top"];
+      if (hidden["left-bottom"] === undefined) delete hidden["left-top"]; else hidden["left-top"] = hidden["left-bottom"];
+      if (top === undefined) delete hidden["left-bottom"]; else hidden["left-bottom"] = top;
+    }
     // An earlier build reserved right-bottom for a separate Cursor panel.
     // Cursor lives in the Agent panel now, so that placeholder goes away.
     if (slots["right-bottom"] === "cursor") {
@@ -96,6 +111,7 @@
       slots: { ...DEFAULT_LAYOUT.slots, ...slots },
       hidden: { ...DEFAULT_LAYOUT.hidden, ...hidden },
       size: { ...DEFAULT_LAYOUT.size, ...saved.size },
+      gitOnTop: true,
     };
   };
 
@@ -508,9 +524,12 @@
    *  The cross and Alt+F4 both arrive here, so it runs once either way. */
   let closing = false;
   win.onCloseRequested(async (event) => {
+    // Asked a second time - the cross again, Alt+F4 - the answer is still the
+    // run already under way: the window goes when that one has finished
+    // putting things away, never half way through it.
+    event.preventDefault();
     if (closing) return;
     closing = true;
-    event.preventDefault();
     // The last resize or move may still be waiting out its debounce, and where
     // the window was when it closed is exactly where it should come back.
     clearTimeout(geomTimer);
@@ -518,7 +537,11 @@
     await panels.get("browser")?.settlePreviewEdit?.();
     await invoke("workspace_browser_close", { window: label }).catch(() => {});
     await closeWorkspaceTerminals();
-    win.close();
+    // `close()` only asks again - another close request, back through this
+    // same handler, which now prevents it - and the window would sit there
+    // waiting for a second click. Everything it held open is already put
+    // away, so it is taken down outright.
+    win.destroy();
   }).catch(() => {});
 
   /** Closes every shell this workspace had - the terminal panel's tabs, and a
@@ -1150,11 +1173,10 @@
     const box = getComputedStyle(body);
     const gap = parseFloat(box.rowGap) || 0;
     const kids = [...body.children].filter((el) => !el.hidden);
-    // The list of saved-but-not-uploaded versions is the one child allowed to
-    // scroll, so its own box is already whatever height it was given last
-    // time. Its content height is what the panel wants; the ceiling below is
-    // what it gets.
-    const kidHeight = (el) => Math.max(el.getBoundingClientRect().height, el.classList.contains("ws-git-saved") ? el.scrollHeight : 0);
+    // Nothing in the panel scrolls, so every child is already its natural
+    // height. scrollHeight is still taken as a floor, in case a child was
+    // handed a smaller box than its content on the frame being measured.
+    const kidHeight = (el) => Math.max(el.getBoundingClientRect().height, el.scrollHeight);
     const content = kids.reduce((sum, el) => sum + kidHeight(el), 0)
       + gap * Math.max(0, kids.length - 1)
       + parseFloat(box.paddingTop) + parseFloat(box.paddingBottom);
@@ -1165,12 +1187,13 @@
     const chrome = slot.offsetHeight - slot.clientHeight
       + parseFloat(slotBox.marginTop) + parseFloat(slotBox.marginBottom);
     const want = content + (head?.getBoundingClientRect().height || 0) + chrome;
-    // The panel above it still has to exist, and a long list of saved versions
-    // must not take the column over: two fifths of it is as far as this panel
-    // grows, and past that the list scrolls inside it.
+    // The panel gets as much of the column as its content asks for: nothing in
+    // it scrolls, so height it is not given is content nobody can reach. The
+    // only limit is that the panel above must not vanish altogether - it keeps
+    // its header row and a line or two of its own.
     const column = slot.parentElement;
     const columnHeight = column?.clientHeight || 0;
-    const ceiling = Math.max(90, Math.min(columnHeight - 120, columnHeight * 0.4));
+    const ceiling = Math.max(90, columnHeight - 72);
     const px = `${Math.min(ceiling, Math.max(90, Math.ceil(want)))}px`;
     if (document.body.style.getPropertyValue("--ws-git-h") !== px) {
       document.body.style.setProperty("--ws-git-h", px);
@@ -1194,8 +1217,8 @@
         <form class="ws-git-form"><input name="message" placeholder="What did you change?" autocomplete="off" />
           <div class="ws-git-buttons">
             <button type="submit" class="ws-btn primary" data-git="save">${icon("bookmark_add")}Save</button>
-            <button type="button" class="ws-btn" data-git="push">${icon("cloud_upload")}Upload</button>
-            <button type="button" class="ws-btn" data-git="pull">${icon("cloud_download")}Get</button>
+            <button type="button" class="ws-btn" data-git="push" hidden>${icon("cloud_upload")}Upload</button>
+            <button type="button" class="ws-btn" data-git="pull" hidden>${icon("cloud_download")}Get</button>
           </div></form>
         <div class="ws-git-jobs" hidden></div>`;
       panel.state = body.querySelector(".ws-git-state");
@@ -1205,7 +1228,11 @@
       panel.note = body.querySelector(".ws-git-note");
       panel.operation = body.querySelector(".ws-git-operation");
       panel.form = body.querySelector(".ws-git-form");
-      panel.tools.addEventListener("click", () => loadGit(panel));
+      panel.pull = body.querySelector('[data-git="pull"]');
+      panel.push = body.querySelector('[data-git="push"]');
+      panel.save = body.querySelector('[data-git="save"]');
+      panel.message = panel.form.querySelector("input");
+      panel.tools.addEventListener("click", () => loadGit(panel, { force: true }));
       panel.form.addEventListener("submit", (e) => { e.preventDefault(); saveVersion(panel); });
       body.addEventListener("click", (e) => {
         const action = e.target.closest("[data-git]")?.dataset.git;
@@ -1271,11 +1298,31 @@
         ${onMain ? "" : `<p class="ws-git-branch-name" title="What this folder is called">${esc(g.branch || "a detached snapshot")}</p>`}
         <p class="ws-git-line">${changed.length
           ? `${changed.length} changed file${changed.length === 1 ? "" : "s"} not saved yet.`
-          : g.ahead ? "Everything is saved here, but not uploaded yet." : "Nothing to save. You are up to date."}</p>`;
-      renderUnpushed(panel, data.unpushed || []);
+          : g.ahead ? "Everything is saved here, but not uploaded yet." : "Nothing to save. You are up to date."}</p>
+        ${g.behind ? `<p class="ws-git-line waiting">${icon("cloud_download")}${g.behind} change${g.behind === 1 ? "" : "s"} from your team ${g.behind === 1 ? "is" : "are"} waiting. Get ${g.behind === 1 ? "it" : "them"} before you carry on.</p>` : ""}`;
+      // Every button here is shown only when it has something to do. Nothing
+      // to save means the box asking what changed and the Save button both go
+      // away rather than sit there greyed; Get appears only when the team has
+      // left something behind; Upload appears only when there are saved
+      // versions this computer has and the remote does not.
+      //
+      // A folder that has never been uploaded has no upstream, so git reports
+      // nothing ahead and no unpushed versions - and that is exactly when
+      // Upload matters most. With a remote configured and no upstream, the
+      // button stays.
+      const nothingToSave = changed.length === 0;
+      const unpushed = data.unpushed || [];
+      const neverUploaded = (data.remotes || []).length > 0 && !g.upstream;
+      panel.message.hidden = nothingToSave;
+      panel.save.hidden = nothingToSave;
+      panel.push.hidden = !(g.ahead || unpushed.length || neverUploaded);
+      panel.pull.hidden = !g.behind;
+      panel.pull.classList.toggle("waiting", !!g.behind);
+      renderUnpushed(panel, unpushed);
       renderBranchLine(panel);
       publishChanged(changed);
       if (!options.skipJobs) loadGithubJobs(panel);
+      if (!options.skipFetch) checkIncoming(panel, options.force);
       say(changed.length ? `${changed.length} file${changed.length === 1 ? "" : "s"} changed` : "Nothing to save");
     } catch (err) {
       panel.state.innerHTML = `<p class="ws-git-line">${esc(String(err))}</p>`;
@@ -1283,6 +1330,34 @@
       say(String(err));
     } finally {
       gitLoading = false;
+    }
+  }
+
+  /** Asks the remote whether anything new is waiting there.
+   *
+   *  `git status` only knows what the last fetch was told, so a folder can sit
+   *  there saying it is up to date for days. This fetches in the background -
+   *  it changes nothing in the project, it only updates what git knows - and
+   *  then reads the counts again, so Get is offered exactly when there is
+   *  something to get. Throttled, because it goes to the network and the panel
+   *  reloads after every save and upload; the refresh button forces it. */
+  async function checkIncoming(panel, force = false) {
+    if (panel.working || panel.fetching || !panel.data?.info?.upstream) return;
+    const now = Date.now();
+    if (!force && panel.lastFetch && now - panel.lastFetch < 60000) return;
+    panel.fetching = true;
+    panel.lastFetch = now;
+    try {
+      const result = await busy("Checking for your team's changes", () => invoke("git_action", {
+        request: { path: projectPath, action: "fetch", value: "", amend: false },
+      }));
+      panel.fetching = false;
+      // A fetch that could not reach the remote is not worth a word in the
+      // panel - it says nothing about the work, and the counts already on
+      // screen stay as true as they were.
+      if (result.ok) await loadGit(panel, { skipFetch: true, skipJobs: true });
+    } catch {
+      panel.fetching = false;
     }
   }
 
@@ -1413,7 +1488,7 @@
     panel.branchline.innerHTML = !main ? ""
       : g.branch === main
         ? `<button class="ws-btn" data-git="branch-out" type="button"
-            title="Keep working, but somewhere of your own, so ${esc(main)} stays as it is">${icon("alt_route")}Work on this separately</button>`
+            title="Keep working, but somewhere of your own, so ${esc(main)} stays as it is">${icon("alt_route")}Work on this in another folder</button>`
         : `<button class="ws-btn" data-git="merge-main" type="button"
             title="Join everything you saved on ${esc(g.branch)} into ${esc(main)} and upload it">${icon("merge")}Save this on ${esc(main)}</button>`;
     syncGitHeight(panel);
@@ -3177,7 +3252,7 @@
       <div class="ws-agent-limit" hidden></div>
       <form class="ws-chat-ask" hidden>
         <label class="ws-agent-model" hidden>
-          <span>${icon("neurology")}<strong>Model for this session</strong><small></small></span>
+          <span>${icon("neurology")}<strong>Model</strong><small></small></span>
           <select aria-label="Model for this session">${(AGENTS[kind].models || []).map((item) => `<option value="${esc(item.id)}">${esc(item.label)} — ${esc(item.note)}</option>`).join("")}</select>
         </label>
         <div class="ws-chat-row">

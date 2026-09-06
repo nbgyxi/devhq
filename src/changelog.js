@@ -16,9 +16,47 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.89.1",
+      date: "2026-09-06",
+      title: "Closing a workspace closes it",
+      changes: [
+        ["fix", "Closing a workspace window while a page was open in the browser panel took two clicks: the first only put the browser away. One click now closes the window."],
+      ],
+    },
+    {
+      version: "0.89.0",
+      date: "2026-09-06",
+      title: "Save & upload shows only what you can do",
+      changes: [
+        ["better", "Save & upload now sits at the top of the left column, above the file list, instead of at the bottom of it. If you had moved it somewhere yourself, it stays where you put it."],
+        ["better", "Save & upload never scrolls any more. The list of versions saved but not uploaded is shown in full and the panel takes exactly the height it needs, instead of collapsing the list into a scrollbar."],
+        ["new", "WinT now checks the remote in the background for work waiting from your team, says how much is waiting, and only then offers Get. With nothing to get, the button stays away."],
+        ["better", "With nothing changed there is nothing to save, so the box asking what you changed and the Save button are hidden rather than sitting there doing nothing."],
+        ["better", "Upload only appears when you have saved versions that are not on the remote yet, or you are in a folder that has never been uploaded at all."],
+        ["better", "\"Work on this separately\" now says \"Work on this in another folder\", which is what it actually does."],
+      ],
+    },
+    {
+      version: "0.88.9",
+      date: "2026-09-06",
+      title: "The model picker fits the panel",
+      changes: [
+        ["fix", "The model chooser above the agent's first message now stacks its label over the dropdown, so in a narrow panel the heading no longer collapses to one word per line with the dropdown sitting on top of it."],
+      ],
+    },
+    {
+      version: "0.88.8",
+      date: "2026-09-06",
+      title: "Closing the window closes WinT",
+      changes: [
+        ["fix", "Closing the main window now quits WinT for real. The hidden Search and Clipboard windows kept the app running with nothing on screen, so the global shortcuts still opened Search but picking anything from it did nothing, and no tray item, jump list entry or command line could bring the window back."],
+      ],
+    },
+    {
       version: "0.88.7",
       date: "2026-09-05",
       title: "Escape closes clipboard history",
+      buildChecksum: "9da026d63ed908eaa42e520d4e745cf7f2bd8a73008bd89827fff92d2db1499d",
       changes: [
         ["fix", "Escape now closes the clipboard picker even when one of its history rows has keyboard focus."],
       ],

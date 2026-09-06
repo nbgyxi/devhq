@@ -2541,6 +2541,12 @@ pub fn run() {
                 // filtering this machine's traffic with nothing left to
                 // show for it.
                 network::shutdown();
+                // Closing the window is closing the app. The hidden Search and
+                // Clipboard windows would otherwise hold the event loop open,
+                // leaving a process with no way back to a window: the tray icon
+                // is hidden, and everything that reopens the app goes through
+                // `show_main_window`, which has no "main" left to find.
+                window.app_handle().exit(0);
             }
         });
 
