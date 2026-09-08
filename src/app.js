@@ -1521,6 +1521,9 @@ function switchMainView(view) {
   savePrefs();
   state.selectedPath = null;
   clearDetailData();
+  // The detail pane is an overlay of its own: dropping the project is not
+  // enough, the region has to repaint or its markup stays over the new view.
+  markDirty("detail");
   syncSettingsButton();
   syncMainView();
   window.wintTrackPageView?.(
@@ -3320,6 +3323,10 @@ function openIsolatedTool(id) {
   state.isolatedToolSession = sessionForTool(id);
   state.activeView = "isolated-tool";
   state.selectedPath = null;
+  clearDetailData();
+  // An isolated tool paints above the page, so a detail pane left standing
+  // underneath is invisible until the tool closes - and dead when it reappears.
+  markDirty("detail");
   savePrefs();
   syncSettingsButton();
   renderIsolatedToolChrome(tool);
@@ -5254,6 +5261,61 @@ function renderDetail() {
   }
 }
 
+/* --------------------------------------------------- the keep-awake hours
+ *
+ * The schedule itself belongs to the backend - it is what actually takes and
+ * releases the hold, tool open or not - so this row only ever reflects and
+ * edits what `keep_awake_status` reports. The Keep Awake tool writes the very
+ * same one, which is why nothing about it is cached in `state`. */
+const AWAKE_DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
+const AWAKE_DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+let keepAwakeSchedule = null;
+
+function awakeClockText(minute) {
+  const value = ((Number(minute) || 0) % 1440 + 1440) % 1440;
+  return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+}
+
+function drawKeepAwakeSetting(host) {
+  const schedule = keepAwakeSchedule;
+  const check = host?.querySelector("#setting-awake-schedule");
+  const days = host?.querySelector("#setting-awake-days");
+  const from = host?.querySelector("#setting-awake-from");
+  const to = host?.querySelector("#setting-awake-to");
+  if (!check || !days || !from || !to) return;
+  const on = schedule?.enabled === true;
+  check.checked = on;
+  check.disabled = !schedule;
+  days.innerHTML = AWAKE_DAY_ORDER.map((day) => `<button type="button" class="${schedule?.days?.includes(day) ? "on" : ""}" data-setting-awake-day="${day}"${on ? "" : " disabled"}>${AWAKE_DAY_NAMES[day]}</button>`).join("");
+  // Never overwrite a field somebody is typing into.
+  if (document.activeElement !== from) from.value = awakeClockText(schedule?.startMinute ?? 540);
+  if (document.activeElement !== to) to.value = awakeClockText(schedule?.endMinute ?? 960);
+  from.disabled = !on;
+  to.disabled = !on;
+}
+
+function syncKeepAwakeSetting(host) {
+  drawKeepAwakeSetting(host);
+  invoke("keep_awake_status")
+    .then((status) => {
+      keepAwakeSchedule = status?.schedule || keepAwakeSchedule;
+      if (state.activeView === "settings") drawKeepAwakeSetting(el["settings-host"]);
+    })
+    .catch(() => { /* an older backend: the row stays as it is */ });
+}
+
+function saveKeepAwakeSetting(patch) {
+  const schedule = { ...(keepAwakeSchedule || {}), ...patch };
+  keepAwakeSchedule = schedule;
+  drawKeepAwakeSetting(el["settings-host"]);
+  invoke("keep_awake_schedule_set", { schedule })
+    .then((status) => {
+      keepAwakeSchedule = status?.schedule || schedule;
+      if (state.activeView === "settings") drawKeepAwakeSetting(el["settings-host"]);
+    })
+    .catch(() => syncKeepAwakeSetting(el["settings-host"]));
+}
+
 async function refreshCliSetting(status = null) {
   const host = el["settings-host"];
   const button = host?.querySelector("#setting-cli-toggle");
@@ -5350,6 +5412,14 @@ function renderSettings() {
             </span>
             <input class="setting-check" id="setting-analytics" type="checkbox" />
           </label>
+          <div class="settings-row awake-schedule-row">
+            <span><strong>Keep the machine awake on a schedule</strong><small>Hold Windows awake between these hours on the days you choose, for as long as WinT is running. The Keep Awake tool edits this same schedule, and is where the rest of it lives.</small></span>
+            <div class="setting-awake">
+              <label class="setting-awake-on" for="setting-awake-schedule"><input class="setting-check" id="setting-awake-schedule" type="checkbox" />On</label>
+              <div class="awake-days" id="setting-awake-days"></div>
+              <div class="setting-awake-window"><input id="setting-awake-from" type="time" aria-label="Hold from" /><span>to</span><input id="setting-awake-to" type="time" aria-label="Hold until" /></div>
+            </div>
+          </div>
           <label class="settings-row" for="setting-time-tracker">
             <span><strong>Always track active-window usage</strong><small>Record application and window-title time while WinT is open, including when it is minimized or unfocused. Nothing is sent anywhere.</small></span>
             <input class="setting-check" id="setting-time-tracker" type="checkbox" />
@@ -5446,6 +5516,7 @@ function renderSettings() {
   host.querySelector("#setting-minimize-to-tray").checked = state.minimizeToTrayButton;
   host.querySelector("#setting-analytics").checked = state.analyticsChosen && state.analytics;
   host.querySelector("#setting-time-tracker").checked = window.wintTimeTracker?.getAlways() === true;
+  syncKeepAwakeSetting(host);
   host.querySelector("#setting-assistant-tool-cap").value = window.wintAssistant?.getToolCallCap?.() || 20;
   refreshCliSetting();
   const shellSetting = window.wintTerminalSettings;
@@ -6337,6 +6408,11 @@ function wireShell() {
         button.textContent = installed ? "Remove from PATH" : "Install CLI";
       }
     }
+    else if (e.target.closest("[data-setting-awake-day]")) {
+      const day = Number(e.target.closest("[data-setting-awake-day]").dataset.settingAwakeDay);
+      const days = keepAwakeSchedule?.days || [];
+      saveKeepAwakeSetting({ days: days.includes(day) ? days.filter((x) => x !== day) : [...days, day].sort() });
+    }
     else if (e.target.closest("[data-setting-theme]")) {
       const button = e.target.closest("[data-setting-theme]");
       if (button.dataset.settingTheme === state.theme) return;
@@ -6468,6 +6544,13 @@ function wireShell() {
       // Switching it on counts the screen it was switched on from, so the
       // setting has an immediate, visible effect rather than a silent one.
       window.wintTrackPageView?.(currentPath());
+    } else if (e.target.id === "setting-awake-schedule") {
+      saveKeepAwakeSetting({ enabled: e.target.checked });
+    } else if (e.target.id === "setting-awake-from" || e.target.id === "setting-awake-to") {
+      const [hours, minutes] = String(e.target.value || "").split(":");
+      if (hours === undefined || minutes === undefined) return;
+      const minute = (Number(hours) * 60 + Number(minutes)) % 1440;
+      saveKeepAwakeSetting(e.target.id === "setting-awake-from" ? { startMinute: minute } : { endMinute: minute });
     } else if (e.target.id === "setting-time-tracker") {
       window.wintTimeTracker?.setAlways(e.target.checked);
     } else if (e.target.id === "setting-assistant-tool-cap") {

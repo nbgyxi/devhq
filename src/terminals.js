@@ -1370,31 +1370,27 @@ function closeTerminal(id) {
   closeTerminalAndWatch(id);
 }
 
-/** Every shell this dock is showing, closed for good, and what each one left
- *  running handed back to the caller.
+/** Every shell this dock is showing, given up on the spot: the dock stops
+ *  owning them and stops writing them down, and their ids go back to the
+ *  caller for Rust to close.
  *
  *  A workspace calls this as its window goes. Without it those sessions stay
  *  alive in Rust with no terminal anywhere in the app showing them - a build
  *  or a dev server nobody can see and nobody can stop until WinT itself
  *  closes. Terminals popped out into their own windows are not this dock's to
- *  close: they have a window of their own and it is still on screen.
+ *  give up: they have a window of their own and it is still on screen.
  *
- *  What comes back is the same process snapshot the tab × takes, so the caller
- *  can have it checked the same way. Prefs are frozen while this runs for the
+ *  Nothing here waits on Rust. Closing a shell means walking the process table
+ *  for what it left running, and a window still on screen while that happens
+ *  is a window that did not close when it was asked to; workspace_teardown
+ *  does that part once the window has already gone. Prefs are frozen for the
  *  same reason restoring freezes them: what this window should open next time
  *  is what it was showing, not the empty strip it is being torn down into. */
-async function closeDockTerminals() {
+function releaseDockTerminals() {
   terms.restoring = true;
-  const expected = [];
-  for (const id of [...terms.sessions.keys()]) {
-    const processes = await term_dock_invoke("term_close_snapshot", { id }).catch(async () => {
-      await term_dock_invoke("term_close", { id }).catch(() => {});
-      return [];
-    });
-    expected.push(...(processes || []));
-    disownTerminal(id);
-  }
-  return expected;
+  const ids = [...terms.sessions.keys()];
+  for (const id of ids) disownTerminal(id);
+  return ids;
 }
 
 /** A dock that has just closed its shells asks WinT's own window to watch what
@@ -1807,7 +1803,7 @@ window.wintTermDock = {
   has: (id) => terms.sessions.has(id),
   label: (id) => terms.known.get(id)?.projectName || "The terminal",
   newTerminal: openNewTerminal,
-  closeAll: closeDockTerminals,
+  releaseAll: releaseDockTerminals,
   write: (data) => {
     const session = terms.sessions.get(terms.active);
     if (!session) return false;

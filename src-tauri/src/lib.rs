@@ -2172,13 +2172,43 @@ async fn clipboard_clear() -> Vec<clipboard::Clip> {
     off_thread(clipboard::clear).await.unwrap_or_default()
 }
 
+/// The hold lives in the backend, not in the tool that started it: the tool
+/// window can close, or the tool can be swapped for another, and the machine
+/// stays awake until the timer runs out or somebody releases it.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn keep_awake_set(
     system: bool,
     display: bool,
     away_mode: bool,
+    minutes: Option<u64>,
+    nudge: Option<bool>,
+    nudge_seconds: Option<u64>,
+    reason: Option<String>,
 ) -> Result<windows_tools::KeepAwakeResult, String> {
-    windows_tools::keep_awake_set(system, display, away_mode)
+    windows_tools::keep_awake_set(
+        system,
+        display,
+        away_mode,
+        minutes.unwrap_or(0),
+        nudge.unwrap_or(false),
+        nudge_seconds.unwrap_or(120),
+        reason.unwrap_or_default(),
+    )
+}
+
+#[tauri::command]
+fn keep_awake_status() -> windows_tools::KeepAwakeResult {
+    windows_tools::keep_awake_status()
+}
+
+/// The hours to hold the machine awake, from the tool or from settings. Both
+/// read and write the same one, because there is only one.
+#[tauri::command]
+fn keep_awake_schedule_set(
+    schedule: windows_tools::KeepAwakeSchedule,
+) -> Result<windows_tools::KeepAwakeResult, String> {
+    windows_tools::keep_awake_schedule_set(schedule)
 }
 
 /* ------------------------------------------------------------- the network
@@ -2301,6 +2331,10 @@ pub fn run() {
             let args: Vec<String> = std::env::args().collect();
             start_wt_request_queue(app.handle().clone());
             clipboard::start(app.handle().clone());
+            // Starts the keep-awake worker so a saved schedule opens its own
+            // window from the moment WinT is up, whether or not anybody opens
+            // the tool that wrote it.
+            windows_tools::keep_awake_status();
             if let Some(id) = tool_arg(&args) {
                 if let Ok(mut pending) = app.state::<PendingTool>().0.lock() {
                     *pending = Some(id);
@@ -2448,6 +2482,7 @@ pub fn run() {
             workspace::workspace_browser_back,
             workspace::workspace_browser_forward,
             workspace::workspace_browser_close,
+            workspace::workspace_teardown,
             workspace::workspace_list_dir,
             workspace::workspace_read_file,
             workspace::workspace_write_file,
@@ -2516,6 +2551,8 @@ pub fn run() {
             repair_target_run,
             active_window_snapshot,
             keep_awake_set,
+            keep_awake_status,
+            keep_awake_schedule_set,
             clipboard_history,
             clipboard_capture,
             clipboard_pin,
@@ -2682,6 +2719,7 @@ pub fn run() {
         ,workspace::workspace_browser_back
         ,workspace::workspace_browser_forward
         ,workspace::workspace_browser_close
+        ,workspace::workspace_teardown
         ,workspace::workspace_list_dir
         ,workspace::workspace_read_file
         ,workspace::workspace_write_file

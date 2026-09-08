@@ -442,6 +442,40 @@ pub async fn workspace_browser_close(app: AppHandle, window: String) -> Result<(
     Ok(())
 }
 
+/// Everything a workspace window was holding open, put away *after* the window
+/// has gone: the browser webview, and every shell the workspace was showing.
+///
+/// A window closes on the click that asked for it. None of this is work the
+/// person is waiting for - walking a process table for what a shell leaves
+/// behind takes as long as it takes, and a window still sitting there while it
+/// happens is a window that did not close. So the command returns the moment it
+/// has been asked, and the real work runs on a thread of its own; by the time
+/// it finishes, the page that asked for it no longer exists, which is exactly
+/// why it cannot be the page doing it.
+///
+/// What the shells leave running is handed to WinT's own window the same way a
+/// dock hands it over, because that is where the "still running" warning is
+/// shown and this workspace is gone.
+#[tauri::command]
+pub async fn workspace_teardown(app: AppHandle, window: String, terminals: Vec<String>) -> Result<(), String> {
+    if let Some(webview) = app.get_webview(&browser_label(&window)) {
+        let _ = webview.close();
+    }
+    std::thread::spawn(move || {
+        let mut expected = Vec::new();
+        for id in terminals {
+            if let Ok(pid) = crate::term::term_pid(&id) {
+                expected.extend(crate::procs::descendants(pid));
+            }
+            let _ = crate::term::term_close_now(id);
+        }
+        if !expected.is_empty() {
+            let _ = app.emit("term:orphan-watch", serde_json::json!({ "expected": expected }));
+        }
+    });
+    Ok(())
+}
+
 // ---- the file panel ----------------------------------------------------
 
 #[derive(Serialize)]

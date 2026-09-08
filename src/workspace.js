@@ -17,7 +17,6 @@
 (async () => {
   const invoke = window.__TAURI__.core.invoke;
   const listen = window.__TAURI__.event.listen;
-  const emit = window.__TAURI__.event.emit;
   const win = window.__TAURI__.window.getCurrentWindow();
   const label = win.label;
 
@@ -517,16 +516,26 @@
     });
   });
 
-  /** Everything this window holds open outside the page itself, put away
-   *  before the window goes: the child webview, which is not destroyed with
-   *  the page, and every shell this workspace was showing.
+  /** The window goes on the click that asked for it.
+   *
+   *  What this window was holding open outside the page - the child webview,
+   *  which is not destroyed with the page, and every shell this workspace was
+   *  showing - still has to be put away, but none of that is work the person
+   *  is waiting for: closing a shell means walking the process table for what
+   *  it left running, which takes as long as it takes. So the page only names
+   *  what it was holding, hands the list to `workspace_teardown` - which does
+   *  the closing on a thread of its own, after this window is gone - and takes
+   *  the window down.
+   *
+   *  The two things that genuinely have to happen first are the ones that die
+   *  with the page: where the window was, and an unsaved edit in the preview.
    *
    *  The cross and Alt+F4 both arrive here, so it runs once either way. */
   let closing = false;
   win.onCloseRequested(async (event) => {
     // Asked a second time - the cross again, Alt+F4 - the answer is still the
-    // run already under way: the window goes when that one has finished
-    // putting things away, never half way through it.
+    // run already under way: the window goes when that one is done, never
+    // half way through it.
     event.preventDefault();
     if (closing) return;
     closing = true;
@@ -535,38 +544,29 @@
     clearTimeout(geomTimer);
     await saveGeometry();
     await panels.get("browser")?.settlePreviewEdit?.();
-    await invoke("workspace_browser_close", { window: label }).catch(() => {});
-    await closeWorkspaceTerminals();
-    // `close()` only asks again - another close request, back through this
-    // same handler, which now prevents it - and the window would sit there
-    // waiting for a second click. Everything it held open is already put
-    // away, so it is taken down outright.
+    await invoke("workspace_teardown", { window: label, terminals: workspaceTerminals() })
+      .catch(() => {});
+    // `close()` would only ask again - another close request, back through
+    // this same handler, which now prevents it - and the window would sit
+    // there waiting for a second click. It is taken down outright.
     win.destroy();
   }).catch(() => {});
 
-  /** Closes every shell this workspace had - the terminal panel's tabs, and a
-   *  conversation the agent panel handed to a terminal of its own - and has
-   *  whatever they leave behind watched.
+  /** Every shell this workspace had: the terminal panel's tabs, and a
+   *  conversation the agent panel handed to a terminal of its own.
    *
-   *  Closing a terminal tab already checks that what was running under it
-   *  really ended; closing the window those tabs live in is the same act on
-   *  all of them at once, and the same check is owed. The survivors are handed
-   *  to WinT's own window, because that is where the warning is shown and this
-   *  one is about to be gone. */
-  async function closeWorkspaceTerminals() {
-    const expected = [];
+   *  Naming them is all this page does. Rust closes them and has whatever they
+   *  leave behind watched by WinT's own window, because that is where the
+   *  "still running" warning is shown and this window is about to be gone. */
+  function workspaceTerminals() {
+    const ids = [];
     const open = agentOverlay?.session;
     if (open) {
       agentOverlay.session = null;
-      const processes = await invoke("term_close_snapshot", { id: open.id }).catch(async () => {
-        await invoke("term_close", { id: open.id }).catch(() => {});
-        return [];
-      });
-      expected.push(...(processes || []));
+      ids.push(open.id);
     }
-    const dockLeftovers = await (window.wintTermDock?.closeAll?.().catch(() => []) ?? []);
-    expected.push(...(dockLeftovers || []));
-    if (expected.length) await emit("term:orphan-watch", { expected }).catch(() => {});
+    ids.push(...(window.wintTermDock?.releaseAll?.() || []));
+    return ids;
   }
 
   /* ------------------------------------------------------- panel: browser */

@@ -1,26 +1,231 @@
 use serde::{Deserialize, Serialize};
 use std::process::{Command, Output};
 
-#[derive(Serialize)]
+/// One line of the hold log. Kept in the backend so the history survives
+/// leaving the tool, or closing the window it was opened from.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct KeepAwakeEvent {
+    pub at: u64,
+    pub tone: String,
+    pub title: String,
+    pub detail: String,
+}
+
+/// The hours WinT holds the machine awake on its own. Days are Sunday-first
+/// (0-6), the way both a `SYSTEMTIME` and a JavaScript `Date` count them, and
+/// the two edges are minutes past local midnight - so 09:00-16:00 on weekdays
+/// is `days: [1,2,3,4,5], start: 540, end: 960`. An end at or before the start
+/// means the window crosses midnight, and belongs to the day it started on.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase", default)]
+pub struct KeepAwakeSchedule {
+    pub enabled: bool,
+    pub days: Vec<u8>,
+    pub start_minute: u16,
+    pub end_minute: u16,
+    pub system: bool,
+    pub display: bool,
+    pub away_mode: bool,
+    pub nudge: bool,
+    pub nudge_seconds: u64,
+}
+
+impl Default for KeepAwakeSchedule {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            days: vec![1, 2, 3, 4, 5],
+            start_minute: 9 * 60,
+            end_minute: 16 * 60,
+            system: true,
+            display: true,
+            away_mode: false,
+            nudge: true,
+            nudge_seconds: 120,
+        }
+    }
+}
+
+/// Everything the Keep Awake page draws. This *is* the state: the tool reads
+/// it back on open and every second while it is showing, so the hold belongs
+/// to WinT rather than to whichever webview happened to start it.
+#[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct KeepAwakeResult {
     pub active: bool,
     pub flags: u32,
+    pub system: bool,
+    pub display: bool,
+    pub away_mode: bool,
+    pub nudge: bool,
+    pub nudge_seconds: u64,
+    pub minutes: u64,
+    pub started_at: u64,
+    pub until: u64,
+    pub nudges: u64,
+    pub last_nudge: u64,
+    /// True while the hold is the schedule's doing. A hold you started by hand
+    /// is yours: the end of the window will not take it away.
+    pub by_schedule: bool,
+    /// Set when you release a scheduled hold by hand. The schedule then leaves
+    /// you alone until this window is over rather than starting again a moment
+    /// later, which is the one thing that would make it unusable.
+    pub snoozed: bool,
+    pub schedule: KeepAwakeSchedule,
+    pub log: Vec<KeepAwakeEvent>,
 }
 
-/// Ask Windows to suspend its normal idle policy for this process. Windows
-/// automatically releases the request when WinT exits.
-pub fn keep_awake_set(
-    system: bool,
-    display: bool,
-    away_mode: bool,
-) -> Result<KeepAwakeResult, String> {
-    use std::sync::{mpsc, OnceLock};
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Local wall-clock, because a schedule is written in the hours you see:
+/// weekday Sunday-first, and minutes past midnight.
+fn local_now() -> (u8, u16) {
+    let stamp = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    (
+        stamp.wDayOfWeek as u8 % 7,
+        stamp.wHour * 60 + stamp.wMinute,
+    )
+}
+
+fn keep_awake_state() -> &'static std::sync::Mutex<KeepAwakeResult> {
+    static STATE: std::sync::OnceLock<std::sync::Mutex<KeepAwakeResult>> =
+        std::sync::OnceLock::new();
+    STATE.get_or_init(|| {
+        let mut state = KeepAwakeResult::default();
+        if let Some(saved) = keep_awake_schedule_read() {
+            state.schedule = saved;
+        }
+        std::sync::Mutex::new(state)
+    })
+}
+
+fn keep_awake_schedule_file() -> Option<std::path::PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(|root| std::path::PathBuf::from(root).join("WinT").join("keep-awake.json"))
+}
+
+fn keep_awake_schedule_read() -> Option<KeepAwakeSchedule> {
+    let text = std::fs::read_to_string(keep_awake_schedule_file()?).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn keep_awake_schedule_write(schedule: &KeepAwakeSchedule) {
+    let Some(path) = keep_awake_schedule_file() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(schedule) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+/// Whether the schedule wants the machine awake at this exact minute.
+fn keep_awake_scheduled_now(schedule: &KeepAwakeSchedule, day: u8, minute: u16) -> bool {
+    if !schedule.enabled || schedule.days.is_empty() || schedule.start_minute == schedule.end_minute
+    {
+        return false;
+    }
+    if schedule.end_minute > schedule.start_minute {
+        schedule.days.contains(&day)
+            && minute >= schedule.start_minute
+            && minute < schedule.end_minute
+    } else {
+        let yesterday = (day + 6) % 7;
+        (schedule.days.contains(&day) && minute >= schedule.start_minute)
+            || (schedule.days.contains(&yesterday) && minute < schedule.end_minute)
+    }
+}
+
+fn keep_awake_clock(minute: u16) -> String {
+    format!("{:02}:{:02}", minute / 60 % 24, minute % 60)
+}
+
+fn keep_awake_log(state: &mut KeepAwakeResult, tone: &str, title: &str, detail: String) {
+    state.log.insert(
+        0,
+        KeepAwakeEvent {
+            at: now_ms(),
+            tone: tone.into(),
+            title: title.into(),
+            detail,
+        },
+    );
+    state.log.truncate(8);
+}
+
+fn keep_awake_flag_names(system: bool, display: bool, away_mode: bool) -> String {
+    [
+        (system, "ES_SYSTEM_REQUIRED"),
+        (display, "ES_DISPLAY_REQUIRED"),
+        (away_mode, "ES_AWAYMODE_REQUIRED"),
+    ]
+    .iter()
+    .filter(|(on, _)| *on)
+    .map(|(_, name)| *name)
+    .collect::<Vec<_>>()
+    .join(" \u{b7} ")
+}
+
+/// How long Windows has been without real keyboard or mouse input. A nudge is
+/// pointless while somebody is actually typing, and this is also the very
+/// clock a chat app reads to decide you have wandered off.
+fn idle_ms() -> u64 {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO {
+        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    unsafe {
+        if GetLastInputInfo(&mut info).as_bool() {
+            u64::from(
+                windows::Win32::System::SystemInformation::GetTickCount().wrapping_sub(info.dwTime),
+            )
+        } else {
+            0
+        }
+    }
+}
+
+/// A pixel out and a pixel back. `SetThreadExecutionState` keeps the machine
+/// running but leaves the idle clock ticking, so anything that reads that
+/// clock - a chat app's presence, the lock-screen policy - still decides you
+/// are away. Real input is the only thing that resets it, and this is the
+/// smallest amount of it: the pointer ends exactly where it started.
+fn keep_awake_nudge() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_MOVE, MOUSEINPUT,
+    };
+    let step = |dx: i32| INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx,
+                dy: 0,
+                mouseData: 0,
+                dwFlags: MOUSEEVENTF_MOVE,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let inputs = [step(1), step(-1)];
+    let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+    sent == inputs.len() as u32
+}
+
+fn keep_awake_apply(system: bool, display: bool, away_mode: bool) -> Result<u32, String> {
     use windows::Win32::System::Power::{
         SetThreadExecutionState, ES_AWAYMODE_REQUIRED, ES_CONTINUOUS, ES_DISPLAY_REQUIRED,
         ES_SYSTEM_REQUIRED,
     };
-
     let mut state = ES_CONTINUOUS;
     if system {
         state |= ES_SYSTEM_REQUIRED;
@@ -31,37 +236,371 @@ pub fn keep_awake_set(
     if away_mode {
         state |= ES_AWAYMODE_REQUIRED;
     }
+    let result = unsafe { SetThreadExecutionState(state) };
+    if result.0 == 0 {
+        Err("Windows rejected the execution-state request.".into())
+    } else {
+        Ok(state.0)
+    }
+}
 
-    type Request = (u32, mpsc::Sender<Result<(), String>>);
-    static WORKER: OnceLock<mpsc::Sender<Request>> = OnceLock::new();
-    let worker = WORKER.get_or_init(|| {
-        let (tx, rx) = mpsc::channel::<Request>();
+/// One hold, as asked for.
+#[derive(Clone)]
+struct KeepAwakeWish {
+    system: bool,
+    display: bool,
+    away_mode: bool,
+    minutes: u64,
+    nudge: bool,
+    nudge_seconds: u64,
+    reason: String,
+    by_schedule: bool,
+}
+
+enum KeepAwakeMsg {
+    Set(
+        Box<KeepAwakeWish>,
+        std::sync::mpsc::Sender<Result<KeepAwakeResult, String>>,
+    ),
+    Schedule(
+        Box<KeepAwakeSchedule>,
+        std::sync::mpsc::Sender<Result<KeepAwakeResult, String>>,
+    ),
+}
+
+/// The one thread that owns the hold. An execution state belongs to the thread
+/// that asked for it, so this thread is never allowed to end: it takes
+/// requests, and between them it wakes twice a second to open and close the
+/// scheduled window, expire a timed hold, and send the presence nudge. All of
+/// that used to live in the tool's JavaScript, which meant closing the tool
+/// quietly abandoned it.
+fn keep_awake_worker() -> &'static std::sync::mpsc::Sender<KeepAwakeMsg> {
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+    static WORKER: std::sync::OnceLock<std::sync::mpsc::Sender<KeepAwakeMsg>> =
+        std::sync::OnceLock::new();
+    WORKER.get_or_init(|| {
+        let (tx, rx) = channel::<KeepAwakeMsg>();
         std::thread::spawn(move || {
-            while let Ok((flags, reply)) = rx.recv() {
-                let result = unsafe {
-                    SetThreadExecutionState(windows::Win32::System::Power::EXECUTION_STATE(flags))
-                };
-                let answer = if result.0 == 0 {
-                    Err("Windows rejected the execution-state request.".into())
-                } else {
-                    Ok(())
-                };
-                let _ = reply.send(answer);
+            keep_awake_tick();
+            loop {
+                match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+                    Ok(KeepAwakeMsg::Set(wish, reply)) => {
+                        let _ = reply.send(keep_awake_engage(&wish));
+                    }
+                    Ok(KeepAwakeMsg::Schedule(schedule, reply)) => {
+                        let _ = reply.send(keep_awake_store_schedule(*schedule));
+                    }
+                    Err(RecvTimeoutError::Timeout) => keep_awake_tick(),
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
             }
         });
         tx
-    });
-    let (reply_tx, reply_rx) = mpsc::channel();
-    worker
-        .send((state.0, reply_tx))
-        .map_err(|_| "The keep-awake worker stopped.".to_string())?;
-    reply_rx
-        .recv()
-        .map_err(|_| "The keep-awake worker did not respond.".to_string())??;
-    Ok(KeepAwakeResult {
-        active: system || display || away_mode,
-        flags: state.0,
     })
+}
+
+fn keep_awake_engage(wish: &KeepAwakeWish) -> Result<KeepAwakeResult, String> {
+    let flags = keep_awake_apply(wish.system, wish.display, wish.away_mode)?;
+    let active = wish.system || wish.display || wish.away_mode;
+    let now = now_ms();
+    let (day, minute) = local_now();
+    let mut state = keep_awake_state()
+        .lock()
+        .map_err(|_| "The keep-awake state is unavailable.".to_string())?;
+    let was = state.active;
+    state.active = active;
+    state.flags = flags;
+    state.system = wish.system;
+    state.display = wish.display;
+    state.away_mode = wish.away_mode;
+    state.nudge = active && wish.nudge;
+    state.nudge_seconds = wish.nudge_seconds.clamp(15, 3600);
+    if active {
+        if !was {
+            state.started_at = now;
+            state.nudges = 0;
+            state.last_nudge = 0;
+        }
+        state.by_schedule = wish.by_schedule;
+        state.snoozed = false;
+        state.minutes = wish.minutes;
+        state.until = if wish.minutes > 0 {
+            now + wish.minutes * 60_000
+        } else {
+            0
+        };
+        let mut detail = keep_awake_flag_names(wish.system, wish.display, wish.away_mode);
+        if state.nudge {
+            detail.push_str(&format!(" \u{b7} nudging every {}s", state.nudge_seconds));
+        }
+        let title = if !wish.reason.is_empty() {
+            wish.reason.as_str()
+        } else if was {
+            "Hold updated"
+        } else {
+            "Hold acquired"
+        };
+        keep_awake_log(&mut state, "good", title, detail);
+    } else {
+        // Letting go by hand inside a scheduled window means you want it to
+        // stop, not to be started again half a second later.
+        state.snoozed = keep_awake_scheduled_now(&state.schedule, day, minute);
+        state.by_schedule = false;
+        state.minutes = 0;
+        state.until = 0;
+        state.started_at = 0;
+        let title = if wish.reason.is_empty() {
+            "Released by hand".to_string()
+        } else {
+            wish.reason.clone()
+        };
+        let detail = if state.snoozed {
+            format!(
+                "ES_CONTINUOUS \u{b7} schedule waits until {}",
+                keep_awake_clock(state.schedule.end_minute)
+            )
+        } else {
+            "ES_CONTINUOUS".to_string()
+        };
+        keep_awake_log(&mut state, "muted", &title, detail);
+    }
+    Ok(state.clone())
+}
+
+fn keep_awake_store_schedule(schedule: KeepAwakeSchedule) -> Result<KeepAwakeResult, String> {
+    {
+        let mut state = keep_awake_state()
+            .lock()
+            .map_err(|_| "The keep-awake state is unavailable.".to_string())?;
+        let mut schedule = schedule;
+        schedule.days.retain(|day| *day < 7);
+        schedule.days.sort_unstable();
+        schedule.days.dedup();
+        schedule.start_minute %= 24 * 60;
+        schedule.end_minute %= 24 * 60;
+        schedule.nudge_seconds = schedule.nudge_seconds.clamp(15, 3600);
+        let detail = if schedule.enabled {
+            format!(
+                "{}-{} \u{b7} {}",
+                keep_awake_clock(schedule.start_minute),
+                keep_awake_clock(schedule.end_minute),
+                keep_awake_day_names(&schedule.days)
+            )
+        } else {
+            "No hours held".to_string()
+        };
+        // Changing the hours is a fresh decision: whatever you snoozed before
+        // no longer describes what you asked for.
+        state.snoozed = false;
+        state.schedule = schedule;
+        keep_awake_log(&mut state, "muted", "Schedule saved", detail);
+        keep_awake_schedule_write(&state.schedule);
+    }
+    // Take effect on the spot rather than at the next tick, so switching the
+    // schedule on inside its own hours does what it looks like it does.
+    keep_awake_tick();
+    Ok(keep_awake_snapshot())
+}
+
+fn keep_awake_day_names(days: &[u8]) -> String {
+    const NAMES: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    if days.len() == 7 {
+        return "every day".into();
+    }
+    if days == [1, 2, 3, 4, 5] {
+        return "weekdays".into();
+    }
+    if days == [0, 6] {
+        return "weekends".into();
+    }
+    days.iter()
+        .filter_map(|day| NAMES.get(*day as usize).copied())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Half a second of housekeeping: open or close the scheduled window, expire
+/// the timer, then nudge if the machine has genuinely been left alone.
+fn keep_awake_tick() {
+    keep_awake_schedule_tick();
+    let now = now_ms();
+    let Ok(mut state) = keep_awake_state().lock() else {
+        return;
+    };
+    if !state.active {
+        return;
+    }
+    if state.until > 0 && now >= state.until {
+        let released = keep_awake_apply(false, false, false).is_ok();
+        state.active = false;
+        state.nudge = false;
+        state.by_schedule = false;
+        state.flags = 0;
+        state.minutes = 0;
+        state.until = 0;
+        state.started_at = 0;
+        let detail = if released {
+            "ES_CONTINUOUS".to_string()
+        } else {
+            "Windows refused the release.".to_string()
+        };
+        keep_awake_log(&mut state, "warn", "Timer expired", detail);
+        return;
+    }
+    if !state.nudge {
+        return;
+    }
+    let every = state.nudge_seconds.max(15) * 1000;
+    let since = now.saturating_sub(state.last_nudge.max(state.started_at));
+    if since < every {
+        return;
+    }
+    // Somebody is at the keyboard: nothing thinks you are away yet, so stay
+    // out of the way. Not touching `last_nudge` here is deliberate - the nudge
+    // then lands as soon as the machine has actually been idle that long,
+    // rather than a whole interval after the last time it was checked.
+    if idle_ms() + 1500 < every {
+        return;
+    }
+    drop(state);
+    let sent = keep_awake_nudge();
+    let Ok(mut state) = keep_awake_state().lock() else {
+        return;
+    };
+    state.last_nudge = now_ms();
+    if sent {
+        state.nudges += 1;
+    } else if state.nudge {
+        state.nudge = false;
+        keep_awake_log(
+            &mut state,
+            "warn",
+            "Presence nudge stopped",
+            "Windows refused the synthetic input.".into(),
+        );
+    }
+}
+
+/// Start the hold when the window opens, and let it go when the window closes.
+/// Only ever touches a hold the schedule started itself.
+fn keep_awake_schedule_tick() {
+    let (day, minute) = local_now();
+    let wanted: Option<KeepAwakeWish>;
+    {
+        let Ok(mut state) = keep_awake_state().lock() else {
+            return;
+        };
+        let due = keep_awake_scheduled_now(&state.schedule, day, minute);
+        if !due {
+            state.snoozed = false;
+            if !(state.active && state.by_schedule) {
+                return;
+            }
+            let released = keep_awake_apply(false, false, false).is_ok();
+            state.active = false;
+            state.nudge = false;
+            state.by_schedule = false;
+            state.flags = 0;
+            state.minutes = 0;
+            state.until = 0;
+            state.started_at = 0;
+            let detail = if released {
+                format!(
+                    "ES_CONTINUOUS \u{b7} window ended at {}",
+                    keep_awake_clock(state.schedule.end_minute)
+                )
+            } else {
+                "Windows refused the release.".to_string()
+            };
+            keep_awake_log(&mut state, "muted", "Scheduled hours over", detail);
+            return;
+        }
+        if state.active || state.snoozed {
+            return;
+        }
+        let schedule = state.schedule.clone();
+        wanted = Some(KeepAwakeWish {
+            system: schedule.system || !(schedule.display || schedule.away_mode),
+            display: schedule.display,
+            away_mode: schedule.away_mode,
+            minutes: 0,
+            nudge: schedule.nudge,
+            nudge_seconds: schedule.nudge_seconds,
+            reason: format!(
+                "Scheduled hold started \u{b7} until {}",
+                keep_awake_clock(schedule.end_minute)
+            ),
+            by_schedule: true,
+        });
+    }
+    if let Some(wish) = wanted {
+        let _ = keep_awake_engage(&wish);
+    }
+}
+
+fn keep_awake_snapshot() -> KeepAwakeResult {
+    keep_awake_state()
+        .lock()
+        .map(|state| state.clone())
+        .unwrap_or_default()
+}
+
+fn keep_awake_ask(message: KeepAwakeMsg) -> Result<(), String> {
+    keep_awake_worker()
+        .send(message)
+        .map_err(|_| "The keep-awake worker stopped.".to_string())
+}
+
+/// Ask Windows to suspend its normal idle policy for this process, and
+/// optionally to keep looking present. Windows automatically releases the
+/// request when WinT exits; nothing else does, which is the point.
+pub fn keep_awake_set(
+    system: bool,
+    display: bool,
+    away_mode: bool,
+    minutes: u64,
+    nudge: bool,
+    nudge_seconds: u64,
+    reason: String,
+) -> Result<KeepAwakeResult, String> {
+    let (reply, answer) = std::sync::mpsc::channel();
+    keep_awake_ask(KeepAwakeMsg::Set(
+        Box::new(KeepAwakeWish {
+            system,
+            display,
+            away_mode,
+            minutes,
+            nudge,
+            nudge_seconds,
+            reason,
+            by_schedule: false,
+        }),
+        reply,
+    ))?;
+    answer
+        .recv()
+        .map_err(|_| "The keep-awake worker did not respond.".to_string())?
+}
+
+/// Write down the hours to hold, and act on them at once. Saved next to WinT's
+/// other runtime files, so the hours survive a restart even though the hold
+/// itself cannot.
+pub fn keep_awake_schedule_set(
+    schedule: KeepAwakeSchedule,
+) -> Result<KeepAwakeResult, String> {
+    let (reply, answer) = std::sync::mpsc::channel();
+    keep_awake_ask(KeepAwakeMsg::Schedule(Box::new(schedule), reply))?;
+    answer
+        .recv()
+        .map_err(|_| "The keep-awake worker did not respond.".to_string())?
+}
+
+/// What the hold looks like right now. The tool asks on open and once a second
+/// while it is on screen, so a hold started somewhere else - another window,
+/// the schedule, the CLI, a preset that has since timed out - draws correctly.
+pub fn keep_awake_status() -> KeepAwakeResult {
+    keep_awake_worker();
+    keep_awake_snapshot()
 }
 
 #[derive(Serialize, Default)]

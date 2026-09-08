@@ -292,6 +292,10 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
                         on,
                         on && args.iter().any(|a| a == "--display"),
                         on && args.iter().any(|a| a == "--away"),
+                        0,
+                        false,
+                        120,
+                        String::new(),
                     )?,
                     pretty,
                 )

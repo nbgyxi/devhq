@@ -12,7 +12,7 @@
     { id: "log-tail", name: "Log Tail", icon: "subject", hint: "follow the newest lines in any local log file", keywords: "log tail logs follow file live stream watch monitor grep filter search lines output text last newest realtime" },
     { id: "lock-inspector", name: "Lock Inspector", icon: "lock_open", hint: "find processes holding a file or folder", keywords: "lock locked file folder handle handles process who holds using delete remove rename move in use cannot access being used by another sharing violation access denied unlock close restart manager" },
     { id: "clipboard", name: "Clipboard History", icon: "content_paste", hint: "everything you copy, recorded from startup — search, pin, restore, forget", keywords: "clipboard clip clips history copied copy cut paste buffer text links urls code snippets search restore pin forget clear earlier" },
-    { id: "keep-awake", name: "Keep Awake", icon: "coffee", hint: "keep Windows and the display awake for as long as you need", keywords: "keep awake stay awake sleep no sleep power display screen monitor timeout screensaver lock idle prevent caffeine caffeinate insomnia presentation meeting build download transfer render" },
+    { id: "keep-awake", name: "Keep Awake", icon: "coffee", hint: "keep Windows and the display awake for as long as you need", keywords: "keep awake stay awake sleep no sleep power display screen monitor timeout screensaver lock idle prevent caffeine caffeinate insomnia presentation meeting build download transfer render chat presence away status active green jiggle nudge mouse mover pointer idle timer stay active schedule scheduled hours weekdays weekends working hours 9 to 5 automatic recurring daily" },
     { id: "time-tracker", name: "Active Window Time Tracker", icon: "schedule", hint: "local time by application and window title", keywords: "time tracker tracking activity active window title productivity apps applications usage screen time hours focus idle away log history what did i do local private" },
   ];
   const repairTools = [
@@ -79,15 +79,28 @@
   let trackerRange = "today";
   let trackerSelected = "";
   const trackerCanSample = !location.pathname.endsWith("/tool.html");
+  // The hold itself lives in the Rust backend — this is only what the page
+  // last heard about it, refreshed every second while the tool is open. The
+  // machine stays awake whether or not this tool, or its window, is still up.
   let awakeActive = false;
   let awakeSystem = true;
   let awakeDisplay = true;
   let awakeAway = false;
+  let awakeNudge = true;
+  let awakeNudgeSeconds = 120;
+  let awakeNudges = 0;
+  let awakeLastNudge = 0;
   let awakeUntil = 0;
   let awakeDuration = 0;
   let awakeStarted = 0;
   let awakeTimer = 0;
   let awakeLog = [];
+  let awakeBySchedule = false;
+  let awakeSnoozed = false;
+  // Sunday-first, the way the backend and `Date.getDay()` both count.
+  let awakeSchedule = { enabled: false, days: [1, 2, 3, 4, 5], startMinute: 9 * 60, endMinute: 16 * 60, system: true, display: true, awayMode: false, nudge: true, nudgeSeconds: 120 };
+  const AWAKE_DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
+  const AWAKE_DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   let handoffHtml = "";
   let handoffRunning = false;
 
@@ -95,6 +108,10 @@
   // backend, which records every copy from the moment WinT starts — the
   // webview can only read the clipboard while this tool is open, and only
   // after Windows has prompted for permission.
+  // A hold may already be running — started before this window opened, or from
+  // a tool page that has since been closed. Ask before drawing anything.
+  refreshKeepAwake();
+
   invoke("clipboard_history")
     .then((rows) => {
       setClips(rows);
@@ -241,6 +258,7 @@
   function render() {
     if (!host) return;
     clearInterval(timer); timer = 0;
+    clearInterval(awakeTimer); awakeTimer = 0;
     const tool = catalog.find((x) => x.id === active) || catalog[0];
     if (active === "events") renderEvents(tool);
     if (active === "help") renderHelp(tool);
@@ -445,34 +463,143 @@
   function awakeFlags() {
     return [awakeSystem && "ES_SYSTEM_REQUIRED", awakeDisplay && "ES_DISPLAY_REQUIRED", awakeAway && "ES_AWAYMODE_REQUIRED"].filter(Boolean);
   }
+  function awakeNudgeLine() {
+    if (!awakeActive) return awakeNudge ? `Presence nudge ready · every ${awakeNudgeSeconds >= 60 ? `${Math.round(awakeNudgeSeconds / 60)}m` : `${awakeNudgeSeconds}s`}` : "Presence nudge off";
+    if (!awakeNudge) return "No presence nudge · chat apps may still say Away";
+    const last = awakeLastNudge ? `last ${new Date(awakeLastNudge).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : "none needed yet";
+    return `${awakeNudges} nudge${awakeNudges === 1 ? "" : "s"} · ${last}`;
+  }
+  /** Take the backend's word for it. Anything the hold owns — is it on, since
+   *  when, until when, how many nudges, the log — is read back rather than
+   *  remembered here, because it keeps running when this page does not. */
+  function awakeClock(minute) {
+    const value = ((Number(minute) || 0) % 1440 + 1440) % 1440;
+    return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+  }
+  function awakeMinutes(value) {
+    const [hours, minutes] = String(value || "").split(":");
+    if (!hours || minutes === undefined) return null;
+    return (Number(hours) * 60 + Number(minutes)) % 1440;
+  }
+  function awakeDayWord() {
+    const days = [...(awakeSchedule.days || [])].sort();
+    if (days.length === 7) return "Every day";
+    if (String(days) === "1,2,3,4,5") return "Weekdays";
+    if (String(days) === "0,6") return "Weekends";
+    if (!days.length) return "No days";
+    return AWAKE_DAY_ORDER.filter((day) => days.includes(day)).map((day) => AWAKE_DAY_NAMES[day]).join(" ");
+  }
+  function awakeScheduleLine() {
+    if (!awakeSchedule.enabled) return "No hours held. The hold starts only when you ask for it.";
+    const span = `${awakeDayWord()} ${awakeClock(awakeSchedule.startMinute)}–${awakeClock(awakeSchedule.endMinute)}${awakeSchedule.endMinute <= awakeSchedule.startMinute ? " (overnight)" : ""}`;
+    if (awakeSnoozed) return `${span} · you released this one, so the next window starts it again`;
+    if (awakeBySchedule) return `${span} · holding now, until ${awakeClock(awakeSchedule.endMinute)}`;
+    return `${span} · WinT starts it for you, as long as it is running`;
+  }
+  /** Any control in the schedule panel that has the caret right now. The page
+   *  redraws itself once a second, and a redraw underneath a half-typed time
+   *  would take the caret with it. */
+  function awakeEditing() {
+    const focused = document.activeElement;
+    return !!(focused && host && host.contains(focused) && focused.matches("input") && focused.closest(".awake-schedule"));
+  }
+  function applyAwakeStatus(state) {
+    if (!state) return false;
+    const changed = awakeActive !== !!state.active || awakeLog.length !== (state.log || []).length
+      || JSON.stringify(awakeSchedule) !== JSON.stringify(state.schedule || awakeSchedule);
+    awakeBySchedule = !!state.bySchedule;
+    awakeSnoozed = !!state.snoozed;
+    if (state.schedule) awakeSchedule = state.schedule;
+    awakeActive = !!state.active;
+    awakeStarted = state.startedAt || 0;
+    awakeUntil = state.until || 0;
+    awakeNudges = state.nudges || 0;
+    awakeLastNudge = state.lastNudge || 0;
+    awakeLog = state.log || [];
+    if (awakeActive) {
+      awakeSystem = !!state.system;
+      awakeDisplay = !!state.display;
+      awakeAway = !!state.awayMode;
+      awakeNudge = !!state.nudge;
+      awakeDuration = state.minutes || 0;
+      if (state.nudgeSeconds) awakeNudgeSeconds = state.nudgeSeconds;
+    }
+    return changed;
+  }
+  function refreshKeepAwake(rerender = true) {
+    return invoke("keep_awake_status")
+      .then((state) => {
+        const changed = applyAwakeStatus(state);
+        if (rerender && changed && active === "keep-awake" && host) renderKeepAwake(catalog.find((x) => x.id === "keep-awake"));
+        return changed;
+      })
+      .catch(() => false);
+  }
   function renderKeepAwake(tool) {
     const flags = awakeFlags();
-    const log = awakeLog.length ? awakeLog.map((row) => `<div class="awake-log-row"><time>${esc(row.time)}</time><span class="awake-log-dot ${row.tone}"></span><div><strong>${esc(row.title)}</strong><small>${esc(row.detail)}</small></div></div>`).join("") : '<div class="awake-empty">Your hold history will appear here.</div>';
+    const log = awakeLog.length ? awakeLog.map((row) => `<div class="awake-log-row"><time>${esc(new Date(row.at || 0).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }))}</time><span class="awake-log-dot ${row.tone}"></span><div><strong>${esc(row.title)}</strong><small>${esc(row.detail)}</small></div></div>`).join("") : '<div class="awake-empty">Your hold history will appear here.</div>';
     host.innerHTML = header(tool, `<div class="awake-page">
-      <section class="awake-hero ${awakeActive ? "is-awake" : ""}"><div class="awake-orbit">${icon(awakeActive ? "coffee" : "bedtime")}</div><div class="awake-hero-copy"><small>${awakeActive ? "HOLDING" : "RELEASED"}</small><h2>${awakeActive ? "You’re bright-eyed and running" : "Power policy is in charge"}</h2><p>${awakeActive ? "Windows idle sleep is paused with the requirements below." : "Nothing held. Windows can dim, sleep, and lock on its usual schedule."}</p><div class="awake-clock"><strong data-awake-elapsed>${awakeElapsed()}</strong><span data-awake-remaining>${awakeActive ? awakeRemaining() : "idle"}</span></div></div><button class="btn awake-main ${awakeActive ? "release" : "primary"}" data-awake-toggle>${icon(awakeActive ? "bedtime" : "coffee")}${awakeActive ? "Let it sleep" : "Keep awake"}</button></section>
+      <section class="awake-hero ${awakeActive ? "is-awake" : ""}"><div class="awake-orbit">${icon(awakeActive ? "coffee" : "bedtime")}</div><div class="awake-hero-copy"><small>${awakeActive ? "HOLDING" : "RELEASED"}</small><h2>${awakeActive ? "You’re bright-eyed and running" : "Power policy is in charge"}</h2><p>${awakeActive ? "Windows idle sleep is paused with the requirements below. The hold belongs to WinT itself — leave this tool, or close its window, and it keeps going until the timer runs out or you release it." : "Nothing held. Windows can dim, sleep, and lock on its usual schedule."}</p><div class="awake-clock"><strong data-awake-elapsed>${awakeElapsed()}</strong><span data-awake-remaining>${awakeActive ? awakeRemaining() : "idle"}</span><span class="awake-nudge-live" data-awake-nudges>${esc(awakeNudgeLine())}</span></div></div><button class="btn awake-main ${awakeActive ? "release" : "primary"}" data-awake-toggle>${icon(awakeActive ? "bedtime" : "coffee")}${awakeActive ? "Let it sleep" : "Keep awake"}</button></section>
       <div class="awake-grid"><section class="awake-panel awake-flags"><header>${icon("flag")}<strong>Execution state flags</strong><small>${flags.length} selected</small></header>${[["system","memory","Keep the computer awake","Prevents idle sleep while work is running.",awakeSystem],["display","desktop_windows","Keep the display awake","Prevents the screen from dimming or turning off.",awakeDisplay],["away","cloud","Away mode","Keeps background media tasks available with the display off.",awakeAway]].map(([id,glyph,title,detail,on]) => `<button class="awake-flag ${on ? "on" : ""}" data-awake-flag="${id}" ${awakeActive ? "disabled" : ""}><span class="awake-check">${icon(on ? "check" : "")}</span>${icon(glyph)}<span><strong>${title}</strong><small>${detail}</small></span></button>`).join("")}</section>
       <section class="awake-panel awake-presets"><header>${icon("bolt")}<strong>Quick presets</strong></header>${[["Long build","system","4 h",240],["Presenting","system + display","2 h",120],["Overnight transfer","system + away mode","8 h",480],["Attached debugger","system + display","Until stopped",0]].map(([name,flagsText,time,minutes]) => `<button data-awake-preset="${minutes}" data-awake-preset-name="${name}"><span>${icon(name === "Presenting" ? "cast" : name === "Overnight transfer" ? "cloud_upload" : name === "Attached debugger" ? "bug_report" : "build")}<span><strong>${name}</strong><small>${flagsText}</small></span></span><em>${time}${icon("arrow_forward")}</em></button>`).join("")}</section>
       <section class="awake-panel awake-duration"><header>${icon("timer")}<strong>Auto-release</strong></header><div class="awake-segments">${[[0,"Until I stop it"],[30,"30 min"],[120,"2 h"],[480,"8 h"]].map(([minutes,label]) => `<button class="${awakeDuration === minutes ? "on" : ""}" data-awake-duration="${minutes}" ${awakeActive ? "disabled" : ""}>${label}</button>`).join("")}</div><p>A timed hold releases automatically—even if you leave this screen open.</p><div class="awake-call"><span>The call, as issued</span><button data-awake-copy>${icon("content_copy")}Copy</button><code>SetThreadExecutionState(ES_CONTINUOUS${flags.length ? ` | ${flags.join(" | ")}` : ""});</code></div></section>
+      <section class="awake-panel awake-schedule"><header>${icon("calendar_month")}<strong>Scheduled hours</strong><small>${awakeSchedule.enabled ? awakeDayWord().toLowerCase() : "off"}</small></header><button class="awake-flag ${awakeSchedule.enabled ? "on" : ""}" data-awake-schedule-toggle><span class="awake-check">${icon(awakeSchedule.enabled ? "check" : "")}</span>${icon("event_available")}<span><strong>Hold these hours by itself</strong><small>WinT takes the hold when the window opens and lets it go when it closes, every week. Release it by hand and it stays released until the next window. It starts with the requirements you have chosen here.</small></span></button>
+        <div class="awake-days">${AWAKE_DAY_ORDER.map((day) => `<button class="${(awakeSchedule.days || []).includes(day) ? "on" : ""}" data-awake-day="${day}" ${awakeSchedule.enabled ? "" : "disabled"}>${AWAKE_DAY_NAMES[day]}</button>`).join("")}</div>
+        <div class="awake-window"><label>From<input type="time" data-awake-from value="${esc(awakeClock(awakeSchedule.startMinute))}" ${awakeSchedule.enabled ? "" : "disabled"}></label><label>To<input type="time" data-awake-to value="${esc(awakeClock(awakeSchedule.endMinute))}" ${awakeSchedule.enabled ? "" : "disabled"}></label></div>
+        <div class="awake-segments">${[["1,2,3,4,5","Weekdays"],["0,6","Weekend"],["0,1,2,3,4,5,6","Every day"]].map(([days,label]) => `<button class="${String([...(awakeSchedule.days || [])].sort()) === days ? "on" : ""}" data-awake-days="${days}" ${awakeSchedule.enabled ? "" : "disabled"}>${label}</button>`).join("")}</div>
+        <p data-awake-schedule-note>${esc(awakeScheduleLine())}</p></section>
+      <section class="awake-panel awake-presence"><header>${icon("mouse")}<strong>Look present</strong><small>${awakeNudge ? "on" : "off"}</small></header><button class="awake-flag ${awakeNudge ? "on" : ""}" data-awake-nudge><span class="awake-check">${icon(awakeNudge ? "check" : "")}</span>${icon("mouse")}<span><strong>Nudge the pointer</strong><small>Moves the pointer one pixel and back, so chat apps and the lock screen stop counting you as idle. Skipped while you are actually typing.</small></span></button><div class="awake-segments">${[[60,"1 min"],[120,"2 min"],[240,"4 min"],[540,"9 min"]].map(([seconds,label]) => `<button class="${awakeNudgeSeconds === seconds ? "on" : ""}" data-awake-nudge-every="${seconds}" ${awakeNudge ? "" : "disabled"}>${label}</button>`).join("")}</div><p data-awake-nudge-note>${esc(awakeNudgeLine())}</p></section>
       <section class="awake-panel awake-history"><header>${icon("history")}<strong>Hold log</strong><small>${awakeLog.length} events</small></header><div>${log}</div></section></div></div>`);
+    startAwakeTimer();
   }
-  function tickKeepAwake() {
-    if (!awakeActive) return;
-    if (awakeUntil && Date.now() >= awakeUntil) { setKeepAwake(false, 0, "Timer expired"); return; }
-    const elapsed = host?.querySelector("[data-awake-elapsed]");
-    const remaining = host?.querySelector("[data-awake-remaining]");
+  /** Once a second while the page is showing: ask the backend where the hold
+   *  stands — it owns the timer and the nudges — and repaint the clock in
+   *  place, redrawing the page only when something actually changed. */
+  async function tickKeepAwake() {
+    const changed = await refreshKeepAwake(false);
+    if (!host || active !== "keep-awake") return;
+    if (changed && !awakeEditing()) return renderKeepAwake(catalog.find((x) => x.id === "keep-awake"));
+    const elapsed = host.querySelector("[data-awake-elapsed]");
+    const remaining = host.querySelector("[data-awake-remaining]");
+    const nudges = host.querySelector("[data-awake-nudges]");
+    const note = host.querySelector("[data-awake-nudge-note]");
+    const scheduleNote = host.querySelector("[data-awake-schedule-note]");
     if (elapsed) elapsed.textContent = awakeElapsed();
-    if (remaining) remaining.textContent = awakeRemaining();
+    if (remaining) remaining.textContent = awakeActive ? awakeRemaining() : "idle";
+    if (nudges) nudges.textContent = awakeNudgeLine();
+    if (note) note.textContent = awakeNudgeLine();
+    if (scheduleNote) scheduleNote.textContent = awakeScheduleLine();
+  }
+  function startAwakeTimer() {
+    clearInterval(awakeTimer);
+    awakeTimer = setInterval(tickKeepAwake, 1000);
+  }
+  /** The schedule is the backend's, not this page's: every edit is written
+   *  straight through and the answer is what the page then draws. Settings
+   *  edits the same one, from the same commands. */
+  async function saveAwakeSchedule(patch) {
+    const schedule = { ...awakeSchedule, ...patch, system: awakeSystem, display: awakeDisplay, awayMode: awakeAway, nudge: awakeNudge, nudgeSeconds: awakeNudgeSeconds };
+    awakeSchedule = schedule;
+    try {
+      applyAwakeStatus(await invoke("keep_awake_schedule_set", { schedule }));
+    } catch (error) { status(String(error), "bad"); }
+    // A redraw underneath a time field would take the caret with it; the
+    // second-by-second tick keeps the summary line honest either way.
+    if (active === "keep-awake" && !awakeEditing()) renderKeepAwake(catalog.find((x) => x.id === "keep-awake"));
   }
   async function setKeepAwake(enabled, minutes = 0, reason = "") {
     if (enabled && !awakeFlags().length) awakeSystem = true;
     try {
-      await invoke("keep_awake_set", { system: enabled && awakeSystem, display: enabled && awakeDisplay, awayMode: enabled && awakeAway });
-      clearInterval(awakeTimer); awakeTimer = 0;
-      awakeActive = enabled;
-      if (enabled) { awakeStarted = Date.now(); awakeUntil = minutes ? Date.now() + minutes * 60000 : 0; awakeTimer = setInterval(tickKeepAwake, 1000); }
-      else { awakeStarted = 0; awakeUntil = 0; }
-      awakeLog.unshift({ time: new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"}), tone: enabled ? "good" : reason ? "warn" : "muted", title: enabled ? "Hold acquired" : reason || "Released by hand", detail: enabled ? awakeFlags().join(" · ") : "ES_CONTINUOUS" });
-      awakeLog = awakeLog.slice(0, 8);
+      const state = await invoke("keep_awake_set", {
+        system: enabled && awakeSystem,
+        display: enabled && awakeDisplay,
+        awayMode: enabled && awakeAway,
+        minutes: enabled ? Number(minutes) || 0 : 0,
+        nudge: enabled && awakeNudge,
+        nudgeSeconds: awakeNudgeSeconds,
+        reason,
+      });
+      applyAwakeStatus(state);
       if (active === "keep-awake") renderKeepAwake(catalog.find((x) => x.id === active));
     } catch (error) { status(String(error), "bad"); }
   }
@@ -686,6 +813,11 @@
     if (event.target.closest("[data-awake-toggle]")) return setKeepAwake(!awakeActive, awakeDuration);
     const awakeFlag=event.target.closest("[data-awake-flag]");if(awakeFlag&&!awakeActive){const id=awakeFlag.dataset.awakeFlag;if(id==="system"){awakeSystem=!awakeSystem;if(!awakeSystem)awakeAway=false;}if(id==="display")awakeDisplay=!awakeDisplay;if(id==="away"){awakeAway=!awakeAway;if(awakeAway)awakeSystem=true;}return renderKeepAwake(catalog.find((x)=>x.id===active));}
     const awakeDurationButton=event.target.closest("[data-awake-duration]");if(awakeDurationButton&&!awakeActive){awakeDuration=Number(awakeDurationButton.dataset.awakeDuration);return renderKeepAwake(catalog.find((x)=>x.id===active));}
+    if(event.target.closest("[data-awake-schedule-toggle]"))return saveAwakeSchedule({enabled:!awakeSchedule.enabled});
+    const awakeDay=event.target.closest("[data-awake-day]");if(awakeDay){const day=Number(awakeDay.dataset.awakeDay);const days=(awakeSchedule.days||[]).includes(day)?awakeSchedule.days.filter((x)=>x!==day):[...(awakeSchedule.days||[]),day].sort();return saveAwakeSchedule({days});}
+    const awakeDays=event.target.closest("[data-awake-days]");if(awakeDays)return saveAwakeSchedule({days:awakeDays.dataset.awakeDays.split(",").map(Number)});
+    if(event.target.closest("[data-awake-nudge]")){awakeNudge=!awakeNudge;if(awakeActive)return setKeepAwake(true,awakeDuration);return renderKeepAwake(catalog.find((x)=>x.id==="keep-awake"));}
+    const awakeEvery=event.target.closest("[data-awake-nudge-every]");if(awakeEvery){awakeNudgeSeconds=Number(awakeEvery.dataset.awakeNudgeEvery);if(awakeActive)return setKeepAwake(true,awakeDuration);return renderKeepAwake(catalog.find((x)=>x.id==="keep-awake"));}
     const awakePreset=event.target.closest("[data-awake-preset]");if(awakePreset){const name=awakePreset.dataset.awakePresetName;awakeSystem=true;awakeDisplay=name==="Presenting"||name==="Attached debugger";awakeAway=name==="Overnight transfer";return setKeepAwake(true,Number(awakePreset.dataset.awakePreset));}
     const awakeCopy=event.target.closest("[data-awake-copy]");if(awakeCopy){const call=host.querySelector(".awake-call code")?.textContent||"";return window.wintCopy.copy(call,awakeCopy).catch(()=>{});}
     if (event.target.closest("[data-tracker-export]")) return exportTrackerCsv();
@@ -775,16 +907,14 @@
     return { active:id||active, html:active===(id||active)?host?.innerHTML||"":"", running:Boolean(timer), armed,
       regPath,regRows,regSelected,regMode,regWatch:[...regWatch],regFeed,eventRows,eventSelected,eventDetailTab,
       systemMode,systemScope,systemReport,systemSelected,clipboardKind,clipboardPinnedOnly,clipboardSelected,
-      trackerRows,trackerEnabled,trackerRange,trackerSelected,awakeActive,awakeSystem,awakeDisplay,awakeAway,
-      awakeUntil,awakeDuration,awakeStarted,awakeLog };
+      trackerRows,trackerEnabled,trackerRange,trackerSelected };
   }
   function importState(state) {
     if(!state)return;
     clearInterval(timer);timer=0;clearInterval(awakeTimer);awakeTimer=0;
     ({armed,regPath,regRows,regSelected,regMode,regFeed,eventRows,eventSelected,eventDetailTab,
       systemMode,systemScope,systemReport,systemSelected,clipboardKind,clipboardPinnedOnly,clipboardSelected,
-      trackerRows,trackerEnabled,trackerRange,trackerSelected,awakeActive,awakeSystem,awakeDisplay,awakeAway,
-      awakeUntil,awakeDuration,awakeStarted,awakeLog}=state);
+      trackerRows,trackerEnabled,trackerRange,trackerSelected}=state);
     regWatch=new Map(state.regWatch||[]);handoffHtml=state.html||"";handoffRunning=state.running===true;
   }
   function resumeHandoff(id){
@@ -794,11 +924,11 @@
       if(tick)timer=setInterval(tick,id==="events"?3000:id==="registry"?2000:1500);
     }
     handoffRunning=false;
-    if(id==="keep-awake"&&awakeActive&&!awakeTimer)awakeTimer=setInterval(tickKeepAwake,1000);
+    if(id==="keep-awake")refreshKeepAwake();
   }
   window.wintWindowsTools = {
     catalog: () => catalog.map((x) => ({ ...x })),
-    mount(node) { host = node; host.onclick = click; host.oninput = (event) => { const slider=event.target.closest("[data-audio-volume]");if(slider)slider.closest(".audio-volume")?.querySelector("output")?.replaceChildren(`${slider.value}%`); }; host.onchange = (event) => { const slider=event.target.closest("[data-audio-volume]");if(slider)setAudioVolume(slider.dataset.audioVolume,Number(slider.value)); }; host.onkeydown = (e) => { if (e.key !== "Enter") return; if(e.target.matches("[data-event-text]"))loadEvents();else if(e.target.matches("[data-reg-path]"))loadRegistry();else if(e.target.matches("[data-log-path],[data-log-filter]"))loadLogTail();else if(e.target.matches("[data-lock-path]"))inspectLocks(); }; render(); },
+    mount(node) { host = node; host.onclick = click; host.oninput = (event) => { const slider=event.target.closest("[data-audio-volume]");if(slider)slider.closest(".audio-volume")?.querySelector("output")?.replaceChildren(`${slider.value}%`); }; host.onchange = (event) => { const slider=event.target.closest("[data-audio-volume]");if(slider)return setAudioVolume(slider.dataset.audioVolume,Number(slider.value)); const from=event.target.closest("[data-awake-from]");if(from){const minute=awakeMinutes(from.value);if(minute!==null)saveAwakeSchedule({startMinute:minute});return;} const to=event.target.closest("[data-awake-to]");if(to){const minute=awakeMinutes(to.value);if(minute!==null)saveAwakeSchedule({endMinute:minute});} }; host.onkeydown = (e) => { if (e.key !== "Enter") return; if(e.target.matches("[data-event-text]"))loadEvents();else if(e.target.matches("[data-reg-path]"))loadRegistry();else if(e.target.matches("[data-log-path],[data-log-filter]"))loadLogTail();else if(e.target.matches("[data-lock-path]"))inspectLocks(); }; render(); },
     open(id) { if (!catalog.some((x) => x.id === id)) return; active = id; render(); if (id === "events") restoreEventPopout(); resumeHandoff(id); },
     opened() { if (active === "events" && timer) loadEvents(); },
     active: () => active,

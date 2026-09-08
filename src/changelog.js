@@ -16,9 +16,45 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.91.0",
+      date: "2026-09-08",
+      title: "Keep Awake can hold the hours you keep",
+      buildChecksum: "20857c08543ed1e2f15fab267fdf98ca2613ca2c9c8d1a09be977adb1861c0d0",
+      changes: [
+        ["new", "Keep Awake can hold the machine by itself between two times on the days you pick - 09:00 to 16:00 on weekdays out of the box. WinT takes the hold when the window opens and lets it go when it closes, week after week, without the tool being open. Release one by hand and it stays released until the next window, so it never fights you."],
+        ["new", "The same hours are editable from Settings, under General, for when you do not want to open the tool to change them. Both read and write the one schedule, and it is remembered across restarts."],
+      ],
+    },
+    {
+      version: "0.90.1",
+      date: "2026-09-08",
+      title: "Back out of a tool and the project you left is gone",
+      changes: [
+        ["fix", "Opening a tool from a project - Git, say - and then coming back left the old project view lying on screen, unreachable and ignoring every click. The project view is now cleared the moment you leave it, so Back returns you to the overview."],
+      ],
+    },
+    {
+      version: "0.90.0",
+      date: "2026-09-08",
+      title: "Keep Awake holds the machine, and your presence",
+      changes: [
+        ["new", "Keep Awake can nudge the pointer a single pixel and back every minute or two, so chat apps and the lock screen stop deciding you have wandered off. Keeping the machine awake never touched the idle clock they read; this does. It stays quiet while you are actually typing, and the hero line counts the nudges it sent."],
+        ["better", "A hold now belongs to WinT rather than to the Keep Awake page. Switch to another tool, or close the tool window entirely, and the hold, its auto-release timer and the hold log all carry on - reopening the tool shows exactly what is still running."],
+      ],
+    },
+    {
+      version: "0.89.2",
+      date: "2026-09-06",
+      title: "A workspace closes when you close it",
+      changes: [
+        ["fix", "Closing a workspace window now closes it on the click, instead of standing there while its terminals were shut down and its browser panel put away. That tidying up carries on behind the window once it is gone, and whatever the workspace left running is still reported in WinT's own window."],
+      ],
+    },
+    {
       version: "0.89.1",
       date: "2026-09-06",
       title: "Closing a workspace closes it",
+      buildChecksum: "2fc7dd42a97f6b007fdea449fa73d6effff8ad7d24d69fb1864cc1db67d21c28",
       changes: [
         ["fix", "Closing a workspace window while a page was open in the browser panel took two clicks: the first only put the browser away. One click now closes the window."],
       ],
