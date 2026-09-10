@@ -592,9 +592,9 @@ pub async fn workspace_write_file(path: String, contents: String) -> Result<(), 
     .unwrap_or_else(|_| Err("Could not save the file.".to_string()))
 }
 
-/// Base64, written out here rather than pulled in as a dependency: this is the
-/// only place in the app that needs it, and it is twenty lines.
-fn base64(bytes: &[u8]) -> String {
+/// Base64, written out here rather than pulled in as a dependency: it is
+/// twenty lines, and Files reuses it for thumbnails.
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

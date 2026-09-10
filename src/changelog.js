@@ -16,6 +16,27 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.94.0",
+      date: "2026-09-10",
+      title: "Files gets pictures, and a way to throw things out",
+      changes: [
+        ["new", "The mouse's back and forward buttons walk the folders you have been through, the way they do everywhere else in Windows."],
+        ["new", "A thumbnails switch turns every image row into a real picture - the same one Explorer shows, out of the same cache - on rows twice the usual height. Files with no picture keep their type icon."],
+        ["new", "A preview switch opens a panel beside the list. Click any picture and it is there, whole and unclipped, with its name, size and date under it."],
+        ["new", "Delete asks first, and gives you both answers: Move to Recycle Bin, which Windows can undo, or Delete for good, which it cannot. Right-click anything, or press Delete on a row. A bookmark pointing at a folder you delete goes with it."],
+      ],
+    },
+    {
+      version: "0.93.0",
+      date: "2026-09-10",
+      title: "Files opens on This PC, and keeps your folders",
+      changes: [
+        ["fix", "Folders with nothing inside them drew as tall empty blocks in the Files tree, pushing the rest of the list down the screen. They are ordinary rows again."],
+        ["new", "Files opens on This PC - every drive, with how full each one is and how much is free - instead of dropping you in your home folder. This PC is also the first step of the path, so it is one click back from anywhere."],
+        ["new", "Bookmarks sit under the tree, with Desktop and Downloads already there. Press + to keep the folder you are in, or right-click any folder to add or remove it. The list is shared by every Files window and survives a restart."],
+      ],
+    },
+    {
       version: "0.92.0",
       date: "2026-09-09",
       title: "Files: a folder browser that filters by type in one click",

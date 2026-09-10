@@ -103,6 +103,7 @@
       <div class="confirm-copy"><h2 id="confirm-title">${esc(options.title || "Are you sure?")}</h2>
         <p id="confirm-message">${esc(options.message || "This action cannot be undone.")}</p></div>
       <div class="confirm-actions"><button class="btn" type="button" data-confirm="cancel">${esc(options.cancelLabel || "Cancel")}</button>
+        ${options.alternateLabel ? `<button class="btn" type="button" data-confirm="alternate">${esc(options.alternateLabel)}</button>` : ""}
         <button class="btn ${tone === "danger" ? "danger" : "primary"}" type="button" data-confirm="accept">${esc(options.confirmLabel || "Continue")}</button></div>
     </section>`;
     document.body.appendChild(layer);
@@ -117,7 +118,7 @@
     };
     layer.addEventListener("click", (event) => {
       const action = event.target.closest("[data-confirm]")?.dataset.confirm;
-      if (action) settle(action === "accept");
+      if (action) settle(action === "accept" ? true : action === "alternate" ? "alternate" : false);
       else if (event.target === layer) settle(false);
     });
     layer.addEventListener("keydown", (event) => {

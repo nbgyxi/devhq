@@ -3158,7 +3158,20 @@ html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
 .fx-page{height:100%;min-height:0;display:flex;flex-direction:column;background:var(--bg)}
 .fx-page[hidden]{display:none}
 .fx-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(180px,268px) minmax(0,1fr)}
-.fx-tree{min-height:0;overflow:auto;padding:10px 6px 16px;border-right:1px solid var(--line);background:var(--bg1)}
+.fx-body.with-preview{grid-template-columns:minmax(180px,240px) minmax(0,1fr) minmax(240px,360px)}
+.fx-side{min-height:0;display:flex;flex-direction:column;border-right:1px solid var(--line);background:var(--bg1)}
+.fx-tree{flex:1;min-height:0;overflow:auto;padding:10px 6px 16px}
+.fx-marks{flex:0 0 auto;max-height:38%;overflow:auto;padding:0 6px 10px;border-top:1px solid var(--line)}
+.fx-marks .fx-tree-label{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;background:var(--bg1)}
+.fx-mark-add{width:20px;height:20px;display:grid;place-items:center;border:0;border-radius:5px;background:none;color:var(--accent);cursor:pointer}
+.fx-mark-add .ms{font-size:16px}
+.fx-mark-add:hover:not(:disabled){background:var(--bg3)}
+.fx-mark-add:disabled{color:var(--dim2);opacity:.5;cursor:default}
+.fx-marks-none{margin:0;padding:2px 10px 6px;color:var(--dim2);font-size:11px;line-height:1.45}
+.fx-unpin{flex:0 0 20px;height:20px;display:none;place-items:center;border:0;border-radius:5px;background:none;color:var(--dim2);cursor:pointer;margin-right:4px}
+.fx-unpin .ms{font-size:14px}
+.fx-unpin:hover{background:var(--bg3);color:var(--red)}
+.fx-marks .fx-node:hover .fx-unpin{display:grid}
 .fx-tree-label{padding:10px 10px 5px;color:var(--dim2);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase}
 .fx-tree-group{display:flex;flex-direction:column}
 .fx-node{display:flex;align-items:center;border-radius:7px;padding-left:calc(var(--depth) * 13px)}
@@ -3169,11 +3182,38 @@ html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
 .fx-twist{flex:0 0 18px;height:26px;display:grid;place-items:center;border:0;background:none;color:var(--dim);cursor:pointer;border-radius:5px}
 .fx-twist .ms{font-size:17px}
 .fx-twist:hover{color:var(--text)}
-.fx-twist.empty{cursor:default}
+.fx-twist.leaf{cursor:default}
 .fx-node-btn{flex:1;min-width:0;display:flex;align-items:center;gap:7px;height:26px;padding:0 8px 0 2px;border:0;background:none;color:var(--text);font:inherit;text-align:left;cursor:pointer}
 .fx-node-btn .ms{font-size:17px;color:var(--accent);flex:0 0 auto}
 .fx-node-btn>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .fx-gauge{flex:0 0 34px;height:4px;margin-left:auto;border-radius:3px;background:var(--line);overflow:hidden}
+.fx-gauge.wide{flex:0 0 120px;height:6px;margin-left:12px}
+.fx-gauge.full>em{background:var(--red)}
+.fx-row.drive{height:38px}
+/* Thumbnails grow the row enough to hold a real picture. It stays a list:
+   the columns, the sort and the filter are all exactly where they were. */
+.fx-list.preview .fx-row:not(.head){height:84px}
+.fx-list.preview .fx-row.skeleton{height:84px}
+.fx-thumb{flex:0 0 64px;width:64px;height:64px;display:grid;place-items:center;border-radius:6px;background:var(--bg3) center/cover no-repeat;color:var(--dim);overflow:hidden}
+/* A loaded picture replaces the type icon rather than carrying it: the icon is
+   only ever the stand-in for a thumbnail that has not arrived. */
+.fx-thumb.has-image{background-color:transparent;box-shadow:0 0 0 1px var(--line)}
+.fx-thumb .ms{font-size:26px}
+.fx-row.picked{background:color-mix(in srgb,var(--accent) 16%,transparent)}
+.fx-row.picked:hover{background:color-mix(in srgb,var(--accent) 22%,transparent)}
+
+/* The preview panel: one picture, contained, with what it is underneath. */
+.fx-preview{min-width:0;min-height:0;display:flex;flex-direction:column;border-left:1px solid var(--line);background:var(--bg1)}
+.fx-preview-stage{flex:1;min-height:0;display:grid;place-items:center;padding:14px;overflow:hidden}
+.fx-preview-image{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;box-shadow:0 6px 22px #0006}
+.fx-preview-empty{display:flex;flex-direction:column;align-items:center;gap:10px;padding:24px;color:var(--dim2);text-align:center}
+.fx-preview-empty>.ms{font-size:38px;opacity:.55}
+.fx-preview-empty p{margin:0;max-width:260px;line-height:1.5;font-size:12px}
+.fx-preview-empty.loading>.ms{animation:spin 1s linear infinite;opacity:1;color:var(--accent)}
+.fx-preview-meta{flex:0 0 auto;display:flex;flex-direction:column;gap:3px;padding:10px 14px;border-top:1px solid var(--line);color:var(--dim);font-size:11px}
+.fx-preview-meta strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-size:12.5px;font-weight:500}
+.fx-row.drive .fx-cell.name strong{font-weight:500}
+.fx-row.head.static .fx-cell.sort{pointer-events:none}
 .fx-gauge>em{display:block;height:100%;background:var(--accent)}
 .fx-note{display:flex;align-items:center;gap:6px;padding:4px 8px 4px calc(var(--depth) * 13px + 22px);color:var(--dim2);font-size:11.5px}
 .fx-note .ms{font-size:15px;animation:spin 1s linear infinite}
@@ -3191,6 +3231,7 @@ html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
 .fx-crumbs::-webkit-scrollbar{height:0}
 .fx-crumb{flex:0 0 auto;padding:3px 7px;border:0;border-radius:5px;background:none;color:var(--text);font:inherit;cursor:pointer;white-space:nowrap}
 .fx-crumb:hover{background:var(--bg3);color:var(--accent)}
+.fx-crumb.on{color:var(--accent);font-weight:600}
 .fx-crumb-sep{flex:0 0 auto;display:grid;place-items:center;color:var(--dim2)}
 .fx-crumb-sep .ms{font-size:15px}
 .fx-crumb-none{color:var(--dim2);padding:0 4px}
@@ -3269,6 +3310,9 @@ html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
 .fx-context button{display:flex;align-items:center;gap:9px;padding:7px 10px;border:0;border-radius:6px;background:none;color:var(--text);font:inherit;font-size:12.5px;text-align:left;cursor:pointer}
 .fx-context button:hover{background:var(--bg3)}
 .fx-context .ms{font-size:17px;color:var(--dim)}
+.fx-context button.danger{color:var(--red)}
+.fx-context button.danger .ms{color:var(--red)}
+.fx-context button.danger:hover{background:color-mix(in srgb,var(--red) 14%,transparent)}
 /* Disk Space Usage ------------------------------------------------------ */
 .disk-page{height:100%;min-height:0;display:flex;flex-direction:column;background:var(--bg)}
 .disk-page[hidden]{display:none}

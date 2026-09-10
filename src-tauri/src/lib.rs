@@ -1601,6 +1601,38 @@ async fn explorer_list(path: String, dirs_only: bool) -> Result<explorer::Listin
 }
 
 #[tauri::command]
+async fn explorer_bookmarks(app: AppHandle) -> Vec<String> {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return Vec::new();
+    };
+    off_thread(move || explorer::bookmarks(&dir))
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn explorer_bookmarks_set(app: AppHandle, paths: Vec<String>) -> Result<Vec<String>, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    off_thread(move || explorer::bookmarks_set(&dir, paths))
+        .await
+        .unwrap_or_else(|| Err("The bookmarks could not be saved.".into()))
+}
+
+#[tauri::command]
+async fn explorer_thumbnail(path: String, size: u32) -> Result<Option<String>, String> {
+    off_thread(move || explorer::thumbnail(path, size))
+        .await
+        .unwrap_or_else(|| Err("The thumbnail did not arrive.".into()))
+}
+
+#[tauri::command]
+async fn explorer_delete(paths: Vec<String>, recycle: bool) -> Result<(), String> {
+    off_thread(move || explorer::delete(paths, recycle))
+        .await
+        .unwrap_or_else(|| Err("The delete did not finish.".into()))
+}
+
+#[tauri::command]
 async fn disk_space_drives() -> Result<Vec<disk_space::Drive>, String> {
     off_thread(disk_space::drives)
         .await
@@ -2423,6 +2455,10 @@ pub fn run() {
             app_build_checksum,
             explorer_roots,
             explorer_list,
+            explorer_bookmarks,
+            explorer_bookmarks_set,
+            explorer_thumbnail,
+            explorer_delete,
             disk_space_drives,
             disk_space_scan,
             disk_space_scan_start,
@@ -2627,6 +2663,10 @@ pub fn run() {
         app_build_checksum,
         explorer_roots,
         explorer_list,
+        explorer_bookmarks,
+        explorer_bookmarks_set,
+        explorer_thumbnail,
+        explorer_delete,
         disk_space_drives,
         disk_space_scan,
         disk_space_scan_start,
