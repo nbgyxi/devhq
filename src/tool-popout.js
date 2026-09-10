@@ -106,6 +106,9 @@
     if (id === "path-ping") {
       return { id: "path-ping", name: "Path Ping", icon: "route", hint: "latency and loss, hop by hop" };
     }
+    if (id === "explorer") {
+      return { id: "explorer", name: "Files", icon: "folder_open", hint: "browse a folder and filter it by type in one click" };
+    }
     if (id === "disk-space") {
       return { id: "disk-space", name: "Disk Space Usage", icon: "hard_drive", hint: "see what fills a drive and drill into every folder" };
     }
@@ -246,6 +249,7 @@
     network: () => window.wintNetwork?.render(),
     "path-ping": () => window.wintPathPing?.render(),
     "disk-space": () => window.wintDiskSpace?.render(),
+    explorer: () => window.wintExplorer?.render(),
     tools: () => window.wintUtilTools?.render(),
   };
   const dirtyRegions = new Set();
@@ -320,6 +324,10 @@
       host.className = "tool-pop-host path-page";
       window.wintPathPing?.mount(host);
       window.wintPathPing?.opened();
+    } else if (id === "explorer") {
+      host.className = "tool-pop-host fx-page";
+      window.wintExplorer?.mount(host);
+      window.wintExplorer?.opened();
     } else if (id === "disk-space") {
       host.className = "tool-pop-host disk-page";
       window.wintDiskSpace?.mount(host);

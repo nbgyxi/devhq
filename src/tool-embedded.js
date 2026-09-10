@@ -48,7 +48,7 @@
   const label = context?.tool?.name || queryName;
   const modules = {
     ports: "ports-tool.js", dns: "dns.js", hosts: "hosts.js", network: "network.js", "path-ping": "path-ping.js",
-    "disk-space": "disk-space.js", github: "github.js", git: "git-client.js",
+    "disk-space": "disk-space.js", explorer: "explorer.js", github: "github.js", git: "git-client.js",
   };
   const load = (src) => new Promise((resolve, reject) => {
     const script = document.createElement("script");
@@ -63,7 +63,7 @@
     if (modules[id]) {
       await load(modules[id]);
       api = { ports: window.wintPortsTool, dns: window.wintDns, hosts: window.wintHosts, network: window.wintNetwork,
-        "path-ping": window.wintPathPing, "disk-space": window.wintDiskSpace,
+        "path-ping": window.wintPathPing, "disk-space": window.wintDiskSpace, explorer: window.wintExplorer,
         github: window.wintGithub, git: window.wintGit }[id];
     } else {
       await load("util-tools.js");
@@ -82,6 +82,7 @@
     const family = utilFamily ? "tools-page"
       : windowsFamily ? "windows-tools-page"
       : id === "network" ? "net-page" : id === "path-ping" ? "path-page"
+      : id === "explorer" ? "fx-page"
       : `${id}-page`;
     host.className = `tool-isolated-body ${family}`;
     if (id === "git") api.setRepositories?.(context.projects || []);

@@ -8,6 +8,7 @@ pub mod conpty;
 mod cwd;
 pub mod disk_space;
 pub mod dns;
+pub mod explorer;
 mod download;
 pub mod git;
 pub mod github;
@@ -1588,6 +1589,18 @@ pub fn open_in_sync(path: String, target: String, context: Option<String>) -> Re
 }
 
 #[tauri::command]
+async fn explorer_roots() -> Vec<explorer::Root> {
+    off_thread(explorer::roots).await.unwrap_or_default()
+}
+
+#[tauri::command]
+async fn explorer_list(path: String, dirs_only: bool) -> Result<explorer::Listing, String> {
+    off_thread(move || explorer::list(path, dirs_only))
+        .await
+        .unwrap_or_else(|| Err("The folder listing did not finish.".into()))
+}
+
+#[tauri::command]
 async fn disk_space_drives() -> Result<Vec<disk_space::Drive>, String> {
     off_thread(disk_space::drives)
         .await
@@ -2408,6 +2421,8 @@ pub fn run() {
             project_run_command,
             app_is_official_build,
             app_build_checksum,
+            explorer_roots,
+            explorer_list,
             disk_space_drives,
             disk_space_scan,
             disk_space_scan_start,
@@ -2610,6 +2625,8 @@ pub fn run() {
         project_run_command,
         app_is_official_build,
         app_build_checksum,
+        explorer_roots,
+        explorer_list,
         disk_space_drives,
         disk_space_scan,
         disk_space_scan_start,

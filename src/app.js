@@ -1494,7 +1494,7 @@ function closeSettings() {
 /** Everything the main area can be showing. The overview is the one that is
  *  always there; the rest are tools, each with a host of its own that
  *  `syncMainView` shows and hides. */
-const MAIN_VIEWS = ["overview", "ports", "dns", "hosts", "network", "path-ping", "disk-space", "github", "git", "tools", "windows-tools", "isolated-tool", "settings"];
+const MAIN_VIEWS = ["overview", "ports", "dns", "hosts", "network", "path-ping", "explorer", "disk-space", "github", "git", "tools", "windows-tools", "isolated-tool", "settings"];
 
 function switchMainView(view) {
   if (!MAIN_VIEWS.includes(view)) return;
@@ -1534,6 +1534,7 @@ function switchMainView(view) {
   if (view === "hosts") window.wintHosts?.opened();
   if (view === "network") window.wintNetwork?.opened();
   if (view === "path-ping") window.wintPathPing?.opened();
+  if (view === "explorer") window.wintExplorer?.opened();
   if (view === "disk-space") window.wintDiskSpace?.opened();
   if (view === "github") window.wintGithub?.opened();
   if (view === "git") { syncGitRepositories(); window.wintGit?.opened(); }
@@ -1928,6 +1929,7 @@ function syncMainView() {
   el["hosts-host"].hidden = state.activeView !== "hosts";
   if (el["network-host"]) el["network-host"].hidden = state.activeView !== "network";
   if (el["path-ping-host"]) el["path-ping-host"].hidden = state.activeView !== "path-ping";
+  if (el["explorer-host"]) el["explorer-host"].hidden = state.activeView !== "explorer";
   if (el["disk-space-host"]) el["disk-space-host"].hidden = state.activeView !== "disk-space";
   if (el["github-host"]) el["github-host"].hidden = state.activeView !== "github";
   if (el["git-host"]) el["git-host"].hidden = state.activeView !== "git";
@@ -1956,6 +1958,7 @@ function openRestoredView() {
   if (state.activeView === "hosts") window.wintHosts?.opened();
   if (state.activeView === "network") window.wintNetwork?.opened();
   if (state.activeView === "path-ping") window.wintPathPing?.opened();
+  if (state.activeView === "explorer") window.wintExplorer?.opened();
   if (state.activeView === "disk-space") window.wintDiskSpace?.opened();
   if (state.activeView === "github") window.wintGithub?.opened();
   if (state.activeView === "git") { syncGitRepositories(); window.wintGit?.opened(); }
@@ -3129,6 +3132,15 @@ const TOOLS = [
     active: () => state.activeView === "path-ping",
   },
   {
+    id: "explorer",
+    name: "Files",
+    icon: "folder_open",
+    hint: "browse a folder and filter it by type in one click",
+    keywords: "files file explorer browser browse folder folders directory directories tree navigate navigation path drive drives disk list listing filter type types extension extensions kind sort size modified date name hidden system reveal open copy path documents downloads desktop pictures home find locate where is my file manager finder commander",
+    open: () => switchMainView("explorer"),
+    active: () => state.activeView === "explorer",
+  },
+  {
     id: "disk-space",
     name: "Disk Space Usage",
     icon: "hard_drive",
@@ -3400,6 +3412,7 @@ async function completeToolPopout(tool, screenX, screenY) {
       if (event.payload?.id === id) readyResolve(true);
     });
     if (leaving) {
+      if (id === "explorer") window.wintExplorer?.preparePopout?.();
       if (id === "disk-space") window.wintDiskSpace?.preparePopout?.();
       if (state.activeView === "isolated-tool") await flushIsolatedToolState();
       else await window.wintToolState?.send?.(id);
@@ -4640,6 +4653,7 @@ function flushRender() {
   if (regions.has("hosts")) window.wintHosts?.render();
   if (regions.has("network")) window.wintNetwork?.render();
   if (regions.has("path-ping")) window.wintPathPing?.render();
+  if (regions.has("explorer")) window.wintExplorer?.render();
   if (regions.has("disk-space")) window.wintDiskSpace?.render();
   if (regions.has("tools")) {
     window.wintUtilTools?.render();
@@ -4772,6 +4786,7 @@ function mountShell() {
     <main class="hosts-page" id="hosts-host" hidden></main>
     <main class="net-page" id="network-host" hidden></main>
     <main class="path-page" id="path-ping-host" hidden></main>
+    <main class="fx-page" id="explorer-host" hidden></main>
     <main class="disk-page" id="disk-space-host" hidden></main>
     <main class="github-page" id="github-host" hidden></main>
     <main class="git-page" id="git-host" hidden></main>
@@ -4837,7 +4852,7 @@ function mountShell() {
     "brand-sub", "loadbar", "roots-btn", "roots-label", "roots-pop", "roots-list",
     "rescan", "title-home", "search-input", "search-menu", "tech-picker", "tech-filter", "tech-filter-label",
     "tech-menu", "tech-menu-input", "tech-menu-list", "tech-clear", "sort-buttons", "view-buttons", "activity", "filters", "filter-chips",
-    "banner-host", "summary", "summary-stats", "scroll", "grid", "ports-host", "dns-host", "hosts-host", "network-host", "path-ping-host", "disk-space-host", "github-host", "git-host", "tools-host", "windows-tools-host", "isolated-tool-host", "isolated-tool-slot", "port-filter-input", "port-pins", "port-tabs", "port-sort", "port-live", "ports-list", "ports-detail", "ports-dialogs", "detail-host", "settings-host", "open-settings", "toggle-theme",
+    "banner-host", "summary", "summary-stats", "scroll", "grid", "ports-host", "dns-host", "hosts-host", "network-host", "path-ping-host", "explorer-host", "disk-space-host", "github-host", "git-host", "tools-host", "windows-tools-host", "isolated-tool-host", "isolated-tool-slot", "port-filter-input", "port-pins", "port-tabs", "port-sort", "port-live", "ports-list", "ports-detail", "ports-dialogs", "detail-host", "settings-host", "open-settings", "toggle-theme",
     "status-term", "status-term-popout", "status-progress", "status-version", "changelog-pop",
     "status-pins-wrap", "status-pins", "pins-pop", "pins-panel",
   ]) {
@@ -4871,6 +4886,7 @@ function mountShell() {
     console.error("Network tool failed to mount", err);
   }
   try { window.wintPathPing?.mount(el["path-ping-host"]); } catch (err) { console.error("Path Ping failed to mount", err); }
+  try { window.wintExplorer?.mount(el["explorer-host"]); } catch (err) { console.error("Files failed to mount", err); }
   try { window.wintDiskSpace?.mount(el["disk-space-host"]); } catch (err) { console.error("Disk Space Usage failed to mount", err); }
   try { window.wintGithub?.mount(el["github-host"]); } catch (err) { console.error("GitHub failed to mount", err); }
   try { window.wintGit?.mount(el["git-host"]); } catch (err) { console.error("Git failed to mount", err); }
@@ -6831,7 +6847,7 @@ window.wintShell = {
   const restoredIsolatedId = state.activeView === "ports" ? "ports"
     : state.activeView === "tools" ? state.utilToolId
     : state.activeView === "windows-tools" ? state.windowsToolId
-    : ["dns", "hosts", "network", "path-ping", "disk-space", "github", "git"].includes(state.activeView)
+    : ["dns", "hosts", "network", "path-ping", "explorer", "disk-space", "github", "git"].includes(state.activeView)
       ? state.activeView : "";
   if (restoredIsolatedId) {
     state.activeView = "isolated-tool";

@@ -16,6 +16,17 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.92.0",
+      date: "2026-09-09",
+      title: "Files: a folder browser that filters by type in one click",
+      changes: [
+        ["new", "Files is a plain folder browser: your own folders and every drive in a tree on the left, one folder listed on the right. Only real folders - no Quick Access, no Libraries, nothing that is not a path you can point at."],
+        ["new", "Every folder arrives with its own type filter. Chips across the top say what is actually in there - Images 42, Code 118, Archives 3 - and clicking one narrows the list. \"By extension\" opens every extension the folder holds, with counts, so you can pick .png and .svg and nothing else."],
+        ["new", "Sort by name, type, size or date by clicking the column, with folders always kept first. Back, Forward, Up, a clickable path and a name filter sit in one row above the list."],
+        ["new", "Hidden and system items stay out of the way behind one toggle, and right-clicking anything offers Open, Show in Windows Explorer, a shell in that folder, or its path on the clipboard."],
+      ],
+    },
+    {
       version: "0.91.0",
       date: "2026-09-08",
       title: "Keep Awake can hold the hours you keep",
