@@ -17,33 +17,43 @@
     if (id === "network") return window.wintNetwork;
     if (id === "path-ping") return window.wintPathPing;
     if (id === "disk-space") return window.wintDiskSpace;
+    if (id === "explorer") return window.wintExplorer;
     if (id === "github") return window.wintGithub;
     if (id === "git") return window.wintGit;
     if (window.wintUtilTools?.byId?.(id)) return window.wintUtilTools;
     if (window.wintWindowsTools?.catalog?.().some((tool) => tool.id === id)) return window.wintWindowsTools;
     return null;
   };
-  async function send(id) {
+  async function send(id, instance) {
     const state = apiFor(id)?.exportState?.(id);
     if (state === undefined) return false;
+    const key = instance ? `${id}:${instance}` : id;
     // Rust storage crosses isolated WebView2 data directories. Keep the old
     // browser handoff as compatibility for builds/windows without the bridge.
-    if (await invoke("tool_bridge_state_put", { id, state }).then(() => true).catch(() => false)) return true;
-    const transfer={ savedAt:Date.now(), state },key=`${PREFIX}${id}`;
-    try { localStorage.setItem(key,JSON.stringify(transfer)); return true; }
-    catch (_) { return dbPut(key,transfer); }
+    if (await invoke("tool_bridge_state_put", { id: key, state }).then(() => true).catch(() => false)) return true;
+    const transfer={ savedAt:Date.now(), state },storeKey=`${PREFIX}${key}`;
+    try { localStorage.setItem(storeKey,JSON.stringify(transfer)); return true; }
+    catch (_) { return dbPut(storeKey,transfer); }
   }
-  async function receive(id) {
-    const bridged = await invoke("tool_bridge_state_take", { id }).catch(() => null);
-    if (bridged) { apiFor(id)?.importState?.(bridged, id); return true; }
-    const key = `${PREFIX}${id}`;
-    let transfer;
-    try { transfer = JSON.parse(localStorage.getItem(key) || "null"); localStorage.removeItem(key); }
-    catch (_) { /* try the larger IndexedDB handoff */ }
-    if(!transfer)transfer=await dbTake(key);
-    if (!transfer || Date.now() - transfer.savedAt > 60000) return false;
-    apiFor(id)?.importState?.(transfer.state, id);
-    return true;
+  async function receive(id, instance) {
+    // Prefer the instance key so two Files windows opening at once do not
+    // steal each other's handoff.
+    const keys = instance ? [`${id}:${instance}`, id] : [id];
+    for (const key of keys) {
+      const bridged = await invoke("tool_bridge_state_take", { id: key }).catch(() => null);
+      if (bridged) { apiFor(id)?.importState?.(bridged, id); return true; }
+    }
+    for (const key of keys) {
+      const storeKey = `${PREFIX}${key}`;
+      let transfer;
+      try { transfer = JSON.parse(localStorage.getItem(storeKey) || "null"); localStorage.removeItem(storeKey); }
+      catch (_) { /* try the larger IndexedDB handoff */ }
+      if (!transfer) transfer = await dbTake(storeKey);
+      if (!transfer || Date.now() - transfer.savedAt > 60000) continue;
+      apiFor(id)?.importState?.(transfer.state, id);
+      return true;
+    }
+    return false;
   }
   window.wintToolState = { send, receive };
 })();

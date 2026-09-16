@@ -234,6 +234,26 @@ svg.ms,svg.ms rect,svg.ms path{fill:none;stroke:currentColor}
 .brand img{width:18px;height:18px;border-radius:5px}
 .brand span{font-size:13px}
 .brand .sub{font-weight:500;color:var(--dim2);font-size:12px}
+.brand .admin-badge{display:inline-flex;align-items:center;gap:3px;flex:0 0 auto;height:18px;padding:0 6px 0 4px;border-radius:4px;background:#e5534b;color:#fff;font-size:10px;font-weight:800;letter-spacing:.04em;text-transform:uppercase}
+.brand .admin-badge[hidden]{display:none}
+.brand .admin-badge .ms{font-size:13px}
+body.popout.admin .titlebar{box-shadow:inset 0 -2px 0 #e5534b}
+.dock-shell-menu .dock-menu-admin{border-top:1px solid var(--line, rgba(255,255,255,.08));margin-top:4px;padding:6px 8px 4px}
+.dock-shell-menu .dock-menu-admin-label{display:flex;align-items:center;gap:5px;font-size:11px;font-weight:600;opacity:.75;margin-bottom:5px}
+.dock-shell-menu .dock-menu-admin-label .ms{font-size:15px;color:#e5534b}
+.dock-shell-menu .dock-admin-shells{display:flex;flex-wrap:wrap;gap:4px}
+.dock-shell-menu .dock-admin-shells .dock-admin-shell{width:auto;min-width:36px;height:22px;padding:0 6px;justify-content:center;border:1px solid currentColor;border-radius:4px;background:transparent;font-size:10px;font-weight:800;letter-spacing:.02em;color:var(--shell-color-auto)}
+.dock-shell-menu .dock-admin-shells .dock-admin-shell:hover:not(:disabled){background:#e5534b;border-color:#e5534b;color:#fff}
+.dock-shell-menu .dock-admin-shells .dock-admin-shell:disabled{opacity:.35;cursor:default}
+.dock-admin-shell.shell-pwsh{color:var(--shell-color-pwsh)}
+.dock-admin-shell.shell-pwsh-preview{color:var(--shell-color-pwsh-preview)}
+.dock-admin-shell.shell-powershell{color:var(--shell-color-powershell)}
+.dock-admin-shell.shell-cmd{color:var(--shell-color-cmd)}
+.dock-admin-shell.shell-git-bash{color:var(--shell-color-git-bash)}
+.dock-admin-shell.shell-wsl{color:var(--shell-color-wsl)}
+.dock-admin-shell.shell-nu{color:var(--shell-color-nu)}
+body.popout #pop-shell{-webkit-app-region:no-drag;cursor:pointer}
+body.popout #pop-shell:hover{background:rgba(255,255,255,.08)}
 .win-btns{display:flex;height:100%}
 .win-btn{width:44px;height:100%;display:grid;place-items:center;color:var(--dim);transition:background .12s,color .12s}
 .win-btn[hidden]{display:none}
@@ -3157,9 +3177,14 @@ html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
 /* Files ----------------------------------------------------------------- */
 .fx-page{height:100%;min-height:0;display:flex;flex-direction:column;background:var(--bg)}
 .fx-page[hidden]{display:none}
-.fx-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(180px,268px) minmax(0,1fr)}
-.fx-body.with-preview{grid-template-columns:minmax(180px,240px) minmax(0,1fr) minmax(240px,360px)}
-.fx-side{min-height:0;display:flex;flex-direction:column;border-right:1px solid var(--line);background:var(--bg1)}
+/* Tree and preview keep the widths the user set; the browse list takes the
+   leftover. Splitters sit between them as the only thing that moves. */
+.fx-body{flex:1;min-height:0;display:flex;--fx-side:268px;--fx-preview:320px}
+.fx-side{flex:0 0 var(--fx-side);width:var(--fx-side);max-width:var(--fx-side);min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--bg1)}
+.fx-main{flex:1 1 auto;min-width:96px;min-height:0;display:flex;flex-direction:column;padding:10px 12px 8px;gap:8px}
+.fx-split{position:relative;flex:0 0 5px;z-index:2;background:var(--line);cursor:col-resize}
+.fx-split::before{content:"";position:absolute;inset:0 -4px;cursor:col-resize}
+.fx-split:hover,.fx-body.resizing .fx-split.active{background:var(--accent)}
 .fx-tree{flex:1;min-height:0;overflow:auto;padding:10px 6px 16px}
 .fx-marks{flex:0 0 auto;max-height:38%;overflow:auto;padding:0 6px 10px;border-top:1px solid var(--line)}
 .fx-marks .fx-tree-label{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;background:var(--bg1)}
@@ -3203,7 +3228,7 @@ html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
 .fx-row.picked:hover{background:color-mix(in srgb,var(--accent) 22%,transparent)}
 
 /* The preview panel: one picture, contained, with what it is underneath. */
-.fx-preview{min-width:0;min-height:0;display:flex;flex-direction:column;border-left:1px solid var(--line);background:var(--bg1)}
+.fx-preview{flex:0 0 var(--fx-preview);width:var(--fx-preview);max-width:var(--fx-preview);min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--bg1)}
 .fx-preview-stage{flex:1;min-height:0;display:grid;place-items:center;padding:14px;overflow:hidden}
 .fx-preview-image{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;box-shadow:0 6px 22px #0006}
 .fx-preview-empty{display:flex;flex-direction:column;align-items:center;gap:10px;padding:24px;color:var(--dim2);text-align:center}
@@ -3220,7 +3245,6 @@ html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
 .fx-note.bad{color:var(--red)}
 .fx-note.bad .ms{animation:none}
 
-.fx-main{min-width:0;min-height:0;display:flex;flex-direction:column;padding:10px 12px 8px;gap:8px}
 .fx-bar{display:flex;align-items:center;gap:5px}
 .fx-nav{flex:0 0 auto;width:30px;height:30px;display:grid;place-items:center;border:1px solid var(--line);border-radius:7px;background:var(--bg2);color:var(--text);cursor:pointer}
 .fx-nav:hover:not(:disabled){background:var(--bg3);border-color:var(--accent)}
@@ -3269,7 +3293,16 @@ html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
 
 .fx-list{flex:1;min-height:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:9px;background:var(--bg1);overflow:hidden}
 .fx-rows{flex:1;min-height:0;overflow:auto}
-.fx-row{display:grid;grid-template-columns:minmax(0,1fr) 130px 92px 148px;align-items:center;gap:10px;padding:0 12px;height:31px;border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
+.fx-row{display:grid;grid-template-columns:minmax(0,1fr) 130px 92px 148px;align-items:center;gap:10px;padding:0 12px;height:31px;border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent);position:relative}
+.fx-row.has-del{padding-right:36px}
+.fx-row-del{
+  position:absolute;right:8px;top:50%;transform:translateY(-50%);
+  width:24px;height:24px;display:none;place-items:center;
+  border:0;border-radius:6px;background:none;color:var(--dim2);cursor:pointer;z-index:1;
+}
+.fx-row-del .ms{font-size:16px}
+.fx-row:hover>.fx-row-del,.fx-row:focus-within>.fx-row-del,.fx-row-del:focus-visible{display:grid}
+.fx-row-del:hover,.fx-row-del:focus-visible{background:color-mix(in srgb,var(--red) 18%,transparent);color:var(--red)}
 .fx-row.head{height:32px;position:sticky;top:0;z-index:1;background:var(--bg2);border-bottom:1px solid var(--line);padding:0 12px}
 .fx-row.head .fx-cell{color:var(--dim);font-size:11px;letter-spacing:.03em}
 .fx-cell{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}

@@ -503,6 +503,14 @@ function dockEl() {
   });
 
   el.querySelector(".dock-bar").addEventListener("click", (e) => {
+    const adminChoice = e.target.closest("[data-new-admin]");
+    if (adminChoice) {
+      if (adminChoice.disabled) return;
+      const pane = Number(adminChoice.closest("[data-tab-pane]").dataset.tabPane);
+      setShellMenuOpen(null);
+      openAdminTerminal(adminChoice.dataset.newAdmin, pane);
+      return;
+    }
     const choice = e.target.closest("[data-new-shell]");
     if (!choice) return;
     const pane = Number(choice.closest("[data-tab-pane]").dataset.tabPane);
@@ -886,10 +894,25 @@ function renderShellMenu() {
       return `<button role="menuitem" data-new-shell="${profile.value}"${status?.available === false ? " disabled" : ""}${status?.reason ? ` title="${escAttr(status.reason)}"` : ""}>${profile.label}${
         status?.available === false ? "<span>Unavailable</span>" : status?.setup ? "<span>Set up</span>" : profile.value === terms.defaultShell ? "<span>Default</span>" : ""
       }</button>`;
-    }).join("")}`;
+    }).join("")}${adminShellRow()}`;
     menu.hidden = terms.shellMenuPane !== pane;
     paneEl.querySelector('[data-dock="shell-menu"]').setAttribute("aria-expanded", String(terms.shellMenuPane === pane));
   }
+}
+
+/** The same shells again, as one compact row, each opening elevated in its own
+ *  window. Claude Code is left out: its setup walkthrough is not something to
+ *  run as administrator. Auto is left out because a shell picked on purpose is
+ *  the point of asking for admin rights. */
+function adminShellRow() {
+  const short = { pwsh: "PW7", "pwsh-preview": "PWP", powershell: "PS", cmd: "CMD", "git-bash": "GIT", wsl: "WSL", nu: "NU" };
+  const buttons = TERM_SHELLS.filter((profile) => short[profile.value]).map((profile) => {
+    const status = terms.shellAvailability.get(profile.value);
+    const unavailable = status?.available === false;
+    const title = unavailable ? status.reason || `${profile.label} is unavailable` : `${profile.label} as administrator, in its own window`;
+    return `<button role="menuitem" class="dock-admin-shell shell-${profile.value}" data-new-admin="${profile.value}"${unavailable ? " disabled" : ""} title="${escAttr(title)}">${short[profile.value]}</button>`;
+  }).join("");
+  return `<div class="dock-menu-admin"><span class="dock-menu-admin-label"><span class="ms">admin_panel_settings</span>As administrator</span><div class="dock-admin-shells">${buttons}</div></div>`;
 }
 
 function setShellMenuOpen(pane) {
@@ -1162,6 +1185,28 @@ function openNewTerminal(shell = terms.defaultShell, pane = terms.active ? sessi
     return;
   }
   openTerminal(target, { shell, pane, ...opts });
+}
+
+/** An elevated terminal is opened by a second, elevated WinT in a window of its
+ *  own - it cannot be a tab here (see `admin_request` in term.rs). What this
+ *  window shows is only the wait for Windows' prompt; once it is answered the
+ *  terminal belongs to the other window. */
+async function openAdminTerminal(shell, pane = terms.active ? sessionPane(terms.active) : 0) {
+  const target = newTerminalTarget(pane);
+  if (!target.path) {
+    termNote("term:noroot", "Nowhere to open a shell - add a folder to scan first.", 4000);
+    return;
+  }
+  const key = `term:admin:${Date.now()}`;
+  const label = TERM_SHELLS.find((profile) => profile.value === shell)?.label || "a shell";
+  window.wintWork?.beginWork(key, `Asking Windows to run ${label} as administrator in ${target.name}`);
+  try {
+    await term_dock_invoke("term_open_admin", { projectPath: target.path, shell });
+  } catch (e) {
+    termNote(`${key}:err`, String(e), 5000);
+  } finally {
+    window.wintWork?.endWork(key);
+  }
 }
 
 function escAttr(s) {

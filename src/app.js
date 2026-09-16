@@ -347,7 +347,10 @@ function loadPrefs() {
       state.toolPins = p.toolPins.filter((id) => TOOLS.some((tool) => tool.id === id));
     }
     if (Array.isArray(p.toolPopouts)) {
-      state.toolPopouts = p.toolPopouts.filter((id) => TOOLS.some((tool) => tool.id === id));
+      state.toolPopouts = p.toolPopouts.filter((entry) => {
+        if (typeof entry !== "string") return false;
+        return TOOLS.some((tool) => tool.id === popoutToolId(entry));
+      });
     }
     if (Array.isArray(p.toolRecent)) {
       state.toolRecent = p.toolRecent
@@ -3297,7 +3300,10 @@ function openTool(id) {
   if (!target) return;
   closeToolPins();
   rememberToolUse(id);
-  if (toolById(id) && isToolPopped(id)) {
+  // Singleton pop-outs steal the in-app open so you are not looking at two
+  // copies of the same tool. Files may have several windows; opening it here
+  // always means the embedded one, even when pop-outs are already up.
+  if (toolById(id) && isToolPopped(id) && !toolAllowsManyPopouts(id)) {
     focusToolPopout(id);
     markDirty("pins");
     return;
@@ -3358,17 +3364,55 @@ function renderIsolatedToolChrome(tool = toolById(state.isolatedToolId)) {
   pin.innerHTML = `${icon("push_pin")}${isToolPinned(tool.id) ? "Pinned" : "Pin"}`;
   const popout = host.querySelector("[data-popout-tool]");
   popout.dataset.popoutTool = tool.id;
-  popout.innerHTML = `${icon("open_in_new")}Pop out`;
+  // Files always offers another window; other tools toggle between Pop out and
+  // Show window when their single copy is already out.
+  if (toolAllowsManyPopouts(tool.id)) {
+    popout.classList.remove("on");
+    popout.innerHTML = `${icon("open_in_new")}Pop out`;
+    popout.title = `Open ${tool.name} in a new window`;
+  } else {
+    popout.innerHTML = `${icon("open_in_new")}Pop out`;
+  }
+}
+
+/** Files is the one tool that may have several pop-outs at once. Everyone else
+ *  still has one window keyed by tool id. Entries look like `"explorer:a1b2"`
+ *  for a multi window, or bare `"dns"` for a singleton. */
+function toolAllowsManyPopouts(id) {
+  return id === "explorer";
+}
+
+function popoutToolId(entry) {
+  if (typeof entry !== "string") return "";
+  const cut = entry.indexOf(":");
+  return cut > 0 ? entry.slice(0, cut) : entry;
+}
+
+function popoutInstance(entry) {
+  if (typeof entry !== "string") return null;
+  const cut = entry.indexOf(":");
+  return cut > 0 ? entry.slice(cut + 1) : null;
+}
+
+function popoutEntry(id, instance) {
+  return instance ? `${id}:${instance}` : id;
+}
+
+function newPopoutInstance() {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function isToolPopped(id) {
-  return state.toolPopouts.includes(id);
+  return state.toolPopouts.some((entry) => popoutToolId(entry) === id);
 }
 
-function rememberToolPopout(id, open) {
+function rememberToolPopout(entry, open) {
   const next = open
-    ? [...state.toolPopouts.filter((pin) => pin !== id), id]
-    : state.toolPopouts.filter((pin) => pin !== id);
+    ? [...state.toolPopouts.filter((pin) => pin !== entry), entry]
+    : state.toolPopouts.filter((pin) => pin !== entry);
   if (next.length === state.toolPopouts.length && next.every((pin, index) => pin === state.toolPopouts[index])) {
     return;
   }
@@ -3381,52 +3425,91 @@ function rememberToolPopout(id, open) {
  *  view lets go immediately; the window remounts the tool on its own. */
 const toolPopoutsOpening = new Set();
 
-function popOutTool(id, screenX, screenY) {
+function popOutTool(id, screenX, screenY, options = {}) {
   const tool = toolById(id);
   if (!tool) return;
-  if (toolPopoutsOpening.has(id)) return;
-  if (isToolPopped(id)) {
+  // Singletons focus the existing window. Multi tools always mint a new one.
+  if (!options.duplicate && !toolAllowsManyPopouts(id) && isToolPopped(id)) {
     void focusToolPopout(id);
     return Promise.resolve();
   }
-  toolPopoutsOpening.add(id);
+  const instance = toolAllowsManyPopouts(id) ? newPopoutInstance() : null;
+  const entry = popoutEntry(id, instance);
+  if (toolPopoutsOpening.has(entry)) return Promise.resolve();
+  toolPopoutsOpening.add(entry);
   // Deliberately detach the handoff from the click handler. State persistence,
   // native window creation and renderer startup must never hold the shell's UI
   // interaction path open.
-  void completeToolPopout(tool, screenX, screenY);
+  void completeToolPopout(tool, screenX, screenY, instance, entry, options);
   return Promise.resolve();
 }
 
-async function completeToolPopout(tool, screenX, screenY) {
+/** Open another Files window at `path` without leaving the one you are in. */
+function openExplorerWindow(path) {
+  return popOutTool("explorer", null, null, { duplicate: true, seedPath: path == null ? "" : path });
+}
+
+async function completeToolPopout(tool, screenX, screenY, instance = null, entry = tool.id, options = {}) {
   const id = tool.id;
-  const leaving = activeTool()?.id === id;
+  const duplicate = options.duplicate === true;
+  const seedPath = options.seedPath;
+  const leaving = !duplicate && activeTool()?.id === id;
   const leavingSession = leaving && state.activeView === "isolated-tool" ? state.isolatedToolSession : "";
-  rememberToolPopout(id, true);
-  const key = `tool-popout:${id}`;
-  beginWork(key, `Opening ${tool.name} in its own window`);
+  rememberToolPopout(entry, true);
+  const key = `tool-popout:${entry}`;
+  beginWork(key, duplicate ? `Opening another ${tool.name} window` : `Opening ${tool.name} in its own window`);
   let readyResolve;
   const ready = new Promise((resolve) => { readyResolve = resolve; });
   let unlistenReady = () => {};
   try {
     unlistenReady = await listen("tool:ready", (event) => {
-      if (event.payload?.id === id) readyResolve(true);
+      if (event.payload?.id !== id) return;
+      if ((event.payload?.instance || null) !== (instance || null)) return;
+      readyResolve(true);
     });
-    if (leaving) {
+    if (duplicate) {
+      let seed = id === "explorer" ? window.wintExplorer?.exportState?.() : null;
+      if (!seed || typeof seed !== "object") seed = {};
+      if (seedPath != null) {
+        seed = {
+          ...seed,
+          path: seedPath,
+          listing: null,
+          error: "",
+          history: [],
+          forward: [],
+          filter: "",
+          kinds: [],
+          exts: [],
+          typesOpen: false,
+        };
+      }
+      const bridgeId = instance ? `${id}:${instance}` : id;
+      await invoke("tool_bridge_state_put", { id: bridgeId, state: seed }).catch(() => {});
+    } else if (leaving) {
       if (id === "explorer") window.wintExplorer?.preparePopout?.();
       if (id === "disk-space") window.wintDiskSpace?.preparePopout?.();
       if (state.activeView === "isolated-tool") await flushIsolatedToolState();
       else await window.wintToolState?.send?.(id);
+      // Multi-instance tools hand off under the instance key so a second
+      // window cannot steal this one's state.
+      if (instance) {
+        const taken = await invoke("tool_bridge_state_take", { id }).catch(() => null);
+        if (taken) await invoke("tool_bridge_state_put", { id: `${id}:${instance}`, state: taken }).catch(() => {});
+      }
     }
     // The tool is moving into a window of its own. Its embedded copy must go
     // rather than linger in the cache, or docking back would restore a stale
-    // one holding state from before the pop-out.
-    await evictEmbeddedTool(id);
+    // one holding state from before the pop-out. A duplicate leaves the source
+    // alone.
+    if (!duplicate) await evictEmbeddedTool(id);
     await invoke("tool_popout", {
       id,
       title: tool.name,
       theme: state.theme === "light" ? "light" : "dark",
       x: Number.isFinite(screenX) ? screenX - 80 : null,
       y: Number.isFinite(screenY) ? screenY - 18 : null,
+      instance,
     });
     const mounted = await Promise.race([
       ready,
@@ -3439,14 +3522,14 @@ async function completeToolPopout(tool, screenX, screenY) {
       openTool("overview");
     }
   } catch (error) {
-    rememberToolPopout(id, false);
-    await invoke("tool_dock", { id }).catch(() => {});
+    rememberToolPopout(entry, false);
+    await invoke("tool_dock", { id, instance }).catch(() => {});
     if (leaving && state.activeView === "isolated-tool" && state.isolatedToolId === id) syncEmbeddedTool();
     beginWork("tool-popout-fail", `Could not pop ${tool.name} out`, String(error));
     setTimeout(() => endWork("tool-popout-fail"), 4000);
   } finally {
     unlistenReady();
-    toolPopoutsOpening.delete(id);
+    toolPopoutsOpening.delete(entry);
     endWork(key);
   }
 }
@@ -3467,18 +3550,21 @@ async function flushIsolatedToolState() {
   return result;
 }
 
-async function focusToolPopout(id) {
+async function focusToolPopout(id, instance = null) {
+  const entry = popoutEntry(id, instance);
   try {
-    await invoke("tool_focus", { id });
+    await invoke("tool_focus", { id, instance });
   } catch {
-    rememberToolPopout(id, false);
-    await popOutTool(id);
+    rememberToolPopout(entry, false);
+    // Only recreate a singleton from a failed focus. Multi tools open a fresh
+    // window when the user asks; they do not replace a missing instance.
+    if (!toolAllowsManyPopouts(id)) await popOutTool(id);
   }
 }
 
-async function dockToolPopout(id) {
-  rememberToolPopout(id, false);
-  await invoke("tool_dock", { id }).catch(() => {});
+async function dockToolPopout(id, instance = null) {
+  rememberToolPopout(popoutEntry(id, instance), false);
+  await invoke("tool_dock", { id, instance }).catch(() => {});
   // Always re-enter through the central router. Calling `tool.open()` here
   // bypasses isolation policy and can expose a shared host's previous child
   // (for Windows tools that was usually Event Stream).
@@ -3486,11 +3572,13 @@ async function dockToolPopout(id) {
 }
 
 async function restoreToolPopouts() {
-  const ids = [...state.toolPopouts];
-  for (const id of ids) {
+  const entries = [...state.toolPopouts];
+  for (const entry of entries) {
+    const id = popoutToolId(entry);
+    const instance = popoutInstance(entry);
     const tool = toolById(id);
     if (!tool) {
-      rememberToolPopout(id, false);
+      rememberToolPopout(entry, false);
       continue;
     }
     try {
@@ -3500,9 +3588,10 @@ async function restoreToolPopouts() {
         theme: state.theme === "light" ? "light" : "dark",
         x: null,
         y: null,
+        instance,
       });
     } catch {
-      rememberToolPopout(id, false);
+      rememberToolPopout(entry, false);
     }
   }
 }
@@ -5137,11 +5226,14 @@ function syncToolHeads() {
   for (const button of document.querySelectorAll(".tool-popout[data-popout-tool]")) {
     const tool = toolById(button.dataset.popoutTool);
     if (!tool) continue;
-    const popped = isToolPopped(tool.id);
+    const many = toolAllowsManyPopouts(tool.id);
+    const popped = !many && isToolPopped(tool.id);
     button.classList.toggle("on", popped);
-    button.title = popped
-      ? `Show ${tool.name} in its own window`
-      : `Open ${tool.name} in a new window`;
+    button.title = many
+      ? `Open ${tool.name} in a new window`
+      : popped
+        ? `Show ${tool.name} in its own window`
+        : `Open ${tool.name} in a new window`;
     button.innerHTML = `${icon("open_in_new")}${popped ? "Show window" : "Pop out"}`;
   }
 }
@@ -6786,12 +6878,18 @@ async function wireToolPopoutEvents() {
   listen("tool:closed", (event) => {
     const id = event.payload?.id;
     if (!id) return;
-    rememberToolPopout(id, false);
+    rememberToolPopout(popoutEntry(id, event.payload?.instance || null), false);
+  });
+  listen("tool:spawned", (event) => {
+    const id = event.payload?.id;
+    const instance = event.payload?.instance || null;
+    if (!id || !instance) return;
+    rememberToolPopout(popoutEntry(id, instance), true);
   });
   listen("tool:docked", async (event) => {
     const id = event.payload?.id;
     if (!id) return;
-    await dockToolPopout(id);
+    await dockToolPopout(id, event.payload?.instance || null);
   });
   listen("tool:open", (event) => {
     const id = event.payload?.id;
@@ -6828,6 +6926,7 @@ window.wintShell = {
   isToolPinned,
   openTool,
   popOutTool,
+  openExplorerWindow,
   isToolPopped,
   /** The scanned projects, for a tool that wants to open on something real.
    *  A copy, because nothing outside the shell may edit the list. */

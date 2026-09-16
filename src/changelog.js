@@ -16,6 +16,85 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.100.0",
+      date: "2026-09-16",
+      title: "Administrator terminals",
+      changes: [
+        ["new", "The new-terminal menu has an As administrator row with a button for each shell. Pick one, Windows asks for permission, and that shell opens in its own window with a red Admin badge in the title bar. Splitting that window gives you another administrator shell."],
+        ["better", "In a popped-out terminal, click the shell badge in the title bar to restart it with a different shell. Before, only right-clicking the title did this."],
+        ["new", "Administrator terminals can't dock back into WinT. They run in a separate elevated copy of WinT, so a program running without admin rights can't type into an admin shell. Closing the window closes that copy."],
+      ],
+    },
+    {
+      version: "0.99.2",
+      date: "2026-09-10",
+      title: "Back lands on the folder you came from",
+      changes: [
+        ["better", "After you open a folder and press Back (or Up), Files selects that folder in the list and scrolls it into view. A resized window still lands in the right place, because it follows the folder rather than a pixel scroll position."],
+      ],
+    },
+    {
+      version: "0.99.1",
+      date: "2026-09-10",
+      title: "Delete from the file row",
+      changes: [
+        ["new", "Hover a file or folder in the list and a small delete button appears on the row. It asks the same Recycle Bin / delete-for-good question as before. Inside a zip there is still no delete."],
+      ],
+    },
+    {
+      version: "0.99.0",
+      date: "2026-09-10",
+      title: "Open another Files window from the toolbar or a right-click",
+      changes: [
+        ["new", "A New window button sits in the Files toolbar. It opens another Files window on the folder you are in, and leaves this one alone - Pop out still moves the tool out."],
+        ["new", "Right-click any folder (or zip) and choose Open in new window. The new window starts on that folder."],
+      ],
+    },
+    {
+      version: "0.98.1",
+      date: "2026-09-10",
+      title: "Preview no longer jumps the file list",
+      changes: [
+        ["fix", "Clicking a picture to fill the preview pane no longer scrolls the file list back to the top. That was especially bad inside a zip, where unpacking the preview took long enough to make the jump obvious."],
+      ],
+    },
+    {
+      version: "0.98.0",
+      date: "2026-09-10",
+      title: "Zip files open like folders",
+      changes: [
+        ["new", "A zip archive opens like any other folder: click it, walk the tree, filter by type, open files. Files inside are unpacked to a temp folder when you open or preview them."],
+        ["better", "Inside a zip there is no delete, no shell and no bookmark - the archive is read-only. Delete still works on the zip file itself from the folder that holds it."],
+      ],
+    },
+    {
+      version: "0.97.0",
+      date: "2026-09-10",
+      title: "Files makes its own picture when Windows has none",
+      changes: [
+        ["better", "When Windows has no thumbnail ready yet, Files reads the image itself and draws a preview - a PNG or JPEG no longer sits blank with \"Windows has no preview\"."],
+        ["better", "The folder-tree and preview dividers can be dragged almost to the edge. Only a thin strip is kept so the browse list never disappears."],
+        ["fix", "The lock that appeared next to read-only files is gone. It was only saying the Windows read-only bit was set, and it was noise in the name column."],
+      ],
+    },
+    {
+      version: "0.96.0",
+      date: "2026-09-10",
+      title: "Files splitters stay where you put them",
+      changes: [
+        ["new", "Drag the divider beside the folder tree, or beside the preview, to set how wide each one is. The browse list takes whatever space is left, and both widths are remembered the next time you open Files."],
+      ],
+    },
+    {
+      version: "0.95.0",
+      date: "2026-09-10",
+      title: "Files remembers the folder, and opens as many windows as you need",
+      changes: [
+        ["better", "Files opens back in the folder you last looked at, instead of starting on This PC every time. The place is shared by every Files window and survives a restart."],
+        ["new", "Pop out on Files always opens another window. You can keep several Files windows open at once, each on its own folder, and still open Files inside WinT while they are out."],
+      ],
+    },
+    {
       version: "0.94.0",
       date: "2026-09-10",
       title: "Files gets pictures, and a way to throw things out",

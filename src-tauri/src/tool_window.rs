@@ -381,8 +381,27 @@ pub fn changelog_hide(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn label_for(id: &str) -> String {
-    format!("tool-{id}")
+fn label_for(id: &str, instance: Option<&str>) -> String {
+    match instance {
+        Some(instance) if !instance.is_empty() => format!("tool-{id}-{instance}"),
+        _ => format!("tool-{id}"),
+    }
+}
+
+fn valid_instance(instance: Option<&str>) -> Result<Option<String>, String> {
+    match instance {
+        None => Ok(None),
+        Some(value) if value.is_empty() => Ok(None),
+        Some(value)
+            if value.len() <= 32
+                && value
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')) =>
+        {
+            Ok(Some(value.to_string()))
+        }
+        _ => Err("That tool window instance is invalid.".into()),
+    }
 }
 
 fn embedded_label_for(id: &str) -> String {
@@ -548,7 +567,9 @@ pub(crate) fn taskbar_icon_for_tool(id: &str) -> Option<Image<'static>> {
         .or_else(|| load_png_icon(&tools.join("_default.png")))
 }
 
-/// Opens a tool in its own undecorated window. Re-focuses an existing one.
+/// Opens a tool in its own undecorated window. Re-focuses an existing one
+/// unless `instance` names a fresh copy - Files uses that to open several
+/// windows of the same tool at once.
 /// `theme` is `"light"` or `"dark"` so the native webview colour matches the
 /// app before HTML has painted — otherwise light mode flashes black.
 #[tauri::command]
@@ -559,6 +580,7 @@ pub async fn tool_popout(
     theme: Option<String>,
     x: Option<f64>,
     y: Option<f64>,
+    instance: Option<String>,
 ) -> Result<(), String> {
     if id.is_empty()
         || id
@@ -567,7 +589,8 @@ pub async fn tool_popout(
     {
         return Err("That tool cannot be opened in its own window.".into());
     }
-    let label = label_for(&id);
+    let instance = valid_instance(instance.as_deref())?;
+    let label = label_for(&id, instance.as_deref());
     if let Some(existing) = app.get_webview_window(&label) {
         let _ = existing.set_focus();
         return Ok(());
@@ -580,12 +603,21 @@ pub async fn tool_popout(
     };
     // Same reason as the embedded page: the window must be able to name what it
     // is opening in its first frame, with no script having run yet.
-    let page = format!(
-        "tool.html?id={}&name={}&theme={}",
-        urlencoding_lite(&id),
-        urlencoding_lite(&window_title),
-        if light { "light" } else { "dark" }
-    );
+    let page = match instance.as_deref() {
+        Some(instance) => format!(
+            "tool.html?id={}&name={}&theme={}&instance={}",
+            urlencoding_lite(&id),
+            urlencoding_lite(&window_title),
+            if light { "light" } else { "dark" },
+            urlencoding_lite(instance)
+        ),
+        None => format!(
+            "tool.html?id={}&name={}&theme={}",
+            urlencoding_lite(&id),
+            urlencoding_lite(&window_title),
+            if light { "light" } else { "dark" }
+        ),
+    };
     // Match --bg in styles.css so the frame never flashes the wrong scheme.
     let background = if light {
         tauri::webview::Color(244, 245, 248, 255)
@@ -628,8 +660,9 @@ pub async fn tool_popout(
 
 /// Focus an already-open tool window without creating one.
 #[tauri::command]
-pub async fn tool_focus(app: AppHandle, id: String) -> Result<(), String> {
-    let label = label_for(&id);
+pub async fn tool_focus(app: AppHandle, id: String, instance: Option<String>) -> Result<(), String> {
+    let instance = valid_instance(instance.as_deref())?;
+    let label = label_for(&id, instance.as_deref());
     off_thread(move || {
         if let Some(window) = app.get_webview_window(&label) {
             window.set_focus().map_err(|e| e.to_string())
@@ -684,8 +717,9 @@ pub async fn tool_drag_preview(
 
 /// Destroys the popped-out window when the tool docks back into WinT.
 #[tauri::command]
-pub async fn tool_dock(app: AppHandle, id: String) -> Result<(), String> {
-    let label = label_for(&id);
+pub async fn tool_dock(app: AppHandle, id: String, instance: Option<String>) -> Result<(), String> {
+    let instance = valid_instance(instance.as_deref())?;
+    let label = label_for(&id, instance.as_deref());
     off_thread(move || {
         if let Some(win) = app.get_webview_window(&label) {
             let _ = win.destroy();

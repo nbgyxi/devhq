@@ -1619,6 +1619,48 @@ async fn explorer_bookmarks_set(app: AppHandle, paths: Vec<String>) -> Result<Ve
 }
 
 #[tauri::command]
+async fn explorer_last_path(app: AppHandle) -> Option<String> {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return None;
+    };
+    off_thread(move || explorer::last_path(&dir))
+        .await
+        .flatten()
+}
+
+#[tauri::command]
+async fn explorer_last_path_set(app: AppHandle, path: String) -> Result<(), String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    off_thread(move || explorer::last_path_set(&dir, path))
+        .await
+        .unwrap_or_else(|| Err("The last folder could not be saved.".into()))
+}
+
+#[tauri::command]
+async fn explorer_layout(app: AppHandle) -> explorer::Layout {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return explorer::Layout {
+            side_width: 268,
+            preview_width: 320,
+        };
+    };
+    off_thread(move || explorer::layout(&dir))
+        .await
+        .unwrap_or(explorer::Layout {
+            side_width: 268,
+            preview_width: 320,
+        })
+}
+
+#[tauri::command]
+async fn explorer_layout_set(app: AppHandle, layout: explorer::Layout) -> Result<explorer::Layout, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    off_thread(move || explorer::layout_set(&dir, layout))
+        .await
+        .unwrap_or_else(|| Err("The layout could not be saved.".into()))
+}
+
+#[tauri::command]
 async fn explorer_thumbnail(path: String, size: u32) -> Result<Option<String>, String> {
     off_thread(move || explorer::thumbnail(path, size))
         .await
@@ -1630,6 +1672,13 @@ async fn explorer_delete(paths: Vec<String>, recycle: bool) -> Result<(), String
     off_thread(move || explorer::delete(paths, recycle))
         .await
         .unwrap_or_else(|| Err("The delete did not finish.".into()))
+}
+
+#[tauri::command]
+async fn explorer_materialize(path: String) -> Result<String, String> {
+    off_thread(move || explorer::materialize(path))
+        .await
+        .unwrap_or_else(|| Err("The file could not be unpacked.".into()))
 }
 
 #[tauri::command]
@@ -2337,13 +2386,34 @@ fn path_ping_cancel() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // An elevated WinT started to be one administrator terminal. It must not
+    // register as the single instance: it would hand its arguments to the
+    // WinT already running - unelevated - and exit, which is the one thing it
+    // exists not to do. See `term::admin_request`.
+    let admin = term::admin_request(&std::env::args().collect::<Vec<_>>());
+    let is_admin = admin.is_some();
+    // A debug build is a console program (see main.rs), and started through
+    // `runas` it has no `npm run dev` console to share, so Windows gives it an
+    // empty one of its own. The terminal is the window; that console is
+    // nothing, so it is let go. A release build never had one.
+    #[cfg(windows)]
+    if is_admin {
+        unsafe {
+            let _ = windows::Win32::System::Console::FreeConsole();
+        }
+    }
     let builder = tauri::Builder::default()
         .manage(PendingTool::default())
         .manage(SearchGlobalShortcut::default())
-        .manage(ClipboardGlobalShortcut::default())
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        .manage(ClipboardGlobalShortcut::default());
+    let builder = if admin.is_some() {
+        builder
+    } else {
+        builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             deliver_tool_arg(app, &args);
         }))
+    };
+    let builder = builder
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -2369,9 +2439,21 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .setup(move |app| {
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+            // One terminal and nothing else: no main window, no tray, no
+            // clipboard watcher, no `wt` queue. Closing the terminal ends this
+            // process, so one prompt buys exactly one window and no elevated
+            // WinT lingers out of sight.
+            if let Some(request) = &admin {
+                if let Some(main) = app.get_webview_window("main") {
+                    let _ = main.destroy();
+                }
+                term::open_admin_window(app.handle(), request)?;
+                return Ok(());
+            }
 
             let args: Vec<String> = std::env::args().collect();
             start_wt_request_queue(app.handle().clone());
@@ -2457,8 +2539,13 @@ pub fn run() {
             explorer_list,
             explorer_bookmarks,
             explorer_bookmarks_set,
+            explorer_last_path,
+            explorer_last_path_set,
+            explorer_layout,
+            explorer_layout_set,
             explorer_thumbnail,
             explorer_delete,
+            explorer_materialize,
             disk_space_drives,
             disk_space_scan,
             disk_space_scan_start,
@@ -2546,6 +2633,7 @@ pub fn run() {
             term::term_close,
             term::term_list,
             term::term_popout,
+            term::term_open_admin,
             term::term_drag_preview,
             term::term_dock,
             tool_window::tool_popout,
@@ -2612,10 +2700,23 @@ pub fn run() {
             github::github_status,
             github::github_api
         ])
-        .on_window_event(|window, event| {
+        .on_window_event(move |window, event| {
+            if !matches!(event, tauri::WindowEvent::Destroyed) {
+                return;
+            }
+            // An administrator terminal is the whole app, so it closing is the
+            // app closing - the elevated process must not outlive its window.
+            // Its `main` was destroyed on purpose at startup and says nothing.
+            if is_admin {
+                if window.label() == "term-admin" {
+                    term::shutdown();
+                    window.app_handle().exit(0);
+                }
+                return;
+            }
             // The main window going away means the app is going away, so every
             // shell goes with it — a popped-out terminal must never outlive it.
-            if matches!(event, tauri::WindowEvent::Destroyed) && window.label() == "main" {
+            if window.label() == "main" {
                 // Destroy bypasses each pop-out's close-to-dock handler; there
                 // is no main window left to receive that handoff.
                 for (label, child) in window.app_handle().webview_windows() {
@@ -2665,8 +2766,13 @@ pub fn run() {
         explorer_list,
         explorer_bookmarks,
         explorer_bookmarks_set,
+        explorer_last_path,
+        explorer_last_path_set,
+        explorer_layout,
+        explorer_layout_set,
         explorer_thumbnail,
         explorer_delete,
+        explorer_materialize,
         disk_space_drives,
         disk_space_scan,
         disk_space_scan_start,

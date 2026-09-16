@@ -28,7 +28,11 @@ for (const kind of KINDS) {
   for (const ext of kind.ext.split(" ").filter(Boolean)) KIND_OF.set(ext, kind.id);
 }
 const kindById = (id) => KINDS.find((kind) => kind.id === id) || KINDS[KINDS.length - 1];
-const kindOf = (entry) => (entry.isDir ? "folder" : KIND_OF.get(entry.ext) || "other");
+const kindOf = (entry) => {
+  if (entry.isArchive) return "archive";
+  if (entry.isDir) return "folder";
+  return KIND_OF.get(entry.ext) || "other";
+};
 
 const COLUMNS = [
   { id: "name", label: "Name" },
@@ -55,14 +59,27 @@ const fx = {
   filter: "", kinds: new Set(), exts: new Set(),
   sort: "name", desc: false, showHidden: false, typesOpen: false,
   thumbsOn: false, previewPane: false,
+  /** Fixed widths for the tree and the preview. The browse list fills what is
+   *  left. Remembered across windows the same way bookmarks are. */
+  sideWidth: 268, previewWidth: 320,
   /** The row the preview pane is showing. Only files are ever selected: a
    *  folder click opens it, which is the whole point of the list. */
   selected: "", previewUrl: "", previewLoading: false,
+  /** After Back/Up, the child folder you came from - selected and scrolled into
+   *  view once the list has painted, so a resized window still lands correctly. */
+  pendingFocus: "",
   /** path -> data URL, or "" for a file Windows has no thumbnail for. Kept
    *  across re-sorts and re-filters so turning preview off and on again does
    *  not ask Windows for the same pictures a second time. */
   thumbs: new Map(),
 };
+
+const SIDE_MIN = 64;
+const SIDE_MAX = 1200;
+const PREVIEW_MIN = 64;
+const PREVIEW_MAX = 1200;
+const MAIN_MIN = 96;
+const SPLIT_W = 5;
 
 /** Which kinds get a picture. Windows will thumbnail far more than this, but a
  *  preview row is for seeing which photo is which - a generic first-page
@@ -105,7 +122,49 @@ const when = (ms) => {
   const day = date.toLocaleDateString([], { day: "2-digit", month: "short", ...(sameYear ? {} : { year: "numeric" }) });
   return `${day} ${time}`;
 };
-const typeLabel = (entry) => (entry.isDir ? "Folder" : entry.ext ? `${entry.ext.toUpperCase()} file` : "File");
+const typeLabel = (entry) => {
+  if (entry.isArchive) return "Zip archive";
+  if (entry.isDir) return "Folder";
+  return entry.ext ? `${entry.ext.toUpperCase()} file` : "File";
+};
+
+/** `C:\pack.zip\docs` → archive + path inside it. A zip is the longest
+ *  `*.zip` prefix; everything after is virtual. */
+function splitZipPath(path) {
+  const normalized = String(path || "").replace(/\//g, "\\");
+  const lower = normalized.toLowerCase();
+  let from = 0;
+  while (from < lower.length) {
+    const idx = lower.indexOf(".zip", from);
+    if (idx < 0) return null;
+    const end = idx + 4;
+    if (end === lower.length || lower[end] === "\\") {
+      const archive = normalized.slice(0, end);
+      const inner = normalized.slice(end).replace(/^\\+/, "");
+      if (inner.split("\\").includes("..")) return null;
+      return { archive, inner };
+    }
+    from = idx + 1;
+  }
+  return null;
+}
+
+function isZipRoot(path) {
+  const parts = splitZipPath(path);
+  return !!parts && !parts.inner;
+}
+
+function isInsideZip(path) {
+  const parts = splitZipPath(path);
+  return !!parts && !!parts.inner;
+}
+
+/** Reveal target for Windows Explorer: the archive file when the path is
+ *  virtual, otherwise the path itself. */
+function revealPath(path) {
+  const parts = splitZipPath(path);
+  return parts ? parts.archive : path;
+}
 
 /** The path split into the pieces the breadcrumb can navigate to. Every piece
  *  is a real path, so clicking one is the same action as clicking a folder. */
@@ -141,15 +200,20 @@ async function loadRoots() {
  *  folder now on screen. */
 let listToken = 0;
 
-async function openFolder(path, { push = true, keepFilter = false } = {}) {
+async function openFolder(path, { push = true, keepFilter = false, focusPath = null } = {}) {
   if (path == null) return;
   if (push && fx.path !== path && !same(fx.path, path)) { fx.history.push(fx.path); fx.forward = []; }
   const token = ++listToken;
+  const leaving = fx.path;
   fx.path = path; fx.loading = false; fx.error = "";
   // A filter belongs to the folder it was typed in. Carrying "png" into the
   // next folder would show an empty folder that is not empty.
   if (!keepFilter) { fx.filter = ""; fx.kinds.clear(); fx.exts.clear(); fx.typesOpen = false; }
-  if (!same(fx.path, path)) { fx.selected = ""; fx.previewUrl = ""; previewToken += 1; }
+  if (!same(leaving, path)) { fx.selected = ""; fx.previewUrl = ""; previewToken += 1; }
+  // Back / Up hand a focusPath: the child you came from. After the list paints,
+  // that row is selected and scrolled into view - a pixel scroll would be wrong
+  // if the window was resized while you were away.
+  fx.pendingFocus = focusPath || "";
   // This PC is drawn from the drive list the tool already holds. There is no
   // folder to read, so it must not go through a listing that would blank the
   // pane and start work the status bar would then have to end.
@@ -158,6 +222,7 @@ async function openFolder(path, { push = true, keepFilter = false } = {}) {
     fx.open.add(THIS_PC);
     dirty();
     saveTransfer();
+    rememberLastPath(THIS_PC);
     return;
   }
   fx.loading = true;
@@ -169,6 +234,7 @@ async function openFolder(path, { push = true, keepFilter = false } = {}) {
     fx.listing = listing;
     fx.tree.set(listing.path, { entries: listing.entries.filter((entry) => entry.isDir), error: "", loading: false });
     fx.path = listing.path;
+    rememberLastPath(listing.path);
   } catch (error) {
     if (token !== listToken) return;
     fx.listing = null;
@@ -221,8 +287,9 @@ function toggleBranch(path) {
 
 function goBack() {
   if (!fx.history.length) return;
-  fx.forward.push(fx.path);
-  openFolder(fx.history.pop(), { push: false });
+  const child = fx.path;
+  fx.forward.push(child);
+  openFolder(fx.history.pop(), { push: false, focusPath: child });
 }
 
 function goForward() {
@@ -233,7 +300,8 @@ function goForward() {
 
 function goUp() {
   if (fx.path === THIS_PC) return;
-  openFolder(fx.listing?.parent ?? THIS_PC);
+  const child = fx.path;
+  openFolder(fx.listing?.parent ?? THIS_PC, { focusPath: child });
 }
 
 function refresh() {
@@ -295,6 +363,55 @@ async function loadBookmarks() {
   dirty();
 }
 
+/** Where Files left off. Lives next to the bookmarks file for the same reason:
+ *  every window has its own browser storage, so only Rust can hand the folder
+ *  back to the next open - or to a second pop-out that starts fresh. */
+let lastPathTimer = 0;
+function rememberLastPath(path) {
+  clearTimeout(lastPathTimer);
+  lastPathTimer = setTimeout(() => {
+    invoke("explorer_last_path_set", { path: path || THIS_PC }).catch(() => {});
+  }, 200);
+}
+
+async function restoreLastPath() {
+  if (fx.path !== THIS_PC) return;
+  let saved = null;
+  try { saved = await invoke("explorer_last_path"); }
+  catch (_) { return; }
+  if (saved == null || same(saved, THIS_PC)) return;
+  await openFolder(saved, { push: false });
+}
+
+function clampSide(width) {
+  return Math.max(SIDE_MIN, Math.min(SIDE_MAX, Math.round(width)));
+}
+function clampPreview(width) {
+  return Math.max(PREVIEW_MIN, Math.min(PREVIEW_MAX, Math.round(width)));
+}
+
+function applyLayout() {
+  const body = fx.host?.querySelector(".fx-body");
+  if (!body) return;
+  body.style.setProperty("--fx-side", `${fx.sideWidth}px`);
+  body.style.setProperty("--fx-preview", `${fx.previewWidth}px`);
+}
+
+function rememberLayout() {
+  invoke("explorer_layout_set", {
+    layout: { sideWidth: fx.sideWidth, previewWidth: fx.previewWidth },
+  }).catch(() => {});
+}
+
+async function loadLayout() {
+  try {
+    const layout = await invoke("explorer_layout");
+    if (layout?.sideWidth) fx.sideWidth = clampSide(layout.sideWidth);
+    if (layout?.previewWidth) fx.previewWidth = clampPreview(layout.previewWidth);
+  } catch (_) { /* Defaults already sit on fx. */ }
+  applyLayout();
+}
+
 /** Bookmarks live in a file the Rust side owns. Browser storage would not do:
  *  the embedded tool, each pop-out and the main window are separate WebView2
  *  environments, so a list kept there would be a different list in each. */
@@ -312,7 +429,7 @@ async function setBookmarks(paths) {
 }
 
 function toggleBookmark(path) {
-  if (!path || path === THIS_PC) return;
+  if (!path || path === THIS_PC || isInsideZip(path)) return;
   const has = fx.bookmarks.some((mark) => same(mark, path));
   setBookmarks(has ? fx.bookmarks.filter((mark) => !same(mark, path)) : [...fx.bookmarks, path]);
 }
@@ -369,10 +486,15 @@ function paintThumb(path, url) {
 async function askDelete(paths) {
   const targets = paths.filter(Boolean);
   if (!targets.length) return;
+  if (targets.some((path) => isInsideZip(path))) {
+    window.wintWork?.beginWork("explorer-delete", "Files inside a zip cannot be deleted here");
+    setTimeout(() => window.wintWork?.endWork("explorer-delete"), 4000);
+    return;
+  }
   const what = targets.length === 1
     ? segments(targets[0]).slice(-1)[0]?.name || targets[0]
     : `${targets.length} items`;
-  const folders = targets.filter((path) => (fx.listing?.entries || []).some((entry) => same(entry.path, path) && entry.isDir));
+  const folders = targets.filter((path) => (fx.listing?.entries || []).some((entry) => same(entry.path, path) && entry.isDir && !entry.isArchive));
   const answer = await (window.wintConfirm
     ? window.wintConfirm({
         title: `Delete ${what}?`,
@@ -412,8 +534,15 @@ function select(path) {
   if (fx.selected === path) return;
   fx.selected = path;
   fx.previewUrl = "";
-  dirty();
-  loadPreview();
+  // Selection and preview update in place. A full render would rebuild the
+  // list and jump the scroll back to the top - painful in a long zip.
+  paintSelection();
+  if (fx.previewPane) {
+    const entry = (fx.listing?.entries || []).find((item) => same(item.path, path));
+    fx.previewLoading = !!(entry && !entry.isDir && PREVIEW_KINDS.has(kindOf(entry)));
+    paintPreview();
+    loadPreview();
+  }
 }
 
 let previewToken = 0;
@@ -425,14 +554,45 @@ async function loadPreview() {
   if (!entry || entry.isDir || !PREVIEW_KINDS.has(kindOf(entry))) return;
   const token = ++previewToken;
   fx.previewLoading = true;
-  dirty();
+  paintPreview();
   let url = "";
   try { url = (await invoke("explorer_thumbnail", { path, size: PREVIEW_PX })) || ""; }
   catch (_) { url = ""; }
   if (token !== previewToken) return;
   fx.previewUrl = url;
   fx.previewLoading = false;
-  dirty();
+  paintPreview();
+}
+
+function paintSelection() {
+  if (!fx.host) return;
+  for (const row of fx.host.querySelectorAll(".fx-row[data-fx-item]")) {
+    row.classList.toggle("picked", same(row.dataset.fxItem, fx.selected));
+  }
+}
+
+/** Select a row by path and scroll it into view. Used when Back/Up returns to
+ *  a folder: the child you had opened is the anchor, not a pixel offset. */
+function applyPendingFocus() {
+  if (!fx.pendingFocus || !fx.host || fx.loading) return;
+  const path = fx.pendingFocus;
+  const row = [...fx.host.querySelectorAll(".fx-row[data-fx-item]")]
+    .find((el) => same(el.dataset.fxItem, path));
+  fx.pendingFocus = "";
+  if (!row) return;
+  fx.selected = path;
+  paintSelection();
+  row.scrollIntoView({ block: "nearest" });
+}
+
+function paintPreview() {
+  if (!fx.host || !fx.previewPane) return;
+  const pane = fx.host.querySelector(".fx-preview");
+  if (!pane) {
+    dirty();
+    return;
+  }
+  pane.outerHTML = renderPreviewPane();
 }
 
 function togglePreviewPane() {
@@ -454,7 +614,7 @@ function renderPreviewPane() {
       ? `<img class="fx-preview-image" src="${fx.previewUrl}" alt="${esc(entry.name)}">`
       : fx.previewLoading
         ? `<div class="fx-preview-empty loading">${icon("progress_activity")}<p>Reading the picture…</p></div>`
-        : `<div class="fx-preview-empty">${icon("broken_image")}<p>Windows has no preview for this file.</p></div>`;
+        : `<div class="fx-preview-empty">${icon("broken_image")}<p>Could not make a preview of this file.</p></div>`;
   return `<aside class="fx-preview" aria-label="Preview">
     <div class="fx-preview-stage">${body}</div>
     <footer class="fx-preview-meta">
@@ -519,9 +679,12 @@ function branchRows(path, depth) {
 function nodeRow(entry, depth) {
   const open = fx.open.has(entry.path);
   const here = same(fx.path, entry.path);
+  const glyph = entry.isArchive
+    ? "folder_zip"
+    : open || here ? "folder_open" : "folder";
   return `<div class="fx-node${here ? " on" : ""}${entry.hidden ? " dim" : ""}" style="--depth:${depth}">
     <button class="fx-twist${entry.hasChildren ? "" : " leaf"}" type="button" data-fx-twist="${esc(entry.path)}" aria-expanded="${open}" aria-label="${open ? "Collapse" : "Expand"} ${esc(entry.name)}" tabindex="-1">${entry.hasChildren ? icon(open ? "expand_more" : "chevron_right") : ""}</button>
-    <button class="fx-node-btn" type="button" data-fx-open="${esc(entry.path)}" title="${esc(entry.path)}">${icon(open || here ? "folder_open" : "folder")}<span>${esc(entry.name)}</span></button>
+    <button class="fx-node-btn" type="button" data-fx-open="${esc(entry.path)}" title="${esc(entry.path)}">${icon(glyph)}<span>${esc(entry.name)}</span></button>
   </div>${branchRows(entry.path, depth + 1)}`;
 }
 
@@ -563,7 +726,7 @@ function renderBookmarks() {
       <button class="fx-unpin" type="button" data-fx-unbookmark="${esc(path)}" title="Remove ${esc(name)} from bookmarks" aria-label="Remove ${esc(name)} from bookmarks">${icon("close")}</button>
     </div>`;
   }).join("");
-  const canAdd = fx.path !== THIS_PC && fx.path && !fx.bookmarks.some((path) => same(path, fx.path));
+  const canAdd = fx.path !== THIS_PC && fx.path && !isInsideZip(fx.path) && !fx.bookmarks.some((path) => same(path, fx.path));
   return `<div class="fx-marks">
     <div class="fx-tree-label">Bookmarks<button class="fx-mark-add" type="button" data-fx-bookmark title="Bookmark this folder" ${canAdd ? "" : "disabled"}>${icon("add")}</button></div>
     ${rows || `<p class="fx-marks-none">Open a folder and press + to keep it here.</p>`}
@@ -619,7 +782,7 @@ function renderRows(shown) {
     return Array.from({ length: 10 }, (_, index) => `<div class="fx-row skeleton" style="--i:${index}"><span class="fx-cell name"><i></i></span><span class="fx-cell type"><i></i></span><span class="fx-cell size"><i></i></span><span class="fx-cell modified"><i></i></span></div>`).join("");
   }
   if (fx.error) {
-    return `<div class="fx-empty">${icon("lock")}<strong>${esc(fx.error)}</strong><p>Pick another folder on the left, or hand this one to Windows Explorer.</p><button class="btn" type="button" data-fx-reveal="${esc(fx.path)}">${icon("folder_open")}Open in Windows Explorer</button></div>`;
+    return `<div class="fx-empty">${icon("lock")}<strong>${esc(fx.error)}</strong><p>Pick another folder on the left, or hand this one to Windows Explorer.</p><button class="btn" type="button" data-fx-reveal="${esc(revealPath(fx.path))}">${icon("folder_open")}Open in Windows Explorer</button></div>`;
   }
   if (!fx.path) {
     return `<div class="fx-empty">${icon("folder_open")}<strong>Pick a folder on the left</strong><p>Files shows one folder at a time, with a filter that already knows every type it holds.</p></div>`;
@@ -633,12 +796,14 @@ function renderRows(shown) {
     const thumb = fx.thumbs.get(entry.path);
     const slot = fx.thumbsOn && !entry.isDir && PREVIEW_KINDS.has(kind)
       ? `<span class="fx-thumb${thumb ? " has-image" : ""}"${thumb ? ` style="background-image:url('${thumb}')"` : ""}>${thumb ? "" : icon(kindById(kind).icon)}</span>`
-      : icon(entry.isDir ? "folder" : kindById(kind).icon);
-    return `<div class="fx-row${entry.isDir ? " dir" : ""}${entry.hidden ? " dim" : ""}${same(fx.selected, entry.path) ? " picked" : ""}" tabindex="0" role="row" data-fx-item="${esc(entry.path)}" data-fx-dir="${entry.isDir}" title="${esc(entry.path)}">
-    <span class="fx-cell name">${slot}<strong>${esc(entry.name)}</strong>${entry.readonly ? `<em class="fx-tag" title="Read-only">${icon("lock")}</em>` : ""}</span>
+      : icon(entry.isArchive ? "folder_zip" : entry.isDir ? "folder" : kindById(kind).icon);
+    const canDelete = !isInsideZip(fx.path);
+    return `<div class="fx-row${entry.isDir ? " dir" : ""}${entry.hidden ? " dim" : ""}${same(fx.selected, entry.path) ? " picked" : ""}${canDelete ? " has-del" : ""}" tabindex="0" role="row" data-fx-item="${esc(entry.path)}" data-fx-dir="${entry.isDir}" title="${esc(entry.path)}">
+    <span class="fx-cell name">${slot}<strong>${esc(entry.name)}</strong></span>
     <span class="fx-cell type">${esc(typeLabel(entry))}</span>
-    <span class="fx-cell size">${entry.isDir ? "" : bytes(entry.bytes)}</span>
+    <span class="fx-cell size">${entry.isDir && !entry.isArchive ? "" : bytes(entry.bytes)}</span>
     <span class="fx-cell modified">${esc(when(entry.modified))}</span>
+    ${canDelete ? `<button class="fx-row-del" type="button" data-fx-delete="${esc(entry.path)}" title="Delete ${esc(entry.name)}" aria-label="Delete ${esc(entry.name)}">${icon("delete")}</button>` : ""}
   </div>`;
   }).join("");
 }
@@ -648,6 +813,10 @@ function render() {
   const live = fx.host.querySelector(".fx-search input");
   const typing = live === document.activeElement;
   const caret = typing ? live.selectionStart ?? fx.filter.length : 0;
+  // Keep the list and tree where the user left them across a rebuild.
+  const rowsScroll = fx.host.querySelector(".fx-rows")?.scrollTop ?? 0;
+  const treeScroll = fx.host.querySelector(".fx-tree")?.scrollTop ?? 0;
+  const marksScroll = fx.host.querySelector(".fx-marks")?.scrollTop ?? 0;
   const { named, shown, total } = visible();
   const counts = facets(named);
   const crumbs = [{ name: "This PC", path: THIS_PC_KEY }, ...segments(fx.path)]
@@ -660,12 +829,14 @@ function render() {
       <div class="fx-tree" aria-label="Folders">${renderTree()}</div>
       ${renderBookmarks()}
     </aside>
+    <div class="fx-split" data-fx-split="side" role="separator" aria-orientation="vertical" aria-label="Resize the folder tree" title="Drag to resize the folder tree"></div>
     <section class="fx-main">
       <div class="fx-bar">
         <button class="fx-nav" type="button" data-fx-back title="Back" aria-label="Back" ${fx.history.length ? "" : "disabled"}>${icon("arrow_back")}</button>
         <button class="fx-nav" type="button" data-fx-forward title="Forward" aria-label="Forward" ${fx.forward.length ? "" : "disabled"}>${icon("arrow_forward")}</button>
         <button class="fx-nav" type="button" data-fx-up title="Up one folder" aria-label="Up one folder" ${fx.path === THIS_PC ? "disabled" : ""}>${icon("arrow_upward")}</button>
         <button class="fx-nav" type="button" data-fx-refresh title="${fx.path === THIS_PC ? "Read the drives again" : "Read this folder again"}" aria-label="Refresh">${icon("refresh")}</button>
+        <button class="fx-nav" type="button" data-fx-new-window title="Open this folder in a new window" aria-label="New window">${icon("tab_duplicate")}</button>
         <nav class="fx-crumbs" aria-label="Path">${crumbs || `<span class="fx-crumb-none">No folder open</span>`}</nav>
         <label class="fx-search">${icon("search")}<input type="text" placeholder="Filter by name" aria-label="Filter by name"></label>
         <button class="fx-nav${fx.thumbsOn ? " on" : ""}" type="button" data-fx-thumbs aria-pressed="${fx.thumbsOn}" title="${fx.thumbsOn ? "Back to plain rows" : "Show a picture on every image row"}" aria-label="Thumbnails">${icon("photo_library")}</button>
@@ -687,11 +858,12 @@ function render() {
           : fx.loading ? `${icon("progress_activity")}Reading this folder…`
           : `${shown.length}${shown.length === total ? "" : ` of ${total}`} item${shown.length === 1 ? "" : "s"}`}</span>
         ${fx.listing?.skipped ? `<span title="Windows would not report these">${icon("warning")}${fx.listing.skipped} could not be read</span>` : ""}
-        <span class="fx-foot-hint">${icon("mouse")}Double-click to open · right-click for more</span>
+        <span class="fx-foot-hint">${icon("mouse")}${isInsideZip(fx.path) ? "Inside a zip · read-only" : "Double-click to open · right-click for more"}</span>
       </footer>
     </section>
-    ${fx.previewPane ? renderPreviewPane() : ""}
+    ${fx.previewPane ? `<div class="fx-split" data-fx-split="preview" role="separator" aria-orientation="vertical" aria-label="Resize the preview" title="Drag to resize the preview"></div>${renderPreviewPane()}` : ""}
   </div>`;
+  applyLayout();
   const pin = fx.host.querySelector('.tool-pin[data-pin-tool="explorer"]');
   const pop = fx.host.querySelector('.tool-popout[data-popout-tool="explorer"]');
   if (pin) {
@@ -701,9 +873,11 @@ function render() {
     pin.innerHTML = `${icon("push_pin")}${on ? "Pinned" : "Pin to dock"}`;
   }
   if (pop) {
-    const out = !!window.wintShell?.isToolPopped?.("explorer");
-    pop.classList.toggle("on", out);
-    pop.innerHTML = `${icon("open_in_new")}${out ? "Show window" : "Pop out"}`;
+    // Files may have several windows open at once. Pop out always means a new
+    // one - never "show the one you already have".
+    pop.classList.remove("on");
+    pop.innerHTML = `${icon("open_in_new")}Pop out`;
+    pop.title = "Open Files in a new window";
   }
   // The whole toolbar is rebuilt on every paint, so the name filter's value,
   // focus and caret have to be put back or typing into it would lose a letter
@@ -713,15 +887,88 @@ function render() {
     search.value = fx.filter;
     if (typing) { search.focus(); search.setSelectionRange(caret, caret); }
   }
+  const rows = fx.host.querySelector(".fx-rows");
+  if (rows) rows.scrollTop = rowsScroll;
+  const tree = fx.host.querySelector(".fx-tree");
+  if (tree) tree.scrollTop = treeScroll;
+  const marks = fx.host.querySelector(".fx-marks");
+  if (marks) marks.scrollTop = marksScroll;
+  applyPendingFocus();
 }
 
 // ----------------------------------------------------------------- wiring
 
 function activate(path, isDir) {
-  if (isDir) openFolder(path);
-  // `explorer <file>` is what a double-click in Windows does: it hands the
-  // file to whatever program owns its type, without this app deciding.
-  else invoke("open_in", { path, target: "explorer" }).catch(() => {});
+  if (isDir) {
+    openFolder(path);
+    return;
+  }
+  // Files inside a zip are unpacked to a temp path first - Windows cannot
+  // open a member of an archive by path alone.
+  const open = async () => {
+    let real = path;
+    if (isInsideZip(path)) {
+      window.wintWork?.beginWork("explorer-open", `Unpacking ${segments(path).slice(-1)[0]?.name || path}`);
+      try { real = await invoke("explorer_materialize", { path }); }
+      catch (error) {
+        fx.error = String(error);
+        dirty();
+        return;
+      } finally {
+        window.wintWork?.endWork("explorer-open");
+      }
+    }
+    invoke("open_in", { path: real, target: "explorer" }).catch(() => {});
+  };
+  void open();
+}
+
+function mintInstance() {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** Open another Files window at this folder. Keeps the current window where
+ *  it is - Pop out moves; this duplicates. */
+async function openInNewWindow(folderPath) {
+  const path = folderPath == null ? fx.path : folderPath;
+  if (window.wintShell?.openExplorerWindow && !window.wintExternalToolChrome) {
+    return window.wintShell.openExplorerWindow(path);
+  }
+  const instance = mintInstance();
+  const seed = {
+    ...(exportState() || {}),
+    path: path || "",
+    listing: null,
+    error: "",
+    history: [],
+    forward: [],
+    filter: "",
+    kinds: [],
+    exts: [],
+    typesOpen: false,
+  };
+  const key = `explorer-window:${instance}`;
+  window.wintWork?.beginWork(key, "Opening Files in a new window");
+  try {
+    await invoke("tool_bridge_state_put", { id: `explorer:${instance}`, state: seed });
+    await invoke("tool_popout", {
+      id: "explorer",
+      title: "Files",
+      theme: document.documentElement.dataset.theme === "light" ? "light" : "dark",
+      x: null,
+      y: null,
+      instance,
+    });
+    await window.__TAURI__.event.emit("tool:spawned", { id: "explorer", instance }).catch(() => {});
+  } catch (error) {
+    window.wintWork?.beginWork("explorer-window-fail", "Could not open another Files window", String(error));
+    setTimeout(() => window.wintWork?.endWork("explorer-window-fail"), 4000);
+  } finally {
+    window.wintWork?.endWork(key);
+  }
 }
 
 function closeContext() { document.querySelector(".fx-context")?.remove(); }
@@ -754,12 +1001,18 @@ function mount(host) {
     if (event.target.closest("[data-fx-forward]")) return goForward();
     if (event.target.closest("[data-fx-up]")) return goUp();
     if (event.target.closest("[data-fx-refresh]")) return refresh();
+    if (event.target.closest("[data-fx-new-window]")) return void openInNewWindow(fx.path);
     if (event.target.closest("[data-fx-clear-ext]")) { fx.exts.clear(); return dirty(); }
     if (event.target.closest("[data-fx-clear]")) return clearFilters();
     if (event.target.closest("[data-fx-types]")) { fx.typesOpen = !fx.typesOpen; return dirty(); }
     if (event.target.closest("[data-fx-hidden]")) { fx.showHidden = !fx.showHidden; return dirty(); }
     if (event.target.closest("[data-fx-thumbs]")) return toggleThumbs();
     if (event.target.closest("[data-fx-preview]")) return togglePreviewPane();
+    const del = event.target.closest("[data-fx-delete]");
+    if (del) {
+      event.preventDefault();
+      return askDelete([del.dataset.fxDelete]);
+    }
     // One click opens a folder - that is the whole job of this tool. Files
     // wait for the second click, because opening a program by accident is a
     // worse mistake than an extra click.
@@ -770,6 +1023,7 @@ function mount(host) {
     }
   });
   host.addEventListener("dblclick", (event) => {
+    if (event.target.closest("[data-fx-delete]")) return;
     const row = event.target.closest("[data-fx-item]");
     if (row) activate(row.dataset.fxItem, row.dataset.fxDir === "true");
   });
@@ -795,6 +1049,50 @@ function mount(host) {
     fx.filter = event.target.value;
     dirty();
   });
+  // Drag the splitters. Widths are applied as CSS variables so the list can
+  // reflow without a full re-render fighting the pointer.
+  host.addEventListener("pointerdown", (event) => {
+    const grip = event.target.closest("[data-fx-split]");
+    if (!grip || event.button !== 0) return;
+    const body = host.querySelector(".fx-body");
+    if (!body) return;
+    event.preventDefault();
+    const which = grip.dataset.fxSplit;
+    const startX = event.clientX;
+    const startSide = fx.sideWidth;
+    const startPreview = fx.previewWidth;
+    const rect = body.getBoundingClientRect();
+    grip.classList.add("active");
+    body.classList.add("resizing");
+    const previousCursor = document.body.style.cursor;
+    const previousSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    const onMove = (move) => {
+      const previewExtra = fx.previewPane ? fx.previewWidth + SPLIT_W : 0;
+      if (which === "side") {
+        const max = Math.max(SIDE_MIN, Math.floor(rect.width - previewExtra - SPLIT_W - MAIN_MIN));
+        fx.sideWidth = clampSide(Math.min(max, startSide + (move.clientX - startX)));
+      } else {
+        const max = Math.max(PREVIEW_MIN, Math.floor(rect.width - fx.sideWidth - SPLIT_W - (fx.previewPane ? SPLIT_W : 0) - MAIN_MIN));
+        fx.previewWidth = clampPreview(Math.min(max, startPreview - (move.clientX - startX)));
+      }
+      applyLayout();
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      grip.classList.remove("active");
+      body.classList.remove("resizing");
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousSelect;
+      rememberLayout();
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  });
   // The mouse's fourth and fifth buttons are Back and Forward everywhere else
   // in Windows, and in a file browser they mean the previous folder. The
   // webview would otherwise try to walk its own page history, which in a
@@ -816,24 +1114,34 @@ function mount(host) {
     const path = asPath(target.dataset.fxItem || target.dataset.fxOpen);
     if (path === THIS_PC) return;
     const isDir = target.dataset.fxDir !== "false";
+    const nested = isInsideZip(path);
     const marked = fx.bookmarks.some((mark) => same(mark, path));
     closeContext();
     const menu = document.createElement("div");
     menu.className = "fx-context";
     menu.style.left = `${event.clientX}px`;
     menu.style.top = `${event.clientY}px`;
+    // Inside a zip the archive is read-only: no delete, no shell, no bookmark.
+    // Reveal always points at a real path Windows can show.
     menu.innerHTML = `<button type="button" data-do="open">${icon(isDir ? "folder_open" : "open_in_new")}${isDir ? "Open folder" : "Open file"}</button>
-      <button type="button" data-do="reveal">${icon("frame_inspect")}Show in Windows Explorer</button>
-      <button type="button" data-do="terminal">${icon("terminal")}Open a shell here</button>
+      ${isDir ? `<button type="button" data-do="new-window">${icon("tab_duplicate")}Open in new window</button>` : ""}
+      <button type="button" data-do="reveal">${icon("frame_inspect")}${nested ? "Show archive in Windows Explorer" : "Show in Windows Explorer"}</button>
+      ${nested ? "" : `<button type="button" data-do="terminal">${icon("terminal")}Open a shell here</button>`}
       <button type="button" data-do="copy">${icon("content_copy")}Copy path</button>
-      ${isDir ? `<button type="button" data-do="bookmark">${icon(marked ? "bookmark_remove" : "bookmark_add")}${marked ? "Remove from bookmarks" : "Add to bookmarks"}</button>` : ""}
-      <button type="button" class="danger" data-do="delete">${icon("delete")}Delete…</button>`;
+      ${isDir && !nested ? `<button type="button" data-do="bookmark">${icon(marked ? "bookmark_remove" : "bookmark_add")}${marked ? "Remove from bookmarks" : "Add to bookmarks"}</button>` : ""}
+      ${nested ? "" : `<button type="button" class="danger" data-do="delete">${icon("delete")}Delete…</button>`}`;
     menu.addEventListener("click", (click) => {
       const action = click.target.closest("[data-do]")?.dataset.do;
       menu.remove();
       if (action === "open") activate(path, isDir);
-      else if (action === "reveal") invoke("open_in", { path, target: "reveal" }).catch(() => {});
-      else if (action === "terminal") invoke("open_in", { path: isDir ? path : fx.path, target: "terminal" }).catch(() => {});
+      else if (action === "new-window") void openInNewWindow(path);
+      else if (action === "reveal") invoke("open_in", { path: revealPath(path), target: "reveal" }).catch(() => {});
+      else if (action === "terminal") {
+        const shellAt = isZipRoot(path)
+          ? path.replace(/\\[^\\]+$/i, "") || path
+          : (isDir ? path : fx.path);
+        invoke("open_in", { path: isInsideZip(shellAt) ? revealPath(shellAt) : shellAt, target: "terminal" }).catch(() => {});
+      }
       else if (action === "copy") navigator.clipboard?.writeText(path).catch(() => {});
       else if (action === "bookmark") toggleBookmark(path);
       else if (action === "delete") askDelete([path]);
@@ -850,10 +1158,14 @@ async function opened() {
   // the bookmarks fill in beside it rather than holding it up.
   const drives = loadRoots();
   loadBookmarks();
+  loadLayout();
   await drives;
   // A folder listed before the tool was handed to another window is stale by
   // definition - files move while a window is closed - so re-read it.
   if (fx.path !== THIS_PC && !fx.loading) openFolder(fx.path, { push: false, keepFilter: true });
+  // A fresh window (no handoff) opens on This PC; put it back where Files was
+  // last, if that folder is still there.
+  else if (fx.path === THIS_PC) await restoreLastPath();
   else dirty();
 }
 
@@ -869,6 +1181,7 @@ function exportState() {
     filter: fx.filter, kinds: [...fx.kinds], exts: [...fx.exts],
     sort: fx.sort, desc: fx.desc, showHidden: fx.showHidden, typesOpen: fx.typesOpen,
     thumbsOn: fx.thumbsOn, previewPane: fx.previewPane,
+    sideWidth: fx.sideWidth, previewWidth: fx.previewWidth,
   };
 }
 
@@ -895,6 +1208,8 @@ function importState(state) {
   fx.typesOpen = !!state.typesOpen;
   fx.thumbsOn = !!state.thumbsOn;
   fx.previewPane = !!state.previewPane;
+  if (state.sideWidth) fx.sideWidth = clampSide(state.sideWidth);
+  if (state.previewWidth) fx.previewWidth = clampPreview(state.previewWidth);
   fx.loading = false;
   if (fx.listing) fx.tree.set(fx.path, { entries: fx.listing.entries.filter((entry) => entry.isDir), error: "", loading: false });
   if (fx.host) render();
@@ -908,5 +1223,5 @@ try {
   }
 } catch (_) { /* An empty explorer is a safe start when storage is unavailable. */ }
 
-window.wintExplorer = { mount, render, opened, preparePopout, exportState, importState };
+window.wintExplorer = { mount, render, opened, preparePopout, exportState, importState, openInNewWindow };
 })();

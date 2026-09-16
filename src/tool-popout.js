@@ -9,6 +9,7 @@
   const win = window.__TAURI__.window.getCurrentWindow();
 
   const id = new URLSearchParams(location.search).get("id");
+  const instance = new URLSearchParams(location.search).get("instance") || null;
   const host = document.getElementById("tool-host");
   const PREFS_KEY = "wint.prefs.v1";
   const ONTOP_KEY = "wint.tools.ontop.v1";
@@ -128,7 +129,7 @@
   const finishClose = async () => {
     if (handedOver || closed) return;
     closed = true;
-    await emit("tool:closed", { id }).catch(() => {});
+    await emit("tool:closed", { id, instance }).catch(() => {});
     await win.destroy().catch(() => {});
   };
 
@@ -136,7 +137,7 @@
     if (handedOver || closed) return;
     await window.wintToolState?.send?.(id);
     handedOver = true;
-    await emit("tool:docked", { id }).catch(() => {});
+    await emit("tool:docked", { id, instance }).catch(() => {});
     await win.destroy().catch(() => {});
   };
 
@@ -286,6 +287,10 @@
       return handOver();
     },
     popOutTool() {},
+    /** Files can open another window from a pop-out without docking back. */
+    openExplorerWindow(path) {
+      return window.wintExplorer?.openInNewWindow?.(path);
+    },
     projects() {
       return [];
     },
@@ -303,7 +308,7 @@
 
   let mounted = false;
   try {
-    await window.wintToolState?.receive?.(id);
+    await window.wintToolState?.receive?.(id, instance);
     if (id === "ports") {
       host.className = "tool-pop-host ports-page tool-pop-ports";
       window.wintPortsTool?.mount(host);
@@ -362,7 +367,7 @@
   }
   // The main shell keeps its current tool covered until this exact point: the
   // pop-out exists, its tool has mounted, and it is safe to release the source.
-  await emit("tool:ready", { id }).catch(() => {});
+  await emit("tool:ready", { id, instance }).catch(() => {});
 
   // Always-on-top, remembered per tool id the way terminals remember per session.
   const readOnTop = () => {

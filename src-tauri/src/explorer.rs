@@ -5,9 +5,14 @@
 //! is exactly what makes a folder listing slow. A listing must come back fast
 //! enough that clicking a tree node feels like the folder was already open.
 use serde::Serialize;
+use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
+use sha2::{Digest, Sha256};
+use zip::ZipArchive;
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +32,9 @@ pub struct Entry {
     pub name: String,
     pub path: String,
     pub is_dir: bool,
+    /// A real `.zip` on disk that opens like a folder. Distinct from a plain
+    /// directory so the type filter can still call it an archive.
+    pub is_archive: bool,
     /// Lower-case extension without the dot. Empty for folders and for files
     /// that have none, which the front end treats as its own "no type" bucket.
     pub ext: String,
@@ -99,7 +107,7 @@ pub fn bookmarks(app_data: &Path) -> Vec<String> {
         Ok(text) => serde_json::from_str::<Vec<String>>(&text)
             .unwrap_or_default()
             .into_iter()
-            .filter(|path| Path::new(path).is_dir())
+            .filter(|path| bookmarkable(path))
             .collect(),
         // No file yet means a first run, not an empty list: Desktop and
         // Downloads are where a file browser is opened for nine times out of
@@ -123,16 +131,101 @@ fn seed() -> Vec<String> {
 /// The tool owns the order, so it writes the whole list back rather than
 /// asking for one to be added or removed.
 pub fn bookmarks_set(app_data: &Path, paths: Vec<String>) -> Result<Vec<String>, String> {
-    let kept: Vec<String> = paths
-        .into_iter()
-        .filter(|path| Path::new(path).is_dir())
-        .collect();
+    let kept: Vec<String> = paths.into_iter().filter(|path| bookmarkable(path)).collect();
     let file = bookmarks_file(app_data).ok_or("There is nowhere to save bookmarks.")?;
     std::fs::write(
         &file,
         serde_json::to_string(&kept).map_err(|error| error.to_string())?,
     )
     .map_err(|error| format!("The bookmarks could not be saved. {error}"))?;
+    Ok(kept)
+}
+
+fn last_path_file(app_data: &Path) -> Option<PathBuf> {
+    std::fs::create_dir_all(app_data).ok()?;
+    Some(app_data.join("explorer-last-path.json"))
+}
+
+/// The folder Files last had open. Same reason as bookmarks: one file in
+/// app data, shared by every Files window, so the next open lands where the
+/// last one left off - not on This PC every time.
+pub fn last_path(app_data: &Path) -> Option<String> {
+    let file = last_path_file(app_data)?;
+    let text = std::fs::read_to_string(file).ok()?;
+    let path = serde_json::from_str::<String>(&text).ok()?;
+    // An empty string means This PC, which is a real place to reopen on.
+    if path.is_empty() {
+        return Some(path);
+    }
+    browsable(&path).then_some(path)
+}
+
+pub fn last_path_set(app_data: &Path, path: String) -> Result<(), String> {
+    if !path.is_empty() && !browsable(&path) {
+        return Err("That folder is no longer there.".into());
+    }
+    let file = last_path_file(app_data).ok_or("There is nowhere to save the last folder.")?;
+    std::fs::write(
+        &file,
+        serde_json::to_string(&path).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("The last folder could not be saved. {error}"))?;
+    Ok(())
+}
+
+#[derive(Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Layout {
+    pub side_width: u32,
+    pub preview_width: u32,
+}
+
+const SIDE_DEFAULT: u32 = 268;
+const PREVIEW_DEFAULT: u32 = 320;
+const SIDE_MIN: u32 = 64;
+const SIDE_MAX: u32 = 1200;
+const PREVIEW_MIN: u32 = 64;
+const PREVIEW_MAX: u32 = 1200;
+
+fn layout_file(app_data: &Path) -> Option<PathBuf> {
+    std::fs::create_dir_all(app_data).ok()?;
+    Some(app_data.join("explorer-layout.json"))
+}
+
+fn clamp_layout(layout: Layout) -> Layout {
+    Layout {
+        side_width: layout.side_width.clamp(SIDE_MIN, SIDE_MAX),
+        preview_width: layout.preview_width.clamp(PREVIEW_MIN, PREVIEW_MAX),
+    }
+}
+
+/// How wide the folder tree and the preview pane are. The browse list takes
+/// whatever is left. Kept in app data so every Files window agrees, the way
+/// bookmarks and the last folder do.
+pub fn layout(app_data: &Path) -> Layout {
+    let defaults = Layout {
+        side_width: SIDE_DEFAULT,
+        preview_width: PREVIEW_DEFAULT,
+    };
+    let Some(file) = layout_file(app_data) else {
+        return defaults;
+    };
+    match std::fs::read_to_string(file) {
+        Ok(text) => serde_json::from_str::<Layout>(&text)
+            .map(clamp_layout)
+            .unwrap_or(defaults),
+        Err(_) => defaults,
+    }
+}
+
+pub fn layout_set(app_data: &Path, layout: Layout) -> Result<Layout, String> {
+    let kept = clamp_layout(layout);
+    let file = layout_file(app_data).ok_or("There is nowhere to save the layout.")?;
+    std::fs::write(
+        &file,
+        serde_json::to_string(&kept).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("The layout could not be saved. {error}"))?;
     Ok(kept)
 }
 
@@ -189,19 +282,345 @@ fn has_subfolder(path: &Path) -> bool {
         if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
             return true;
         }
+        // A zip is openable like a folder, so it counts as a child for the tree.
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| is_zip_name(name))
+        {
+            return true;
+        }
     }
     false
+}
+
+fn is_zip_name(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+}
+
+fn is_zip_file(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_zip_name)
+}
+
+/// Bookmarks are places you return to: a real folder, or a zip that opens as
+/// one. Paths *inside* a zip are not bookmarkable - they vanish when the
+/// archive moves, and the pin would be a dead row.
+fn bookmarkable(path: &str) -> bool {
+    let item = Path::new(path);
+    item.is_dir() || is_zip_file(item)
+}
+
+/// Anywhere Files can open: a directory, a zip, or a folder path inside a zip.
+fn browsable(path: &str) -> bool {
+    let item = Path::new(path);
+    if item.is_dir() || is_zip_file(item) {
+        return true;
+    }
+    match split_zip_path(path) {
+        Some((archive, inner)) if !inner.is_empty() => {
+            archive.is_file() && zip_has_prefix(&archive, &inner)
+        }
+        _ => false,
+    }
+}
+
+/// Split `C:\a.zip\docs\x` into the archive file and the path inside it.
+/// The archive is the longest existing `*.zip` file prefix; everything after
+/// is the virtual path. Rejects `..` so a zip cannot climb out of itself.
+fn split_zip_path(raw: &str) -> Option<(PathBuf, String)> {
+    let normalized = raw.replace('/', "\\");
+    let bytes = normalized.as_bytes();
+    let lower = normalized.to_ascii_lowercase();
+    let mut search_from = 0;
+    while let Some(rel) = lower[search_from..].find(".zip") {
+        let idx = search_from + rel;
+        let end = idx + 4;
+        let boundary_ok = end == lower.len() || lower.as_bytes().get(end) == Some(&b'\\');
+        if boundary_ok {
+            let archive = PathBuf::from(&normalized[..end]);
+            if archive.is_file() {
+                let mut inner = normalized[end..].trim_start_matches('\\').to_string();
+                if inner.split(['\\', '/']).any(|part| part == "..") {
+                    return None;
+                }
+                inner = inner.replace('/', "\\");
+                return Some((archive, inner));
+            }
+        }
+        search_from = idx + 1;
+        if search_from >= bytes.len() {
+            break;
+        }
+    }
+    None
+}
+
+fn inside_zip(path: &str) -> bool {
+    matches!(split_zip_path(path), Some((_, inner)) if !inner.is_empty())
+}
+
+fn join_zip(archive: &Path, inner: &str) -> String {
+    if inner.is_empty() {
+        archive.to_string_lossy().into_owned()
+    } else {
+        format!("{}\\{}", archive.to_string_lossy(), inner.replace('/', "\\"))
+    }
+}
+
+fn zip_parent(archive: &Path, inner: &str) -> Option<String> {
+    if inner.is_empty() {
+        return archive
+            .parent()
+            .map(|parent| parent.to_string_lossy().into_owned())
+            .filter(|parent| !parent.is_empty());
+    }
+    match inner.rsplit_once('\\') {
+        Some((parent, _)) => Some(join_zip(archive, parent)),
+        None => Some(archive.to_string_lossy().into_owned()),
+    }
+}
+
+fn open_zip(archive: &Path) -> Result<ZipArchive<File>, String> {
+    let file = File::open(archive).map_err(|error| {
+        format!(
+            "{} could not be opened. {error}",
+            name_of(archive)
+        )
+    })?;
+    ZipArchive::new(file).map_err(|error| {
+        format!(
+            "{} is not a readable zip archive. {error}",
+            name_of(archive)
+        )
+    })
+}
+
+fn zip_has_entries(archive: &Path) -> bool {
+    open_zip(archive).map(|zip| zip.len() > 0).unwrap_or(true)
+}
+
+fn zip_has_prefix(archive: &Path, inner: &str) -> bool {
+    let Ok(mut zip) = open_zip(archive) else {
+        return false;
+    };
+    let prefix = inner.replace('\\', "/").trim_matches('/').to_string();
+    let dir_prefix = format!("{prefix}/");
+    for index in 0..zip.len() {
+        let Ok(entry) = zip.by_index(index) else {
+            continue;
+        };
+        let Some(name) = entry.enclosed_name() else {
+            continue;
+        };
+        let name = name.to_string_lossy().replace('\\', "/");
+        if name == prefix || name.trim_end_matches('/') == prefix || name.starts_with(&dir_prefix) {
+            return true;
+        }
+    }
+    false
+}
+
+struct ZipChild {
+    is_dir: bool,
+    bytes: u64,
+    has_children: bool,
+}
+
+fn list_zip(archive: &Path, inner: &str, dirs_only: bool) -> Result<Listing, String> {
+    let mut zip = open_zip(archive)?;
+    let prefix = if inner.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", inner.replace('\\', "/").trim_matches('/'))
+    };
+    let mut children: BTreeMap<String, ZipChild> = BTreeMap::new();
+    for index in 0..zip.len() {
+        let Ok(entry) = zip.by_index(index) else {
+            continue;
+        };
+        let Some(enclosed) = entry.enclosed_name() else {
+            continue;
+        };
+        let name = enclosed.to_string_lossy().replace('\\', "/");
+        if !prefix.is_empty() && !name.starts_with(&prefix) {
+            continue;
+        }
+        let rest = &name[prefix.len()..];
+        if rest.is_empty() {
+            continue;
+        }
+        let mut parts = rest.split('/').filter(|part| !part.is_empty());
+        let Some(first) = parts.next() else {
+            continue;
+        };
+        if first == "." || first == ".." {
+            continue;
+        }
+        let deeper = parts.next().is_some();
+        let explicit_dir = entry.is_dir() || name.ends_with('/');
+        if deeper || explicit_dir {
+            children
+                .entry(first.to_string())
+                .and_modify(|child| {
+                    child.is_dir = true;
+                    child.has_children = child.has_children || deeper;
+                })
+                .or_insert(ZipChild {
+                    is_dir: true,
+                    bytes: 0,
+                    has_children: deeper,
+                });
+        } else if !dirs_only {
+            children.entry(first.to_string()).or_insert(ZipChild {
+                is_dir: false,
+                bytes: entry.size(),
+                has_children: false,
+            });
+        }
+    }
+    let mut out = Vec::with_capacity(children.len());
+    for (name, child) in children {
+        if dirs_only && !child.is_dir {
+            continue;
+        }
+        let child_inner = if inner.is_empty() {
+            name.clone()
+        } else {
+            format!("{inner}\\{name}")
+        };
+        out.push(Entry {
+            ext: extension(&name, child.is_dir),
+            has_children: child.is_dir && child.has_children,
+            path: join_zip(archive, &child_inner),
+            name,
+            is_dir: child.is_dir,
+            is_archive: false,
+            bytes: if child.is_dir { 0 } else { child.bytes },
+            modified: 0,
+            hidden: false,
+            readonly: true,
+        });
+    }
+    out.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(Listing {
+        parent: zip_parent(archive, inner),
+        path: join_zip(archive, inner),
+        entries: out,
+        skipped: 0,
+    })
+}
+
+/// Pull one zip member out to a temp file so the rest of the app can open or
+/// preview it like a normal path. Cached by archive+member so a second look
+/// at the same picture does not unpack it again.
+pub fn materialize(raw_path: String) -> Result<String, String> {
+    let path = PathBuf::from(raw_path.replace('/', "\\"));
+    if path.is_file() {
+        return Ok(path.to_string_lossy().into_owned());
+    }
+    let Some((archive, inner)) = split_zip_path(&path.to_string_lossy()) else {
+        return Err("That file is no longer available.".into());
+    };
+    if inner.is_empty() {
+        return Ok(archive.to_string_lossy().into_owned());
+    }
+    let real = materialize_zip_member(&archive, &inner)?;
+    Ok(real.to_string_lossy().into_owned())
+}
+
+fn materialize_zip_member(archive: &Path, inner: &str) -> Result<PathBuf, String> {
+    let inner_norm = inner.replace('\\', "/");
+    if inner_norm.split('/').any(|part| part == "..") {
+        return Err("That path is not allowed inside the zip.".into());
+    }
+    let file_name = Path::new(&inner_norm)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "That zip entry has no file name.".to_string())?;
+    let mut hasher = Sha256::new();
+    hasher.update(archive.to_string_lossy().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(inner_norm.as_bytes());
+    let digest = hex_digest(&hasher.finalize());
+    let dest_dir = std::env::temp_dir().join("wint-zip").join(&digest[..16]);
+    let dest = dest_dir.join(&file_name);
+    if dest.is_file() {
+        return Ok(dest);
+    }
+    std::fs::create_dir_all(&dest_dir)
+        .map_err(|error| format!("A temporary folder could not be created. {error}"))?;
+    let mut zip = open_zip(archive)?;
+    let mut found = None;
+    for index in 0..zip.len() {
+        let Ok(entry) = zip.by_index(index) else {
+            continue;
+        };
+        if entry.is_dir() {
+            continue;
+        }
+        let Some(enclosed) = entry.enclosed_name() else {
+            continue;
+        };
+        let name = enclosed.to_string_lossy().replace('\\', "/");
+        if name == inner_norm || name.trim_end_matches('/') == inner_norm {
+            found = Some(index);
+            break;
+        }
+    }
+    let index = found.ok_or_else(|| format!("{file_name} is not in that zip."))?;
+    let mut entry = zip
+        .by_index(index)
+        .map_err(|error| format!("{file_name} could not be read. {error}"))?;
+    let mut bytes = Vec::with_capacity(entry.size() as usize);
+    entry
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("{file_name} could not be read. {error}"))?;
+    let mut out = File::create(&dest)
+        .map_err(|error| format!("{file_name} could not be unpacked. {error}"))?;
+    out.write_all(&bytes)
+        .map_err(|error| format!("{file_name} could not be unpacked. {error}"))?;
+    Ok(dest)
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// One shallow listing of one folder. `dirs_only` is what the tree asks for:
 /// it skips the files entirely, which is the difference between opening a
 /// branch and listing a folder of ten thousand files to show none of them.
+///
+/// A `.zip` file is listed and opened the same way as a folder: the path
+/// `archive.zip\inner` is virtual, built from the zip's central directory.
 pub fn list(raw_path: String, dirs_only: bool) -> Result<Listing, String> {
-    let path = PathBuf::from(&raw_path);
-    if !path.is_dir() {
-        return Err("That folder is no longer available.".into());
+    let path = PathBuf::from(raw_path.replace('/', "\\"));
+    if path.is_dir() {
+        return list_dir(path, dirs_only);
     }
-    let entries = std::fs::read_dir(&path).map_err(|error| readable(&raw_path, error))?;
+    if is_zip_file(&path) {
+        return list_zip(&path, "", dirs_only);
+    }
+    if let Some((archive, inner)) = split_zip_path(&path.to_string_lossy()) {
+        return list_zip(&archive, &inner, dirs_only);
+    }
+    Err("That folder is no longer available.".into())
+}
+
+fn list_dir(path: PathBuf, dirs_only: bool) -> Result<Listing, String> {
+    let raw = path.to_string_lossy().into_owned();
+    let entries = std::fs::read_dir(&path).map_err(|error| readable(&raw, error))?;
     let mut out = Vec::new();
     let mut skipped = 0u64;
     for entry in entries.flatten() {
@@ -210,22 +629,32 @@ pub fn list(raw_path: String, dirs_only: bool) -> Result<Listing, String> {
             continue;
         };
         let is_dir = meta.is_dir();
-        if dirs_only && !is_dir {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let is_archive = !is_dir && is_zip_name(&name);
+        if dirs_only && !is_dir && !is_archive {
             continue;
         }
-        let name = entry.file_name().to_string_lossy().into_owned();
         let (hidden, readonly) = flags(&meta);
         let child = entry.path();
         out.push(Entry {
-            ext: extension(&name, is_dir),
-            has_children: is_dir && has_subfolder(&child),
+            ext: if is_archive {
+                "zip".into()
+            } else {
+                extension(&name, is_dir)
+            },
+            has_children: if is_archive {
+                zip_has_entries(&child)
+            } else {
+                is_dir && has_subfolder(&child)
+            },
             path: child.to_string_lossy().into_owned(),
             name,
-            is_dir,
-            bytes: if is_dir { 0 } else { meta.len() },
+            is_dir: is_dir || is_archive,
+            is_archive,
+            bytes: if is_dir && !is_archive { 0 } else { meta.len() },
             modified: modified_ms(&meta),
             hidden,
-            readonly,
+            readonly: readonly || is_archive,
         });
     }
     // Folders first, then by name. Every other order the front end offers is a
@@ -240,7 +669,7 @@ pub fn list(raw_path: String, dirs_only: bool) -> Result<Listing, String> {
             .parent()
             .map(|parent| parent.to_string_lossy().into_owned())
             .filter(|parent| !parent.is_empty()),
-        path: path.to_string_lossy().into_owned(),
+        path: raw,
         entries: out,
         skipped,
     })
@@ -260,10 +689,10 @@ fn readable(path: &str, error: std::io::Error) -> String {
 
 /// A thumbnail for one file, as a `data:` URL.
 ///
-/// Windows draws it, not this app: `IShellItemImageFactory` returns the same
-/// picture Explorer shows, out of the same cache, already scaled down. Reading
-/// the file and shrinking it here would mean pulling whole 20 MB photographs
-/// through the bridge to draw them 28 pixels wide.
+/// Prefer Windows' own picture (`IShellItemImageFactory`) so Explorer's cache
+/// is reused when it has one. When the shell has nothing yet - common for a
+/// file that has never been opened in Explorer - decode the image ourselves
+/// and shrink it, rather than telling the user there is no preview of a PNG.
 ///
 /// A data URL rather than a path, for the reason `workspace_read_image` gives:
 /// nothing in `src/` can point an `<img>` at a real path without opening the
@@ -271,6 +700,29 @@ fn readable(path: &str, error: std::io::Error) -> String {
 /// over inline.
 #[cfg(windows)]
 pub fn thumbnail(raw_path: String, size: u32) -> Result<Option<String>, String> {
+    // The shell parses this path itself and is stricter than the rest of
+    // Windows: a forward slash anywhere in it is rejected outright with "the
+    // parameter is incorrect", even though every std::fs call accepts one.
+    let normalized = raw_path.replace('/', "\\");
+    let path = if let Some((archive, inner)) = split_zip_path(&normalized) {
+        if inner.is_empty() {
+            return Ok(None);
+        }
+        materialize_zip_member(&archive, &inner)?
+    } else {
+        PathBuf::from(normalized)
+    };
+    if !path.is_file() {
+        return Ok(None);
+    }
+    if let Some(url) = shell_thumbnail(&path, size)? {
+        return Ok(Some(url));
+    }
+    Ok(decode_thumbnail(&path, size)?)
+}
+
+#[cfg(windows)]
+fn shell_thumbnail(path: &Path, size: u32) -> Result<Option<String>, String> {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::SIZE;
     use windows::Win32::Graphics::Gdi::{
@@ -283,13 +735,6 @@ pub fn thumbnail(raw_path: String, size: u32) -> Result<Option<String>, String> 
         SIIGBF_THUMBNAILONLY,
     };
 
-    // The shell parses this path itself and is stricter than the rest of
-    // Windows: a forward slash anywhere in it is rejected outright with "the
-    // parameter is incorrect", even though every std::fs call accepts one.
-    let path = PathBuf::from(raw_path.replace('/', "\\"));
-    if !path.is_file() {
-        return Ok(None);
-    }
     let wide: Vec<u16> = path
         .as_os_str()
         .encode_wide()
@@ -309,21 +754,17 @@ pub fn thumbnail(raw_path: String, size: u32) -> Result<Option<String>, String> 
                 Ok(factory) => factory,
                 Err(_) => return Ok(None),
             };
-        // THUMBNAILONLY stops Windows falling back to the generic icon for the
-        // file type. This tool draws its own type icons, and a second-rate
-        // copy of one is worse than none at all.
+        let wanted = SIZE {
+            cx: size as i32,
+            cy: size as i32,
+        };
+        // THUMBNAILONLY: a real extracted picture, never the generic type
+        // icon. When the cache is empty the call fails and the decode path
+        // below builds one from the file instead.
         let bitmap = match unsafe {
-            factory.GetImage(
-                SIZE {
-                    cx: size as i32,
-                    cy: size as i32,
-                },
-                SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK,
-            )
+            factory.GetImage(wanted, SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK)
         } {
             Ok(bitmap) => bitmap,
-            // No thumbnail is an ordinary answer, not a failure: plenty of
-            // files have none, and the row simply keeps its type icon.
             Err(_) => return Ok(None),
         };
         let mut info = BITMAP::default();
@@ -385,30 +826,77 @@ pub fn thumbnail(raw_path: String, size: u32) -> Result<Option<String>, String> 
                 pixel[3] = 255;
             }
         }
-        let mut png = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut png, width, height);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            let mut writer = encoder
-                .write_header()
-                .map_err(|error| format!("The thumbnail could not be encoded. {error}"))?;
-            writer
-                .write_image_data(&pixels)
-                .map_err(|error| format!("The thumbnail could not be encoded. {error}"))?;
-        }
-        Ok(Some(format!(
-            "data:image/png;base64,{}",
-            crate::workspace::base64(&png)
-        )))
+        rgba_to_data_url(width, height, &pixels)
     })();
     unsafe { CoUninitialize() };
     result
 }
 
+/// Shrink an image file ourselves when the shell has no thumbnail yet.
+/// Soft-fails on anything that is not a plain bitmap format we know: SVG,
+/// RAW and HEIC stay as "no preview" rather than taking down the call.
+fn decode_thumbnail(path: &Path, size: u32) -> Result<Option<String>, String> {
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    const KNOWN: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico"];
+    if !KNOWN.contains(&ext.as_str()) {
+        return Ok(None);
+    }
+    // A 40 megapixel RAW mistaken for a JPEG must not be pulled across the
+    // bridge whole. Anything past this is left for a proper viewer.
+    const MAX_BYTES: u64 = 40 * 1024 * 1024;
+    let Ok(meta) = std::fs::metadata(path) else {
+        return Ok(None);
+    };
+    if meta.len() > MAX_BYTES {
+        return Ok(None);
+    }
+    let Ok(image) = image::open(path) else {
+        return Ok(None);
+    };
+    let edge = size.max(1);
+    let thumb = image.thumbnail(edge, edge);
+    let rgba = thumb.to_rgba8();
+    rgba_to_data_url(rgba.width(), rgba.height(), rgba.as_raw())
+}
+
+fn rgba_to_data_url(width: u32, height: u32, pixels: &[u8]) -> Result<Option<String>, String> {
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .map_err(|error| format!("The thumbnail could not be encoded. {error}"))?;
+        writer
+            .write_image_data(pixels)
+            .map_err(|error| format!("The thumbnail could not be encoded. {error}"))?;
+    }
+    Ok(Some(format!(
+        "data:image/png;base64,{}",
+        crate::workspace::base64(&png)
+    )))
+}
+
 #[cfg(not(windows))]
-pub fn thumbnail(_raw_path: String, _size: u32) -> Result<Option<String>, String> {
-    Ok(None)
+pub fn thumbnail(raw_path: String, size: u32) -> Result<Option<String>, String> {
+    let normalized = raw_path.replace('/', "\\");
+    let path = if let Some((archive, inner)) = split_zip_path(&normalized) {
+        if inner.is_empty() {
+            return Ok(None);
+        }
+        materialize_zip_member(&archive, &inner)?
+    } else {
+        PathBuf::from(normalized)
+    };
+    if !path.is_file() {
+        return Ok(None);
+    }
+    Ok(decode_thumbnail(&path, size)?)
 }
 
 fn name_of(path: &Path) -> String {
@@ -443,6 +931,12 @@ pub fn delete(paths: Vec<String>, recycle: bool) -> Result<(), String> {
         FO_DELETE, SHFILEOPSTRUCTW,
     };
 
+    if let Some(path) = paths.iter().find(|path| inside_zip(path)) {
+        return Err(format!(
+            "{} is inside a zip — delete the archive itself, not the files in it.",
+            name_of(Path::new(path.as_str()))
+        ));
+    }
     let targets: Vec<&String> = paths
         .iter()
         .filter(|path| Path::new(path.as_str()).exists())
@@ -488,6 +982,12 @@ pub fn delete(paths: Vec<String>, recycle: bool) -> Result<(), String> {
 
 #[cfg(not(windows))]
 pub fn delete(paths: Vec<String>, _recycle: bool) -> Result<(), String> {
+    if let Some(path) = paths.iter().find(|path| inside_zip(path)) {
+        return Err(format!(
+            "{} is inside a zip — delete the archive itself, not the files in it.",
+            name_of(Path::new(path.as_str()))
+        ));
+    }
     let targets: Vec<&String> = paths
         .iter()
         .filter(|path| Path::new(path.as_str()).exists())

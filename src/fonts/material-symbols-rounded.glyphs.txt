@@ -158,7 +158,6 @@ eyebrow
 face
 fact_check
 factory
-falling
 favorite
 feed
 fence
@@ -454,6 +453,7 @@ switches
 sync
 sync_alt
 tab
+tab_duplicate
 table
 tablet
 tabs

@@ -19,6 +19,15 @@
   // about its sessions carries it, so docking back - or splitting with `wt` -
   // lands in the dock it came from and not in every window that was listening.
   const origin = params.get("origin") || "";
+  // An administrator terminal is drawn by a second, elevated WinT (see the
+  // comment above `admin_request` in term.rs). It has no session to attach to
+  // yet - it opens its own - and no dock to go back to.
+  const admin = params.get("admin") === "1";
+  if (admin) {
+    document.body.classList.add("admin");
+    document.getElementById("pop-admin").hidden = false;
+    document.getElementById("pop-dock").hidden = true;
+  }
   const host = document.getElementById("pop-term");
   const layout = document.getElementById("pop-term-layout");
   const divider = document.querySelector(".pop-divider");
@@ -45,6 +54,15 @@
   const companion = () => panes[1] || null;
   const ownedIds = () => panes.map((pane) => pane.id);
   const current = () => panes[activePane] || panes[0];
+
+  /** Says a session is over. Normally the dock hears `term:closed` and ends it.
+   *  An administrator window is its own WinT with no dock to hear it, so it
+   *  ends the session itself - otherwise every restarted or closed pane would
+   *  leave an elevated shell running with nothing showing it. */
+  const endSession = async (sessionId) => {
+    await emit("term:closed", { id: sessionId, origin }).catch(() => {});
+    if (admin) await invoke("term_close", { id: sessionId }).catch(() => {});
+  };
 
   const handOver = async () => {
     if (handedOver || closed) return;
@@ -99,7 +117,7 @@
   syncMaximizeButton();
   win.onResized(() => syncMaximizeButton());
 
-  if (!id) {
+  if (!id && !admin) {
     host.textContent = "No terminal id.";
     return;
   }
@@ -299,7 +317,7 @@
     pane.view.dispose();
     pane.el.remove();
     await emit("term:close-watch", { id: pane.id, origin }).catch(() => {});
-    await emit("term:closed", { id: pane.id, origin }).catch(() => {});
+    await endSession(pane.id);
     activePane = 0;
     renderPanes();
     panes[0].view.fit();
@@ -311,7 +329,18 @@
   const first = document.querySelector('.pop-pane[data-pane="0"]');
   let info;
   try {
-    info = (await addPane(id, first)).info;
+    let sessionId = id;
+    if (admin) {
+      const cwd = params.get("cwd") || "";
+      subtitle.textContent = "Starting an administrator shell";
+      const opened = await invoke("term_open", { args: {
+        projectPath: cwd,
+        projectName: cwd.split(/[\\/]/).filter(Boolean).pop() || "Terminal",
+        shell: params.get("shell") || "auto",
+      }});
+      sessionId = opened.id;
+    }
+    info = (await addPane(sessionId, first)).info;
   } catch (e) {
     host.textContent = String(e);
     return;
@@ -330,7 +359,7 @@
     .split(/[\\/]/)
     .filter(Boolean)
     .pop();
-  document.title = folderTitle || info.projectName || "Terminal";
+  document.title = `${folderTitle || info.projectName || "Terminal"}${admin ? " — Administrator" : ""}`;
   renderPanes();
   panes[0].view.fit();
   panes[0].view.focus();
@@ -412,8 +441,17 @@
     openPaneMenu(index < 0 ? 0 : index, e.clientX, e.clientY);
   });
 
+  // The shell mark in the titlebar is the visible way in: right-clicking a
+  // title is not something anyone finds on their own.
+  const titleMark = document.getElementById("pop-shell");
+  titleMark.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const box = titleMark.getBoundingClientRect();
+    openPaneMenu(activePane, box.left, box.bottom + 4);
+  });
+
   document.addEventListener("pointerdown", (e) => {
-    if (!paneMenu.hidden && !e.target.closest("#pop-menu")) closePaneMenu();
+    if (!paneMenu.hidden && !e.target.closest("#pop-menu") && !e.target.closest("#pop-shell")) closePaneMenu();
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closePaneMenu();
@@ -447,7 +485,7 @@
       pane.profile = shellProfileFromCommand(pane.info.command);
       await emit("term:popped-created", { info: pane.info, origin }).catch(() => {});
       await emit("term:close-watch", { id: previousId, origin }).catch(() => {});
-      await emit("term:closed", { id: previousId, origin }).catch(() => {});
+      await endSession(previousId);
       renderPanes();
       pane.view.fit();
       pane.view.focus();
@@ -455,7 +493,7 @@
       // The half-opened session must not be left running with nothing showing
       // it, and the pane says what went wrong where it was asked for.
       if (replacement?.id && panes.every((item) => item.id !== replacement.id)) {
-        await emit("term:closed", { id: replacement.id, origin }).catch(() => {});
+        await endSession(replacement.id);
       }
       sayInTitle(`${label} couldn't start: ${error}`);
     }
