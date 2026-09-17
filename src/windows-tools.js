@@ -4,6 +4,7 @@
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const icon = (name) => window.wintShell?.icon?.(name) || `<span class="ms" aria-hidden="true">${name}</span>`;
   const catalog = [
+    { id: "security-audit", name: "Security Sweep", icon: "shield", hint: "an agent sweeps what starts, runs and listens, works out where anything odd came from, and fixes what you approve", keywords: "security sweep audit scan scanner check checkup health inspection review posture hardening malware virus spyware adware trojan worm rootkit keylogger stealer miner ransomware infection infected compromised hacked breach intrusion attack backdoor startup autostart autorun autoruns startup programs run key runonce registry scheduled task tasks schtasks services winlogon ifeo wmi subscription persistence running processes process unsigned signature signed publisher certificate authenticode browser extension extensions chrome edge firefox addon add-on plugin installed software programs apps uninstall version outdated end of life remote access rdp remote desktop winrm ssh vnc firewall port listening exposed defender antivirus av real-time protection definitions exclusions threat history quarantine where did this come from origin provenance trace download downloaded zone identifier prefetch event log forensics forensic incident response ir threat hunting hunt suspicious unknown program strange weird why is my pc slow popups ads something running i did not install investigate fix remediate disable kill stop end process remove entry quarantine undo agent ai claude codex gemini copilot cursor administrator elevated powershell stall stalls freeze freezes stutter mouse lag dpc driver latency diagnose stalls" },
     { id: "help", name: "Help", icon: "help", hint: "project commands, application commands, and available tools", keywords: "help guide guides docs documentation manual readme ? about faq how to getting started what can commands run terminal pull code explorer tools shortcuts keyboard hotkeys" },
     { id: "cli", name: "CLI", icon: "terminal", hint: "use every headless WinT command from any terminal", keywords: "cli command line commandline terminal console shell powershell pwsh cmd bash headless script scripting automation arguments flags json output scan git dns ports help docs wint exe" },
     { id: "events", name: "Event Log Streamer", icon: "receipt_long", hint: "filter Windows events as they arrive", keywords: "event events viewer eventvwr log logs evtx application system security setup errors warnings critical crash audit login source id level filter regex stream live follow windows log" },
@@ -12,6 +13,7 @@
     { id: "log-tail", name: "Log Tail", icon: "subject", hint: "follow the newest lines in any local log file", keywords: "log tail logs follow file live stream watch monitor grep filter search lines output text last newest realtime" },
     { id: "lock-inspector", name: "Lock Inspector", icon: "lock_open", hint: "find processes holding a file or folder", keywords: "lock locked file folder handle handles process who holds using delete remove rename move in use cannot access being used by another sharing violation access denied unlock close restart manager" },
     { id: "clipboard", name: "Clipboard History", icon: "content_paste", hint: "everything you copy, recorded from startup — search, pin, restore, forget", keywords: "clipboard clip clips history copied copy cut paste buffer text links urls code snippets search restore pin forget clear earlier" },
+    { id: "stall-watch", name: "Input Stall Watch", icon: "mouse", hint: "catch the moments the mouse or the whole PC freezes, and see what caused them", keywords: "mouse freeze freezes frozen stutter stutters lag laggy hitch hiccup slow pointer cursor jumps jumping sticks sticky input stall stalls latency dpc interrupt isr driver latencymon diagnose diagnostics monitor watch background paging hard faults cpu spike wireless receiver usb power saving hook" },
     { id: "keep-awake", name: "Keep Awake", icon: "coffee", hint: "keep Windows and the display awake for as long as you need", keywords: "keep awake stay awake sleep no sleep power display screen monitor timeout screensaver lock idle prevent caffeine caffeinate insomnia presentation meeting build download transfer render chat presence away status active green jiggle nudge mouse mover pointer idle timer stay active schedule scheduled hours weekdays weekends working hours 9 to 5 automatic recurring daily" },
     { id: "time-tracker", name: "Active Window Time Tracker", icon: "schedule", hint: "local time by application and window title", keywords: "time tracker tracking activity active window title productivity apps applications usage screen time hours focus idle away log history what did i do local private" },
   ];
@@ -270,9 +272,39 @@
     if (active === "clipboard") renderClipboard(tool);
     if (active === "keep-awake") renderKeepAwake(tool);
     if (active === "time-tracker") renderTimeTracker(tool);
+    if (active === "security-audit") renderSecurityAudit(tool);
+    if (active === "stall-watch") renderStallWatch(tool);
     if (active === "repair-swap") renderAudioChooser(tool);
     else if (["repair-radio","repair-usb","repair-bounds","repair-wifi"].includes(active)) renderTargetRepair(tool);
     else if (active.startsWith("repair-")) renderRepair(tool);
+  }
+
+  // The audit lives in a file of its own and is loaded the first time it opens,
+  // from whichever page this host is running in.
+  function renderSecurityAudit(tool) {
+    host.innerHTML = header(tool, '<div class="audit-host" data-audit-host></div>');
+    const node = host.querySelector("[data-audit-host]");
+    const mount = () => { if (node.isConnected) window.wintSecurityAudit.mount(node); };
+    if (window.wintSecurityAudit) return mount();
+    const script = document.createElement("script");
+    script.src = "security-audit.js";
+    script.onload = mount;
+    script.onerror = () => { node.innerHTML = '<div class="win-empty">Security Sweep could not load.</div>'; };
+    document.head.appendChild(script);
+  }
+
+  // Like the audit, its own file; the watch itself runs in the backend, so
+  // loading the page late never delays it.
+  function renderStallWatch(tool) {
+    host.innerHTML = header(tool, '<div data-stall-host></div>');
+    const node = host.querySelector("[data-stall-host]");
+    const mount = () => { if (node.isConnected) window.wintStallWatch.mount(node); };
+    if (window.wintStallWatch) return mount();
+    const script = document.createElement("script");
+    script.src = "stall-watch.js";
+    script.onload = mount;
+    script.onerror = () => { node.innerHTML = '<div class="win-empty">Input Stall Watch could not load.</div>'; };
+    document.head.appendChild(script);
   }
 
   const cliGroups = [
@@ -427,7 +459,7 @@
     ].filter(Boolean);
     const technical=catalog.filter((item)=>item.id!=='help'&&!['time-tracker','clipboard','log-tail','lock-inspector'].includes(item.id)).map((item)=>({id:item.id,name:item.name,icon:item.icon,hint:item.hint}));
     const cards=(items)=>items.map((item)=>`<button type="button" class="help-tool" data-help-tool="${esc(item.id)}" title="Open ${esc(item.name)}">${icon(item.icon)}<span><strong>${esc(item.name)}</strong><small>${esc(item.hint)}</small></span>${icon('arrow_forward')}</button>`).join('');
-    host.innerHTML=header(tool,`<div class="help-page"><section class="help-lead"><span>${icon('search')}</span><div><h2>Search is how you get anywhere</h2><p>Press <kbd>Ctrl</kbd> + <kbd>K</kbd> from any screen, or type <kbd>&gt;</kbd> while you are not editing a field. Start typing a tool, project, action, technology, port, or process.</p></div></section><div class="help-columns"><section class="help-panel"><header>${icon('manage_search')}<strong>How results work</strong></header><ul><li>An empty search only shows destinations you opened recently.</li><li>Typing searches names first, then descriptions and keywords.</li><li>Use <kbd>↑</kbd>/<kbd>↓</kbd> and <kbd>Enter</kbd>, or click a row.</li><li>The pin beside a tool keeps it in the bottom status bar.</li><li><kbd>Ctrl</kbd> + <kbd>1</kbd>…<kbd>9</kbd> opens the matching pinned tool.</li><li>Type <kbd>kill</kbd> plus a process, PID, or port to find termination commands.</li></ul></section><section class="help-panel"><header>${icon('bolt')}<strong>Commands and destinations</strong></header><div class="help-command"><code>Rescan projects</code><span>Run the project scan again · F5</span></div><div class="help-command"><code>Toggle terminal panel</code><span>Show or hide docked terminals · Ctrl+`</span></div><div class="help-command"><code>Show / Remove …</code><span>Turn project filters on and off</span></div><div class="help-command"><code>Run / Terminal / Pull …</code><span>Project actions generated from scanned repositories</span></div><div class="help-command"><code>Kill …</code><span>Terminate a matching process from search</span></div><div class="help-command"><code>Overview / Settings</code><span>Navigate without permanent tabs</span></div></section></div><section class="help-tools"><header><div>${icon('handyman')}<strong>Available tools</strong></div><small>${core.length+native.length+utility.length} tools · type any name in search</small></header><h3>Core</h3><div class="help-tool-grid">${cards(core)}</div><h3>Windows and diagnostics</h3><div class="help-tool-grid">${cards(native)}</div><h3>Encode, hash, time, and formats</h3><div class="help-tool-grid">${cards(utility)}</div></section></div>`);
+    host.innerHTML=header(tool,`<div class="help-page"><section class="help-lead"><span>${icon('search')}</span><div><h2>Search is how you get anywhere</h2><p>Press <kbd>Ctrl</kbd> + <kbd>K</kbd> from any screen, or type <kbd>&gt;</kbd> while you are not editing a field. Start typing a tool, project, action, technology, port, or process.</p></div></section><div class="help-columns"><section class="help-panel"><header>${icon('manage_search')}<strong>How results work</strong></header><ul><li>An empty search only shows destinations you opened recently.</li><li>Typing searches names first, then descriptions and keywords.</li><li>Use <kbd>↑</kbd>/<kbd>↓</kbd> and <kbd>Enter</kbd>, or click a row.</li><li>The pin beside a tool keeps it in the bottom status bar.</li><li><kbd>Ctrl</kbd> + <kbd>1</kbd>…<kbd>9</kbd> opens the matching pinned tool.</li><li>Type <kbd>kill</kbd> plus a process, PID, or port to find termination commands.</li></ul></section><section class="help-panel"><header>${icon('bolt')}<strong>Commands and destinations</strong></header><div class="help-command"><code>Rescan projects</code><span>Run the project scan again · F5</span></div><div class="help-command"><code>Toggle terminal panel</code><span>Show or hide docked terminals · Ctrl+`</span></div><div class="help-command"><code>Show / Remove …</code><span>Turn project filters on and off</span></div><div class="help-command"><code>Run / Terminal / Pull …</code><span>Project actions generated from scanned repositories</span></div><div class="help-command"><code>Kill …</code><span>Terminate a matching process from search</span></div><div class="help-command"><code>Home / Settings</code><span>Navigate without permanent tabs</span></div></section></div><section class="help-tools"><header><div>${icon('handyman')}<strong>Available tools</strong></div><small>${core.length+native.length+utility.length} tools · type any name in search</small></header><h3>Core</h3><div class="help-tool-grid">${cards(core)}</div><h3>Windows and diagnostics</h3><div class="help-tool-grid">${cards(native)}</div><h3>Encode, hash, time, and formats</h3><div class="help-tool-grid">${cards(utility)}</div></section></div>`);
   }
   */
   function renderEvents(tool) {
@@ -628,7 +660,8 @@
     const utility=(window.wintUtilTools?.catalog?.()||[]).map((item)=>({id:item.id,name:item.name,icon:item.icon,hint:item.hint}));
     const byId=(id)=>catalog.find((item)=>item.id===id);
     const core=[
-      {id:'overview',name:'Overview',icon:'dashboard',hint:'projects, Git status, and technology at a glance'},
+      {id:'overview',name:'Home',icon:'home',hint:'what needs attention, favorites, and where you left off'},
+      {id:'projects',name:'Projects',icon:'folder_copy',hint:'Git status, running dev servers, and technology for every project'},
       {id:'git',name:'Git',icon:'commit',hint:'changes, staging, commits, branches, remotes, and history'},
       {id:'github',name:'GitHub',icon:'merge',hint:'inbox, pull requests, issues, Actions, and repositories'},
       {id:'ports',name:'Process Explorer',icon:'lan',hint:'ports, processes, resource use, and termination'},
@@ -904,7 +937,9 @@
     }
   }
   function exportState(id) {
-    return { active:id||active, html:active===(id||active)?host?.innerHTML||"":"", running:Boolean(timer), armed,
+    const live = (id || active) === "security-audit";
+    return { active:id||active, html:live?"":(active===(id||active)?host?.innerHTML||"":""), running:Boolean(timer), armed,
+      audit: live ? window.wintSecurityAudit?.exportState?.() || null : null,
       regPath,regRows,regSelected,regMode,regWatch:[...regWatch],regFeed,eventRows,eventSelected,eventDetailTab,
       systemMode,systemScope,systemReport,systemSelected,clipboardKind,clipboardPinnedOnly,clipboardSelected,
       trackerRows,trackerEnabled,trackerRange,trackerSelected };
@@ -916,8 +951,12 @@
       systemMode,systemScope,systemReport,systemSelected,clipboardKind,clipboardPinnedOnly,clipboardSelected,
       trackerRows,trackerEnabled,trackerRange,trackerSelected}=state);
     regWatch=new Map(state.regWatch||[]);handoffHtml=state.html||"";handoffRunning=state.running===true;
+    // Handed to Security Sweep by its own mount, whenever that happens: the
+    // tool is loaded on demand and may not exist yet.
+    if(state.audit)window.wintAuditHandoff=state.audit;
   }
   function resumeHandoff(id){
+    if(id==="security-audit"){handoffHtml="";handoffRunning=false;return;}
     if(handoffHtml){host.innerHTML=handoffHtml;handoffHtml="";}
     if(handoffRunning&&!timer){
       const tick=id==="events"?loadEvents:id==="registry"?pollRegistry:id==="log-tail"?loadLogTail:null;

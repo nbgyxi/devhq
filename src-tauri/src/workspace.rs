@@ -835,7 +835,7 @@ pub async fn workspace_attach_text(name: String, text: String) -> Result<Attachm
 
 /// The other half of [`base64`], for bytes arriving from the webview. Same
 /// reasoning as that one: twenty lines beats a dependency.
-fn unbase64(text: &str) -> Option<Vec<u8>> {
+pub(crate) fn unbase64(text: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(text.len() / 4 * 3);
     let mut acc: u32 = 0;
     let mut bits = 0;

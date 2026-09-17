@@ -58,15 +58,47 @@ window.wintMaturity = (() => {
   /* ------------------------------------------------------------ the popover */
 
   let pop = null;
+  // The explanation is open in a window of its own rather than on this page.
+  let native = false;
 
   function close() {
+    if (native) {
+      native = false;
+      window.__TAURI__?.core?.invoke?.("maturity_hide").catch(() => {});
+      return;
+    }
     if (!pop) return;
     pop.remove();
     pop = null;
   }
 
+  /** An isolated tool is a child webview floating above this page: anything
+   *  drawn in HTML lands behind it. When one is on screen the explanation goes
+   *  into a native window of its own, anchored under the badge, so the tool
+   *  never has to be hidden to read it. */
+  function isolatedToolOnScreen() {
+    const host = document.getElementById("isolated-tool-host");
+    return !!host && !host.hidden;
+  }
+
+  function openNative(anchor, stage) {
+    const box = anchor.getBoundingClientRect();
+    const theme = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+    return window.__TAURI__.core.invoke("maturity_show", {
+      stage,
+      theme,
+      x: Math.max(0, window.screenX + box.left),
+      y: Math.max(0, window.screenY + box.bottom + 6),
+    });
+  }
+
   function open(anchor, stage) {
     close();
+    if (isolatedToolOnScreen() && window.__TAURI__?.core?.invoke) {
+      native = true;
+      openNative(anchor, stage).catch(() => { native = false; });
+      return;
+    }
     const meta = STAGES[stage] || STAGES[DEFAULT];
     pop = document.createElement("div");
     pop.className = "maturity-pop";
@@ -103,6 +135,10 @@ window.wintMaturity = (() => {
       if (badgeEl.classList.contains("static")) return;
       event.preventDefault();
       // A second click on the same badge puts it away again.
+      // The note window closes itself when this window takes the focus back,
+      // and clicking this badge does exactly that. So a badge click always
+      // means show it again - toggling here would fight the blur and swallow
+      // every second click.
       const wasOpen = !!pop;
       close();
       if (!wasOpen) open(badgeEl, badgeEl.dataset.maturity);

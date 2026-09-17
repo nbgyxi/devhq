@@ -18,6 +18,17 @@ const emit = window.__TAURI__.event.emit;
 const appWindow = window.__TAURI__.window.getCurrentWindow();
 
 const PREFS_KEY = "wint.prefs.v1";
+/** This page is the Projects tool popped out into a window of its own
+ *  (projects.html) rather than the main window. It runs the same code, shows
+ *  only Projects, and hands everything else back to the main window. */
+const PROJECTS_WINDOW = document.documentElement.dataset.projectsWindow === "true";
+/** What a Projects window may write back into the shared preferences. The
+ *  main window owns everything else, and a window holding an old copy of it
+ *  must never undo what was changed there since. */
+const PROJECTS_WINDOW_PREFS = [
+  "roots", "sort", "filters", "techFilter", "compactTechOverview", "viewMode", "tableSortKey",
+  "tableSortDirection", "tableColumns", "tableColumnWidths", "favorites",
+];
 /** Present only while a remembered destination is being restored. If the
  * renderer dies before it can clear this flag, the next launch ignores that
  * destination and opens the overview instead of repeating the crash forever. */
@@ -126,6 +137,12 @@ const state = {
   /** Tools and places opened recently, most recent first. An empty Ctrl+K
    *  list is these, plus Help. */
   toolRecent: [],
+  /** tool id -> when it was last opened, ms. Home's "Jump back in" says how
+   *  long ago, and "Never opened" is every tool missing from it. */
+  toolUsedAt: {},
+  /** Home's layout and what it watches: order, hidden, wide, watched,
+   *  dismissed. Filled in with defaults by home.js. */
+  home: {},
   /** Whether the "all pins" panel that opens upward from the dock is showing. */
   toolPinsOpen: false,
   /** Where the pins live: false keeps the handful of chips in the status bar,
@@ -357,6 +374,10 @@ function loadPrefs() {
         .filter((id) => typeof id === "string" && (TOOLS.some((tool) => tool.id === id) || PLACES.some((place) => place.id === id)))
         .slice(0, TOOL_RECENT_MAX);
     }
+    if (p.toolUsedAt && typeof p.toolUsedAt === "object" && !Array.isArray(p.toolUsedAt)) {
+      state.toolUsedAt = Object.fromEntries(Object.entries(p.toolUsedAt).filter(([, at]) => Number.isFinite(at)));
+    }
+    if (p.home && typeof p.home === "object" && !Array.isArray(p.home)) state.home = p.home;
     // Restore the last main destination only when it still exists in this
     // build. Shared tool hosts also need their concrete child id; otherwise a
     // removed tool falls back to that host's stable default.
@@ -385,9 +406,7 @@ function loadPrefs() {
 function savePrefs() {
   if (resetting) return;
   try {
-    localStorage.setItem(
-      PREFS_KEY,
-      JSON.stringify({
+    const prefs = {
         roots: state.roots,
         sort: state.sort,
         filters: [...state.filters],
@@ -413,14 +432,22 @@ function savePrefs() {
         gitWording: state.gitWording,
         toolPopouts: state.toolPopouts,
         toolRecent: state.toolRecent,
+        toolUsedAt: state.toolUsedAt,
+        home: state.home,
         activeView: state.activeView,
         utilToolId: state.utilToolId,
         windowsToolId: state.windowsToolId,
         isolatedToolId: state.isolatedToolId,
         hotkeys: state.hotkeys,
         hotkeyGlobals: [...state.hotkeyGlobals],
-      })
-    );
+    };
+    if (PROJECTS_WINDOW) {
+      const stored = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
+      for (const key of PROJECTS_WINDOW_PREFS) stored[key] = prefs[key];
+      localStorage.setItem(PREFS_KEY, JSON.stringify(stored));
+    } else {
+      localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+    }
   } catch {
     /* storage disabled - prefs simply do not persist */
   }
@@ -1466,7 +1493,7 @@ function toggleTodoSource(file, line) {
 /** Fills the window with one project, and starts everything the full view
  *  shows that a card does not already know. */
 function openDetail(project) {
-  if (state.activeView === "settings") switchMainView("overview");
+  if (state.activeView !== "projects") switchMainView("projects");
   state.selectedPath = project.path;
   window.wintTrackPageView?.("/project");
   clearDetailData();
@@ -1494,13 +1521,19 @@ function closeSettings() {
 
 /* --------------------------------------------------------------- ports */
 
-/** Everything the main area can be showing. The overview is the one that is
- *  always there; the rest are tools, each with a host of its own that
- *  `syncMainView` shows and hides. */
-const MAIN_VIEWS = ["overview", "ports", "dns", "hosts", "network", "path-ping", "explorer", "disk-space", "github", "git", "tools", "windows-tools", "isolated-tool", "settings"];
+/** Everything the main area can be showing. "overview" is Home, the front
+ *  page the window opens on; the rest are tools, each with a host of its own
+ *  that `syncMainView` shows and hides. Projects is one of those tools. */
+const MAIN_VIEWS = ["overview", "projects", "ports", "dns", "hosts", "network", "path-ping", "explorer", "disk-space", "github", "git", "tools", "windows-tools", "isolated-tool", "settings"];
 
 function switchMainView(view) {
   if (!MAIN_VIEWS.includes(view)) return;
+  // A Projects window only ever shows Projects; anywhere else is the main
+  // window's to open.
+  if (PROJECTS_WINDOW && view !== "projects") {
+    if (view !== "overview") emit("tool:open", { id: view === "isolated-tool" ? state.isolatedToolId : view }).catch(() => {});
+    return;
+  }
   // Re-opening the current destination must repair visibility as well. This
   // matters when a tool's first mount failed or a cached stylesheet left its
   // host hidden: the next click should recover without requiring a restart.
@@ -1532,6 +1565,7 @@ function switchMainView(view) {
   window.wintTrackPageView?.(
     view === "tools" ? `/tools/${state.utilToolId}` : `/${view}`
   );
+  if (view === "overview") window.wintHome?.opened();
   if (view === "ports" && !state.ports.length) loadPorts();
   if (view === "dns") window.wintDns?.opened();
   if (view === "hosts") window.wintHosts?.opened();
@@ -1916,7 +1950,6 @@ window.addEventListener("wint:open-git-repo", (event) => {
 window.addEventListener("wint:open-github-project", (event) => {
   const local = projectForGithubRepo(event.detail?.repo);
   if (!local) return;
-  switchMainView("overview");
   openDetail(local);
 });
 
@@ -1924,9 +1957,11 @@ function syncMainView() {
   if (!el["ports-host"]) return;
   const ports = state.activeView === "ports";
   const overview = state.activeView === "overview";
+  const projects = state.activeView === "projects";
   document.documentElement.classList.toggle("github-active", state.activeView === "github");
   document.documentElement.classList.toggle("git-active", state.activeView === "git");
-  for (const id of ["summary", "filters", "banner-host", "scroll"]) el[id].hidden = !overview;
+  el["home-host"].hidden = !overview;
+  el["projects-host"].hidden = !projects;
   el["ports-host"].hidden = !ports;
   el["dns-host"].hidden = state.activeView !== "dns";
   el["hosts-host"].hidden = state.activeView !== "hosts";
@@ -1943,19 +1978,23 @@ function syncMainView() {
   syncEmbeddedTool();
   el["search-input"].value = state.search;
   if (el["port-filter-input"]) el["port-filter-input"].value = state.portSearch;
-  el["search-input"].placeholder = "Search projects, tools and commands...";
+  el["search-input"].placeholder = overview
+    ? "Search tools, ports, files, settings and commands..."
+    : "Search projects, tools and commands...";
+  el["title-home"].classList.toggle("on", overview);
   closeSearchCommands();
   // The sampler only runs while the explorer is on screen - nothing else reads
   // it, and it is the one thing in the app that ticks on its own.
   setPortsLive(ports && state.portLive);
   // The dock says which tool is on screen, and offers to keep an unpinned one.
-  markDirty(overview ? "grid" : state.activeView, "toolbar", "pins");
+  markDirty(overview ? "home" : projects ? "grid" : state.activeView, "toolbar", "pins", "activity");
 }
 
 /** Starts the data lifecycle for a destination restored from preferences.
  * `mountShell` has already mounted every host and made the right one visible;
  * this pass does the same work a deliberate click would normally trigger. */
 function openRestoredView() {
+  if (state.activeView === "overview") window.wintHome?.opened();
   if (state.activeView === "ports" && !state.ports.length) loadPorts();
   if (state.activeView === "dns") window.wintDns?.opened();
   if (state.activeView === "hosts") window.wintHosts?.opened();
@@ -2921,9 +2960,12 @@ function openWorkspace(p) {
 /** Every action a project offers, in one place, so the card and the detail
  *  view cannot drift apart about what "Run" or "Code" means. */
 function projectAction(action, p, button = null) {
+  if (PROJECTS_WINDOW && ["run", "terminal", "git"].includes(action)) {
+    emit("projects:action", { action, path: p.path }).catch(() => {});
+    return;
+  }
   switch (action) {
     case "open":
-      if (state.activeView !== "overview") switchMainView("overview");
       openDetail(p);
       break;
     case "run":
@@ -3074,6 +3116,14 @@ function renderTechMenu() {
 
 const TOOLS = [
   {
+    // Lives in the main window's own DOM rather than a webview of its own: the
+    // scan, the cards and a project's detail all share the shell's state.
+    id: "projects", name: "Projects", icon: "folder_copy",
+    hint: "git status, running dev servers and detected tech for every project",
+    keywords: "projects project overview repos repositories repository folders folder code workspace list all cards table scan rescan git status uncommitted unpushed running dev server tech technology stack filter favorites starred",
+    open: () => switchMainView("projects"), active: () => state.activeView === "projects",
+  },
+  {
     id: "git", name: "Git", icon: "commit",
     hint: "changes, staging, commits, branches, remotes and history",
     keywords: "git versions version history save saved record snapshot source control commit branch checkout switch stash fetch pull push upload download sync diff changes changed modified untracked staged unstaged uncommitted stage unstage discard revert reset amend merge rebase conflict clone remote origin upstream tag blame log repository repo working tree",
@@ -3174,14 +3224,15 @@ const TOOLS = [
 ];
 
 /** Destinations that are not pinnable tools. They still occupy the main area
- *  and answer to search like tools; Overview is the home destination. */
+ *  and answer to search like tools; Home is the front page, kept under its
+ *  old id "overview" because every tool's Back and Close already lead there. */
 const PLACES = [
   {
     id: "overview",
-    name: "Overview",
-    icon: "dashboard",
-    hint: "projects, git status and tech at a glance",
-    keywords: "overview projects home start main dashboard repos repositories folders workspace list all everything front page",
+    name: "Home",
+    icon: "home",
+    hint: "what needs attention, favorites and where you left off",
+    keywords: "home start main dashboard front page overview needs attention watched favorites recent jump back in",
     open: () => switchMainView("overview"),
     active: () => state.activeView === "overview",
   },
@@ -3235,6 +3286,7 @@ function isToolPinned(id) {
 function rememberToolUse(id) {
   if (!id || id === "overview") return;
   if (!toolById(id) && !PLACES.some((place) => place.id === id)) return;
+  if (toolById(id)) state.toolUsedAt[id] = Date.now();
   const next = [id, ...state.toolRecent.filter((entry) => entry !== id)].slice(0, TOOL_RECENT_MAX);
   if (next.length === state.toolRecent.length && next.every((entry, index) => entry === state.toolRecent[index])) {
     return;
@@ -3295,9 +3347,17 @@ function unpinTool(id) {
   if (leaving) openTool("overview");
 }
 
+/** Tools that open in the main window's own DOM instead of an isolated
+ *  webview. They still pop out: Projects has a page of its own for that. */
+const SHELL_TOOLS = new Set(["projects"]);
+
 function openTool(id) {
   const target = toolById(id) || PLACES.find((place) => place.id === id);
   if (!target) return;
+  if (PROJECTS_WINDOW) {
+    if (id !== "projects" && id !== "overview") emit("tool:open", { id }).catch(() => {});
+    return;
+  }
   closeToolPins();
   rememberToolUse(id);
   // Singleton pop-outs steal the in-app open so you are not looking at two
@@ -3308,7 +3368,7 @@ function openTool(id) {
     markDirty("pins");
     return;
   }
-  if (toolById(id)) {
+  if (toolById(id) && !SHELL_TOOLS.has(id)) {
     openIsolatedTool(id);
     markDirty("pins");
     return;
@@ -3358,6 +3418,8 @@ function renderIsolatedToolChrome(tool = toolById(state.isolatedToolId)) {
   host.querySelector("[data-isolated-icon]").innerHTML = icon(tool.icon);
   host.querySelector("[data-isolated-name]").textContent = tool.name;
   host.querySelector("[data-isolated-hint]").textContent = tool.hint;
+  // Every other header says how finished its tool is; an isolated one must too.
+  host.querySelector("[data-isolated-maturity]").innerHTML = window.wintMaturity?.badge(tool.id) ?? "";
   const pin = host.querySelector("[data-pin-tool]");
   pin.dataset.pinTool = tool.id;
   pin.classList.toggle("on", isToolPinned(tool.id));
@@ -3870,10 +3932,9 @@ function runSearchCommand(index) {
   else if (command.action === "rescan") rescan();
   else if (command.action === "terminal-panel") openTerminalPanel();
   else if (command.action === "filter") {
-    if (state.activeView !== "overview") switchMainView("overview");
+    if (state.activeView !== "projects") openTool("projects");
     toggleFilter(command.key);
   } else if (command.action === "repo") {
-    if (state.activeView !== "overview") switchMainView("overview");
     openDetail(command.project);
   }
   else if (command.action === "run") projectAction("run", command.project);
@@ -4749,6 +4810,12 @@ function flushRender() {
     syncToolHeads();
   }
   if (regions.has("pins")) renderPins();
+  // Home repeats a little of everything - the scan, pins, favorites - so it
+  // follows those regions while it is on screen. It only rewrites the
+  // sections whose markup actually changed.
+  if (state.activeView === "overview" && ["home", "grid", "summary", "pins", "toolbar"].some((region) => regions.has(region))) {
+    window.wintHome?.render();
+  }
 }
 
 /** The shell is built once. Inputs live for the lifetime of the window, so
@@ -4762,7 +4829,7 @@ function mountShell() {
           <span class="sub" id="brand-sub"></span></div>
       </div>
       <button class="title-home" id="title-home" type="button"
-              title="Overview" aria-label="Go to overview">${icon("home")}</button>
+              title="Home" aria-label="Go home">${icon("home")}</button>
       <div class="field search" id="search-box">${icon("search")}
         <input id="search-input" spellcheck="false"
                placeholder="Search projects, tools and commands..." />
@@ -4782,12 +4849,26 @@ function mountShell() {
           ${settingsIcon("win-icon")}
         </button>
         <button class="win-btn" data-win="tray" title="Minimize to tray" aria-label="Minimize to tray"${state.minimizeToTrayButton ? "" : " hidden"}>${icon("move_to_inbox")}</button>
+        <button class="win-btn projects-dock" id="projects-dock" title="Dock back into WinT" aria-label="Dock back into WinT">${icon("move_group")}</button>
         <button class="win-btn" data-win="min">${icon("remove")}</button>
         <button class="win-btn" data-win="max">${icon("crop_square")}</button>
         <button class="win-btn close" data-win="close">${icon("close")}</button>
       </div>
     </div>
 
+    <main class="home-page" id="home-host" hidden></main>
+    <main class="projects-page" id="projects-host" hidden>
+    <header class="tool-head">
+      <button class="btn back tool-back" type="button" data-open-tool="overview" title="Back home">${icon("arrow_back")}Back</button>
+      <span class="tool-plate">${icon("folder_copy")}</span>
+      <span class="tool-title">
+        <strong>Projects</strong>
+        <small>git status, running dev servers and detected tech for every project</small>
+      </span>
+      <button class="tool-popout" type="button" data-popout-tool="projects"></button>
+      <button class="tool-pin" type="button" data-pin-tool="projects"></button>
+      <button class="tool-close" type="button" data-open-tool="overview" title="Back home">${icon("close")}</button>
+    </header>
     <div class="summary" id="summary">
       <div class="summary-stats" id="summary-stats"></div>
       <div class="roots summary-roots" id="roots">
@@ -4833,6 +4914,7 @@ function mountShell() {
     </div>
     <div id="banner-host"></div>
     <div class="scroll" id="scroll"><div class="grid" id="grid"></div></div>
+    </main>
     <main class="ports-page" id="ports-host" hidden>
       <header class="tool-head">
         <button class="btn back tool-back" type="button" data-open-tool="overview"
@@ -4886,6 +4968,7 @@ function mountShell() {
         <button class="btn back tool-back" type="button" data-open-tool="overview">${icon("arrow_back")}Back</button>
         <span class="tool-plate" data-isolated-icon></span>
         <span class="tool-title"><strong data-isolated-name></strong><small data-isolated-hint></small></span>
+        <span data-isolated-maturity></span>
         <button class="tool-popout" type="button" data-popout-tool=""></button>
         <button class="tool-pin" type="button" data-pin-tool=""></button>
         <button class="tool-close" type="button" data-open-tool="overview" title="Back to the overview">${icon("close")}</button>
@@ -4941,7 +5024,7 @@ function mountShell() {
     "brand-sub", "loadbar", "roots-btn", "roots-label", "roots-pop", "roots-list",
     "rescan", "title-home", "search-input", "search-menu", "tech-picker", "tech-filter", "tech-filter-label",
     "tech-menu", "tech-menu-input", "tech-menu-list", "tech-clear", "sort-buttons", "view-buttons", "activity", "filters", "filter-chips",
-    "banner-host", "summary", "summary-stats", "scroll", "grid", "ports-host", "dns-host", "hosts-host", "network-host", "path-ping-host", "explorer-host", "disk-space-host", "github-host", "git-host", "tools-host", "windows-tools-host", "isolated-tool-host", "isolated-tool-slot", "port-filter-input", "port-pins", "port-tabs", "port-sort", "port-live", "ports-list", "ports-detail", "ports-dialogs", "detail-host", "settings-host", "open-settings", "toggle-theme",
+    "banner-host", "summary", "summary-stats", "scroll", "grid", "home-host", "projects-host", "ports-host", "dns-host", "hosts-host", "network-host", "path-ping-host", "explorer-host", "disk-space-host", "github-host", "git-host", "tools-host", "windows-tools-host", "isolated-tool-host", "isolated-tool-slot", "port-filter-input", "port-pins", "port-tabs", "port-sort", "port-live", "ports-list", "ports-detail", "ports-dialogs", "detail-host", "settings-host", "open-settings", "toggle-theme",
     "status-term", "status-term-popout", "status-progress", "status-version", "changelog-pop",
     "status-pins-wrap", "status-pins", "pins-pop", "pins-panel",
   ]) {
@@ -4981,6 +5064,7 @@ function mountShell() {
   try { window.wintGit?.mount(el["git-host"]); } catch (err) { console.error("Git failed to mount", err); }
   try { window.wintUtilTools?.mount(el["tools-host"]); } catch (err) { console.error("Util tools failed to mount", err); }
   try { window.wintWindowsTools?.mount(el["windows-tools-host"]); } catch (err) { console.error("Windows tools failed to mount", err); }
+  try { window.wintHome?.mount(el["home-host"]); } catch (err) { console.error("Home failed to mount", err); }
 
   el["search-input"].value = state.search;
   renderVersionButton();
@@ -5016,8 +5100,9 @@ function renderToolbar() {
     button.setAttribute("aria-pressed", String(active));
   }
   const pending = state.total ? state.total - state.settled : 0;
-  el["brand-sub"].textContent =
-    busy && pending
+  el["brand-sub"].textContent = state.activeView === "overview"
+    ? "this PC"
+    : busy && pending
       ? `${state.projects.length} projects \u00b7 ${pending} loading`
       : `${state.projects.length} projects`;
 
@@ -5044,7 +5129,7 @@ function renderActivity() {
   renderProgress();
   if (!items.length) {
     el.activity.innerHTML = `<span class="act idle"><i class="act-dot"></i><span
-      class="act-label">Idle</span></span>`;
+      class="act-label">Idle</span><span class="act-detail">${esc(idleDetail())}</span></span>`;
     return;
   }
   el.activity.innerHTML = items
@@ -5070,6 +5155,7 @@ function renderProgress() {
 
 /** What the app has to say for itself when it is not doing anything. */
 function idleDetail() {
+  if (state.activeView === "overview" && window.wintHome) return window.wintHome.idleDetail();
   if (!state.projects.length) return "nothing scanned yet";
   const settled = state.projects.filter((x) => !x.pending);
   const dirty = settled.filter(FILTERS.dirty.test).length;
@@ -6250,8 +6336,18 @@ function wireShell() {
 
   el["title-home"].onclick = () => {
     closeSearchCommands();
-    if (state.activeView === "overview" && state.selectedPath) closeDetail();
-    else switchMainView("overview");
+    switchMainView("overview");
+  };
+
+  // Projects is a tool drawn in the shell itself; only its header is wired
+  // here, the summary, filters and grid below keep their own handlers.
+  el["projects-host"].querySelector(".tool-head").onclick = (event) => {
+    const popout = event.target.closest("[data-popout-tool]");
+    if (popout) return popOutTool(popout.dataset.popoutTool);
+    const pin = event.target.closest("[data-pin-tool]");
+    if (pin) return toggleToolPin(pin.dataset.pinTool);
+    const destination = event.target.closest("[data-open-tool]")?.dataset.openTool;
+    if (destination) return openTool(destination);
   };
 
   // This header lives in the shell, deliberately outside the child webview.
@@ -6279,7 +6375,6 @@ function wireShell() {
     if (projectLink) {
       const project = state.byPath.get(projectLink.dataset.portProject || projectLink.dataset.portDetail);
       if (!project) return;
-      switchMainView("overview");
       return openDetail(project);
     }
     const tab = e.target.closest("[data-port-tab]");
@@ -6891,6 +6986,10 @@ async function wireToolPopoutEvents() {
     if (!id) return;
     await dockToolPopout(id, event.payload?.instance || null);
   });
+  listen("projects:action", (event) => {
+    const project = state.byPath.get(event.payload?.path);
+    if (project) projectAction(event.payload.action, project);
+  });
   listen("tool:open", (event) => {
     const id = event.payload?.id;
     if (id) openTool(id);
@@ -6935,7 +7034,58 @@ window.wintShell = {
 
 /* ------------------------------------------------------------------ start */
 
+/** Startup for a popped-out Projects window. The scan is shared: its events
+ *  reach every window, so this one shows the last finished scan straight away
+ *  and then follows whichever window scans next. */
+async function startProjectsWindow() {
+  loadPrefs();
+  state.activeView = "projects";
+  document.body.classList.add("projects-window");
+  mountShell();
+  const titlebar = document.querySelector(".titlebar");
+  titlebar.querySelector(".brand span").textContent = "Projects";
+  // The title bar here closes and docks this window only. Its own handler is
+  // replaced: the main window's closes the whole app.
+  titlebar.onclick = (event) => {
+    const button = event.target.closest("[data-win], #projects-dock");
+    if (!button) return;
+    if (button.id === "projects-dock") {
+      emit("tool:docked", { id: "projects", instance: null }).catch(() => {}).finally(() => appWindow.destroy());
+    } else if (button.dataset.win === "min") appWindow.minimize();
+    else if (button.dataset.win === "max") appWindow.toggleMaximize().catch(() => {});
+    else if (button.dataset.win === "close") {
+      emit("tool:closed", { id: "projects", instance: null }).catch(() => {}).finally(() => appWindow.destroy());
+    }
+  };
+  appWindow.onCloseRequested(async (event) => {
+    event.preventDefault();
+    await emit("tool:closed", { id: "projects", instance: null }).catch(() => {});
+    appWindow.destroy();
+  });
+  window.addEventListener("storage", (event) => {
+    if (event.key !== PREFS_KEY) return;
+    const theme = JSON.parse(event.newValue || "{}").theme;
+    if (["dark", "light"].includes(theme) && theme !== state.theme) {
+      state.theme = theme;
+      applyTheme();
+    }
+  });
+  loadAppVersion();
+  window.wintI18n?.init(state.language);
+  markDirty("toolbar", "filters", "summary", "grid", "activity");
+  await listenScan();
+  const cache = loadScanCache();
+  if (cache) restoreScanCache(cache);
+  else if (state.roots.length) rescan();
+  requestAnimationFrame(() => requestAnimationFrame(async () => {
+    await appWindow.show().catch(() => {});
+    await appWindow.setFocus().catch(() => {});
+    emit("tool:ready", { id: "projects", instance: null }).catch(() => {});
+  }));
+}
+
 (async function start() {
+  if (PROJECTS_WINDOW) return startProjectsWindow();
   let restoreWasInterrupted = false;
   try {
     restoreWasInterrupted = Boolean(localStorage.getItem(STARTUP_RESTORE_KEY));

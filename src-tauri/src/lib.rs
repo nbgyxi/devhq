@@ -32,6 +32,9 @@ mod codex;
 mod cursor;
 #[cfg(windows)]
 mod gemini;
+#[cfg(windows)]
+mod security_audit;
+mod stall_watch;
 mod workspace;
 mod term;
 pub mod todo;
@@ -2462,6 +2465,8 @@ pub fn run() {
             // window from the moment WinT is up, whether or not anybody opens
             // the tool that wrote it.
             windows_tools::keep_awake_status();
+            // A stall watch left on keeps watching from the moment WinT is up.
+            stall_watch::resume(app.handle().clone());
             if let Some(id) = tool_arg(&args) {
                 if let Ok(mut pending) = app.state::<PendingTool>().0.lock() {
                     *pending = Some(id);
@@ -2613,6 +2618,20 @@ pub fn run() {
             gemini::gemini_terminal_command,
             gemini::gemini_sessions,
             gemini::gemini_transcript,
+            stall_watch::stall_watch_status,
+            stall_watch::stall_watch_set,
+            stall_watch::stall_watch_mark,
+            stall_watch::stall_watch_clear,
+            stall_watch::stall_watch_events,
+            security_audit::audit_agents,
+            security_audit::audit_begin,
+            security_audit::audit_turn,
+            security_audit::audit_save,
+            security_audit::audit_history,
+            security_audit::audit_load,
+            security_audit::audit_delete,
+            security_audit::audit_cancel,
+            security_audit::audit_end,
             workspace::workspace_browser_show,
             workspace::workspace_browser_hide,
             workspace::workspace_browser_navigate,
@@ -2650,6 +2669,8 @@ pub fn run() {
             tool_window::search_prepare,
             tool_window::changelog_show,
             tool_window::changelog_hide,
+            tool_window::maturity_show,
+            tool_window::maturity_hide,
             search_global_binding_set,
             clipboard_global_binding_set,
             tool_window::clipboard_picker_prepare,
@@ -2837,6 +2858,8 @@ pub fn run() {
         ,tool_window::search_prepare
         ,tool_window::changelog_show
         ,tool_window::changelog_hide
+        ,tool_window::maturity_show
+        ,tool_window::maturity_hide
         ,search_global_binding_set
         ,term::term_serving
         ,workspace::workspace_open
@@ -2875,6 +2898,20 @@ pub fn run() {
         ,gemini::gemini_terminal_command
         ,gemini::gemini_sessions
         ,gemini::gemini_transcript
+        ,stall_watch::stall_watch_status
+        ,stall_watch::stall_watch_set
+        ,stall_watch::stall_watch_mark
+        ,stall_watch::stall_watch_clear
+        ,stall_watch::stall_watch_events
+        ,security_audit::audit_agents
+        ,security_audit::audit_begin
+        ,security_audit::audit_turn
+        ,security_audit::audit_save
+        ,security_audit::audit_history
+        ,security_audit::audit_load
+        ,security_audit::audit_delete
+        ,security_audit::audit_cancel
+        ,security_audit::audit_end
         ,workspace::workspace_browser_show
         ,workspace::workspace_browser_hide
         ,workspace::workspace_browser_navigate

@@ -373,6 +373,80 @@ pub async fn changelog_show(app: AppHandle, theme: Option<String>) -> Result<(),
     focus_search_window(&window)
 }
 
+const MATURITY_LABEL: &str = "maturity-note";
+
+/// What Alpha and Beta mean, in a native sibling window.
+///
+/// The same reason as the release history above: an isolated tool is a child
+/// webview floating over the page, so anything the shell draws in HTML lands
+/// behind it. The explanation belongs next to the badge that was clicked, and
+/// the tool must not have to be hidden for it to be read.
+#[tauri::command]
+pub async fn maturity_show(
+    app: AppHandle,
+    stage: String,
+    theme: Option<String>,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    if !matches!(stage.as_str(), "alpha" | "beta") {
+        return Err("That is not a stage.".into());
+    }
+    let light = theme.as_deref() == Some("light");
+    let position = LogicalPosition::new(x.max(0.0), y.max(0.0));
+    if let Some(window) = app.get_webview_window(MATURITY_LABEL) {
+        window
+            .eval(&format!(
+                r#"document.documentElement.dataset.theme="{}";window.wintMaturityNote?.show("{}");"#,
+                if light { "light" } else { "dark" },
+                stage
+            ))
+            .map_err(|e| e.to_string())?;
+        window.set_position(position).map_err(|e| e.to_string())?;
+        return focus_search_window(&window);
+    }
+    let background = if light {
+        tauri::webview::Color(244, 245, 248, 255)
+    } else {
+        tauri::webview::Color(12, 13, 17, 255)
+    };
+    let page = format!(
+        "maturity.html?stage={}&theme={}",
+        stage,
+        if light { "light" } else { "dark" }
+    );
+    let build_app = app.clone();
+    off_thread(move || {
+        WebviewWindowBuilder::new(&app, MATURITY_LABEL, WebviewUrl::App(page.into()))
+            .title("How finished is this?")
+            .inner_size(460.0, 300.0)
+            .decorations(false)
+            .resizable(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .visible(false)
+            .position(position.x, position.y)
+            .background_color(background)
+            .build()
+            .map(|_| ())
+            .map_err(|e| format!("Could not open the badge explanation: {e}"))
+    })
+    .await
+    .unwrap_or_else(|| Err("Could not open the badge explanation.".to_string()))?;
+    let window = build_app
+        .get_webview_window(MATURITY_LABEL)
+        .ok_or_else(|| "The badge explanation was created without a window.".to_string())?;
+    focus_search_window(&window)
+}
+
+#[tauri::command]
+pub fn maturity_hide(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(MATURITY_LABEL) {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn changelog_hide(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(CHANGELOG_LABEL) {
@@ -402,6 +476,13 @@ fn valid_instance(instance: Option<&str>) -> Result<Option<String>, String> {
         }
         _ => Err("That tool window instance is invalid.".into()),
     }
+}
+
+/// Which session each embedded tool webview was built with, so one whose
+/// session has been rolled can be told apart from one that is still valid.
+fn embedded_sessions() -> &'static Mutex<std::collections::HashMap<String, String>> {
+    static SESSIONS: OnceLock<Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
+    SESSIONS.get_or_init(Default::default)
 }
 
 fn embedded_label_for(id: &str) -> String {
@@ -457,6 +538,28 @@ pub async fn tool_embedded_show(
     } else {
         tauri::webview::Color(12, 13, 17, 255)
     };
+    // A webview carries the session it was built with in its URL, and the shell
+    // ignores anything from a session it no longer knows. So a surviving
+    // webview whose session has been rolled - an eviction that did not take,
+    // a tool that was popped out and came back - is deaf, and showing it again
+    // is a tool that never answers. It is replaced rather than shown.
+    let stale = embedded_sessions()
+        .lock()
+        .unwrap()
+        .get(&id)
+        .is_some_and(|known| *known != session);
+    if stale {
+        if let Some(webview) = app.get_webview(&label) {
+            let _ = webview.close();
+            // Closing is not instant; the label has to be free before the
+            // replacement can take it.
+            let _ = tauri::async_runtime::spawn_blocking(|| {
+                std::thread::sleep(std::time::Duration::from_millis(80))
+            })
+            .await;
+        }
+        embedded_sessions().lock().unwrap().remove(&id);
+    }
     if let Some(webview) = app.get_webview(&label) {
         webview
             .eval(&format!(
@@ -505,6 +608,7 @@ pub async fn tool_embedded_show(
             .initialization_script(&init_theme)
             .background_color(background)
     };
+    embedded_sessions().lock().unwrap().insert(id.clone(), session.clone());
     match window.add_child(make_builder(), position, size) {
         Ok(_) => Ok(()),
         Err(first_err) => {
@@ -542,6 +646,7 @@ pub fn tool_embedded_hide(app: AppHandle, id: String) -> Result<(), String> {
 /// Its WebView2 data directory remains, so persistent tool data survives.
 #[tauri::command]
 pub fn tool_embedded_destroy(app: AppHandle, id: String) -> Result<(), String> {
+    embedded_sessions().lock().unwrap().remove(&id);
     if let Some(webview) = app.get_webview(&embedded_label_for(&id)) {
         webview.close().map_err(|e| e.to_string())?;
     }

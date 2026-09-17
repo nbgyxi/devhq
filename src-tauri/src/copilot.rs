@@ -54,7 +54,7 @@ fn copilot_paths() -> Vec<PathBuf> {
     paths
 }
 
-fn copilot_path() -> Option<PathBuf> {
+pub(crate) fn copilot_path() -> Option<PathBuf> {
     let paths = copilot_paths();
     paths
         .iter()

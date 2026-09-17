@@ -16,6 +16,55 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.104.0",
+      date: "2026-09-17",
+      title: "Diagnose stalls",
+      changes: [
+        ["new", "Security Sweep can now diagnose stalls. Pick Diagnose stalls, and the agent gets every freeze Input Stall Watch caught, with the driver time, CPU, paging and busy processes around each one. It looks for what they have in common and checks drivers, the System log, power settings, USB power saving and input hooks to find the cause, then reports each cause as a finding that lists which stalls it explains and gives a fix."],
+        ["new", "A stall audit keeps tracking: stalls caught while it is open go to the agent with your next step, so it can tell whether a fix helped or a new cause appeared."],
+        ["new", "The Diagnose stalls card shows how many stalls there are to diagnose, and whether Input Stall Watch is still watching."],
+      ],
+    },
+    {
+      version: "0.103.0",
+      date: "2026-09-17",
+      title: "Home",
+      changes: [
+        ["new", "WinT now opens on Home, a front page for the whole PC. Needs attention shows what is worth a look right now: a drive over 90% full, open Security Sweep findings, freezes caught by Input Stall Watch, processes left running after a terminal closed, Keep Awake holding, active hosts overrides, a wint command missing from PATH, and projects with unsaved work or dev servers running. Each card has buttons that take you to the tool that can deal with it."],
+        ["new", "What's watched lets you choose which of those Home checks. Dismiss a card and it stays hidden until what it says changes."],
+        ["new", "Home only checks when you open it or press Refresh. It never scans in the background, and the status bar shows each check as it runs."],
+        ["new", "Home also has Favorites (your pinned tools and starred projects), Jump back in (the tools you opened most recently, and how long ago), a few tools you have never opened, and your most recently active projects."],
+        ["new", "Customize Home: drag sections to reorder them, make each one full or half width, or hide it. Sections turns whole blocks on and off."],
+        ["better", "The project overview is now the Projects tool. Find it in search, pin it to the status bar, or open it from Home. Pop it out into a window of its own like any other tool. Its cards, table, filters and Rescan work as before, and opening a project from anywhere goes there."],
+      ],
+    },
+    {
+      version: "0.102.0",
+      date: "2026-09-16",
+      title: "Input Stall Watch",
+      changes: [
+        ["new", "Input Stall Watch, in the Windows tools, catches the moments the mouse pointer or the whole PC freezes. Start it once and it keeps watching with the tool closed, and it starts again with WinT until you stop it."],
+        ["new", "Each stall caught gets a diagnosis from what the machine was doing at that second: a driver holding a CPU, every core busy, Windows paging to disk, or a PC that kept running while only the pointer stopped, which points at the mouse, its receiver or its USB port. The seconds around it show driver time, CPU, hard page faults, memory and the busiest processes."],
+        ["new", "It just happened diagnoses the last 15 seconds when you felt a stutter, and Check the System log lists the warnings and errors Windows logged within two minutes of a stall. A live strip shows how late the system is each second, and you set how long a freeze has to last to count."],
+      ],
+    },
+    {
+      version: "0.101.0",
+      date: "2026-09-16",
+      title: "Security Sweep",
+      changes: [
+        ["new", "Security Sweep, in the Windows tools, has a coding agent you already have installed sweep this PC: Claude Code, Codex, Gemini, GitHub Copilot or Cursor Agent. You choose the agent, its rights for the whole audit (one Windows prompt if you pick Administrator), and which areas it looks at: autostart, running processes, browser extensions, installed software, remote access, Defender, WMI and the Security log."],
+        ["new", "The Activity list on the left shows every command the agent runs, why it ran it, what came back, and the full output when you open a row. Anything the agent writes along the way, a remark or a question, appears between the commands in the order it was said. Filter it to the scan, origin traces, deeper questions, fixes or one finding, and export it."],
+        ["new", "Findings on the right are sorted by risk. Open one to see the verdict, the evidence, and the exact commands of the recommended fix, including how to undo it. Apply this fix has the agent run exactly those commands and check that they worked."],
+        ["new", "Trace where this came from has the agent rebuild how a finding arrived: the download, what ran, what wrote the file, and what else appeared at the same time, drawn as a timeline with a conclusion."],
+        ["new", "Go deeper on any finding with a suggested question or your own. The box along the bottom answers the agent's questions or sends it in any direction, even after it has finished. Every step continues the same agent conversation, so it never loses what it has learned."],
+        ["new", "Mark a finding as expected and later scans leave it out. Export report saves everything as Markdown next to the log."],
+        ["fix", "Clicking the Alpha or Beta badge while a tool is open now opens its explanation in a small window of its own, anchored under the badge, instead of behind the tool."],
+        ["fix", "A tool opened in the main window now shows how finished it is, the same Alpha or Beta badge its own window and every other tool header already had."],
+        ["new", "Every audit is kept. Past audits are listed with their date, agent, rights and open findings, and History reopens one exactly as it ended. Acting on an old audit first warns that it starts a new agent without the old one’s context, which may cost more and miss details, and says how old the audit is."],
+      ],
+    },
+    {
       version: "0.100.0",
       date: "2026-09-16",
       title: "Administrator terminals",

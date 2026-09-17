@@ -6,6 +6,14 @@
 <title>Tool</title>
 <link rel="icon" type="image/png" href="wint-icon.png" />
 <script>
+/* Projects is drawn by the shell's own code rather than a tool module, so its
+   window is a page of its own. Rust opens every tool here; hand it over before
+   anything else runs. */
+if (new URLSearchParams(location.search).get("id") === "projects") {
+  location.replace("projects.html" + location.search);
+}
+</script>
+<script>
 /* Theme before first paint. Opener ?theme= wins; then prefs; else dark.
    Rust also stamps data-theme via initialization_script — this covers reload. */
 (function () {

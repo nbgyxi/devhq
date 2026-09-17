@@ -47,9 +47,9 @@ pub fn agent_command() -> (Command, String) {
     (Command::new("agent.exe"), "`agent`".into())
 }
 
-struct FoundAgent {
-    node: PathBuf,
-    script: PathBuf,
+pub(crate) struct FoundAgent {
+    pub(crate) node: PathBuf,
+    pub(crate) script: PathBuf,
 }
 
 impl FoundAgent {
@@ -61,7 +61,7 @@ impl FoundAgent {
     }
 }
 
-fn find_agent() -> Option<FoundAgent> {
+pub(crate) fn find_agent() -> Option<FoundAgent> {
     let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
     let versions = local.join("cursor-agent").join("versions");
     let latest = std::fs::read_dir(&versions).ok()?.flatten().filter(|entry| {
@@ -305,7 +305,7 @@ pub async fn cursor_send(
 /// Code's `--session-id` works. Cursor's print mode has no equivalent — it
 /// only resumes ids it created — so an empty chat is opened first and the
 /// id comes back.
-fn create_chat(cwd: &str) -> Result<String, String> {
+pub(crate) fn create_chat(cwd: &str) -> Result<String, String> {
     let (mut cmd, how) = agent_command();
     let output = silent(&mut cmd)
         .current_dir(cwd)

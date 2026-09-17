@@ -32,7 +32,7 @@ fn running() -> &'static Mutex<std::collections::HashMap<String, Child>> {
     RUNNING.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
-fn gemini_path() -> Option<PathBuf> {
+pub(crate) fn gemini_path() -> Option<PathBuf> {
     crate::term::find_program_on_path(&["gemini.exe", "gemini.cmd", "gemini.bat"]).or_else(|| {
         std::env::var_os("APPDATA")
             .map(PathBuf::from)

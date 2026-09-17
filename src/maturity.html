@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<title>How finished is this?</title>
+<link rel="stylesheet" href="styles.css" />
+<style>
+  /* Its own window, so it is the whole page rather than a floating card. */
+  html, body { height: 100%; }
+  body { margin: 0; overflow: hidden; background: var(--bg1); }
+  .note { height: 100%; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .note-head { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--line); background: var(--bg2); font-size: 12px; font-weight: 600; }
+  .note-head button { margin-left: auto; width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 7px; background: none; color: var(--dim); cursor: pointer; }
+  .note-head button:hover { background: var(--bg3); color: var(--text); }
+  .note-body { flex: 1; min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .note-row { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 10px; align-items: start; font-size: 12px; line-height: 1.5; color: var(--dim); }
+  .note-row.on { color: var(--text); }
+  .note-foot { color: var(--dim2); font-size: 11px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="note">
+  <div class="note-head"><span class="ms" aria-hidden="true">help</span><span>How finished is this?</span>
+    <button type="button" data-close title="Close"><span class="ms" aria-hidden="true">close</span></button></div>
+  <div class="note-body" data-body></div>
+</div>
+<script src="maturity.js"></script>
+<script>
+  (() => {
+    "use strict";
+    const invoke = window.__TAURI__.core.invoke;
+    const query = new URLSearchParams(location.search);
+    if (query.get("theme") === "light") document.documentElement.dataset.theme = "light";
+    const body = document.querySelector("[data-body]");
+    const hide = () => invoke("maturity_hide").catch(() => {});
+
+    function show(stage) {
+      const stages = window.wintMaturity?.stages?.() || {};
+      // Both stages every time: someone reading about Alpha wants to know what
+      // it is short of.
+      body.innerHTML = `${Object.entries(stages).map(([key, entry]) => `
+        <div class="note-row${key === stage ? " on" : ""}">
+          <span class="tool-maturity ${entry.tone} static">${entry.label}</span>
+          <span>${entry.text}</span>
+        </div>`).join("")}
+        <div class="note-foot">Every tool starts at Alpha and moves up once it has been through its paces.</div>`;
+    }
+
+    // Clicking the badge again focuses WinT, which blurs this window a moment
+    // before the badge asks for it to be shown. Hiding is therefore delayed
+    // just long enough for that to arrive and cancel it, so a second click
+    // does not make the note flash out and back.
+    let going = 0;
+    const hideSoon = () => { clearTimeout(going); going = setTimeout(hide, 220); };
+    const stay = () => clearTimeout(going);
+
+    window.wintMaturityNote = { show: (stage) => { stay(); show(stage); } };
+    show(query.get("stage") || "alpha");
+    document.querySelector("[data-close]").addEventListener("click", () => { stay(); hide(); });
+    window.addEventListener("focus", stay);
+    window.addEventListener("blur", hideSoon);
+    document.addEventListener("keydown", (event) => { if (event.key === "Escape") hide(); });
+  })();
+</script>
+</body>
+</html>

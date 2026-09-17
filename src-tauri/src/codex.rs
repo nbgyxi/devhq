@@ -51,7 +51,7 @@ fn codex_home() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".codex"))
 }
 
-fn codex_path() -> Option<PathBuf> {
+pub(crate) fn codex_path() -> Option<PathBuf> {
     crate::term::find_program_on_path(&["codex.exe", "codex.cmd", "codex.bat"])
         .or_else(|| {
             std::env::var_os("LOCALAPPDATA")
