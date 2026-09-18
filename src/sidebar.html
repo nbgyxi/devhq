@@ -41,6 +41,8 @@
   .bar-brand { margin-bottom: 4px; }
   .bar-brand strong { letter-spacing: .08em; text-transform: uppercase; }
   .bar-slot small { color: var(--muted, #8b93a7); }
+  .bar-slot.active { background: var(--hover, #1c2030); }
+  .bar-slot.active .ms, .bar-slot.active small { color: var(--accent, #6ea8fe); }
   .bar-win small { color: var(--text, #e6e8ef); }
   /* The open windows fill whatever the launchers leave, and scroll on their own. */
   .bar-windows {
@@ -86,6 +88,7 @@
   <button class="bar-slot" type="button" data-action="terminal" data-slot="terminal"><span class="ms" aria-hidden="true">terminal</span><small>WinT terminal</small></button>
   <button class="bar-slot" type="button" data-action="start" data-slot="start"><span class="ms" aria-hidden="true">grid_view</span><small>Windows</small></button>
   <button class="bar-slot" type="button" data-action="clipboard" data-slot="clipboard"><span class="ms" aria-hidden="true">content_paste</span><small>Clipboard</small></button>
+  <button class="bar-slot" type="button" data-action="focus" data-slot="focus"><span class="ms" aria-hidden="true">shield_lock</span><small>Focus mode</small></button>
   <div class="bar-windows" data-windows data-slot="windows" aria-label="Open windows">
     <div class="bar-win skeleton"><i></i><small>Reading open windows</small></div>
   </div>

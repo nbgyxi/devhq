@@ -703,7 +703,7 @@ unsafe fn window_exe(hwnd: HWND) -> String {
     }
 }
 
-fn list_windows(sidebar: isize) -> Vec<OpenWindow> {
+pub(crate) fn list_windows(sidebar: isize) -> Vec<OpenWindow> {
     use windows::core::BOOL;
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetForegroundWindow, GetWindowTextW, IsIconic,
@@ -753,6 +753,24 @@ fn list_windows(sidebar: isize) -> Vec<OpenWindow> {
             }
         })
         .collect()
+}
+
+pub(crate) fn sidebar_window_handle(app: &AppHandle) -> isize {
+    sidebar_hwnd(app)
+}
+
+/// The docked sidebar's handle, or 0, for code with no `AppHandle` to hand.
+pub(crate) fn docked_handle() -> isize {
+    HOST.load(Ordering::SeqCst)
+}
+
+/// A window's title and the path of the program behind it, whether or not it
+/// is visible.
+pub(crate) unsafe fn window_title_and_exe(hwnd: HWND) -> (String, String) {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowTextW;
+    let mut title = [0u16; 512];
+    let len = GetWindowTextW(hwnd, &mut title).max(0) as usize;
+    (String::from_utf16_lossy(&title[..len]), window_exe(app_window(hwnd)))
 }
 
 fn sidebar_hwnd(app: &AppHandle) -> isize {

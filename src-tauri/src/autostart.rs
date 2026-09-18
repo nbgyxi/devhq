@@ -7,15 +7,51 @@
 //! id `WinTStartup`) and toggles that; any other build writes the Run key with
 //! `--autostart` behind the exe.
 //!
-//! Either way, a launch at sign-in goes straight to the notification area.
+//! How a launch at sign-in shows itself (in the notification area, minimized
+//! to the taskbar, or on screen) is the user's pick when they turn it on. A
+//! startup task cannot carry arguments, so the pick lives in a file in the
+//! app data folder rather than on the command line.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 pub const ARG: &str = "--autostart";
+const MODE_FILE: &str = "autostart-mode.txt";
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    #[default]
+    Tray,
+    Minimized,
+    Normal,
+}
+
+/// How WinT shows itself when Windows starts it. Tray when nothing was picked,
+/// which is how every earlier version started.
+pub fn mode(dir: &Path) -> Mode {
+    match std::fs::read_to_string(dir.join(MODE_FILE)).unwrap_or_default().trim() {
+        "minimized" => Mode::Minimized,
+        "normal" => Mode::Normal,
+        _ => Mode::Tray,
+    }
+}
+
+fn set_mode(dir: &Path, mode: Mode) -> Result<(), String> {
+    let word = match mode {
+        Mode::Tray => "tray",
+        Mode::Minimized => "minimized",
+        Mode::Normal => "normal",
+    };
+    std::fs::create_dir_all(dir)
+        .and_then(|_| std::fs::write(dir.join(MODE_FILE), word))
+        .map_err(|e| format!("Could not save how WinT starts: {e}"))
+}
 
 #[derive(Serialize, Clone, Debug)]
 pub struct Status {
     pub enabled: bool,
+    pub mode: Mode,
     /// False when Windows will not let WinT change it (turned off in Task
     /// Manager's Startup apps, or by policy); `note` says why.
     pub changeable: bool,
@@ -35,37 +71,43 @@ pub fn launched_at_startup(args: &[String]) -> bool {
 }
 
 #[cfg(windows)]
-pub fn status() -> Result<Status, String> {
-    if imp::is_packaged() {
-        imp::task_status()
+pub fn status(dir: &Path) -> Result<Status, String> {
+    let mut status = if imp::is_packaged() {
+        imp::task_status()?
     } else {
-        imp::run_key_status()
-    }
+        imp::run_key_status()?
+    };
+    status.mode = mode(dir);
+    Ok(status)
 }
 
+/// Saves `start` before switching on, so the very next sign-in already uses it.
 #[cfg(windows)]
-pub fn set(enabled: bool) -> Result<Status, String> {
+pub fn set(dir: &Path, enabled: bool, start: Option<Mode>) -> Result<Status, String> {
+    if let Some(start) = start {
+        set_mode(dir, start)?;
+    }
     if imp::is_packaged() {
-        imp::task_set(enabled)
+        imp::task_set(enabled)?;
     } else {
         imp::run_key_set(enabled)?;
-        imp::run_key_status()
     }
+    status(dir)
 }
 
 #[cfg(not(windows))]
-pub fn status() -> Result<Status, String> {
+pub fn status(_dir: &Path) -> Result<Status, String> {
     Err("Starting with the system is only supported on Windows.".into())
 }
 
 #[cfg(not(windows))]
-pub fn set(_enabled: bool) -> Result<Status, String> {
-    status()
+pub fn set(dir: &Path, _enabled: bool, _start: Option<Mode>) -> Result<Status, String> {
+    status(dir)
 }
 
 #[cfg(windows)]
 mod imp {
-    use super::{Status, ARG};
+    use super::{Mode, Status, ARG};
     use windows::core::{HSTRING, PCWSTR};
     use windows::ApplicationModel::Activation::ActivationKind;
     use windows::ApplicationModel::{AppInstance, StartupTask, StartupTaskState};
@@ -102,23 +144,26 @@ mod imp {
 
     fn task_state_status(state: StartupTaskState) -> Status {
         match state {
-            StartupTaskState::Enabled => Status { enabled: true, changeable: true, note: None },
+            StartupTaskState::Enabled => Status { enabled: true, mode: Mode::Tray, changeable: true, note: None },
             StartupTaskState::EnabledByPolicy => Status {
                 enabled: true,
+                mode: Mode::Tray,
                 changeable: false,
                 note: Some("Your organization starts WinT with Windows.".into()),
             },
             StartupTaskState::DisabledByUser => Status {
                 enabled: false,
+                mode: Mode::Tray,
                 changeable: false,
                 note: Some("Turned off in Windows Settings > Apps > Startup. Switch WinT on there first.".into()),
             },
             StartupTaskState::DisabledByPolicy => Status {
                 enabled: false,
+                mode: Mode::Tray,
                 changeable: false,
                 note: Some("Your organization does not allow WinT to start with Windows.".into()),
             },
-            _ => Status { enabled: false, changeable: true, note: None },
+            _ => Status { enabled: false, mode: Mode::Tray, changeable: true, note: None },
         }
     }
 
@@ -173,14 +218,15 @@ mod imp {
     pub fn run_key_status() -> Result<Status, String> {
         let expected = command_line()?;
         Ok(match read_run_value()? {
-            None => Status { enabled: false, changeable: true, note: None },
+            None => Status { enabled: false, mode: Mode::Tray, changeable: true, note: None },
             Some(value) if value.eq_ignore_ascii_case(&expected) => {
-                Status { enabled: true, changeable: true, note: None }
+                Status { enabled: true, mode: Mode::Tray, changeable: true, note: None }
             }
             // Another copy of WinT registered itself; switching on here
             // points the entry at this one instead.
             Some(value) => Status {
                 enabled: false,
+                mode: Mode::Tray,
                 changeable: true,
                 note: Some(format!("Windows starts a different WinT: {value}")),
             },

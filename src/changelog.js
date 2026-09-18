@@ -16,6 +16,57 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.113.1",
+      date: "2026-09-18",
+      title: "Usage tracking on Home",
+      changes: [
+        ["new", "Home's Running in the background list has a Usage tracking switch, so you can see at a glance whether WinT shares which screens you use - anonymously, never your projects - and flip it either way."],
+      ],
+    },
+    {
+      version: "0.113.0",
+      date: "2026-09-18",
+      title: "Choose how WinT starts with Windows",
+      changes: [
+        ["new", "Switching on Start WinT with Windows now asks how it should open at sign-in: in the tray, minimized to the taskbar, or on screen. A Change link under the setting lets you pick again later."],
+      ],
+    },
+    {
+      version: "0.112.3",
+      date: "2026-09-18",
+      title: "Focus mode windows come back with their taskbar button",
+      changes: [
+        ["fix", "Windows Focus mode brings back get their taskbar button back. Before, a window could return to the screen with no button, so it still looked hidden."],
+      ],
+    },
+    {
+      version: "0.112.2",
+      date: "2026-09-18",
+      title: "Focus mode can't lose a window",
+      changes: [
+        ["fix", "Focus mode writes each window down before hiding it, so a WinT that crashes or is closed mid-way still brings every one of them back on its next start."],
+        ["new", "Windows that match your Focus mode rules but were left hidden anyway show up in the tool marked \"Left hidden\", each with a Show button, and there is a new Hidden filter. Every hidden window can also be shown again on its own."],
+      ],
+    },
+    {
+      version: "0.112.1",
+      date: "2026-09-18",
+      title: "Focus mode never waits on a hung app",
+      changes: [
+        ["fix", "Focus mode no longer freezes WinT when one of the windows it hides or brings back belongs to an app that has stopped responding. The hung window catches up once its app recovers."],
+      ],
+    },
+    {
+      version: "0.112.0",
+      date: "2026-09-18",
+      title: "Focus mode",
+      changes: [
+        ["new", "Focus mode is a new tool. One press, a system-wide shortcut (Ctrl+Alt+H, changeable under Hotkeys) or its button on the sidebar hides the programs and title words you pick. They are hidden completely - gone from the taskbar, Alt+Tab and the sidebar - and the next press brings them all back."],
+        ["new", "Rules are built from a list of every window open now and the ones seen lately: one click hides a program, another picks a word from a window's title. Each window shows whether your rules would hide it."],
+        ["new", "Windows Focus mode hid always come back: when WinT closes, and on the next start if WinT was killed while they were hidden."],
+      ],
+    },
+    {
       version: "0.111.1",
       date: "2026-09-18",
       title: "Mouse back leaves a tool",

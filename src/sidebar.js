@@ -53,7 +53,26 @@
     if (action === "search") return invoke("search_show", {}).catch(() => {});
     if (action === "terminal") return openTerminal(button);
     if (action === "clipboard") return invoke("clipboard_picker_show", {}).catch(() => {});
+    if (action === "focus") return invoke("focus_mode_toggle").catch((error) => flash(button, error));
   });
+
+  // The Focus mode button shows whether it is holding windows back, whether
+  // the press came from here, the shortcut or the tool.
+  function paintFocus(focus) {
+    const button = document.querySelector("[data-action=focus]");
+    const hidden = focus?.hidden || 0;
+    button.classList.toggle("active", hidden > 0);
+    button.querySelector(".ms").textContent = hidden ? "visibility" : "shield_lock";
+    const label = button.querySelector("small");
+    label.textContent = hidden ? `Show ${hidden} hidden` : "Focus mode";
+    delete label.dataset.text;
+    button.title = focus?.message || (hidden ? "Bring the hidden windows back" : "Hide the windows your Focus mode rules pick");
+  }
+  window.__TAURI__.event.listen("focus-mode:state", (event) => {
+    paintFocus(event.payload);
+    refreshWindows();
+  });
+  invoke("focus_mode_state").then(paintFocus, () => {});
 
   // Starting a shell and building its window takes a moment; the label says so.
   async function openTerminal(button) {
@@ -78,7 +97,7 @@
   // runs in an isolated webview with storage of its own, so every change
   // reaches this rail as a `sidebar:settings` event, the moment it is made.
   const DEFAULT_SETTINGS = {
-    slots: { brand: true, start: true, clipboard: true, windows: true, geometry: true, tray: true, taskbar: true, edge: true, close: true },
+    slots: { brand: true, start: true, clipboard: true, focus: true, windows: true, geometry: true, tray: true, taskbar: true, edge: true, close: true },
     textSize: 10,
     iconSize: 22,
     hideTaskbar: true,

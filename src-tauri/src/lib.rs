@@ -1,6 +1,8 @@
 mod ai;
 #[cfg(windows)]
 mod appbar;
+#[cfg(windows)]
+mod focus_mode;
 mod autostart;
 pub mod analytics;
 mod assistant;
@@ -589,15 +591,21 @@ fn tray_set_recent_tools(app: AppHandle, tools: Vec<TrayTool>) -> Result<(), Str
 }
 
 #[tauri::command]
-async fn autostart_status() -> Result<autostart::Status, String> {
-    off_thread(autostart::status)
+async fn autostart_status(app: AppHandle) -> Result<autostart::Status, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    off_thread(move || autostart::status(&dir))
         .await
         .unwrap_or_else(|| Err("Could not check whether WinT starts with Windows.".into()))
 }
 
 #[tauri::command]
-async fn autostart_set(enabled: bool) -> Result<autostart::Status, String> {
-    off_thread(move || autostart::set(enabled))
+async fn autostart_set(
+    app: AppHandle,
+    enabled: bool,
+    mode: Option<autostart::Mode>,
+) -> Result<autostart::Status, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    off_thread(move || autostart::set(&dir, enabled, mode))
         .await
         .unwrap_or_else(|| Err("Could not change whether WinT starts with Windows.".into()))
 }
@@ -2483,6 +2491,9 @@ pub fn run() {
             // it hidden. Put it back before anything else can dock again.
             #[cfg(windows)]
             std::thread::spawn(appbar::recover_taskbar);
+            // Windows Focus mode hid before a crash come back; start remembering windows for its list.
+            #[cfg(windows)]
+            std::thread::spawn(focus_mode::recover);
 
             // One terminal and nothing else: no main window, no tray, no
             // clipboard watcher, no `wt` queue. Closing the terminal ends this
@@ -2552,12 +2563,26 @@ pub fn run() {
                 tray = tray.icon(icon.clone());
             }
             let tray = tray.build(app)?;
-            // Started by Windows at sign-in: nobody asked to see the window,
-            // so WinT waits in the notification area instead.
-            if autostart::launched_at_startup(&args) {
-                minimize_to_tray(app.handle().clone());
+            // Started by Windows at sign-in: WinT shows itself the way the
+            // user picked when they turned it on (the notification area when
+            // nothing was picked).
+            let start = if autostart::launched_at_startup(&args) {
+                app.path()
+                    .app_data_dir()
+                    .map(|dir| autostart::mode(&dir))
+                    .unwrap_or_default()
             } else {
-                tray.set_visible(false)?;
+                autostart::Mode::Normal
+            };
+            match start {
+                autostart::Mode::Tray => minimize_to_tray(app.handle().clone()),
+                autostart::Mode::Minimized => {
+                    tray.set_visible(false)?;
+                    if let Some(window) = app.get_window("main") {
+                        let _ = window.minimize();
+                    }
+                }
+                autostart::Mode::Normal => tray.set_visible(false)?,
             }
             Ok(())
         });
@@ -2716,6 +2741,13 @@ pub fn run() {
             tool_window::tool_bridge_state_put,
             tool_window::tool_bridge_state_take,
             appbar::sidebar_state,
+            focus_mode::focus_mode_toggle,
+            focus_mode::focus_mode_state,
+            focus_mode::focus_mode_windows,
+            focus_mode::focus_mode_settings,
+            focus_mode::focus_mode_settings_set,
+            focus_mode::focus_mode_icon,
+            focus_mode::focus_mode_show,
             appbar::sidebar_open,
             appbar::sidebar_configure,
             appbar::sidebar_close,
@@ -2822,6 +2854,9 @@ pub fn run() {
                 // process is gone.
                 #[cfg(windows)]
                 appbar::teardown();
+                // Nothing Focus mode hid may outlive WinT.
+                #[cfg(windows)]
+                focus_mode::teardown();
                 term::shutdown();
                 // A pktmon session outliving the window would go on
                 // filtering this machine's traffic with nothing left to

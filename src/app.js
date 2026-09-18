@@ -3961,6 +3961,7 @@ const HOTKEY_DEFAULTS = {
   "tool:ports": "Ctrl+Shift+P", "tool:network": "Ctrl+Shift+N",
   "tool:registry": "Ctrl+Shift+R", "tool:clipboard": "Ctrl+Shift+V",
   "tool:github": "Ctrl+Shift+G", "tool:git": "Ctrl+Alt+G",
+  "command:focus-mode": "Ctrl+Alt+H",
 };
 
 function hotkeyCatalog() {
@@ -3990,6 +3991,7 @@ function hotkeyCatalog() {
     ...TOOLS.map((tool) => ({ id: `tool:${tool.id}`, kind: "tool", name: tool.name, icon: tool.icon, hint: tool.hint, action: () => tool.id === "clipboard" ? openClipboardPicker() : openTool(tool.id) })),
     { id: "command:clipboard-tool", kind: "global", name: "Open Clipboard History tool", icon: "inventory_2", hint: "Open the full history for searching, pinning and removing entries", action: () => openTool("clipboard") },
     { id: "command:palette", kind: "global", name: "Command palette", icon: "search", hint: "Find any command, tool or action", action: () => openSearchCommands({ fresh: true }) },
+    { id: "command:focus-mode", kind: "global", name: "Focus mode: hide or bring back windows", icon: "shield_lock", hint: "Hide the windows your Focus mode rules pick, or bring them back. Always system-wide.", action: () => invoke("focus_mode_toggle").catch(() => {}) },
     { id: "command:rescan", kind: "global", name: "Rescan projects", icon: "refresh", hint: "Scan every configured project folder again", action: () => rescan() },
     { id: "command:terminal-panel", kind: "global", name: "Toggle terminal panel", icon: "terminal", hint: "Show or hide docked terminals", action: () => setDockOpen(!window.termsState.open) },
     ...Object.entries(FILTERS).map(([key, filter]) => ({
@@ -4029,6 +4031,11 @@ function hotkeyConflicts() {
   return new Set([...bindings.values()].filter((ids) => ids.length > 1).flat());
 }
 
+// The Focus mode shortcut is only any use from outside WinT, so it is always global.
+function isGlobalHotkey(id) {
+  return id === "command:focus-mode" || state.hotkeyGlobals.has(id);
+}
+
 const globalHotkeyErrors = new Map();
 async function syncGlobalHotkeys() {
   const api = window.__TAURI__?.globalShortcut;
@@ -4053,7 +4060,7 @@ async function syncGlobalHotkeys() {
     globalHotkeyErrors.set("tool:clipboard", String(error));
   });
   for (const command of catalog) {
-    if (!state.hotkeyGlobals.has(command.id)) continue;
+    if (!isGlobalHotkey(command.id)) continue;
     const binding = hotkeyBinding(command.id);
     if (!binding) continue;
     try {
@@ -4069,7 +4076,7 @@ async function syncGlobalHotkeys() {
         // The native palette is intentionally usable without surfacing the
         // main window. Other global commands still bring their working context
         // forward before executing.
-        if (command.id !== "command:palette") {
+        if (command.id !== "command:palette" && command.id !== "command:focus-mode") {
           await appWindow.show().catch(() => {});
           await appWindow.unminimize().catch(() => {});
           await appWindow.setFocus().catch(() => {});
@@ -4116,9 +4123,9 @@ function renderHotkeys(host) {
       const binding = hotkeyBinding(command.id);
       const recording = state.hotkeyRecording === command.id;
       const keys = binding ? binding.split("+").map((part) => `<kbd>${esc(part)}</kbd>`).join("") : "Unbound";
-      const global = state.hotkeyGlobals.has(command.id);
+      const global = isGlobalHotkey(command.id);
       const error = globalHotkeyErrors.get(command.id);
-      return `<div class="hotkey-row${conflicts.has(command.id) || error ? " conflict" : ""}"><span class="hotkey-command">${icon(command.icon)}<span><strong>${esc(command.name)}</strong><small>${esc(error || command.hint)}</small></span></span><span class="hotkey-scope">${command.kind === "tool" ? "Tool" : "Action"}</span><button type="button" class="hotkey-binding${recording ? " recording" : ""}" data-hotkey-record="${esc(command.id)}">${recording ? "Press a shortcut…" : keys}</button><label class="hotkey-global" title="Make this shortcut work while WinT is unfocused"><input type="checkbox" data-hotkey-global="${esc(command.id)}"${global ? " checked" : ""}${binding ? "" : " disabled"}><span>Global</span></label><button type="button" class="hotkey-clear" data-hotkey-clear="${esc(command.id)}" title="Clear binding" ${binding ? "" : "disabled"}>${icon("backspace")}</button></div>`;
+      return `<div class="hotkey-row${conflicts.has(command.id) || error ? " conflict" : ""}"><span class="hotkey-command">${icon(command.icon)}<span><strong>${esc(command.name)}</strong><small>${esc(error || command.hint)}</small></span></span><span class="hotkey-scope">${command.kind === "tool" ? "Tool" : "Action"}</span><button type="button" class="hotkey-binding${recording ? " recording" : ""}" data-hotkey-record="${esc(command.id)}">${recording ? "Press a shortcut…" : keys}</button><label class="hotkey-global" title="Make this shortcut work while WinT is unfocused"><input type="checkbox" data-hotkey-global="${esc(command.id)}"${global ? " checked" : ""}${binding && command.id !== "command:focus-mode" ? "" : " disabled"}><span>Global</span></label><button type="button" class="hotkey-clear" data-hotkey-clear="${esc(command.id)}" title="Clear binding" ${binding ? "" : "disabled"}>${icon("backspace")}</button></div>`;
     }).join("") : `<div class="hotkey-empty">${icon("search_off")}Nothing matches this view.</div>`}</div>`;
 }
 
@@ -5510,7 +5517,35 @@ function saveKeepAwakeSetting(patch) {
     .catch(() => syncKeepAwakeSetting(el["settings-host"]));
 }
 
-const AUTOSTART_HINT = "Open WinT when you sign in. It starts in the notification area, out of the way, until you click its icon.";
+const AUTOSTART_HINT = "Open WinT when you sign in. You choose how it shows up when you switch this on.";
+const AUTOSTART_MODES = {
+  tray: "Opens at sign-in in the notification area, out of the way, until you click its icon.",
+  minimized: "Opens at sign-in minimized to the taskbar.",
+  normal: "Opens at sign-in on screen, like starting it yourself.",
+};
+
+function showAutostartChoice(show) {
+  const choice = el["settings-host"]?.querySelector("#setting-autostart-choice");
+  if (choice) choice.hidden = !show;
+}
+
+/** Switches starting with Windows on in the way picked in the chooser. */
+function enableAutostart(mode) {
+  const host = el["settings-host"];
+  const check = host.querySelector("#setting-autostart");
+  showAutostartChoice(false);
+  check.disabled = true;
+  beginWork("autostart", "Adding WinT to Windows startup");
+  invoke("autostart_set", { enabled: true, mode })
+    .then((status) => refreshAutostartSetting(status))
+    .catch((error) => {
+      check.checked = false;
+      check.disabled = false;
+      const label = host.querySelector("#setting-autostart-status");
+      if (label) label.textContent = String(error);
+    })
+    .finally(() => endWork("autostart"));
+}
 
 /** Windows owns this setting (and the user can flip it in Task Manager), so
  *  the checkbox always shows what Windows reports, never a saved pref. */
@@ -5523,7 +5558,12 @@ async function refreshAutostartSetting(status = null) {
     status ||= await invoke("autostart_status");
     check.checked = status.enabled;
     check.disabled = !status.changeable;
-    label.textContent = status.note || AUTOSTART_HINT;
+    label.textContent = status.note || (status.enabled ? AUTOSTART_MODES[status.mode] || AUTOSTART_HINT : AUTOSTART_HINT);
+    const change = host.querySelector("#setting-autostart-change");
+    if (change) change.hidden = !status.enabled || !status.changeable;
+    host.querySelectorAll("[data-autostart-mode]").forEach((button) => {
+      button.classList.toggle("primary", status.enabled && button.dataset.autostartMode === status.mode);
+    });
   } catch (error) {
     check.disabled = true;
     label.textContent = String(error);
@@ -5632,9 +5672,18 @@ function renderSettings() {
             <input class="setting-check" id="setting-pins-panel" type="checkbox" />
           </label>
           <label class="settings-row" for="setting-autostart">
-            <span><strong>Start WinT with Windows</strong><small id="setting-autostart-status">Open WinT when you sign in. It starts in the notification area, out of the way, until you click its icon.</small></span>
+            <span><strong>Start WinT with Windows</strong><small><span id="setting-autostart-status">Open WinT when you sign in. You choose how it shows up when you switch this on.</span> <a href="#" id="setting-autostart-change" hidden>Change</a></small></span>
             <input class="setting-check" id="setting-autostart" type="checkbox" disabled />
           </label>
+          <div class="settings-row settings-choice" id="setting-autostart-choice" hidden>
+            <span><strong>How should WinT start?</strong><small>When Windows starts WinT at sign-in, it should open…</small></span>
+            <span class="settings-choice-buttons">
+              <button class="btn" type="button" data-autostart-mode="tray">${icon("keyboard_arrow_up")}In the tray</button>
+              <button class="btn" type="button" data-autostart-mode="minimized">${icon("minimize")}Minimized</button>
+              <button class="btn" type="button" data-autostart-mode="normal">${icon("open_in_new")}On screen</button>
+              <button class="btn" type="button" id="setting-autostart-cancel">Cancel</button>
+            </span>
+          </div>
           <label class="settings-row" for="setting-dock-on-start">
             <span><strong>Dock the sidebar when WinT starts</strong><small>Put the Docked Sidebar back on its edge, at its last width, every time WinT starts - with Start WinT with Windows, right from sign-in.</small></span>
             <input class="setting-check" id="setting-dock-on-start" type="checkbox" disabled />
@@ -6608,6 +6657,21 @@ function wireShell() {
   };
 
   el["settings-host"].onclick = async (e) => {
+    const autostartMode = e.target.closest("[data-autostart-mode]");
+    if (autostartMode) {
+      enableAutostart(autostartMode.dataset.autostartMode);
+      return;
+    }
+    if (e.target.closest("#setting-autostart-cancel")) {
+      showAutostartChoice(false);
+      refreshAutostartSetting();
+      return;
+    }
+    if (e.target.closest("#setting-autostart-change")) {
+      e.preventDefault();
+      showAutostartChoice(true);
+      return;
+    }
     const navItem = e.target.closest("[data-settings-section]");
     if (e.target.closest("#setting-analytics-source")) {
       // Inside the row's label, so the click has to be stopped from also
@@ -6783,8 +6847,15 @@ function wireShell() {
     } else if (e.target.id === "setting-autostart") {
       const check = e.target;
       const enabled = check.checked;
+      // Switching on asks first how WinT should show itself at sign-in; the
+      // box stays ticked while the choice is open and Cancel clears it.
+      if (enabled) {
+        showAutostartChoice(true);
+        return;
+      }
+      showAutostartChoice(false);
       check.disabled = true;
-      beginWork("autostart", enabled ? "Adding WinT to Windows startup" : "Removing WinT from Windows startup");
+      beginWork("autostart", "Removing WinT from Windows startup");
       invoke("autostart_set", { enabled })
         .then((status) => refreshAutostartSetting(status))
         .catch((error) => {

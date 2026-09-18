@@ -334,6 +334,12 @@ window.wintHome = (() => {
         key: "awake", icon: "coffee", label: "Keep Awake", on: awake.value?.active === true, records: false, tool: "keep-awake",
         detail: awake.value?.active ? "On · holding sleep off, records nothing" : "Off · Windows sleeps as usual",
       } : pending("awake", "coffee", "Keep Awake", "keep-awake"),
+      {
+        key: "usage", icon: "favorite", label: "Usage tracking", on: state.analyticsChosen && state.analytics, records: false, go: "settings",
+        detail: state.analyticsChosen && state.analytics
+          ? "On · thank you! Tells us which screens get used - anonymous, never your projects"
+          : "Off · switch on to help us see which parts of WinT people enjoy",
+      },
     ];
   }
 
@@ -352,7 +358,7 @@ window.wintHome = (() => {
         }
         const busy = home.switching.has(row.key);
         return `<span class="home-bg-row${row.on ? " on" : ""}">
-          <button type="button" class="home-bg-open" data-home-go="tool:${row.tool}" title="Open ${esc(row.label)}">
+          <button type="button" class="home-bg-open" data-home-go="${esc(row.go || `tool:${row.tool}`)}" title="Open ${esc(row.label)}">
             <i class="home-bg-dot"></i>${icon(row.icon)}<span class="home-fav-text"><strong>${esc(row.label)}</strong><small>${esc(busy ? (row.on ? "Turning off…" : "Turning on…") : row.detail)}</small></span></button>
           <button type="button" class="home-bg-switch${row.on ? " on" : ""}" role="switch" aria-checked="${row.on}" data-home-bg="${row.key}"
             title="${row.on ? "Turn off" : "Turn on"} ${esc(row.label)}"${busy ? " disabled" : ""}><i></i></button>
@@ -365,7 +371,7 @@ window.wintHome = (() => {
    *  restarts where the activity itself remembers (all but Keep Awake). */
   async function switchBackground(key, on) {
     if (home.switching.has(key)) return;
-    const label = { clip: "clipboard history", tracker: "active window tracking", stall: "input stall tracking", awake: "Keep Awake" }[key];
+    const label = { clip: "clipboard history", tracker: "active window tracking", stall: "input stall tracking", awake: "Keep Awake", usage: "usage tracking" }[key];
     home.switching.add(key);
     beginWork(`home-bg-${key}`, `${on ? "Turning on" : "Turning off"} ${label}`);
     render();
@@ -378,6 +384,12 @@ window.wintHome = (() => {
       } else if (key === "stall") {
         const thresholdMs = reading("stall")?.value?.thresholdMs || 100;
         home.readings.set("stall", { value: await invoke("stall_watch_set", { watching: on, thresholdMs }) });
+      } else if (key === "usage") {
+        state.analytics = on;
+        state.analyticsChosen = true;
+        savePrefs();
+        applyAnalytics();
+        if (on) window.wintTrackPageView?.(currentPath());
       } else if (key === "awake") {
         home.readings.set("awake", { value: await invoke("keep_awake_set", {
           system: on, display: false, awayMode: false, minutes: 0, nudge: false, nudgeSeconds: 120,
@@ -725,6 +737,7 @@ window.wintHome = (() => {
       return;
     }
     if (kind === "rescan") return rescan();
+    if (kind === "settings") return document.getElementById("open-settings")?.click();
     if (kind === "orphans") return document.getElementById("status-orphan")?.click();
     if (kind === "search") return openSearchCommands({ fresh: true });
     if (kind === "choose-folder") {
