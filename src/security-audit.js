@@ -41,6 +41,8 @@
       what: "Real-time protection, definition age, exclusions, and past detections with what was done about them." },
     { id: "WMI", chip: "WMI", glyph: "manage_history", admin: true, name: "WMI subscriptions and Security log",
       what: "Permanent WMI event consumers and the Security log — both hidden from a standard user." },
+    { id: "Event logs", chip: "Events", glyph: "receipt_long", admin: false, name: "Event log health",
+      what: "Warnings, errors and critical events in the System and Application logs from the last 7 days — grouped, the ones every Windows PC logs set apart as normal, and the real problems explained with a fix." },
     { id: "Stalls", chip: "Stalls", glyph: "mouse", admin: false, name: "Diagnose stalls",
       what: "The freezes Input Stall Watch caught — driver time, busy cores, paging and the processes around each — traced to the driver, device, power setting or program behind them. Stalls caught while the audit is open are passed on as they arrive." },
   ];
@@ -383,8 +385,12 @@ Report each distinct cause as a finding in area "Stalls", with the ids of the st
     return `${head}\n${JSON.stringify(stallDigest(stalls))}`;
   }
 
+  const EVENT_TASK = `How to sweep the event logs: read Critical, Error and Warning events (levels 1-3) from the last 7 days at least, e.g. Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2,3; StartTime=(Get-Date).AddDays(-7)}, plus Microsoft-Windows-Windows Defender/Operational and, with administrator, the Security log's failed sign-ins (4625) and audit-log clears (1102). Group by log, provider and event id with count, first and last seen, and one sample message. Do not print every event.
+Judge each group. Many are normal on every Windows PC and need nothing: DistributedCOM 10016, a Service Control Manager 7000/7009/7031 for a service that started later, Kernel-Power 41 after a known power cut, ESENT, Perflib, VSS, Time-Service sync warnings, an app that crashed once. Put each normal group in "passed" with its count and one line saying why it is harmless. Report as findings what points at a real problem: disk, NTFS or storport errors, WHEA hardware errors, repeated bugchecks (BugCheck 1001) or unexpected shutdowns, the same app or service crashing again and again, failed Windows Update or driver installs, Defender detections or disabled protection, many failed sign-ins, a cleared audit log. Each finding carries the event ids and counts in its evidence, the likely cause, and a fix with backup and undo where it changes anything.`;
+
   function scanPrompt() {
-    const stalls = stallsInScope() ? `\n${STALL_TASK}\n\n${stallsBlock(st.stallWatch?.stalls || [], false)}\n` : "";
+    const events = st.scope.includes("Event logs") ? `\n${EVENT_TASK}\n` : "";
+    const stalls =stallsInScope() ? `\n${STALL_TASK}\n\n${stallsBlock(st.stallWatch?.stalls || [], false)}\n` : "";
     const rights = st.ranAsAdmin
       ? "Your shell runs as Administrator."
       : "Your shell runs WITHOUT administrator rights. When a check needs admin, list it under passed with detail \"skipped — needs administrator\" and move on; do not try to elevate.";
@@ -394,7 +400,7 @@ Report each distinct cause as a finding in area "Stalls", with the ids of the st
 
 Scan these areas now, and only these:
 ${areas}
-${stalls}${expected.length ? `\nThe user has marked these as expected; do not report them again:\n${expected.map((k) => `- ${k}`).join("\n")}\n` : ""}
+${events}${stalls}${expected.length ? `\nThe user has marked these as expected; do not report them again:\n${expected.map((k) => `- ${k}`).join("\n")}\n` : ""}
 ${RULES}
 
 ${FORMAT}`;

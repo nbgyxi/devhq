@@ -67,7 +67,7 @@ pub struct SidebarState {
     pub docked: bool,
     pub edge: String,
     pub width: u32,
-    /// True while the real taskbar is auto-hidden because we asked it to be.
+    /// True while the real taskbar is auto-hidden, whoever set it that way.
     pub taskbar_auto_hidden: bool,
 }
 
@@ -80,7 +80,9 @@ fn state() -> SidebarState {
             "left".into()
         },
         width: WIDTH.load(Ordering::SeqCst),
-        taskbar_auto_hidden: TASKBAR_WAS.load(Ordering::SeqCst) != u32::MAX,
+        // Read from the shell, not from what we remember doing: a taskbar the
+        // user (or a crashed run) had already set to auto-hide is hidden too.
+        taskbar_auto_hidden: unsafe { taskbar_state() } & ABS_AUTOHIDE != 0,
     }
 }
 
@@ -171,19 +173,35 @@ unsafe fn set_taskbar_state(value: u32) {
 }
 
 /// Ask the real taskbar to auto-hide, remembering what it was so undocking can
-/// put it back. A taskbar the user had already set to auto-hide is left alone:
-/// we would otherwise "restore" it to a state they never chose.
+/// put it back. A taskbar that is already auto-hidden is left alone.
 unsafe fn auto_hide_taskbar() {
-    if TASKBAR_WAS.load(Ordering::SeqCst) != u32::MAX {
+    let now = taskbar_state();
+    if now & ABS_AUTOHIDE != 0 {
         return;
     }
-    let was = taskbar_state();
-    if was & ABS_AUTOHIDE != 0 {
+    remember_original(now);
+    set_taskbar_state(now | ABS_AUTOHIDE | ABS_ALWAYSONTOP);
+}
+
+/// Bring the real taskbar back now, even if it was auto-hidden before we came
+/// along. What it was is remembered, so undocking still puts it back.
+unsafe fn show_taskbar() {
+    let now = taskbar_state();
+    if now & ABS_AUTOHIDE == 0 {
         return;
     }
-    TASKBAR_WAS.store(was, Ordering::SeqCst);
-    remember_taskbar(Some(was));
-    set_taskbar_state(was | ABS_AUTOHIDE | ABS_ALWAYSONTOP);
+    remember_original(now);
+    set_taskbar_state(now & !ABS_AUTOHIDE);
+}
+
+/// The first change we make records the user's own state; later ones keep it.
+fn remember_original(now: u32) {
+    if TASKBAR_WAS
+        .compare_exchange(u32::MAX, now, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+        remember_taskbar(Some(now));
+    }
 }
 
 unsafe fn restore_taskbar() {
@@ -529,7 +547,7 @@ pub async fn sidebar_configure(
             on_window_thread(&app, hwnd, move |hwnd| unsafe {
                 match hide_taskbar {
                     Some(true) => auto_hide_taskbar(),
-                    Some(false) => restore_taskbar(),
+                    Some(false) => show_taskbar(),
                     None => {}
                 }
                 place(hwnd)

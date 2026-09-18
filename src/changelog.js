@@ -16,6 +16,39 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.111.1",
+      date: "2026-09-18",
+      title: "Mouse back leaves a tool",
+      changes: [
+        ["fix", "The mouse's back button now leaves a tool wherever the pointer is. It used to work only over the tool's header and did nothing over the tool itself. In Files it still goes to the previous folder."],
+      ],
+    },
+    {
+      version: "0.111.0",
+      date: "2026-09-18",
+      title: "Event log health in Security Sweep",
+      changes: [
+        ["new", "Security Sweep has an Event log health scan. The agent reads the last 7 days of warnings and errors in the System and Application logs, sets apart the ones every Windows PC logs as normal, and reports the real problems (failing disks, hardware errors, crashes that keep coming back, failed updates, failed sign-ins) with a fix for each."],
+      ],
+    },
+    {
+      version: "0.110.4",
+      date: "2026-09-18",
+      title: "Minimized windows at full strength",
+      buildChecksum: "d95cf71ad404412d99b947129fa6addcef23c127eef410424eb2adc2fb423b93",
+      changes: [
+        ["better", "Minimized windows on the sidebar are no longer dimmed - they look the same as every other window."],
+      ],
+    },
+    {
+      version: "0.110.3",
+      date: "2026-09-18",
+      title: "Show taskbar button that works",
+      changes: [
+        ["fix", "The sidebar's Show taskbar / Hide taskbar button now reads the taskbar's real state. A taskbar that was already set to auto-hide no longer shows up as Hide taskbar and ignores the click. Show taskbar brings it back, and undocking still puts it back the way you had it."],
+      ],
+    },
+    {
       version: "0.110.2",
       date: "2026-09-18",
       title: "Dock settings in the sidebar menu",

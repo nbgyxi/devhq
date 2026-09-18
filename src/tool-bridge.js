@@ -143,6 +143,18 @@
     event.preventDefault();
     request("search", commandSearch ? { initialQuery: "> " } : null).catch(() => {});
   });
+  // The mouse's back button leaves the tool, as it does in the shell. The shell
+  // cannot hear it while the pointer is over this webview, so without this it
+  // only worked on the header. Listening on the way back up lets a tool with a
+  // back of its own (Files walks its folder history) claim it first.
+  for (const type of ["mousedown", "mouseup", "auxclick"]) {
+    document.addEventListener(type, (event) => {
+      if (event.button !== 3 && event.button !== 4) return;
+      const claimed = event.defaultPrevented;
+      event.preventDefault();
+      if (type === "mouseup" && event.button === 3 && !claimed) request("navigate", "overview").catch(() => {});
+    });
+  }
   persistLoop = setInterval(() => { persist().catch(() => {}); }, 2000);
   window.addEventListener("pagehide", () => { persist().catch(() => {}); });
 })();
