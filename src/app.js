@@ -5510,6 +5510,41 @@ function saveKeepAwakeSetting(patch) {
     .catch(() => syncKeepAwakeSetting(el["settings-host"]));
 }
 
+const AUTOSTART_HINT = "Open WinT when you sign in. It starts in the notification area, out of the way, until you click its icon.";
+
+/** Windows owns this setting (and the user can flip it in Task Manager), so
+ *  the checkbox always shows what Windows reports, never a saved pref. */
+async function refreshAutostartSetting(status = null) {
+  const host = el["settings-host"];
+  const check = host?.querySelector("#setting-autostart");
+  const label = host?.querySelector("#setting-autostart-status");
+  if (!check || !label) return;
+  try {
+    status ||= await invoke("autostart_status");
+    check.checked = status.enabled;
+    check.disabled = !status.changeable;
+    label.textContent = status.note || AUTOSTART_HINT;
+  } catch (error) {
+    check.disabled = true;
+    label.textContent = String(error);
+  }
+}
+
+/** Kept with the sidebar's own settings in the backend, which the Docked
+ *  Sidebar tool page writes too, so this box and that one are the same. */
+async function refreshDockOnStartSetting(saved = null) {
+  const check = el["settings-host"]?.querySelector("#setting-dock-on-start");
+  if (!check) return;
+  try {
+    saved ||= await invoke("sidebar_settings");
+    check.checked = saved?.dockOnStart === true;
+    check.disabled = false;
+  } catch (_) { /* stays disabled */ }
+}
+
+// The tool page's box changes the same setting; follow it while settings are open.
+listen("sidebar:settings", (event) => refreshDockOnStartSetting(event.payload || {}));
+
 async function refreshCliSetting(status = null) {
   const host = el["settings-host"];
   const button = host?.querySelector("#setting-cli-toggle");
@@ -5595,6 +5630,14 @@ function renderSettings() {
           <label class="settings-row" for="setting-pins-panel">
             <span><strong>Pinned tools on their own shelf</strong><small>Give the pins a panel above the status bar instead of a few chips inside it. The row wraps, so every pin stays on screen however many you keep.</small></span>
             <input class="setting-check" id="setting-pins-panel" type="checkbox" />
+          </label>
+          <label class="settings-row" for="setting-autostart">
+            <span><strong>Start WinT with Windows</strong><small id="setting-autostart-status">Open WinT when you sign in. It starts in the notification area, out of the way, until you click its icon.</small></span>
+            <input class="setting-check" id="setting-autostart" type="checkbox" disabled />
+          </label>
+          <label class="settings-row" for="setting-dock-on-start">
+            <span><strong>Dock the sidebar when WinT starts</strong><small>Put the Docked Sidebar back on its edge, at its last width, every time WinT starts - with Start WinT with Windows, right from sign-in.</small></span>
+            <input class="setting-check" id="setting-dock-on-start" type="checkbox" disabled />
           </label>
           <label class="settings-row" for="setting-minimize-to-tray">
             <span><strong>Show minimize-to-tray button</strong><small>Add a title-bar button that keeps WinT running in the notification area. Click the tray icon to bring it back.</small></span>
@@ -5713,6 +5756,8 @@ function renderSettings() {
   syncKeepAwakeSetting(host);
   host.querySelector("#setting-assistant-tool-cap").value = window.wintAssistant?.getToolCallCap?.() || 20;
   refreshCliSetting();
+  refreshAutostartSetting();
+  refreshDockOnStartSetting();
   const shellSetting = window.wintTerminalSettings;
   const shellSelect = host.querySelector("#setting-terminal-shell");
   shellSelect.innerHTML = shellSetting.profiles
@@ -6735,6 +6780,28 @@ function wireShell() {
       closeToolPins();
       savePrefs();
       markDirty("pins");
+    } else if (e.target.id === "setting-autostart") {
+      const check = e.target;
+      const enabled = check.checked;
+      check.disabled = true;
+      beginWork("autostart", enabled ? "Adding WinT to Windows startup" : "Removing WinT from Windows startup");
+      invoke("autostart_set", { enabled })
+        .then((status) => refreshAutostartSetting(status))
+        .catch((error) => {
+          check.checked = !enabled;
+          check.disabled = false;
+          const label = el["settings-host"].querySelector("#setting-autostart-status");
+          if (label) label.textContent = String(error);
+        })
+        .finally(() => endWork("autostart"));
+    } else if (e.target.id === "setting-dock-on-start") {
+      const check = e.target;
+      const enabled = check.checked;
+      beginWork("dock-on-start", enabled ? "Saving: dock the sidebar at start" : "Saving: leave the sidebar undocked at start");
+      invoke("sidebar_settings")
+        .then((saved) => invoke("sidebar_settings_set", { settings: { ...(saved || {}), dockOnStart: enabled } }))
+        .catch(() => { check.checked = !enabled; })
+        .finally(() => endWork("dock-on-start"));
     } else if (e.target.id === "setting-minimize-to-tray") {
       state.minimizeToTrayButton = e.target.checked;
       document.querySelector('.titlebar [data-win="tray"]').hidden = !state.minimizeToTrayButton;
@@ -6891,6 +6958,13 @@ async function wireToolPopoutEvents() {
     await appWindow.unminimize().catch(() => {});
     await appWindow.setFocus().catch(() => {});
     runSearchCommand(index);
+  });
+  // The docked sidebar's right-click menu asks for its own settings page.
+  await listen("sidebar:open-settings", async () => {
+    await appWindow.show().catch(() => {});
+    await appWindow.unminimize().catch(() => {});
+    await appWindow.setFocus().catch(() => {});
+    openTool("sidebar");
   });
   await listen("tool:bridge-request", async (event) => {
     const request = event.payload || {};

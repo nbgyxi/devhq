@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>WinT Sidebar</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+  /* The bar owns the whole window: no page padding, no scrollbars, and no
+     rubber-band drag - the window is positioned by the shell, not by us. */
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  body {
+    display: flex; flex-direction: column; align-items: stretch; gap: 6px;
+    padding: 10px 6px; box-sizing: border-box;
+    background: var(--panel, #12141b);
+    border-right: 1px solid var(--line, #262a36);
+    font: 12px/1.3 system-ui, "Segoe UI", sans-serif;
+    color: var(--text, #e6e8ef);
+    user-select: none; -webkit-user-select: none;
+  }
+  body[data-edge="right"] { border-right: 0; border-left: 1px solid var(--line, #262a36); }
+  /* Sizes come from the sidebar settings; these are the defaults. */
+  :root { --bar-text: 10px; --bar-icon: 22px; }
+  [hidden] { display: none !important; }
+  /* Every button is one row: the icon, then its text to the right of it. A
+     narrow bar cuts the text short with an ellipsis rather than stacking. */
+  .bar-brand, .bar-slot, .bar-win {
+    display: grid; grid-template-columns: calc(var(--bar-icon) + 2px) minmax(0, 1fr);
+    align-items: center; justify-items: start; gap: 8px; flex: none;
+    padding: 7px 10px; border-radius: 8px; border: 0; cursor: pointer; position: relative;
+    background: transparent; color: inherit; font: inherit; text-align: left;
+  }
+  .bar-brand:hover, .bar-slot:hover, .bar-win:hover, .bar-win.active { background: var(--hover, #1c2030); }
+  .bar-brand .ms, .bar-slot .ms, .bar-win img, .bar-win .ms {
+    grid-column: 1; width: calc(var(--bar-icon) + 2px); height: calc(var(--bar-icon) + 2px);
+    font-size: var(--bar-icon); line-height: calc(var(--bar-icon) + 2px); text-align: center;
+  }
+  .bar-brand strong, .bar-slot small, .bar-win small {
+    grid-column: 2; min-width: 0; max-width: 100%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--bar-text);
+  }
+  .bar-brand { margin-bottom: 4px; }
+  .bar-brand strong { letter-spacing: .08em; text-transform: uppercase; }
+  .bar-slot small { color: var(--muted, #8b93a7); }
+  .bar-win small { color: var(--text, #e6e8ef); }
+  /* The open windows fill whatever the launchers leave, and scroll on their own. */
+  .bar-windows {
+    flex: 1 1 auto; min-height: 0; overflow: hidden auto; scrollbar-width: none;
+    display: flex; flex-direction: column; gap: 2px; padding: 6px 0;
+    border-top: 1px solid var(--line, #262a36); border-bottom: 1px solid var(--line, #262a36);
+  }
+  .bar-win.active::before {
+    content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px;
+    border-radius: 2px; background: var(--accent, #6ea8fe);
+  }
+  body[data-edge="right"] .bar-win.active::before { left: auto; right: 0; }
+  .bar-win.minimized { opacity: .55; }
+  /* The row being dragged lifts off the list; everything else stops reacting. */
+  .bar-win.dragging { background: var(--hover, #1c2030); box-shadow: 0 4px 14px rgba(0,0,0,.45); z-index: 2; cursor: grabbing; }
+  body.reordering, body.reordering * { cursor: grabbing !important; }
+  body.reordering .bar-win:not(.dragging):hover { background: transparent; }
+  /* The grip on the inner edge. It sits over the border so it costs no room. */
+  .bar-grip { position: fixed; top: 0; bottom: 0; right: 0; width: 6px; cursor: ew-resize; z-index: 10; }
+  body[data-edge="right"] .bar-grip { right: auto; left: 0; }
+  .bar-grip-badge {
+    display: none; position: fixed; top: 50%; transform: translateY(-50%); right: 10px; z-index: 11;
+    padding: 3px 7px; border-radius: 6px; background: var(--accent, #6ea8fe); color: #0c0d11;
+    font: 600 11px/1.2 system-ui, "Segoe UI", sans-serif; white-space: nowrap; pointer-events: none;
+  }
+  body[data-edge="right"] .bar-grip-badge { right: auto; left: 10px; }
+  body.resizing .bar-grip-badge { display: block; }
+  .bar-grip:hover, body.resizing .bar-grip { background: var(--accent, #6ea8fe); opacity: .6; }
+  body.resizing, body.resizing * { cursor: ew-resize !important; }
+  .bar-win.skeleton { cursor: default; }
+  .bar-win.skeleton i { display: block; grid-column: 1; width: calc(var(--bar-icon) + 2px); height: calc(var(--bar-icon) + 2px); }
+  .bar-win.skeleton i, .bar-win.skeleton small {
+    color: transparent; border-radius: 4px;
+    background: linear-gradient(90deg, #1c2030 0%, #2a3042 50%, #1c2030 100%);
+    background-size: 400% 100%; animation: shimmer 1.4s ease infinite;
+  }
+  .bar-spacer { flex: 1 1 auto; }
+  .bar-geometry { display: grid; gap: 1px; padding: 6px 4px; color: var(--muted, #8b93a7); font-size: 10px; text-align: center; }
+  .bar-geometry code { font-size: 10px; }
+</style>
+</head>
+<body data-edge="left">
+  <button class="bar-brand" type="button" data-action="search" data-slot="brand" title="Search"><span class="ms" aria-hidden="true">dashboard</span><strong>WinT</strong></button>
+  <button class="bar-slot" type="button" data-action="terminal" data-slot="terminal"><span class="ms" aria-hidden="true">terminal</span><small>WinT terminal</small></button>
+  <button class="bar-slot" type="button" data-action="start" data-slot="start"><span class="ms" aria-hidden="true">grid_view</span><small>Windows</small></button>
+  <button class="bar-slot" type="button" data-action="clipboard" data-slot="clipboard"><span class="ms" aria-hidden="true">content_paste</span><small>Clipboard</small></button>
+  <div class="bar-windows" data-windows data-slot="windows" aria-label="Open windows">
+    <div class="bar-win skeleton"><i></i><small>Reading open windows</small></div>
+  </div>
+  <div class="bar-spacer" data-spacer hidden></div>
+  <div class="bar-geometry" data-geometry data-slot="geometry"></div>
+  <button class="bar-slot" type="button" data-action="tray" data-slot="tray"><span class="ms" aria-hidden="true">expand_less</span><small>Tray icons</small></button>
+  <button class="bar-slot" type="button" data-action="taskbar" data-slot="taskbar"><span class="ms" aria-hidden="true">visibility_off</span><small>Hide taskbar</small></button>
+  <button class="bar-slot" type="button" data-action="edge" data-slot="edge"><span class="ms" aria-hidden="true">swap_horiz</span><small>Flip side</small></button>
+  <button class="bar-slot" type="button" data-action="close" data-slot="close"><span class="ms" aria-hidden="true">close</span><small>Undock</small></button>
+  <div class="bar-grip" data-grip title="Drag to resize" aria-hidden="true"></div>
+  <div class="bar-grip-badge" data-grip-badge aria-hidden="true"></div>
+  <script src="sidebar.js"></script>
+</body>
+</html>

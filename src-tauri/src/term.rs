@@ -1957,6 +1957,24 @@ pub async fn term_popout(
     .unwrap_or_else(|| Err("Could not open the window.".to_string()))
 }
 
+/// The sidebar's terminal button: a fresh shell in the user's home folder,
+/// straight into a window of its own. The sidebar has no dock to mount it in.
+#[tauri::command]
+pub async fn sidebar_open_terminal(app: AppHandle) -> Result<(), String> {
+    let home = std::env::var("USERPROFILE").map_err(|_| "No home folder to open a shell in.".to_string())?;
+    let args = OpenArgs {
+        project_path: home,
+        project_name: Some("Home".into()),
+        command: None,
+        shell: None,
+        cols: None,
+        rows: None,
+        history_key: None,
+    };
+    let info = term_open(app.clone(), args).await?;
+    term_popout(app, info.id, None, None, None, None, None, None, Some(true), None).await
+}
+
 // ---- administrator terminals -------------------------------------------
 //
 // An elevated pseudoconsole is not something this process can make.

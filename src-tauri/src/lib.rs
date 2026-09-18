@@ -1,4 +1,7 @@
 mod ai;
+#[cfg(windows)]
+mod appbar;
+mod autostart;
 pub mod analytics;
 mod assistant;
 mod cli_registration;
@@ -16,6 +19,8 @@ pub mod github;
 mod jump_list;
 pub mod network;
 mod path_ping;
+mod recent;
+mod suggest;
 #[cfg(windows)]
 mod picker;
 pub mod procs;
@@ -58,7 +63,7 @@ fn show_main_window(app: &AppHandle) {
     if let Some(tray) = app.tray_by_id("wint-tray") {
         let _ = tray.set_visible(false);
     }
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -70,7 +75,7 @@ fn minimize_to_tray(app: AppHandle) {
     if let Some(tray) = app.tray_by_id("wint-tray") {
         let _ = tray.set_visible(true);
     }
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         let _ = window.hide();
     }
 }
@@ -581,6 +586,20 @@ fn tray_set_recent_tools(app: AppHandle, tools: Vec<TrayTool>) -> Result<(), Str
         .tray_by_id("wint-tray")
         .ok_or_else(|| "WinT tray icon is unavailable".to_string())?;
     tray.set_menu(Some(menu)).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn autostart_status() -> Result<autostart::Status, String> {
+    off_thread(autostart::status)
+        .await
+        .unwrap_or_else(|| Err("Could not check whether WinT starts with Windows.".into()))
+}
+
+#[tauri::command]
+async fn autostart_set(enabled: bool) -> Result<autostart::Status, String> {
+    off_thread(move || autostart::set(enabled))
+        .await
+        .unwrap_or_else(|| Err("Could not change whether WinT starts with Windows.".into()))
 }
 
 #[tauri::command]
@@ -2235,6 +2254,20 @@ startup (see `clipboard.rs`); these commands only read and edit what it kept.
 
 #[cfg(windows)]
 #[tauri::command]
+fn clipboard_recording() -> bool {
+    clipboard::recording()
+}
+
+#[cfg(windows)]
+#[tauri::command]
+async fn clipboard_recording_set(on: bool) -> bool {
+    off_thread(move || clipboard::set_recording(on))
+        .await
+        .unwrap_or_else(clipboard::recording)
+}
+
+#[cfg(windows)]
+#[tauri::command]
 async fn clipboard_history() -> Vec<clipboard::Clip> {
     off_thread(clipboard::history).await.unwrap_or_default()
 }
@@ -2446,6 +2479,11 @@ pub fn run() {
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
+            // A run that hid the taskbar and then died without undocking left
+            // it hidden. Put it back before anything else can dock again.
+            #[cfg(windows)]
+            std::thread::spawn(appbar::recover_taskbar);
+
             // One terminal and nothing else: no main window, no tray, no
             // clipboard watcher, no `wt` queue. Closing the terminal ends this
             // process, so one prompt buys exactly one window and no elevated
@@ -2461,6 +2499,8 @@ pub fn run() {
             let args: Vec<String> = std::env::args().collect();
             start_wt_request_queue(app.handle().clone());
             clipboard::start(app.handle().clone());
+            #[cfg(windows)]
+            appbar::dock_at_start(app.handle().clone());
             // Starts the keep-awake worker so a saved schedule opens its own
             // window from the moment WinT is up, whether or not anybody opens
             // the tool that wrote it.
@@ -2512,7 +2552,13 @@ pub fn run() {
                 tray = tray.icon(icon.clone());
             }
             let tray = tray.build(app)?;
-            tray.set_visible(false)?;
+            // Started by Windows at sign-in: nobody asked to see the window,
+            // so WinT waits in the notification area instead.
+            if autostart::launched_at_startup(&args) {
+                minimize_to_tray(app.handle().clone());
+            } else {
+                tray.set_visible(false)?;
+            }
             Ok(())
         });
 
@@ -2525,6 +2571,10 @@ pub fn run() {
             take_startup_tool,
             wt_report,
             cli_status,
+        autostart_status,
+        autostart_set,
+            autostart_status,
+            autostart_set,
             cli_install,
             cli_uninstall,
             assistant_status,
@@ -2652,6 +2702,7 @@ pub fn run() {
             term::term_close,
             term::term_list,
             term::term_popout,
+            term::sidebar_open_terminal,
             term::term_open_admin,
             term::term_drag_preview,
             term::term_dock,
@@ -2664,6 +2715,24 @@ pub fn run() {
             tool_window::tool_embedded_destroy,
             tool_window::tool_bridge_state_put,
             tool_window::tool_bridge_state_take,
+            appbar::sidebar_state,
+            appbar::sidebar_open,
+            appbar::sidebar_configure,
+            appbar::sidebar_close,
+            appbar::sidebar_windows,
+            appbar::sidebar_activate,
+            appbar::sidebar_window_icon,
+            appbar::sidebar_window_menu,
+            appbar::sidebar_launch_new,
+            appbar::sidebar_window_command,
+            appbar::sidebar_window_recent,
+            appbar::sidebar_start_menu,
+            appbar::sidebar_hidden_icons,
+            appbar::sidebar_suggestions,
+            appbar::sidebar_suggest_icon,
+            appbar::sidebar_suggest_launch,
+            appbar::sidebar_settings,
+            appbar::sidebar_settings_set,
             tool_window::search_show,
             tool_window::search_hide,
             tool_window::search_prepare,
@@ -2718,6 +2787,8 @@ pub fn run() {
             clipboard_pin,
             clipboard_forget,
             clipboard_clear,
+            clipboard_recording,
+            clipboard_recording_set,
             github::github_status,
             github::github_api
         ])
@@ -2746,6 +2817,11 @@ pub fn run() {
                     }
                 }
                 tool_window::destroy_all(&window.app_handle());
+                // The sidebar is a shell appbar: leaving it registered would keep
+                // the work area shrunk, and the taskbar auto-hidden, after the
+                // process is gone.
+                #[cfg(windows)]
+                appbar::teardown();
                 term::shutdown();
                 // A pktmon session outliving the window would go on
                 // filtering this machine's traffic with nothing left to
@@ -2768,6 +2844,8 @@ pub fn run() {
         take_startup_tool,
         wt_report,
         cli_status,
+        autostart_status,
+        autostart_set,
         cli_install,
         cli_uninstall,
         assistant_status,

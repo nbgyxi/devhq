@@ -863,7 +863,7 @@ fn decode_thumbnail(path: &Path, size: u32) -> Result<Option<String>, String> {
     rgba_to_data_url(rgba.width(), rgba.height(), rgba.as_raw())
 }
 
-fn rgba_to_data_url(width: u32, height: u32, pixels: &[u8]) -> Result<Option<String>, String> {
+pub(crate) fn rgba_to_data_url(width: u32, height: u32, pixels: &[u8]) -> Result<Option<String>, String> {
     let mut png = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut png, width, height);

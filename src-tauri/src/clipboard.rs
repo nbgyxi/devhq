@@ -168,6 +168,42 @@ fn load(path: &PathBuf) -> Vec<Clip> {
         .unwrap_or_default()
 }
 
+/// Whether copies are being recorded. Off only when the user paused it, which
+/// is written down as a marker file so it stays off across restarts.
+static RECORDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+fn paused_marker() -> Option<PathBuf> {
+    APP.get()?
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join("clipboard-paused"))
+}
+
+pub fn recording() -> bool {
+    RECORDING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Pauses or resumes recording. The listener stays registered either way; a
+/// paused one simply ignores what Windows tells it.
+pub fn set_recording(on: bool) -> bool {
+    RECORDING.store(on, std::sync::atomic::Ordering::Relaxed);
+    if let Some(marker) = paused_marker() {
+        if on {
+            let _ = std::fs::remove_file(&marker);
+        } else {
+            if let Some(dir) = marker.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&marker, b"");
+        }
+    }
+    if let Some(app) = APP.get() {
+        let _ = app.emit("clipboard:recording", on);
+    }
+    on
+}
+
 /// Records a clip and tells every window about it. Returns the stored entry,
 /// which is the existing one moved back to the top when the same content was
 /// copied again.
@@ -244,6 +280,10 @@ pub fn clear() -> Vec<Clip> {
 pub fn start(app_handle: AppHandle) {
     let _ = APP.set(app_handle.clone());
     std::thread::spawn(move || {
+        // Before the listener exists, so a paused history never takes a copy.
+        if paused_marker().is_some_and(|marker| marker.exists()) {
+            RECORDING.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
         let path = app_handle
             .path()
             .app_data_dir()
@@ -300,7 +340,7 @@ fn base64(bytes: &[u8]) -> String {
 
 #[cfg(windows)]
 mod win {
-    use super::{base64, classify, new_id, now_ms, remember, Clip, MAX_IMAGE_BYTES, MAX_TEXT_CHARS};
+    use super::{base64, classify, new_id, now_ms, recording, remember, Clip, MAX_IMAGE_BYTES, MAX_TEXT_CHARS};
     use windows::core::w;
     use windows::Win32::Foundation::{HGLOBAL, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::DataExchange::{
@@ -355,8 +395,10 @@ mod win {
                 return;
             }
             // Whatever is already on the clipboard counts as the first entry.
-            if let Ok(Some(clip)) = read_clipboard() {
-                remember(clip);
+            if recording() {
+                if let Ok(Some(clip)) = read_clipboard() {
+                    remember(clip);
+                }
             }
             let mut message = MSG::default();
             while GetMessageW(&mut message, None, 0, 0).0 > 0 {
@@ -373,6 +415,11 @@ mod win {
         lparam: LPARAM,
     ) -> LRESULT {
         if message == WM_CLIPBOARDUPDATE {
+            // Paused: Windows still says the clipboard changed, but nothing
+            // is read, so nothing that was copied ever reaches WinT.
+            if !recording() {
+                return LRESULT(0);
+            }
             if let Ok(Some(clip)) = read_clipboard() {
                 remember(clip);
             }

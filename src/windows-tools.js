@@ -15,6 +15,7 @@
     { id: "clipboard", name: "Clipboard History", icon: "content_paste", hint: "everything you copy, recorded from startup — search, pin, restore, forget", keywords: "clipboard clip clips history copied copy cut paste buffer text links urls code snippets search restore pin forget clear earlier" },
     { id: "stall-watch", name: "Input Stall Watch", icon: "mouse", hint: "catch the moments the mouse or the whole PC freezes, and see what caused them", keywords: "mouse freeze freezes frozen stutter stutters lag laggy hitch hiccup slow pointer cursor jumps jumping sticks sticky input stall stalls latency dpc interrupt isr driver latencymon diagnose diagnostics monitor watch background paging hard faults cpu spike wireless receiver usb power saving hook" },
     { id: "keep-awake", name: "Keep Awake", icon: "coffee", hint: "keep Windows and the display awake for as long as you need", keywords: "keep awake stay awake sleep no sleep power display screen monitor timeout screensaver lock idle prevent caffeine caffeinate insomnia presentation meeting build download transfer render chat presence away status active green jiggle nudge mouse mover pointer idle timer stay active schedule scheduled hours weekdays weekends working hours 9 to 5 automatic recurring daily" },
+    { id: "sidebar", name: "Docked Sidebar", icon: "dock_to_right", hint: "a rail docked to the edge of the screen that Windows reserves room for, with the real taskbar out of the way", keywords: "sidebar side bar rail dock docked appbar app bar taskbar task bar replacement replace edge left right screen edge reserve work area maximize maximized under behind overlap always on top topmost launcher launch bar shortcuts autohide auto-hide auto hide hidden explorer shell desktop" },
     { id: "time-tracker", name: "Active Window Time Tracker", icon: "schedule", hint: "local time by application and window title", keywords: "time tracker tracking activity active window title productivity apps applications usage screen time hours focus idle away log history what did i do local private" },
   ];
   const repairTools = [
@@ -274,11 +275,82 @@
     if (active === "time-tracker") renderTimeTracker(tool);
     if (active === "security-audit") renderSecurityAudit(tool);
     if (active === "stall-watch") renderStallWatch(tool);
+    if (active === "sidebar") renderSidebar(tool);
     if (active === "repair-swap") renderAudioChooser(tool);
     else if (["repair-radio","repair-usb","repair-bounds","repair-wifi"].includes(active)) renderTargetRepair(tool);
     else if (active.startsWith("repair-")) renderRepair(tool);
   }
 
+  // The sidebar is a window of its own, docked by the backend as a shell
+  // appbar. This page is only its switch: every reading below comes back from
+  // the commands, because the shell - not this tool - has the last word on
+  // where a docked bar ends up and how wide it is allowed to be.
+  let dock = { docked: false, edge: "left", width: 200, taskbarAutoHidden: false };
+  let dockKnown = false;
+  // The rail can be flipped, resized or undocked from itself; follow it.
+  window.__TAURI__?.event?.listen("sidebar:state", (event) => {
+    dock = event.payload; dockKnown = true;
+    if (active === "sidebar" && !host?.querySelector("[data-dock-width]:active")) renderSidebar(catalog.find((x) => x.id === "sidebar"));
+  });
+  function renderSidebar(tool) {
+    // The sidebar outlives this page - it can already be docked when the tool
+    // is opened, or from an earlier visit. Draw what we last knew immediately,
+    // then correct it from the backend.
+    if (!dockKnown) refreshDock();
+    if (!barKnown) loadBar();
+    const edges = [["left", "Left edge"], ["right", "Right edge"]];
+    host.innerHTML = header(tool, `<div class="dock-page">
+      <p>Docking uses <code>SHAppBarMessage</code>, the same call Explorer's own taskbar makes. Windows shrinks the desktop work area by the width below, so a maximized window stops at the sidebar instead of going under it. While it is docked the real taskbar is set to auto-hide; undocking puts it back exactly as it was, and so does closing WinT.</p>
+      <div class="dock-row"><button class="btn${dock.docked ? "" : " primary"}" data-dock-toggle>${icon(dock.docked ? "close" : "dock_to_right")}${dock.docked ? "Undock" : "Dock the sidebar"}</button>${edges.map(([id, label]) => `<button class="btn${dock.edge === id ? " on" : ""}" data-dock-edge="${id}">${esc(label)}</button>`).join("")}</div>
+      <label class="dock-row"><span>Width</span><input type="range" min="48" max="480" step="4" value="${dock.width}" data-dock-width><code data-dock-width-out>${dock.width} dip</code></label>
+      <div class="win-status" data-win-status data-tone="${dock.docked ? "ok" : ""}">${dock.docked ? `Docked to the ${esc(dock.edge)} edge. The taskbar is ${dock.taskbarAutoHidden ? "auto-hidden" : "left as you had it"}.` : "Not docked. The desktop work area is untouched."}</div>
+      <label class="dock-slot"><input type="checkbox" data-dock-on-start${bar.dockOnStart === true ? " checked" : ""}>${icon("start")}<span>Dock when WinT starts</span></label>
+      <h3 class="dock-head">On the sidebar</h3>
+      <label class="dock-slot"><input type="checkbox" data-dock-hide-taskbar${bar.hideTaskbar !== false ? " checked" : ""}>${icon("hide")}<span>Hide the Windows taskbar while the sidebar is docked</span></label>
+      <div class="dock-slots">${DOCK_SLOTS.map(([id, label, glyph]) => `<label class="dock-slot"><input type="checkbox" data-dock-slot="${id}"${bar.slots[id] !== false ? " checked" : ""}>${icon(glyph)}<span>${esc(label)}</span></label>`).join("")}</div>
+      <label class="dock-row"><span>Text size</span><input type="range" min="8" max="18" step="1" value="${bar.textSize}" data-dock-size="textSize"><code data-dock-size-out="textSize">${bar.textSize} px</code></label>
+      <label class="dock-row"><span>Icon size</span><input type="range" min="14" max="40" step="1" value="${bar.iconSize}" data-dock-size="iconSize"><code data-dock-size-out="iconSize">${bar.iconSize} px</code></label>
+      <p>Changes show on the sidebar straight away. The WinT mark at the top of the bar opens the Start menu.</p>
+    </div>`);
+  }
+  // What the rail draws. This page runs in an isolated webview with storage of
+  // its own, so the settings are kept by the backend, which also hands every
+  // change to the docked rail as it is made.
+  const DOCK_SLOTS = [["brand", "WinT (opens Search)", "dashboard"], ["start", "Windows Start", "grid_view"], ["clipboard", "Clipboard", "content_paste"], ["windows", "Open windows", "select_window"], ["geometry", "Edge and width readout", "straighten"], ["tray", "Tray icons", "expand_less"], ["taskbar", "Show / hide taskbar", "visibility_off"], ["edge", "Flip side", "swap_horiz"], ["close", "Undock", "close"]];
+  let bar = { textSize: 10, iconSize: 22, slots: {} };
+  let barKnown = false;
+  async function loadBar() {
+    barKnown = true;
+    try {
+      const saved = await invoke("sidebar_settings");
+      bar = { ...bar, ...(saved || {}), slots: { ...(saved?.slots || {}) } };
+    } catch (_) { return; }
+    if (active === "sidebar") renderSidebar(catalog.find((x) => x.id === "sidebar"));
+  }
+  // The rail's own taskbar button saves settings too; keep this page in step.
+  window.__TAURI__?.event?.listen("sidebar:settings", (event) => {
+    const saved = event.payload || {};
+    bar = { ...bar, ...saved, slots: { ...(saved.slots || {}) } };
+    barKnown = true;
+    if (active === "sidebar" && !host?.querySelector("input[type=range]:active")) renderSidebar(catalog.find((x) => x.id === "sidebar"));
+  });
+  function saveBar() {
+    invoke("sidebar_settings_set", { settings: bar }).catch(() => { /* the rail keeps what it had */ });
+  }
+  /** Every sidebar command answers with the whole state, so the page never has
+   *  to guess what the shell allowed. */
+  async function refreshDock() {
+    dockKnown = true;
+    try { dock = await invoke("sidebar_state"); } catch (error) { return; }
+    if (active === "sidebar") renderSidebar(catalog.find((x) => x.id === "sidebar"));
+  }
+  async function dockCall(command, args) {
+    dockKnown = true;
+    try {
+      dock = await work("sidebar", command === "sidebar_close" ? "Undocking the sidebar" : "Docking the sidebar", invoke(command, args));
+    } catch (error) { return status(String(error), "bad"); }
+    if (active === "sidebar") renderSidebar(catalog.find((x) => x.id === "sidebar"));
+  }
   // The audit lives in a file of its own and is loaded the first time it opens,
   // from whichever page this host is running in.
   function renderSecurityAudit(tool) {
@@ -856,6 +928,8 @@
     if (event.target.closest("[data-tracker-export]")) return exportTrackerCsv();
     const trackerRangeButton=event.target.closest("[data-tracker-range]");if(trackerRangeButton){trackerRange=trackerRangeButton.dataset.trackerRange;trackerSelected="";return renderTimeTracker(catalog.find((x)=>x.id==="time-tracker"));}
     const trackerApp=event.target.closest("[data-tracker-app]");if(trackerApp){trackerSelected=trackerApp.dataset.trackerApp;return renderTimeTracker(catalog.find((x)=>x.id==="time-tracker"));}
+    if(event.target.closest("[data-dock-toggle]"))return dockCall(dock.docked?"sidebar_close":"sidebar_open",dock.docked?undefined:{edge:dock.edge,width:dock.width,hideTaskbar:bar.hideTaskbar!==false});
+    const dockEdge=event.target.closest("[data-dock-edge]");if(dockEdge){const edge=dockEdge.dataset.dockEdge;if(dock.docked)return dockCall("sidebar_configure",{edge});dock={...dock,edge};return renderSidebar(catalog.find((x)=>x.id==="sidebar"));}
     if(event.target.closest('[data-clip-capture]'))return captureClipboard();
     if(event.target.closest('[data-clip-clear]'))return clearClips();
     const clipKindButton=event.target.closest('[data-clip-kind]');if(clipKindButton){clipboardKind=clipKindButton.dataset.clipKind;return renderClipboard(catalog.find((item)=>item.id==='clipboard'));}
@@ -967,7 +1041,7 @@
   }
   window.wintWindowsTools = {
     catalog: () => catalog.map((x) => ({ ...x })),
-    mount(node) { host = node; host.onclick = click; host.oninput = (event) => { const slider=event.target.closest("[data-audio-volume]");if(slider)slider.closest(".audio-volume")?.querySelector("output")?.replaceChildren(`${slider.value}%`); }; host.onchange = (event) => { const slider=event.target.closest("[data-audio-volume]");if(slider)return setAudioVolume(slider.dataset.audioVolume,Number(slider.value)); const from=event.target.closest("[data-awake-from]");if(from){const minute=awakeMinutes(from.value);if(minute!==null)saveAwakeSchedule({startMinute:minute});return;} const to=event.target.closest("[data-awake-to]");if(to){const minute=awakeMinutes(to.value);if(minute!==null)saveAwakeSchedule({endMinute:minute});} }; host.onkeydown = (e) => { if (e.key !== "Enter") return; if(e.target.matches("[data-event-text]"))loadEvents();else if(e.target.matches("[data-reg-path]"))loadRegistry();else if(e.target.matches("[data-log-path],[data-log-filter]"))loadLogTail();else if(e.target.matches("[data-lock-path]"))inspectLocks(); }; render(); },
+    mount(node) { host = node; host.onclick = click; host.oninput = (event) => { const barSize=event.target.closest("[data-dock-size]");if(barSize){const key=barSize.dataset.dockSize;bar={...bar,[key]:Number(barSize.value)};saveBar();host.querySelector(`[data-dock-size-out="${key}"]`)?.replaceChildren(`${barSize.value} px`);return;} const slider=event.target.closest("[data-audio-volume]");if(slider)slider.closest(".audio-volume")?.querySelector("output")?.replaceChildren(`${slider.value}%`); const width=event.target.closest("[data-dock-width]");if(width)host.querySelector("[data-dock-width-out]")?.replaceChildren(`${width.value} dip`); }; host.onchange = (event) => { const onStart=event.target.closest("[data-dock-on-start]");if(onStart){bar={...bar,dockOnStart:onStart.checked};return saveBar();} const hideBar=event.target.closest("[data-dock-hide-taskbar]");if(hideBar){bar={...bar,hideTaskbar:hideBar.checked};saveBar();return dock.docked?dockCall("sidebar_configure",{hideTaskbar:hideBar.checked}):undefined;} const barSlot=event.target.closest("[data-dock-slot]");if(barSlot){bar={...bar,slots:{...bar.slots,[barSlot.dataset.dockSlot]:barSlot.checked}};return saveBar();} const dockWidth=event.target.closest("[data-dock-width]");if(dockWidth){dock={...dock,width:Number(dockWidth.value)};return dockCall("sidebar_configure",{width:dock.width});} const slider=event.target.closest("[data-audio-volume]");if(slider)return setAudioVolume(slider.dataset.audioVolume,Number(slider.value)); const from=event.target.closest("[data-awake-from]");if(from){const minute=awakeMinutes(from.value);if(minute!==null)saveAwakeSchedule({startMinute:minute});return;} const to=event.target.closest("[data-awake-to]");if(to){const minute=awakeMinutes(to.value);if(minute!==null)saveAwakeSchedule({endMinute:minute});} }; host.onkeydown = (e) => { if (e.key !== "Enter") return; if(e.target.matches("[data-event-text]"))loadEvents();else if(e.target.matches("[data-reg-path]"))loadRegistry();else if(e.target.matches("[data-log-path],[data-log-filter]"))loadLogTail();else if(e.target.matches("[data-lock-path]"))inspectLocks(); }; render(); },
     open(id) { if (!catalog.some((x) => x.id === id)) return; active = id; render(); if (id === "events") restoreEventPopout(); resumeHandoff(id); },
     opened() { if (active === "events" && timer) loadEvents(); },
     active: () => active,

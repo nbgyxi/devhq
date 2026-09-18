@@ -11,7 +11,8 @@
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap rescap">
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  IgnorableNamespaces="uap rescap desktop">
 
   <Identity
     Name="{{IDENTITY_NAME}}"
@@ -44,6 +45,14 @@
         Square44x44Logo="Assets\Square44x44Logo.png">
         <uap:DefaultTile Square71x71Logo="Assets\Square71x71Logo.png" Square310x310Logo="Assets\Square310x310Logo.png" Wide310x150Logo="Assets\Wide310x150Logo.png" />
       </uap:VisualElements>
+      <Extensions>
+        <!-- "Start WinT with Windows" in Settings. A package cannot use the
+             Run key, so it switches this task instead (src-tauri/src/autostart.rs
+             looks it up by this id). Off until the user turns it on. -->
+        <desktop:Extension Category="windows.startupTask" Executable="WinT.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="WinTStartup" Enabled="false" DisplayName="{{DISPLAY_NAME}}" />
+        </desktop:Extension>
+      </Extensions>
     </Application>
   </Applications>
 

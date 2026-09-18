@@ -16,6 +16,125 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.110.2",
+      date: "2026-09-18",
+      title: "Dock settings in the sidebar menu",
+      changes: [
+        ["new", "Dock settings sits at the top of the sidebar's right-click menu and opens the Docked Sidebar page."],
+        ["better", "The suggested apps menu opens straight away: the list and its icons are read ahead of time and kept up to date in the background."],
+        ["fix", "An app Windows counts twice - Paint.NET and paintdotnet, Command Prompt and cmd - is suggested once, under the name the Start menu uses."],
+      ],
+    },
+    {
+      version: "0.110.1",
+      date: "2026-09-18",
+      title: "A terminal button in the sidebar",
+      changes: [
+        ["new", "The sidebar has a WinT terminal button near the top: one click opens a shell in your home folder in its own WinT terminal window."],
+      ],
+    },
+    {
+      version: "0.110.0",
+      date: "2026-09-18",
+      title: "Suggested apps in the sidebar",
+      changes: [
+        ["new", "Right-click the sidebar anywhere but a window for a menu of apps you probably want to open next, with their icons, ranked by how often and how recently you start them. Apps that already have a window open are left out."],
+      ],
+    },
+    {
+      version: "0.109.1",
+      date: "2026-09-18",
+      title: "A bigger app icon",
+      changes: [
+        ["better", "The WinT icon now fills its whole square - on the taskbar, in the Start menu, in the window title and in the app itself - instead of sitting small inside a wide transparent border."],
+      ],
+    },
+    {
+      version: "0.109.0",
+      date: "2026-09-18",
+      title: "Right-click and dock-at-start for the sidebar",
+      changes: [
+        ["new", "Right-click a window on the sidebar for the taskbar's menu: start a new copy of the app (a new VS Code window, say), minimize, restore or maximize it, or close it - or every window of that app at once."],
+        ["new", "The same menu lists the app's recent files and folders, the ones its taskbar jump list shows, and opens them in that app. VS Code, Cursor and the other VS Code editors list their recent folders and workspaces."],
+        ["new", "Dock when WinT starts: a new setting, on the Docked Sidebar page and in Settings, that docks the sidebar every time WinT starts, on the edge and at the width you last used."],
+      ],
+    },
+    {
+      version: "0.108.0",
+      date: "2026-09-18",
+      title: "A leaner sidebar",
+      changes: [
+        ["new", "A Windows button on the sidebar opens the Windows Start menu."],
+        ["better", "Clicking WinT at the top of the sidebar opens Search, so the separate Search button is gone. WinT itself can now be turned off on the Docked Sidebar page too."],
+        ["better", "The Overview button is gone from the sidebar."],
+      ],
+    },
+    {
+      version: "0.107.1",
+      date: "2026-09-18",
+      title: "Tray icons from the sidebar",
+      changes: [
+        ["new", "A Tray icons button on the sidebar opens the notification area's Show hidden icons flyout, so the tray is in reach while the taskbar is hidden. It can be turned off on the Docked Sidebar page."],
+      ],
+    },
+    {
+      version: "0.107.0",
+      date: "2026-09-18",
+      title: "Sidebar you can arrange",
+      changes: [
+        ["new", "Drag windows up and down the sidebar to put them in the order you like. The order is remembered, so windows reopened later, even after a restart, go back to their places. Each Edge profile keeps a place of its own."],
+        ["new", "A Show taskbar / Hide taskbar button on the sidebar, next to Undock, and a matching setting on the Docked Sidebar page for whether docking hides the Windows taskbar."],
+        ["fix", "Docking and undocking from the Docked Sidebar page takes one press. It used to report the old state, so the page only caught up on the second press."],
+        ["fix", "The sidebar's Overview button, and bringing WinT back from the notification area, work while a tool is open. Before, WinT could not find its own window then."],
+      ],
+    },
+    {
+      version: "0.106.0",
+      date: "2026-09-18",
+      title: "Start with Windows",
+      changes: [
+        ["new", "Settings has a Start WinT with Windows switch. When it is on, WinT opens as you sign in and waits in the notification area instead of putting a window in front of you. Click its icon to bring it up."],
+        ["new", "If Windows has WinT's startup turned off in Settings > Apps > Startup, or your organization decides it, the switch says so instead of pretending to work."],
+      ],
+    },
+    {
+      version: "0.105.1",
+      date: "2026-09-18",
+      title: "What runs in the background",
+      changes: [
+        ["new", "Home now shows what WinT is doing in the background: whether clipboard history is recording, whether active windows are being tracked, whether Input Stall Watch is watching, and whether Keep Awake is holding. Each one says plainly if it is on or off, and a click opens its tool."],
+        ["new", "When nothing is recording, Home says so: WinT is not recording any information right now."],
+        ["new", "Each one has its own switch there. Clipboard history can now be paused: while it is, nothing you copy reaches WinT, and it stays paused after a restart. Stop all recording turns off everything that keeps information in one click."],
+      ],
+    },
+    {
+      version: "0.105.0",
+      date: "2026-09-17",
+      title: "Docked sidebar",
+      changes: [
+        ["new", "A sidebar you can dock to the left or right edge of the screen. Windows reserves the room for it, so maximizing a window now stops at the sidebar instead of disappearing behind it."],
+        ["new", "Docking the sidebar sets the real taskbar to auto-hide, and undocking puts it back the way you had it."],
+        ["new", "The sidebar lists every open window with its own icon and title, like the taskbar: the active one is marked, click one to switch to it, click the active one to minimize it. Store apps show their own icon, not a generic one."],
+        ["new", "Drag the sidebar's inner edge to make it wider or narrower. While you drag, a badge shows the new width, and it is applied when you let go."],
+        ["new", "Every sidebar button shows its text to the right of its icon."],
+        ["new", "Choose which buttons the sidebar shows, and set its text and icon size, from the Docked Sidebar page. Changes appear on the bar straight away."],
+        ["new", "The WinT mark at the top of the sidebar opens the Start menu."],
+        ["fix", "The sidebar's Overview button brings the WinT window to the front, even when it is already open behind other windows."],
+        ["fix", "The width slider on the Docked Sidebar page resizes the docked bar, and the page and the bar stay in step whichever one you change it from."],
+        ["fix", "Undocking always brings the taskbar back. If WinT closed without undocking, for example after a crash, the taskbar is un-hidden the next time it starts."],
+        ["new", "The sidebar carries buttons for the overview, search and clipboard history, and can be flipped to the other edge or undocked from the bar itself."],
+      ],
+    },
+    {
+      version: "0.104.1",
+      date: "2026-09-17",
+      title: "Installer fix",
+      buildChecksum: "59496b42032751be539a16944aa72c68d45bc39d2cc62721f99554e0ef9c73e4",
+      changes: [
+        ["fix", "The MSI installer builds again: the wint command-line tool was being packed into it twice."],
+      ],
+    },
+    {
       version: "0.104.0",
       date: "2026-09-17",
       title: "Diagnose stalls",

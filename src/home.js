@@ -73,6 +73,7 @@ window.wintHome = (() => {
     ["stall", "Reading Input Stall Watch", () => invoke("stall_watch_status")],
     ["cli", "Checking the wint command", () => invoke("cli_status")],
     ["awake", "Reading Keep Awake", () => invoke("keep_awake_status")],
+    ["clip", "Reading clipboard history", () => invoke("clipboard_recording")],
   ];
 
   const home = {
@@ -81,6 +82,8 @@ window.wintHome = (() => {
     /** source -> { value } | { error } once read; absent while it is coming. */
     readings: new Map(),
     looking: false,
+    /** Background activities being switched right now. */
+    switching: new Set(),
     lookedAt: 0,
     /** Last HTML written per region, so a redraw only touches what changed. */
     drawn: new Map(),
@@ -268,11 +271,13 @@ window.wintHome = (() => {
   }
 
   /** Reads every source Home watches, streaming each answer into the page as
-   *  it lands. Sources nothing watches are not read at all. */
+   *  it lands. Sources nothing watches are not read at all - except the ones
+   *  the "Running in the background" strip needs, which are always read. */
   async function look() {
     if (home.looking) return;
     const watched = new Set(prefs().watched);
-    const needed = LOOK_SOURCES.filter(([source]) => FLAT.some((item) => item.source === source && watched.has(item.key)));
+    const needed = LOOK_SOURCES.filter(([source]) => BACKGROUND_SOURCES.includes(source)
+      || FLAT.some((item) => item.source === source && watched.has(item.key)));
     home.looking = true;
     home.readings.clear();
     render();
@@ -293,6 +298,103 @@ window.wintHome = (() => {
     endWork("home-look");
     render();
     markDirty("activity");
+  }
+
+  /* ---------------------------------------------------------- background */
+
+  /** Sources the background strip reads on every look, watched or not. */
+  const BACKGROUND_SOURCES = ["stall", "awake", "clip"];
+
+  /** What WinT does while nobody is looking: one row per thing that runs on
+   *  its own. `records` marks the ones that keep information about this PC. */
+  function backgroundRows() {
+    const clip = reading("clip");
+    const stall = reading("stall");
+    const awake = reading("awake");
+    const tracking = window.wintTimeTracker?.getEnabled?.() === true;
+    const pending = (key, iconName, label, tool) => ({ key, icon: iconName, label, tool, pending: true });
+    return [
+      clip ? {
+        key: "clip", icon: "content_paste", label: "Clipboard history", on: clip.value === true, records: true, tool: "clipboard",
+        detail: clip.error ? "Could not be read" : clip.value
+          ? "Recording · keeps your last 250 copies, text and images, on this PC"
+          : "Paused · nothing you copy is kept",
+      } : pending("clip", "content_paste", "Clipboard history", "clipboard"),
+      {
+        key: "tracker", icon: "schedule", label: "Active window tracking", on: tracking, records: true, tool: "time-tracker",
+        detail: tracking ? "Recording · notes which window is in front every few seconds" : "Off · not noting which window you use",
+      },
+      stall ? {
+        key: "stall", icon: "mouse", label: "Input stall tracking", on: stall.value?.watching === true, records: true, tool: "stall-watch",
+        detail: stall.error ? "Could not be read" : stall.value?.watching
+          ? `Recording · catching freezes longer than ${stall.value.thresholdMs} ms`
+          : "Off · not watching for freezes",
+      } : pending("stall", "mouse", "Input stall tracking", "stall-watch"),
+      awake ? {
+        key: "awake", icon: "coffee", label: "Keep Awake", on: awake.value?.active === true, records: false, tool: "keep-awake",
+        detail: awake.value?.active ? "On · holding sleep off, records nothing" : "Off · Windows sleeps as usual",
+      } : pending("awake", "coffee", "Keep Awake", "keep-awake"),
+    ];
+  }
+
+  function backgroundHtml() {
+    const rows = backgroundRows();
+    const pending = rows.some((row) => row.pending);
+    const recording = rows.filter((row) => row.on && row.records);
+    const summary = pending ? "reading…"
+      : recording.length ? `recording: ${recording.map((row) => row.label.toLowerCase()).join(", ")}`
+        : "not recording any information";
+    return `<span class="home-bg-head">${icon("sensors")}<strong>Running in the background</strong><small>${esc(summary)}</small>
+        ${recording.length ? `<span class="home-fill"></span><button type="button" class="home-ghost small" data-home-act="bg-all-off">${icon("block")}Stop all recording</button>` : ""}</span>
+      <span class="home-bg-rows">${rows.map((row) => {
+        if (row.pending) {
+          return `<span class="home-bg-row skeleton">${icon(row.icon)}<span class="home-fav-text"><strong>${esc(row.label)}</strong><small>Reading…</small></span></span>`;
+        }
+        const busy = home.switching.has(row.key);
+        return `<span class="home-bg-row${row.on ? " on" : ""}">
+          <button type="button" class="home-bg-open" data-home-go="tool:${row.tool}" title="Open ${esc(row.label)}">
+            <i class="home-bg-dot"></i>${icon(row.icon)}<span class="home-fav-text"><strong>${esc(row.label)}</strong><small>${esc(busy ? (row.on ? "Turning off…" : "Turning on…") : row.detail)}</small></span></button>
+          <button type="button" class="home-bg-switch${row.on ? " on" : ""}" role="switch" aria-checked="${row.on}" data-home-bg="${row.key}"
+            title="${row.on ? "Turn off" : "Turn on"} ${esc(row.label)}"${busy ? " disabled" : ""}><i></i></button>
+        </span>`;
+      }).join("")}</span>
+      ${!pending && !recording.length ? `<span class="home-bg-none">${icon("verified_user")}WinT is not recording any information right now.</span>` : ""}`;
+  }
+
+  /** Turns one background activity on or off, and keeps it that way across
+   *  restarts where the activity itself remembers (all but Keep Awake). */
+  async function switchBackground(key, on) {
+    if (home.switching.has(key)) return;
+    const label = { clip: "clipboard history", tracker: "active window tracking", stall: "input stall tracking", awake: "Keep Awake" }[key];
+    home.switching.add(key);
+    beginWork(`home-bg-${key}`, `${on ? "Turning on" : "Turning off"} ${label}`);
+    render();
+    try {
+      if (key === "clip") {
+        home.readings.set("clip", { value: await invoke("clipboard_recording_set", { on }) });
+      } else if (key === "tracker") {
+        window.wintTimeTracker?.setAlways(on);
+        window.wintTimeTracker?.setEnabled(on);
+      } else if (key === "stall") {
+        const thresholdMs = reading("stall")?.value?.thresholdMs || 100;
+        home.readings.set("stall", { value: await invoke("stall_watch_set", { watching: on, thresholdMs }) });
+      } else if (key === "awake") {
+        home.readings.set("awake", { value: await invoke("keep_awake_set", {
+          system: on, display: false, awayMode: false, minutes: 0, nudge: false, nudgeSeconds: 120,
+          reason: on ? "Turned on from Home" : "",
+        }) });
+      }
+    } catch (error) {
+      console.error(`Could not switch ${label}`, error);
+    }
+    home.switching.delete(key);
+    endWork(`home-bg-${key}`);
+    render();
+  }
+
+  async function stopAllRecording() {
+    const rows = backgroundRows().filter((row) => row.on && row.records && !row.pending);
+    await Promise.all(rows.map((row) => switchBackground(row.key, false)));
   }
 
   /* ------------------------------------------------------------- drawing */
@@ -468,7 +570,7 @@ window.wintHome = (() => {
       <button type="button" class="home-tbtn home-push${home.ui.sectionsOpen ? " on" : ""}" data-home-act="sections">${icon("visibility")}<span>Sections</span><span class="mono">${shown}/${SECTIONS.length}</span></button>
       <button type="button" class="home-tbtn${home.ui.editing ? " done" : ""}" data-home-act="edit">${icon(home.ui.editing ? "check_circle" : "tune")}<span>${home.ui.editing ? "Done" : "Customize"}</span></button>
       <button type="button" class="btn primary home-refresh" data-home-act="refresh"${home.looking ? " disabled" : ""}>${icon("refresh")}<span>Refresh</span></button>
-      <span class="home-promise">${icon("bolt")}Nothing scans in the background</span>`;
+      <span class="home-promise">${icon("bolt")}Home only looks when opened or refreshed</span>`;
   }
 
   function sectionsPanelHtml() {
@@ -532,6 +634,7 @@ window.wintHome = (() => {
   function mount(host) {
     home.host = host;
     host.innerHTML = `<div class="home-toolbar" data-region="toolbar"></div>
+      <div class="home-bg" data-region="background"></div>
       <div class="home-scroll"><div class="home-grid" data-region="grid">
         <section class="home-sec home-panel" data-region="sections" hidden></section>
         <section class="home-sec home-setup" data-region="setup" hidden></section>
@@ -540,6 +643,12 @@ window.wintHome = (() => {
         <section class="home-sec home-editbar" data-region="editbar" hidden></section>
       </div></div>`;
     host.addEventListener("click", onClick);
+    window.addEventListener("wint:time-tracker-changed", () => render());
+    // Clipboard recording can be paused from its own tool as well as here.
+    listen("clipboard:recording", (event) => {
+      home.readings.set("clip", { value: event.payload === true });
+      render();
+    });
     host.addEventListener("dragstart", (event) => {
       const section = event.target.closest?.("[data-home-section]");
       if (!section || !home.ui.editing) return;
@@ -570,6 +679,7 @@ window.wintHome = (() => {
     const hidden = effectiveHidden();
     const region = (name) => host.querySelector(`[data-region="${name}"]`);
     patch(region("toolbar"), "toolbar", toolbarHtml());
+    patch(region("background"), "background", backgroundHtml());
     region("grid").classList.toggle("editing", home.ui.editing);
 
     const sections = region("sections");
@@ -631,6 +741,7 @@ window.wintHome = (() => {
     const h = prefs();
     const d = target.dataset;
     if (d.homeGo) return go(d.homeGo, target);
+    if (d.homeBg) return switchBackground(d.homeBg, target.getAttribute("aria-checked") !== "true");
     if (d.homeToggle) {
       h.hidden[d.homeToggle] = !effectiveHidden()[d.homeToggle];
       if (d.homeToggle === "projects" && !state.roots.length) return go("choose-folder");
@@ -661,6 +772,7 @@ window.wintHome = (() => {
       case "sections": home.ui.sectionsOpen = !home.ui.sectionsOpen; return render();
       case "edit": home.ui.editing = !home.ui.editing; return render();
       case "refresh": return look();
+      case "bg-all-off": return stopAllRecording();
       case "reset":
         h.order = [...DEFAULT_ORDER];
         h.hidden = {};
