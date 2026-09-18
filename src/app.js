@@ -89,6 +89,13 @@ const state = {
   compactTechOverview: true,
   /** Whether the optional title-bar control that hides WinT to the tray is visible. */
   minimizeToTrayButton: false,
+  /** What closing the main window does: "ask" shows the close dialog first,
+   *  "quit" closes WinT and everything it opened, "tray" hides it to the tray. */
+  closeAction: "ask",
+  /** Draw the Windows title bar and frame instead of WinT's own buttons. */
+  nativeDecorations: false,
+  /** Minimizing hides WinT to the notification area instead of the taskbar. */
+  alwaysMinimizeToTray: false,
   viewMode: "cards",
   tableSortKey: "project",
   tableSortDirection: 1,
@@ -295,6 +302,140 @@ function showNextConfirm() {
 
 window.wintConfirm = appConfirm;
 
+/* ---------- closing the app ---------- */
+
+// Windows that exist for the whole run but are only ever shown on demand, or
+// only while dragging. They close with WinT, but nobody thinks of them as open.
+const BACKGROUND_WINDOWS = new Set(["main", "sidebar", "global-search", "clipboard-picker"]);
+
+/** Everything that goes away with the main window, as display lines. Each
+ *  source is asked on its own, so a slow or failing one only drops its line. */
+async function whatClosesWithApp() {
+  const items = [];
+  const windows = await Promise.resolve(window.__TAURI__.webviewWindow.getAllWebviewWindows()).catch(() => []);
+  const titled = await Promise.all(windows
+    .filter((w) => !BACKGROUND_WINDOWS.has(w.label) && !/drag/.test(w.label))
+    .map(async (w) => {
+      if (!(await w.isVisible().catch(() => false))) return null;
+      const title = (await w.title().catch(() => "")) || w.label;
+      const kind = w.label.startsWith("term-") ? "Terminal window"
+        : w.label.startsWith("workspace-") ? "Workspace"
+        : w.label.startsWith("tool-") ? "Tool window" : "Window";
+      return { icon: w.label.startsWith("term-") ? "terminal" : "open_in_new", text: `${kind}: ${title.replace(/^WinT\s*[-–·]\s*/, "")}` };
+    }));
+  items.push(...titled.filter(Boolean));
+  const [sidebar, terms, focus] = await Promise.all([
+    invoke("sidebar_state").catch(() => null),
+    invoke("term_list", { projectPath: null }).catch(() => []),
+    invoke("focus_mode_state").catch(() => null),
+  ]);
+  if (sidebar?.docked) items.push({ icon: "side_navigation", text: "The Docked Sidebar - the taskbar comes back as it was" });
+  const live = (terms || []).filter((t) => t.alive);
+  if (live.length) {
+    items.push({ icon: "terminal", text: `${live.length} running terminal session${live.length === 1 ? "" : "s"} - ${[...new Set(live.map((t) => t.projectName || t.title))].slice(0, 3).join(", ")}${live.length > 3 ? ", ..." : ""}` });
+  }
+  if (focus?.hidden) items.push({ icon: "visibility", text: `${focus.hidden} window${focus.hidden === 1 ? "" : "s"} hidden by Focus mode will be shown again` });
+  return items;
+}
+
+function quitApp() {
+  beginWork("app-close", "Closing WinT");
+  appWindow.destroy();
+}
+
+function hideToTray() {
+  invoke("minimize_to_tray").catch(() => {});
+}
+
+let closeDialogOpen = false;
+
+/** The title-bar close, Alt+F4 and the native frame's close all land here. */
+async function requestAppClose() {
+  if (state.closeAction === "quit") return quitApp();
+  if (state.closeAction === "tray") return hideToTray();
+  if (closeDialogOpen) return;
+  closeDialogOpen = true;
+  try {
+    const choice = await askBeforeClose();
+    if (choice.remember && choice.action !== "cancel") {
+      state.closeAction = choice.action;
+      savePrefs();
+      if (state.activeView === "settings") syncCloseActionSetting(el["settings-host"]);
+    }
+    if (choice.action === "quit") quitApp();
+    else if (choice.action === "tray") hideToTray();
+  } finally {
+    closeDialogOpen = false;
+  }
+}
+
+/** Resolves `{ action: "quit" | "tray" | "cancel", remember }`. The dialog is
+ *  drawn at once and the list of what closes fills in as it is found. */
+function askBeforeClose() {
+  return new Promise((resolve) => {
+    const layer = document.createElement("div");
+    layer.className = "confirm-layer";
+    layer.innerHTML = `<section class="confirm-card close-card" role="alertdialog" aria-modal="true"
+      aria-labelledby="close-title" aria-describedby="close-message">
+      <span class="confirm-icon danger">${icon("power_settings_new")}</span>
+      <div class="confirm-copy"><h2 id="close-title">Close WinT?</h2>
+        <p id="close-message">These close along with it:</p>
+        <ul class="close-list" aria-busy="true"><li class="close-list-loading">${icon("hourglass_top")}Checking what is open...</li></ul>
+        <label class="close-remember"><input type="checkbox" id="close-remember" />Don't show this again<small>Change it later in Settings - When you close WinT.</small></label>
+      </div>
+      <div class="confirm-actions">
+        <button class="btn" type="button" data-close="cancel">Cancel</button>
+        <button class="btn" type="button" data-close="tray">${icon("move_to_inbox")}Minimize to tray</button>
+        <button class="btn danger" type="button" data-close="quit">Yes, close</button>
+      </div>
+    </section>`;
+    document.body.appendChild(layer);
+    const list = layer.querySelector(".close-list");
+    whatClosesWithApp().then((items) => {
+      if (!layer.isConnected) return;
+      list.removeAttribute("aria-busy");
+      list.innerHTML = items.length
+        ? items.map((item) => `<li>${icon(item.icon)}${esc(item.text)}</li>`).join("")
+        : `<li class="close-list-empty">${icon("check")}Nothing else is open.</li>`;
+    }).catch(() => {
+      if (layer.isConnected) list.innerHTML = `<li class="close-list-empty">Could not check what else is open.</li>`;
+    });
+    const settle = (action) => {
+      if (!layer.isConnected) return;
+      const remember = layer.querySelector("#close-remember").checked;
+      layer.remove();
+      resolve({ action, remember });
+    };
+    layer.querySelectorAll("[data-close]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        settle(button.dataset.close);
+      });
+    });
+    layer.addEventListener("click", (event) => { if (event.target === layer) settle("cancel"); });
+    layer.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); settle("cancel"); }
+    });
+    requestAnimationFrame(() => layer.querySelector('[data-close="cancel"]')?.focus());
+  });
+}
+
+function syncCloseActionSetting(host) {
+  host?.querySelectorAll("[data-setting-close-action]").forEach((button) => {
+    const active = button.dataset.settingCloseAction === state.closeAction;
+    button.classList.toggle("primary", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+/** Native frame on or off. Under the native frame WinT's own title bar is
+ *  hidden entirely, and the status bar's Settings button stands in for it. */
+function applyDecorations() {
+  document.body.classList.toggle("native-frame", state.nativeDecorations);
+  appWindow.setDecorations(state.nativeDecorations).catch(() => {});
+}
+
 /** Shows a label for as long as `promise` runs, whatever the outcome. */
 function trackWork(key, label, promise) {
   beginWork(key, label);
@@ -334,6 +475,9 @@ function loadPrefs() {
       state.compactTechOverview = true;
     }
     if (typeof p.minimizeToTrayButton === "boolean") state.minimizeToTrayButton = p.minimizeToTrayButton;
+    if (["ask", "quit", "tray"].includes(p.closeAction)) state.closeAction = p.closeAction;
+    if (typeof p.nativeDecorations === "boolean") state.nativeDecorations = p.nativeDecorations;
+    if (typeof p.alwaysMinimizeToTray === "boolean") state.alwaysMinimizeToTray = p.alwaysMinimizeToTray;
     if (typeof p.analytics === "boolean") {
       state.analytics = p.analytics;
       state.analyticsChosen = true;
@@ -417,6 +561,9 @@ function savePrefs() {
         workspaceTheme: state.workspaceTheme,
         compactTechOverview: state.compactTechOverview,
         minimizeToTrayButton: state.minimizeToTrayButton,
+        closeAction: state.closeAction,
+        nativeDecorations: state.nativeDecorations,
+        alwaysMinimizeToTray: state.alwaysMinimizeToTray,
         viewMode: state.viewMode,
         tableSortKey: state.tableSortKey,
         tableSortDirection: state.tableSortDirection,
@@ -741,6 +888,7 @@ function esc(s) {
 /** The settings page's left-hand menu. One entry per group, in this order. */
 const SETTINGS_SECTIONS = [
   { id: "general", label: "General", icon: "tune" },
+  { id: "window", label: "Window & tray", icon: "select_window" },
   { id: "assistant", label: "Assistant", icon: "auto_awesome" },
   { id: "terminal", label: "Terminal", icon: "terminal" },
   { id: "hotkeys", label: "Hotkeys", icon: "keyboard" },
@@ -1493,6 +1641,7 @@ function toggleTodoSource(file, line) {
 /** Fills the window with one project, and starts everything the full view
  *  shows that a card does not already know. */
 function openDetail(project) {
+  notePlace({ kind: "project", path: project.path });
   if (state.activeView !== "projects") switchMainView("projects");
   state.selectedPath = project.path;
   window.wintTrackPageView?.("/project");
@@ -1500,6 +1649,56 @@ function openDetail(project) {
   markDirty("detail");
   if (project.git) loadDiff(project);
   loadTodos(project);
+}
+
+/* The trail of places you came through, so the mouse's Back button returns
+ * to where you actually were - Home, a tool, a project - rather than always
+ * to Overview. Each step records the place being left. */
+const placeTrail = [];
+let walkingBack = false;
+
+function currentPlace() {
+  if (state.selectedPath) return { kind: "project", path: state.selectedPath };
+  if (state.activeView === "isolated-tool") return { kind: "view", id: state.isolatedToolId };
+  return { kind: "view", id: state.activeView };
+}
+
+const placeKey = (place) => `${place.kind}:${place.path || place.id}`;
+
+function notePlace(next) {
+  if (walkingBack) return;
+  const here = currentPlace();
+  if (placeKey(here) === placeKey(next)) return;
+  placeTrail.push(here);
+  if (placeTrail.length > 50) placeTrail.shift();
+}
+
+/** Steps back to the previous place. Returns false when there is none. */
+function goBackPlace() {
+  const here = placeKey(currentPlace());
+  while (placeTrail.length) {
+    const place = placeTrail.pop();
+    if (placeKey(place) === here) continue;
+    const project = place.kind === "project" && state.projects.find((p) => p.path === place.path);
+    if (place.kind === "project" && !project) continue;
+    walkingBack = true;
+    try {
+      if (project) openDetail(project);
+      else if (place.id === "settings") {
+        if (state.selectedPath) closeDetail("/settings");
+        switchMainView("settings");
+      } else if (place.id === "projects" && state.activeView === "projects" && state.selectedPath) {
+        closeDetail("/projects");
+      } else {
+        if (state.selectedPath) closeDetail();
+        openTool(place.id);
+      }
+    } finally {
+      walkingBack = false;
+    }
+    return true;
+  }
+  return false;
 }
 
 function closeDetail(nextPath = "/overview") {
@@ -1511,6 +1710,7 @@ function closeDetail(nextPath = "/overview") {
 
 function openSettings() {
   if (state.activeView === "settings") return closeSettings();
+  notePlace({ kind: "view", id: "settings" });
   if (state.selectedPath) closeDetail("/settings");
   switchMainView("settings");
 }
@@ -2920,6 +3120,8 @@ function closeChangelog() {
 }
 
 function syncSettingsButton() {
+  const status = document.getElementById("status-settings");
+  status?.classList.toggle("on", state.activeView === "settings");
   const button = document.getElementById("open-settings");
   if (!button) return;
   const active = state.activeView === "settings";
@@ -3354,6 +3556,7 @@ const SHELL_TOOLS = new Set(["projects"]);
 function openTool(id) {
   const target = toolById(id) || PLACES.find((place) => place.id === id);
   if (!target) return;
+  if (!PROJECTS_WINDOW) notePlace({ kind: "view", id });
   if (PROJECTS_WINDOW) {
     if (id !== "projects" && id !== "overview") emit("tool:open", { id }).catch(() => {});
     return;
@@ -3985,6 +4188,7 @@ function hotkeyCatalog() {
       project.path
     );
     if (project.runCmd) add("run", "Run —", "play_arrow", project.runCmd);
+    if (project.git) add("git", "Open in Git —", "commit", project.path);
     if (project.git) add("pull", "Pull —", "download", project.git.upstream || project.git.branch || "git pull");
   }
   return [
@@ -4697,7 +4901,7 @@ function detailView(p, replayEntrance = true) {
 
   return `<div class="detail${replayEntrance ? "" : " steady"}">
     <div class="detail-head">
-      <button class="btn back" data-act="close" title="Back to the list (Esc)">${icon(
+      <button class="btn back" data-act="back" title="Back to where you came from">${icon(
         "arrow_back"
       )}Back</button>
       <div class="detail-id">
@@ -4713,6 +4917,7 @@ function detailView(p, replayEntrance = true) {
     </div>
     <div class="detail-actions">
       ${run}
+      <button class="btn" data-act="workspace" title="Open this project's workspace">${icon("dashboard")}Workspace</button>
       <button class="btn" data-act="vscode">${icon("code")}VS Code</button>
       <button class="btn" data-act="terminal">${icon("terminal")}Terminal</button>
       ${g ? `<button class="btn" data-act="pull" title="Run git pull here">${icon("download")}Pull</button>` : ""}
@@ -5003,6 +5208,7 @@ function mountShell() {
     <div class="pins-panel" id="pins-panel" hidden></div>
     <div class="statusbar">
       <div class="activity" id="activity"></div>
+      <button class="status-btn status-settings" id="status-settings" title="Settings" aria-label="Settings">${settingsIcon("win-icon")}</button>
       <div class="status-version-wrap" id="status-version-wrap">
         <button class="status-btn status-version" id="status-version" title="What's new in WinT"
                 aria-haspopup="dialog" aria-expanded="false"></button>
@@ -5671,27 +5877,6 @@ function renderSettings() {
             <span><strong>Pinned tools on their own shelf</strong><small>Give the pins a panel above the status bar instead of a few chips inside it. The row wraps, so every pin stays on screen however many you keep.</small></span>
             <input class="setting-check" id="setting-pins-panel" type="checkbox" />
           </label>
-          <label class="settings-row" for="setting-autostart">
-            <span><strong>Start WinT with Windows</strong><small><span id="setting-autostart-status">Open WinT when you sign in. You choose how it shows up when you switch this on.</span> <a href="#" id="setting-autostart-change" hidden>Change</a></small></span>
-            <input class="setting-check" id="setting-autostart" type="checkbox" disabled />
-          </label>
-          <div class="settings-row settings-choice" id="setting-autostart-choice" hidden>
-            <span><strong>How should WinT start?</strong><small>When Windows starts WinT at sign-in, it should open…</small></span>
-            <span class="settings-choice-buttons">
-              <button class="btn" type="button" data-autostart-mode="tray">${icon("keyboard_arrow_up")}In the tray</button>
-              <button class="btn" type="button" data-autostart-mode="minimized">${icon("minimize")}Minimized</button>
-              <button class="btn" type="button" data-autostart-mode="normal">${icon("open_in_new")}On screen</button>
-              <button class="btn" type="button" id="setting-autostart-cancel">Cancel</button>
-            </span>
-          </div>
-          <label class="settings-row" for="setting-dock-on-start">
-            <span><strong>Dock the sidebar when WinT starts</strong><small>Put the Docked Sidebar back on its edge, at its last width, every time WinT starts - with Start WinT with Windows, right from sign-in.</small></span>
-            <input class="setting-check" id="setting-dock-on-start" type="checkbox" disabled />
-          </label>
-          <label class="settings-row" for="setting-minimize-to-tray">
-            <span><strong>Show minimize-to-tray button</strong><small>Add a title-bar button that keeps WinT running in the notification area. Click the tray icon to bring it back.</small></span>
-            <input class="setting-check" id="setting-minimize-to-tray" type="checkbox" />
-          </label>
           <label class="settings-row" for="setting-analytics">
             <span><strong>Send anonymous usage data</strong><small>Let us know you're using WinT, via PageRain. It's a random number and the screen you opened - never your projects.</small>
               <button class="linklike" type="button" id="setting-analytics-source">Read the code that sends it</button>
@@ -5718,6 +5903,46 @@ function renderSettings() {
             <span><strong>Reset WinT</strong><small>Forget the folders, language, appearance and terminals, and start over as if the app had just been installed.</small></span>
             <button class="btn danger setting-control" id="setting-reset" type="button">Reset</button>
           </div>
+        </section>
+        <section class="settings-group" data-section="window">
+          <h3>Window &amp; tray</h3>
+          <label class="settings-row" for="setting-autostart">
+            <span><strong>Start WinT with Windows</strong><small><span id="setting-autostart-status">Open WinT when you sign in. You choose how it shows up when you switch this on.</span> <a href="#" id="setting-autostart-change" hidden>Change</a></small></span>
+            <input class="setting-check" id="setting-autostart" type="checkbox" disabled />
+          </label>
+          <div class="settings-row settings-choice" id="setting-autostart-choice" hidden>
+            <span><strong>How should WinT start?</strong><small>When Windows starts WinT at sign-in, it should open…</small></span>
+            <span class="settings-choice-buttons">
+              <button class="btn" type="button" data-autostart-mode="tray">${icon("keyboard_arrow_up")}In the tray</button>
+              <button class="btn" type="button" data-autostart-mode="minimized">${icon("minimize")}Minimized</button>
+              <button class="btn" type="button" data-autostart-mode="normal">${icon("open_in_new")}On screen</button>
+              <button class="btn" type="button" id="setting-autostart-cancel">Cancel</button>
+            </span>
+          </div>
+          <label class="settings-row" for="setting-dock-on-start">
+            <span><strong>Dock the sidebar when WinT starts</strong><small>Put the Docked Sidebar back on its edge, at its last width, every time WinT starts - with Start WinT with Windows, right from sign-in.</small></span>
+            <input class="setting-check" id="setting-dock-on-start" type="checkbox" disabled />
+          </label>
+          <label class="settings-row" for="setting-minimize-to-tray">
+            <span><strong>Show minimize-to-tray button</strong><small>Add a title-bar button that keeps WinT running in the notification area. Click the tray icon to bring it back.</small></span>
+            <input class="setting-check" id="setting-minimize-to-tray" type="checkbox" />
+          </label>
+          <label class="settings-row" for="setting-always-tray">
+            <span><strong>Always minimize to tray</strong><small>Minimizing WinT - with its button, the native frame or Windows+Down - puts it in the notification area instead of on the taskbar.</small></span>
+            <input class="setting-check" id="setting-always-tray" type="checkbox" />
+          </label>
+          <div class="settings-row">
+            <span><strong>When you close WinT</strong><small>Closing WinT also closes its pop-out windows, terminals and the Docked Sidebar. Ask first lists what will close.</small></span>
+            <div class="settings-choice-buttons">
+              <button class="btn" type="button" data-setting-close-action="ask">Ask first</button>
+              <button class="btn" type="button" data-setting-close-action="quit">Close WinT</button>
+              <button class="btn" type="button" data-setting-close-action="tray">Minimize to tray</button>
+            </div>
+          </div>
+          <label class="settings-row" for="setting-native-decorations">
+            <span><strong>Use the standard Windows title bar</strong><small>Show the normal Windows title bar with its minimize, maximize and close buttons instead of WinT's own. WinT's top bar - search, theme and the rest - goes away, and Settings moves to the status bar.</small></span>
+            <input class="setting-check" id="setting-native-decorations" type="checkbox" />
+          </label>
         </section>
         <section class="settings-group" data-section="assistant">
           <h3>Assistant</h3>
@@ -5800,6 +6025,9 @@ function renderSettings() {
   host.querySelector("#setting-pins-panel").checked = state.pinsPanel;
   host.querySelector("#setting-git-wording").checked = state.gitWording;
   host.querySelector("#setting-minimize-to-tray").checked = state.minimizeToTrayButton;
+  syncCloseActionSetting(host);
+  host.querySelector("#setting-native-decorations").checked = state.nativeDecorations;
+  host.querySelector("#setting-always-tray").checked = state.alwaysMinimizeToTray;
   host.querySelector("#setting-analytics").checked = state.analyticsChosen && state.analytics;
   host.querySelector("#setting-time-tracker").checked = window.wintTimeTracker?.getAlways() === true;
   syncKeepAwakeSetting(host);
@@ -6084,6 +6312,8 @@ function renderDiffSelection() {
  *  from a container - so a redraw never has to rewire anything. */
 function wireShell() {
   el["open-settings"].onclick = openSettings;
+  // Under the Windows title bar WinT's own is hidden, and Settings lives here.
+  document.getElementById("status-settings").onclick = openSettings;
   el["toggle-theme"].onclick = () => {
     state.theme = state.theme === "light" ? "dark" : "light";
     applyTheme();
@@ -6570,11 +6800,24 @@ function wireShell() {
     const btn = e.target.closest("[data-win]");
     if (!btn) return;
     if (btn.dataset.win === "tray") invoke("minimize_to_tray").catch(() => {});
-    else if (btn.dataset.win === "min") appWindow.minimize();
+    else if (btn.dataset.win === "min") state.alwaysMinimizeToTray ? hideToTray() : appWindow.minimize();
     else if (btn.dataset.win === "max") {
       appWindow.toggleMaximize().then(() => syncMaximizeButton()).catch(() => {});
-    } else appWindow.destroy();
+    } else requestAppClose();
   };
+  // Alt+F4 and the native frame's close button arrive here instead.
+  // A popped-out Projects window registers its own close handler instead.
+  if (!PROJECTS_WINDOW) {
+    appWindow.onCloseRequested((event) => {
+      event.preventDefault();
+      requestAppClose();
+    });
+    // A minimize WinT's own button did not handle - the native frame's,
+    // Windows+Down, the taskbar - is caught once it has happened.
+    appWindow.onResized(async () => {
+      if (state.alwaysMinimizeToTray && await appWindow.isMinimized().catch(() => false)) hideToTray();
+    });
+  }
 
   const maxButton = document.querySelector('.titlebar [data-win="max"]');
   let wasMaximized = false;
@@ -6653,10 +6896,18 @@ function wireShell() {
     const p = selectedProject();
     if (!p) return;
     if (action.dataset.act === "close") return closeDetail();
+    if (action.dataset.act === "back") return goBackPlace() || closeDetail();
     projectAction(action.dataset.act, p, action);
   };
 
   el["settings-host"].onclick = async (e) => {
+    const closeAction = e.target.closest("[data-setting-close-action]");
+    if (closeAction) {
+      state.closeAction = closeAction.dataset.settingCloseAction;
+      savePrefs();
+      syncCloseActionSetting(el["settings-host"]);
+      return;
+    }
     const autostartMode = e.target.closest("[data-autostart-mode]");
     if (autostartMode) {
       enableAutostart(autostartMode.dataset.autostartMode);
@@ -6877,6 +7128,13 @@ function wireShell() {
       state.minimizeToTrayButton = e.target.checked;
       document.querySelector('.titlebar [data-win="tray"]').hidden = !state.minimizeToTrayButton;
       savePrefs();
+    } else if (e.target.id === "setting-always-tray") {
+      state.alwaysMinimizeToTray = e.target.checked;
+      savePrefs();
+    } else if (e.target.id === "setting-native-decorations") {
+      state.nativeDecorations = e.target.checked;
+      savePrefs();
+      applyDecorations();
     } else if (e.target.id === "setting-analytics") {
       state.analytics = e.target.checked;
       state.analyticsChosen = true;
@@ -6919,6 +7177,7 @@ for (const type of ["mousedown", "mouseup", "auxclick"]) {
     e.preventDefault();
     if (type === "mouseup" && e.button === 3) {
       if (toolPinsOpen()) closeToolPins();
+      else if (goBackPlace()) return;
       else if (state.activeView === "settings") closeSettings();
       else if (state.selectedPath) closeDetail();
       // A tool is somewhere you went, so back is the way out of it - the same
@@ -7037,6 +7296,19 @@ async function wireToolPopoutEvents() {
     await appWindow.setFocus().catch(() => {});
     openTool("sidebar");
   });
+  // A tool shortcut on the sidebar always opens its tool in a window of its
+  // own, leaving this window where it is.
+  await listen("sidebar:open-tool", (event) => {
+    const id = event.payload?.id;
+    if (toolById(id) && !SHELL_TOOLS.has(id)) popOutTool(id);
+  });
+  // The Docked Sidebar page runs in an isolated webview with no TOOLS of its
+  // own; it asks for the list of tools a shortcut can point at.
+  await listen("sidebar:tool-catalog-request", () => {
+    emit("sidebar:tool-catalog", TOOLS
+      .filter((tool) => !SHELL_TOOLS.has(tool.id))
+      .map(({ id, name, icon }) => ({ id, name, icon }))).catch(() => {});
+  });
   await listen("tool:bridge-request", async (event) => {
     const request = event.payload || {};
     // Any resident tool may speak, not just the one on screen - a hidden one
@@ -7091,7 +7363,10 @@ async function wireToolPopoutEvents() {
         // evict it outright if the cache is full. Acknowledge it first so the
         // child and the Tauri event bridge cannot be left waiting on each other.
         await reply(true);
-        setTimeout(() => openTool(destination), 0);
+        // "back" is the mouse's Back button inside a tool: return to wherever
+        // the tool was opened from, falling back to Overview.
+        if (destination === "back") setTimeout(() => { if (!goBackPlace()) openTool("overview"); }, 0);
+        else setTimeout(() => openTool(destination), 0);
       } else if (request.action === "toggle-pin") {
         toggleToolPin(fromId);
         await reply(true, { pinned: isToolPinned(fromId) });
@@ -7259,6 +7534,7 @@ async function startProjectsWindow() {
   }
   // The window is drawn and interactive before anything is asked of the disk.
   mountShell();
+  applyDecorations();
   await wireToolPopoutEvents();
   syncRecentTrayTools();
   window.wintTrackPageView?.(currentPath());

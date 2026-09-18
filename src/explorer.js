@@ -1101,6 +1101,9 @@ function mount(host) {
   for (const type of ["mousedown", "mouseup", "auxclick"]) {
     host.addEventListener(type, (event) => {
       if (event.button !== 3 && event.button !== 4) return;
+      // With no folder to go back to, leave Back unclaimed so the shell
+      // returns to wherever Files was opened from.
+      if (event.button === 3 && !fx.history.length) return;
       event.preventDefault();
       if (type !== "mouseup") return;
       if (event.button === 3) goBack();

@@ -16,6 +16,80 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.115.0",
+      date: "2026-09-18",
+      title: "Closing asks first, and a Window & tray page",
+      buildChecksum: "ee85f9cc6132420e846a176ad42732e3ee352938228115e535f082dc263ef08a",
+      changes: [
+        ["new", "Closing WinT asks first and lists what closes with it - pop-out windows, terminal sessions, the Docked Sidebar and windows Focus mode hid - with Yes, close, Minimize to tray or Cancel."],
+        ["new", "\"Don't show this again\" in that dialog remembers your choice; change it any time under Settings - When you close WinT."],
+        ["new", "Always minimize to tray: minimizing puts WinT in the notification area instead of on the taskbar."],
+        ["new", "Use the standard Windows title bar: the normal Windows title bar replaces WinT's own top bar, and Settings moves to the status bar."],
+        ["better", "Startup, tray, closing and window-frame settings have their own Window & tray page in Settings."],
+      ],
+    },
+    {
+      version: "0.114.3",
+      date: "2026-09-18",
+      title: "A tidier Docked Sidebar page",
+      changes: [
+        ["better", "The Docked Sidebar settings are grouped into cards - Docking, On the bar, Tool shortcuts and Appearance - with a proper left/right edge switch and aligned sliders."],
+      ],
+    },
+    {
+      version: "0.114.2",
+      date: "2026-09-18",
+      title: "Back goes back to where you were",
+      changes: [
+        ["better", "The mouse's Back button now returns to wherever you came from - Home, a tool or another project - instead of always to the overview."],
+        ["new", "A project's details now have a Workspace button, like its card and table row."],
+        ["new", "The command palette can open a project in the Git tool."],
+        ["better", "The Back button on a project's details returns to where you came from, just like the mouse's Back button."],
+        ["fix", "In Files, Back with no earlier folder to return to now leaves Files for the previous screen instead of doing nothing."],
+      ],
+    },
+    {
+      version: "0.114.1",
+      date: "2026-09-18",
+      title: "Disk Space Usage shows what it could not find",
+      changes: [
+        ["new", "A scanned drive now shows an Unaccounted block for space that is in use but that the scan could not see, such as the pagefile, shadow copies and protected folders, so the diagram adds up to what the drive really uses."],
+        ["fix", "Disk Space Usage shows drive paths the ordinary way, like D:\\Photos, and Show in Files opens the folder you picked instead of a path Files could not use."],
+      ],
+    },
+    {
+      version: "0.114.0",
+      date: "2026-09-18",
+      title: "Tool shortcuts on the sidebar",
+      changes: [
+        ["new", "The Docked Sidebar page can add a shortcut to any WinT tool. The shortcuts sit in their own section near the bottom of the sidebar, above the tray icons and the bar controls, and each one opens its tool in a window of its own."],
+      ],
+    },
+    {
+      version: "0.114.0",
+      date: "2026-09-18",
+      title: "Show in Files from Disk Space Usage",
+      changes: [
+        ["new", "Right-click any area in Disk Space Usage and choose Show in Files to open that folder - or the folder a file sits in - in its own Files window."],
+      ],
+    },
+    {
+      version: "0.113.3",
+      date: "2026-09-18",
+      title: "Sidebar rows drag upward",
+      changes: [
+        ["fix", "Dragging a sidebar row upward now carries it past as many rows as you like, instead of letting go after one step."],
+      ],
+    },
+    {
+      version: "0.113.2",
+      date: "2026-09-18",
+      title: "Disk Space Usage fills the window",
+      changes: [
+        ["fix", "Disk Space Usage's diagram now fills the whole window instead of a short strip at the top, so the smaller folders get room for their names."],
+      ],
+    },
+    {
       version: "0.113.1",
       date: "2026-09-18",
       title: "Usage tracking on Home",

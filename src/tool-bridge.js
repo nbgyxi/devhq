@@ -152,7 +152,7 @@
       if (event.button !== 3 && event.button !== 4) return;
       const claimed = event.defaultPrevented;
       event.preventDefault();
-      if (type === "mouseup" && event.button === 3 && !claimed) request("navigate", "overview").catch(() => {});
+      if (type === "mouseup" && event.button === 3 && !claimed) request("navigate", "back").catch(() => {});
     });
   }
   persistLoop = setInterval(() => { persist().catch(() => {}); }, 2000);

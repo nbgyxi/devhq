@@ -137,12 +137,27 @@ fn folder_size_while(path: &Path, skipped: &mut u64, active: &dyn Fn() -> bool) 
     total
 }
 
+/// `canonicalize` answers with a verbatim `\\?\D:\` path. Every path the scan
+/// hands out is shown to the user and passed on to Files and Explorer, so it is
+/// turned back into the ordinary form. Rust's file calls still manage long
+/// paths on their own.
+fn plain_path(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy().into_owned();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path
+    }
+}
+
 pub fn scan(raw_path: String) -> Result<SpaceScan, String> {
     let path = PathBuf::from(&raw_path);
     if !path.is_dir() {
         return Err("That folder is no longer available.".into());
     }
-    let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+    let canonical = plain_path(path.canonicalize().map_err(|e| e.to_string())?);
     let mut skipped = 0u64;
     let entries = std::fs::read_dir(&canonical).map_err(|e| e.to_string())?;
     let mut children = Vec::new();
@@ -194,7 +209,7 @@ where
     if !path.is_dir() {
         return Err("That folder is no longer available.".into());
     }
-    let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+    let canonical = plain_path(path.canonicalize().map_err(|e| e.to_string())?);
     let mut skipped = 0u64;
     let entries = std::fs::read_dir(&canonical).map_err(|e| e.to_string())?;
     let jobs: VecDeque<_> = entries

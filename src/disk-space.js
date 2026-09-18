@@ -165,24 +165,47 @@ function choose(path) {
   scan(path, false);
 }
 
+// The space a finished drive scan could not account for: the drive's used
+// bytes minus everything measured. Windows keeps a lot where a scan cannot
+// look - pagefile and hiberfil, shadow copies in System Volume Information,
+// the file system's own tables, folders this account is denied - and a
+// treemap that leaves it out makes the drive look emptier than it is.
+const UNKNOWN_PATH = "?";
+const samePath = (a, b) => String(a || "").replace(/[\\/]+$/, "").toLowerCase() === String(b || "").replace(/[\\/]+$/, "").toLowerCase();
+function unaccounted(measured) {
+  if (ds.scanning || !ds.drive || !samePath(ds.path, ds.drive.path)) return 0;
+  const used = ds.drive.totalBytes - ds.drive.freeBytes;
+  const rest = used - measured;
+  // Ignore rounding-sized gaps; show anything a person would care about.
+  return rest > Math.max(256 * 1024 ** 2, used * 0.002) ? rest : 0;
+}
+
 function render() {
   if (!ds.host) return;
   const measured = ds.items.reduce((sum, item) => sum + item.bytes, 0);
-  const rects = treemap(ds.items);
+  const unknown = unaccounted(measured);
+  const shown = unknown
+    ? [...ds.items, { path: UNKNOWN_PATH, name: "Unaccounted", bytes: unknown, isDir: false }].sort((a, b) => b.bytes - a.bytes)
+    : ds.items;
+  const rects = treemap(shown);
   const driveOptions = ds.drives.map((drive) => `<button type="button" class="disk-drive" data-disk-drive="${esc(drive.path)}">
     <span>${icon("hard_drive")}<strong>${esc(drive.label)}</strong></span><b>${bytes(drive.totalBytes - drive.freeBytes)} used</b>
     <i><em style="width:${drive.totalBytes ? ((drive.totalBytes - drive.freeBytes) / drive.totalBytes) * 100 : 0}%"></em></i><small>${bytes(drive.freeBytes)} free of ${bytes(drive.totalBytes)}</small></button>`).join("");
-  const tiles = ds.items.map((item, index) => {
+  const tiles = shown.map((item, index) => {
     const rect = rects.get(item.path) || { x: 0, y: 0, width: 0, height: 0 };
     const tiny = rect.width * rect.height < 80;
+    if (item.path === UNKNOWN_PATH) {
+      return `<div class="disk-tile disk-unknown${tiny ? " tiny" : ""}" style="left:${rect.x}%;top:${rect.y}%;width:${rect.width}%;height:${rect.height}%" title="Used on the drive but not found by the scan: pagefile, hibernation file, shadow copies, file system tables and folders Windows would not let this account read · ${bytes(item.bytes)}">
+      <span>${icon("help")}<strong>Unaccounted</strong></span><b>${bytes(item.bytes)}</b></div>`;
+    }
     return `<button class="disk-tile tone-${index % 8}${tiny ? " tiny" : ""}" style="left:${rect.x}%;top:${rect.y}%;width:${rect.width}%;height:${rect.height}%" type="button" data-disk-path="${esc(item.path)}" data-disk-dir="${item.isDir}" title="${esc(item.path)} · ${bytes(item.bytes)}">
       <span>${icon(item.isDir ? "folder" : "draft")}<strong>${esc(item.name)}</strong></span><b>${bytes(item.bytes)}</b></button>`;
   }).join("");
   ds.host.innerHTML = `<header class="tool-head"><button class="btn back tool-back" type="button" data-open-tool="overview">${icon("arrow_back")}Back</button><span class="tool-plate">${icon("hard_drive")}</span><span class="tool-title"><strong>Disk Space Usage</strong><small>choose a drive, then click any folder to drill down</small></span><button class="tool-popout" type="button" data-popout-tool="disk-space"></button><button class="tool-pin" type="button" data-pin-tool="disk-space"></button><button class="tool-close" type="button" data-open-tool="overview">${icon("close")}</button></header>
-    ${!ds.drive ? `<section class="disk-choose"><div><span class="disk-hero">${icon("donut_large")}</span><h2>Choose one drive to scan</h2><p>Nothing is read until you choose. Areas will appear in the diagram while the scan is still running.</p></div><div class="disk-drives">${driveOptions || (ds.loadingDrives ? `<div class="disk-loading">${icon("progress_activity")}<span><strong>Reading available drives…</strong><small>Asking Windows which local disks are ready.</small></span></div>` : `<div class="disk-empty"><p>${esc(ds.error || "No fixed or removable drives were found.")}</p><button class="btn" type="button" data-disk-retry>${icon("refresh")}Retry</button></div>`)}</div></section>` : `<section class="disk-work"><div class="disk-toolbar"><button class="btn" data-disk-back ${ds.history.length ? "" : "disabled"}>${icon("arrow_upward")}Up</button><span class="disk-path mono">${esc(ds.path)}</span><span class="disk-total">${ds.scanning ? `${icon("progress_activity")} Scanning · ` : ""}${ds.items.length} items · ${bytes(measured)}</span><button class="btn" data-disk-change>${icon("swap_horiz")}Drive</button></div>
+    ${!ds.drive ? `<section class="disk-choose"><div><span class="disk-hero">${icon("donut_large")}</span><h2>Choose one drive to scan</h2><p>Nothing is read until you choose. Areas will appear in the diagram while the scan is still running.</p></div><div class="disk-drives">${driveOptions || (ds.loadingDrives ? `<div class="disk-loading">${icon("progress_activity")}<span><strong>Reading available drives…</strong><small>Asking Windows which local disks are ready.</small></span></div>` : `<div class="disk-empty"><p>${esc(ds.error || "No fixed or removable drives were found.")}</p><button class="btn" type="button" data-disk-retry>${icon("refresh")}Retry</button></div>`)}</div></section>` : `<section class="disk-work"><div class="disk-toolbar"><button class="btn" data-disk-back ${ds.history.length ? "" : "disabled"}>${icon("arrow_upward")}Up</button><span class="disk-path mono">${esc(ds.path)}</span><span class="disk-total">${ds.scanning ? `${icon("progress_activity")} Scanning · ` : ""}${ds.items.length} items · ${bytes(measured)}${unknown ? ` · ${bytes(unknown)} unaccounted` : ""}</span><button class="btn" data-disk-change>${icon("swap_horiz")}Drive</button></div>
       ${ds.error ? `<div class="disk-error">${icon("error")} ${esc(ds.error)}</div>` : ""}
       <div class="disk-treemap ${ds.scanning ? "scanning" : ""}">${tiles}${!ds.scanning && !tiles ? `<div class="disk-empty">This folder is empty, or its contents could not be read.</div>` : ""}</div>
-      <footer class="disk-foot"><span>${icon("mouse")}Click a folder to open it</span><span>${icon("right_click")}Right-click any area to Reveal in Explorer</span>${ds.skipped ? `<span>${icon("warning")}${ds.skipped} protected areas skipped</span>` : ""}${ds.scanning ? `<span class="disk-scan-status"><i></i>Measuring ${esc(ds.path)}</span>` : ""}</footer></section>`}`;
+      <footer class="disk-foot"><span>${icon("mouse")}Click a folder to open it</span><span>${icon("right_click")}Right-click any area to show it in Files or Explorer</span>${ds.skipped ? `<span>${icon("warning")}${ds.skipped} protected areas skipped</span>` : ""}${ds.scanning ? `<span class="disk-scan-status"><i></i>Measuring ${esc(ds.path)}</span>` : ""}</footer></section>`}`;
   const pin = ds.host.querySelector('.tool-pin[data-pin-tool="disk-space"]');
   const pop = ds.host.querySelector('.tool-popout[data-popout-tool="disk-space"]');
   if (pin) {
@@ -194,6 +217,27 @@ function render() {
     const out = !!window.wintShell?.isToolPopped?.("disk-space");
     pop.classList.toggle("on", out);
     pop.innerHTML = `${icon("open_in_new")}${out ? "Show window" : "Pop out"}`;
+  }
+}
+
+/** Open a Files window at this area - the folder itself, or the folder a file
+ *  sits in. Always its own window, so the treemap stays where it is. */
+async function showInFiles(path, isDir) {
+  const folder = isDir ? path : path.replace(/[\\/][^\\/]*$/, "") || path;
+  const target = /^[A-Za-z]:$/.test(folder) ? `${folder}\\` : folder;
+  if (window.wintShell?.openExplorerWindow && !window.wintExternalToolChrome) return window.wintShell.openExplorerWindow(target);
+  const instance = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  const key = `disk-files:${instance}`;
+  window.wintWork?.beginWork(key, "Opening Files in a new window");
+  try {
+    await invoke("tool_bridge_state_put", { id: `explorer:${instance}`, state: { path: target } });
+    await invoke("tool_popout", { id: "explorer", title: "Files", theme: document.documentElement.dataset.theme === "light" ? "light" : "dark", x: null, y: null, instance });
+    await window.__TAURI__.event.emit("tool:spawned", { id: "explorer", instance }).catch(() => {});
+  } catch (error) {
+    window.wintWork?.beginWork("disk-files-fail", "Could not open Files", String(error));
+    setTimeout(() => window.wintWork?.endWork("disk-files-fail"), 4000);
+  } finally {
+    window.wintWork?.endWork(key);
   }
 }
 
@@ -219,9 +263,16 @@ function mount(host) {
     if (!tile) return;
     event.preventDefault();
     document.querySelector(".disk-context")?.remove();
-    const menu = document.createElement("button"); menu.type = "button"; menu.className = "disk-context"; menu.innerHTML = `${icon("folder_open")}Reveal in Explorer`;
+    const path = tile.dataset.diskPath;
+    const menu = document.createElement("div"); menu.className = "disk-context";
+    menu.innerHTML = `<button type="button" data-act="files">${icon("folder_open")}Show in Files</button><button type="button" data-act="reveal">${icon("open_in_new")}Reveal in Explorer</button>`;
     menu.style.left = `${event.clientX}px`; menu.style.top = `${event.clientY}px`;
-    menu.onclick = () => { invoke("open_in", { path: tile.dataset.diskPath, target: "reveal" }); menu.remove(); };
+    menu.onclick = (click) => {
+      const act = click.target.closest("[data-act]")?.dataset.act;
+      if (act === "files") showInFiles(path, tile.dataset.diskDir === "true");
+      else if (act === "reveal") invoke("open_in", { path, target: "reveal" });
+      menu.remove();
+    };
     document.body.appendChild(menu);
     setTimeout(() => document.addEventListener("click", () => menu.remove(), { once: true }), 0);
   });

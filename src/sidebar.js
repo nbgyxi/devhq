@@ -54,6 +54,12 @@
     if (action === "terminal") return openTerminal(button);
     if (action === "clipboard") return invoke("clipboard_picker_show", {}).catch(() => {});
     if (action === "focus") return invoke("focus_mode_toggle").catch((error) => flash(button, error));
+    // Tool shortcuts always open in a window of their own. The main window
+    // owns the pop-out handoff, so it is asked to do it.
+    if (action === "tool") {
+      return window.__TAURI__.event.emit("sidebar:open-tool", { id: button.dataset.tool })
+        .catch((error) => flash(button, error));
+    }
   });
 
   // The Focus mode button shows whether it is holding windows back, whether
@@ -101,6 +107,9 @@
     textSize: 10,
     iconSize: 22,
     hideTaskbar: true,
+    // [{ id, name, icon }], in the order they were added. Name and icon are
+    // kept with the id so the rail can draw them without the tool catalog.
+    tools: [],
   };
   let settings = DEFAULT_SETTINGS;
 
@@ -116,8 +125,35 @@
     // With no window list to fill the middle, the bottom buttons still belong
     // at the bottom.
     document.querySelector("[data-spacer]").hidden = settings.slots.windows !== false;
+    paintTools();
     document.documentElement.style.setProperty("--bar-text", `${settings.textSize}px`);
     document.documentElement.style.setProperty("--bar-icon", `${settings.iconSize}px`);
+  }
+
+  const toolsBox = document.querySelector("[data-tools]");
+  let toolsDrawn = "";
+  function paintTools() {
+    const tools = Array.isArray(settings.tools) ? settings.tools.filter((tool) => tool?.id) : [];
+    const key = JSON.stringify(tools);
+    if (key === toolsDrawn) return;
+    toolsDrawn = key;
+    toolsBox.hidden = !tools.length;
+    toolsBox.replaceChildren(...tools.map((tool) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "bar-slot";
+      button.dataset.action = "tool";
+      button.dataset.tool = tool.id;
+      button.title = `Open ${tool.name || tool.id} in its own window`;
+      const glyph = document.createElement("span");
+      glyph.className = "ms";
+      glyph.setAttribute("aria-hidden", "true");
+      glyph.textContent = tool.icon || "build";
+      const label = document.createElement("small");
+      label.textContent = tool.name || tool.id;
+      button.append(glyph, label);
+      return button;
+    }));
   }
 
   window.__TAURI__.event.listen("sidebar:settings", (event) => applySettings(event.payload));
@@ -277,12 +313,14 @@
       document.body.classList.add("reordering");
     }
     // Slide the row past any neighbour whose middle the pointer has crossed.
+    // Always move the neighbour, never the dragged row: moving the row out of
+    // the DOM drops its pointer capture and ends the drag after one step.
     const next = moving.nextElementSibling;
     const prev = moving.previousElementSibling;
     if (next?.dataset.window && event.clientY > next.getBoundingClientRect().top + next.offsetHeight / 2) {
       list.insertBefore(next, moving);
     } else if (prev?.dataset.window && event.clientY < prev.getBoundingClientRect().top + prev.offsetHeight / 2) {
-      list.insertBefore(moving, prev);
+      list.insertBefore(prev, moving.nextElementSibling);
     }
     // Near the ends of a list that scrolls, keep it scrolling.
     const box = list.getBoundingClientRect();

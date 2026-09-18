@@ -82,7 +82,7 @@
     const family = utilFamily ? "tools-page"
       : windowsFamily ? "windows-tools-page"
       : id === "network" ? "net-page" : id === "path-ping" ? "path-page"
-      : id === "explorer" ? "fx-page"
+      : id === "explorer" ? "fx-page" : id === "disk-space" ? "disk-page"
       : `${id}-page`;
     host.className = `tool-isolated-body ${family}`;
     if (id === "git") api.setRepositories?.(context.projects || []);

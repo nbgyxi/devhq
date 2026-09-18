@@ -302,37 +302,67 @@
     if (!barKnown) loadBar();
     const edges = [["left", "Left edge"], ["right", "Right edge"]];
     host.innerHTML = header(tool, `<div class="dock-page">
-      <p>Docking uses <code>SHAppBarMessage</code>, the same call Explorer's own taskbar makes. Windows shrinks the desktop work area by the width below, so a maximized window stops at the sidebar instead of going under it. While it is docked the real taskbar is set to auto-hide; undocking puts it back exactly as it was, and so does closing WinT.</p>
-      <div class="dock-row"><button class="btn${dock.docked ? "" : " primary"}" data-dock-toggle>${icon(dock.docked ? "close" : "dock_to_right")}${dock.docked ? "Undock" : "Dock the sidebar"}</button>${edges.map(([id, label]) => `<button class="btn${dock.edge === id ? " on" : ""}" data-dock-edge="${id}">${esc(label)}</button>`).join("")}</div>
-      <label class="dock-row"><span>Width</span><input type="range" min="48" max="480" step="4" value="${dock.width}" data-dock-width><code data-dock-width-out>${dock.width} dip</code></label>
-      <div class="win-status" data-win-status data-tone="${dock.docked ? "ok" : ""}">${dock.docked ? `Docked to the ${esc(dock.edge)} edge. The taskbar is ${dock.taskbarAutoHidden ? "auto-hidden" : "left as you had it"}.` : "Not docked. The desktop work area is untouched."}</div>
-      <label class="dock-slot"><input type="checkbox" data-dock-on-start${bar.dockOnStart === true ? " checked" : ""}>${icon("start")}<span>Dock when WinT starts</span></label>
-      <h3 class="dock-head">On the sidebar</h3>
-      <label class="dock-slot"><input type="checkbox" data-dock-hide-taskbar${bar.hideTaskbar !== false ? " checked" : ""}>${icon("hide")}<span>Hide the Windows taskbar while the sidebar is docked</span></label>
-      <div class="dock-slots">${DOCK_SLOTS.map(([id, label, glyph]) => `<label class="dock-slot"><input type="checkbox" data-dock-slot="${id}"${bar.slots[id] !== false ? " checked" : ""}>${icon(glyph)}<span>${esc(label)}</span></label>`).join("")}</div>
-      <label class="dock-row"><span>Text size</span><input type="range" min="8" max="18" step="1" value="${bar.textSize}" data-dock-size="textSize"><code data-dock-size-out="textSize">${bar.textSize} px</code></label>
-      <label class="dock-row"><span>Icon size</span><input type="range" min="14" max="40" step="1" value="${bar.iconSize}" data-dock-size="iconSize"><code data-dock-size-out="iconSize">${bar.iconSize} px</code></label>
-      <p>Changes show on the sidebar straight away. The WinT mark at the top of the bar opens the Start menu.</p>
+      <section class="dock-card">
+        <div class="dock-card-head"><h3>Docking</h3><div class="win-status" data-win-status data-tone="${dock.docked ? "ok" : ""}">${dock.docked ? `Docked to the ${esc(dock.edge)} edge. The taskbar is ${dock.taskbarAutoHidden ? "auto-hidden" : "left as you had it"}.` : "Not docked. The desktop work area is untouched."}</div></div>
+        <div class="dock-row"><button class="btn${dock.docked ? "" : " primary"}" data-dock-toggle>${icon(dock.docked ? "close" : "dock_to_right")}${dock.docked ? "Undock" : "Dock the sidebar"}</button><div class="dock-seg">${edges.map(([id, label]) => `<button class="${dock.edge === id ? "on" : ""}" data-dock-edge="${id}">${esc(label)}</button>`).join("")}</div></div>
+        <label class="dock-row"><span>Width</span><input type="range" min="48" max="480" step="4" value="${dock.width}" data-dock-width><code data-dock-width-out>${dock.width} dip</code></label>
+        <label class="dock-slot"><input type="checkbox" data-dock-on-start${bar.dockOnStart === true ? " checked" : ""}>${icon("start")}<span>Dock when WinT starts</span></label>
+        <label class="dock-slot"><input type="checkbox" data-dock-hide-taskbar${bar.hideTaskbar !== false ? " checked" : ""}>${icon("hide")}<span>Hide the Windows taskbar while the sidebar is docked</span></label>
+        <p>Windows shrinks the desktop work area by this width, so maximized windows stop at the sidebar. Undocking or closing WinT puts the taskbar back exactly as it was.</p>
+      </section>
+      <section class="dock-card">
+        <h3>On the bar</h3>
+        <div class="dock-slots">${DOCK_SLOTS.map(([id, label, glyph]) => `<label class="dock-slot"><input type="checkbox" data-dock-slot="${id}"${bar.slots[id] !== false ? " checked" : ""}>${icon(glyph)}<span>${esc(label)}</span></label>`).join("")}</div>
+      </section>
+      <section class="dock-card">
+        <h3>Tool shortcuts</h3>
+        <p>Each opens its tool in a window of its own, in a section above the bar's controls.</p>
+        ${dockToolsHtml()}
+      </section>
+      <section class="dock-card">
+        <h3>Appearance</h3>
+        <label class="dock-row"><span>Text size</span><input type="range" min="8" max="18" step="1" value="${bar.textSize}" data-dock-size="textSize"><code data-dock-size-out="textSize">${bar.textSize} px</code></label>
+        <label class="dock-row"><span>Icon size</span><input type="range" min="14" max="40" step="1" value="${bar.iconSize}" data-dock-size="iconSize"><code data-dock-size-out="iconSize">${bar.iconSize} px</code></label>
+        <p>Changes show on the sidebar straight away.</p>
+      </section>
     </div>`);
   }
   // What the rail draws. This page runs in an isolated webview with storage of
   // its own, so the settings are kept by the backend, which also hands every
   // change to the docked rail as it is made.
   const DOCK_SLOTS = [["brand", "WinT (opens Search)", "dashboard"], ["start", "Windows Start", "grid_view"], ["clipboard", "Clipboard", "content_paste"], ["focus", "Focus mode", "shield_lock"], ["windows", "Open windows", "select_window"], ["geometry", "Edge and width readout", "straighten"], ["tray", "Tray icons", "expand_less"], ["taskbar", "Show / hide taskbar", "visibility_off"], ["edge", "Flip side", "swap_horiz"], ["close", "Undock", "close"]];
-  let bar = { textSize: 10, iconSize: 22, slots: {} };
+  let bar = { textSize: 10, iconSize: 22, slots: {}, tools: [] };
+  // Every tool a shortcut can point at. This page has no catalog of the whole
+  // app, so it asks the main window, which answers with one event.
+  let toolCatalog = null;
+  window.__TAURI__?.event?.listen("sidebar:tool-catalog", (event) => {
+    toolCatalog = Array.isArray(event.payload) ? event.payload : [];
+    if (active === "sidebar") renderSidebar(catalog.find((x) => x.id === "sidebar"));
+  });
+  function barTools() { return Array.isArray(bar.tools) ? bar.tools.filter((tool) => tool?.id) : []; }
+  function dockToolsHtml() {
+    if (!toolCatalog) window.__TAURI__?.event?.emit("sidebar:tool-catalog-request").catch(() => {});
+    const chosen = barTools();
+    const rows = chosen.map((tool) => `<div class="dock-tool">${icon(tool.icon || "build")}<span>${esc(tool.name || tool.id)}</span><button class="btn" type="button" data-dock-tool-remove="${esc(tool.id)}" title="Remove from the sidebar">${icon("close")}</button></div>`).join("");
+    const left = (toolCatalog || []).filter((tool) => !chosen.some((x) => x.id === tool.id));
+    const picker = toolCatalog === null
+      ? '<select disabled><option>Reading the list of tools</option></select>'
+      : `<select data-dock-tool-add${left.length ? "" : " disabled"}><option value="">${left.length ? "Add a tool" : "Every tool is on the sidebar"}</option>${left.map((tool) => `<option value="${esc(tool.id)}">${esc(tool.name)}</option>`).join("")}</select>`;
+    return `<div class="dock-tools">${rows || '<p class="dock-empty-tools">No tool shortcuts yet.</p>'}</div><div class="dock-row">${picker}</div>`;
+  }
   let barKnown = false;
   async function loadBar() {
     barKnown = true;
     try {
       const saved = await invoke("sidebar_settings");
-      bar = { ...bar, ...(saved || {}), slots: { ...(saved?.slots || {}) } };
+      bar = { ...bar, ...(saved || {}), slots: { ...(saved?.slots || {}) }, tools: Array.isArray(saved?.tools) ? saved.tools : [] };
     } catch (_) { return; }
     if (active === "sidebar") renderSidebar(catalog.find((x) => x.id === "sidebar"));
   }
   // The rail's own taskbar button saves settings too; keep this page in step.
   window.__TAURI__?.event?.listen("sidebar:settings", (event) => {
     const saved = event.payload || {};
-    bar = { ...bar, ...saved, slots: { ...(saved.slots || {}) } };
+    bar = { ...bar, ...saved, slots: { ...(saved.slots || {}) }, tools: Array.isArray(saved.tools) ? saved.tools : [] };
     barKnown = true;
     if (active === "sidebar" && !host?.querySelector("input[type=range]:active")) renderSidebar(catalog.find((x) => x.id === "sidebar"));
   });
@@ -944,6 +974,7 @@
     if (event.target.closest("[data-tracker-export]")) return exportTrackerCsv();
     const trackerRangeButton=event.target.closest("[data-tracker-range]");if(trackerRangeButton){trackerRange=trackerRangeButton.dataset.trackerRange;trackerSelected="";return renderTimeTracker(catalog.find((x)=>x.id==="time-tracker"));}
     const trackerApp=event.target.closest("[data-tracker-app]");if(trackerApp){trackerSelected=trackerApp.dataset.trackerApp;return renderTimeTracker(catalog.find((x)=>x.id==="time-tracker"));}
+    const dropTool=event.target.closest("[data-dock-tool-remove]");if(dropTool){bar={...bar,tools:barTools().filter((tool)=>tool.id!==dropTool.dataset.dockToolRemove)};saveBar();return renderSidebar(catalog.find((x)=>x.id==="sidebar"));}
     if(event.target.closest("[data-dock-toggle]"))return dockCall(dock.docked?"sidebar_close":"sidebar_open",dock.docked?undefined:{edge:dock.edge,width:dock.width,hideTaskbar:bar.hideTaskbar!==false});
     const dockEdge=event.target.closest("[data-dock-edge]");if(dockEdge){const edge=dockEdge.dataset.dockEdge;if(dock.docked)return dockCall("sidebar_configure",{edge});dock={...dock,edge};return renderSidebar(catalog.find((x)=>x.id==="sidebar"));}
     if(event.target.closest('[data-clip-capture]'))return captureClipboard();
@@ -1057,7 +1088,7 @@
   }
   window.wintWindowsTools = {
     catalog: () => catalog.map((x) => ({ ...x })),
-    mount(node) { host = node; host.onclick = click; host.oninput = (event) => { const barSize=event.target.closest("[data-dock-size]");if(barSize){const key=barSize.dataset.dockSize;bar={...bar,[key]:Number(barSize.value)};saveBar();host.querySelector(`[data-dock-size-out="${key}"]`)?.replaceChildren(`${barSize.value} px`);return;} const slider=event.target.closest("[data-audio-volume]");if(slider)slider.closest(".audio-volume")?.querySelector("output")?.replaceChildren(`${slider.value}%`); const width=event.target.closest("[data-dock-width]");if(width)host.querySelector("[data-dock-width-out]")?.replaceChildren(`${width.value} dip`); }; host.onchange = (event) => { const onStart=event.target.closest("[data-dock-on-start]");if(onStart){bar={...bar,dockOnStart:onStart.checked};return saveBar();} const hideBar=event.target.closest("[data-dock-hide-taskbar]");if(hideBar){bar={...bar,hideTaskbar:hideBar.checked};saveBar();return dock.docked?dockCall("sidebar_configure",{hideTaskbar:hideBar.checked}):undefined;} const barSlot=event.target.closest("[data-dock-slot]");if(barSlot){bar={...bar,slots:{...bar.slots,[barSlot.dataset.dockSlot]:barSlot.checked}};return saveBar();} const dockWidth=event.target.closest("[data-dock-width]");if(dockWidth){dock={...dock,width:Number(dockWidth.value)};return dockCall("sidebar_configure",{width:dock.width});} const slider=event.target.closest("[data-audio-volume]");if(slider)return setAudioVolume(slider.dataset.audioVolume,Number(slider.value)); const from=event.target.closest("[data-awake-from]");if(from){const minute=awakeMinutes(from.value);if(minute!==null)saveAwakeSchedule({startMinute:minute});return;} const to=event.target.closest("[data-awake-to]");if(to){const minute=awakeMinutes(to.value);if(minute!==null)saveAwakeSchedule({endMinute:minute});} }; host.onkeydown = (e) => { if (e.key !== "Enter") return; if(e.target.matches("[data-event-text]"))loadEvents();else if(e.target.matches("[data-reg-path]"))loadRegistry();else if(e.target.matches("[data-log-path],[data-log-filter]"))loadLogTail();else if(e.target.matches("[data-lock-path]"))inspectLocks(); }; render(); },
+    mount(node) { host = node; host.onclick = click; host.oninput = (event) => { const barSize=event.target.closest("[data-dock-size]");if(barSize){const key=barSize.dataset.dockSize;bar={...bar,[key]:Number(barSize.value)};saveBar();host.querySelector(`[data-dock-size-out="${key}"]`)?.replaceChildren(`${barSize.value} px`);return;} const slider=event.target.closest("[data-audio-volume]");if(slider)slider.closest(".audio-volume")?.querySelector("output")?.replaceChildren(`${slider.value}%`); const width=event.target.closest("[data-dock-width]");if(width)host.querySelector("[data-dock-width-out]")?.replaceChildren(`${width.value} dip`); }; host.onchange = (event) => { const onStart=event.target.closest("[data-dock-on-start]");if(onStart){bar={...bar,dockOnStart:onStart.checked};return saveBar();} const hideBar=event.target.closest("[data-dock-hide-taskbar]");if(hideBar){bar={...bar,hideTaskbar:hideBar.checked};saveBar();return dock.docked?dockCall("sidebar_configure",{hideTaskbar:hideBar.checked}):undefined;} const addTool=event.target.closest("[data-dock-tool-add]");if(addTool){const tool=(toolCatalog||[]).find((x)=>x.id===addTool.value);if(tool){bar={...bar,tools:[...barTools(),{id:tool.id,name:tool.name,icon:tool.icon}]};saveBar();renderSidebar(catalog.find((x)=>x.id==="sidebar"));}return;} const barSlot=event.target.closest("[data-dock-slot]");if(barSlot){bar={...bar,slots:{...bar.slots,[barSlot.dataset.dockSlot]:barSlot.checked}};return saveBar();} const dockWidth=event.target.closest("[data-dock-width]");if(dockWidth){dock={...dock,width:Number(dockWidth.value)};return dockCall("sidebar_configure",{width:dock.width});} const slider=event.target.closest("[data-audio-volume]");if(slider)return setAudioVolume(slider.dataset.audioVolume,Number(slider.value)); const from=event.target.closest("[data-awake-from]");if(from){const minute=awakeMinutes(from.value);if(minute!==null)saveAwakeSchedule({startMinute:minute});return;} const to=event.target.closest("[data-awake-to]");if(to){const minute=awakeMinutes(to.value);if(minute!==null)saveAwakeSchedule({endMinute:minute});} }; host.onkeydown = (e) => { if (e.key !== "Enter") return; if(e.target.matches("[data-event-text]"))loadEvents();else if(e.target.matches("[data-reg-path]"))loadRegistry();else if(e.target.matches("[data-log-path],[data-log-filter]"))loadLogTail();else if(e.target.matches("[data-lock-path]"))inspectLocks(); }; render(); },
     open(id) { if (!catalog.some((x) => x.id === id)) return; active = id; render(); if (id === "events") restoreEventPopout(); resumeHandoff(id); },
     opened() { if (active === "events" && timer) loadEvents(); },
     active: () => active,
