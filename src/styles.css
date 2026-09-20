@@ -4809,3 +4809,16 @@ body.projects-window #status-term-popout{display:none!important}
   .startup-row{grid-template-columns:20px minmax(0,1fr);grid-template-areas:"icon name" "icon meta" "actions actions"}
   .startup-actions{justify-content:flex-start;margin-top:6px}
 }
+
+/* App health. A log, read when something has already gone wrong, so: no
+   animation, no colour but the two that mean trouble, newest at the top. */
+.health-now{display:grid;gap:5px;margin:12px 0;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg1)}
+.health-now strong{font-size:11px;color:var(--dim)}
+.health-now code{font:11px/1.55 'Cascadia Mono',Consolas,monospace;color:var(--text);overflow-wrap:anywhere;user-select:text}
+.health-now small{color:var(--dim2);font-size:10.5px;line-height:1.5;max-width:78ch}
+.health-log{border:1px solid var(--line);border-radius:10px;background:var(--bg1);max-height:52vh;overflow:auto}
+.health-line{padding:5px 12px;border-bottom:1px solid var(--line);font:11px/1.5 'Cascadia Mono',Consolas,monospace;color:var(--dim);overflow-wrap:anywhere;user-select:text}
+.health-line:last-child{border-bottom:0}
+.health-line.bad{color:var(--red)}
+.health-line.warn{color:var(--amber)}
+.health-line.ok{color:var(--green)}

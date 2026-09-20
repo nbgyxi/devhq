@@ -518,12 +518,18 @@ Then verify it worked. Put the finding in "resolved" if it did, or update it wit
     return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
   }
 
+  /** A line in WinT own health log, so that if the window stops answering
+   *  during an audit, what the audit was doing is in the same file as what
+   *  the backend was doing. Never waited on. */
+  const note = (text) => { invoke("health_note", { text }).catch(() => {}); };
+
   /** Starts a scan: a fresh audit folder and a fresh agent session. */
   async function startScan() {
     if (!st.agent || !st.scope.length || st.starting || st.turn) return;
     savePrefs();
     st.starting = true;
     st.error = "";
+    note(`Security Sweep: starting a scan of ${st.scope.join(", ")} with ${st.agent}${st.elevated ? " as administrator" : ""}`);
     work(st.elevated ? "Security Sweep · waiting for the administrator prompt" : "Security Sweep · starting");
     dirty();
     const stamp = stampNow();

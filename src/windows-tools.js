@@ -16,6 +16,7 @@
     { id: "stall-watch", name: "Input Stall Watch", icon: "mouse", hint: "catch the moments the mouse or the whole PC freezes, and see what caused them", keywords: "mouse freeze freezes frozen stutter stutters lag laggy hitch hiccup slow pointer cursor jumps jumping sticks sticky input stall stalls latency dpc interrupt isr driver latencymon diagnose diagnostics monitor watch background paging hard faults cpu spike wireless receiver usb power saving hook" },
     { id: "focus-mode", name: "Focus mode", icon: "shield_lock", hint: "one press or shortcut hides the windows you choose - gone from the taskbar, not just minimized - and the next brings them back", keywords: "focus mode panic boss key hide windows hidden taskbar alt tab privacy distraction distractions screen share sharing presentation quick hide stealth chrome discord youtube games" },
     { id: "keep-awake", name: "Keep Awake", icon: "coffee", hint: "keep Windows and the display awake for as long as you need", keywords: "keep awake stay awake sleep no sleep power display screen monitor timeout screensaver lock idle prevent caffeine caffeinate insomnia presentation meeting build download transfer render chat presence away status active green jiggle nudge mouse mover pointer idle timer stay active schedule scheduled hours weekdays weekends working hours 9 to 5 automatic recurring daily" },
+    { id: "health", name: "App health", icon: "monitor_heart", hint: "what WinT itself was doing when it stopped answering - freezes, slow calls and panics, as they happen", keywords: "health diagnostics diagnose debug log logs logging freeze froze frozen hang hung hangs unresponsive not responding stuck stall stalls lag slow sluggish spinning beachball crash crashed crashing exception panic error stack trace backtrace watchdog heartbeat main thread ui thread blocked deadlock performance profiling timing what happened why did it freeze report bug" },
     { id: "startup", name: "Startup and tray", icon: "rocket_launch", hint: "what starts with Windows and what sits in the tray - where each icon comes from, and the switch that stops it coming back", keywords: "startup start up autostart auto start autorun auto-run autoruns boot login logon sign in run key runonce registry hkcu hklm startup folder shell:startup task manager msconfig startup apps startup programs launch on login slow boot slow startup boot time disable enable turn off stop prevent block remove delete tray system tray notification area notification icons hidden icons overflow chevron icon icons background app apps background programs running silently what is this program where did it come from origin trace who started it discord steam onedrive teams spotify nordvpn greenshot docker updater helper agent daemon bloat bloatware" },
     { id: "sidebar", name: "Docked Sidebar", icon: "dock_to_right", hint: "a rail docked to the edge of the screen that Windows reserves room for, with the real taskbar out of the way", keywords: "sidebar side bar rail dock docked appbar app bar taskbar task bar replacement replace edge left right screen edge reserve work area maximize maximized under behind overlap always on top topmost launcher launch bar shortcuts autohide auto-hide auto hide hidden explorer shell desktop" },
     { id: "time-tracker", name: "Active Window Time Tracker", icon: "schedule", hint: "local time by application and window title", keywords: "time tracker tracking activity active window title productivity apps applications usage screen time hours focus idle away log history what did i do local private" },
@@ -277,6 +278,7 @@
     if (active === "time-tracker") renderTimeTracker(tool);
     if (active === "security-audit") renderSecurityAudit(tool);
     if (active === "stall-watch") renderStallWatch(tool);
+    if (active === "health") renderAppHealth(tool);
     if (active === "startup") renderStartupTray(tool);
     if (active === "focus-mode") renderFocusMode(tool);
     if (active === "sidebar") renderSidebar(tool);
@@ -410,6 +412,20 @@
     script.src = "stall-watch.js";
     script.onload = mount;
     script.onerror = () => { node.innerHTML = '<div class="win-empty">Input Stall Watch could not load.</div>'; };
+    document.head.appendChild(script);
+  }
+
+  // Its own file, and deliberately the plainest page in the app: it is read
+  // when something else has gone wrong, so it must not be another suspect.
+  function renderAppHealth(tool) {
+    host.innerHTML = header(tool, '<div data-health-host></div>');
+    const node = host.querySelector("[data-health-host]");
+    const mount = () => { if (node.isConnected) window.wintAppHealth.mount(node); };
+    if (window.wintAppHealth) return mount();
+    const script = document.createElement("script");
+    script.src = "app-health.js";
+    script.onload = mount;
+    script.onerror = () => { node.innerHTML = '<div class="win-empty">App health could not load.</div>'; };
     document.head.appendChild(script);
   }
 

@@ -729,7 +729,6 @@ fn shell_thumbnail(path: &Path, size: u32) -> Result<Option<String>, String> {
         DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
         BITMAPINFOHEADER, DIB_RGB_COLORS,
     };
-    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
     use windows::Win32::UI::Shell::{
         IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK,
         SIIGBF_THUMBNAILONLY,
@@ -740,11 +739,12 @@ fn shell_thumbnail(path: &Path, size: u32) -> Result<Option<String>, String> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
-    // Every call lands on a spawn_blocking thread that has never seen COM, so
-    // it is initialised here and torn down before the thread goes back.
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-    }
+    // These threads are pooled and shared with everything else that talks to
+    // the shell, so the apartment is entered through the guard: it leaves only
+    // what it entered. Tearing down an apartment this call did not create
+    // takes the reference another caller is still holding, and the crash lands
+    // somewhere else entirely.
+    let _apartment = crate::com::Apartment::single_threaded();
     let result = (|| -> Result<Option<String>, String> {
         // A file the shell will not even name is a file with no thumbnail,
         // not an error worth showing: the row keeps its type icon either way,
@@ -828,7 +828,6 @@ fn shell_thumbnail(path: &Path, size: u32) -> Result<Option<String>, String> {
         }
         rgba_to_data_url(width, height, &pixels)
     })();
-    unsafe { CoUninitialize() };
     result
 }
 

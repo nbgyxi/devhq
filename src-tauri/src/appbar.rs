@@ -728,12 +728,7 @@ pub(crate) fn list_windows(sidebar: isize) -> Vec<OpenWindow> {
     // Reading a window's AppUserModelID goes through a COM property store.
     // The blocking pool's threads may already be in an apartment; a second
     // init is harmless and a failed one only costs us the IDs.
-    unsafe {
-        let _ = windows::Win32::System::Com::CoInitializeEx(
-            None,
-            windows::Win32::System::Com::COINIT_MULTITHREADED,
-        );
-    }
+    let _apartment = crate::com::Apartment::multi_threaded();
     let mut handles: Vec<isize> = Vec::new();
     unsafe {
         let foreground = GetForegroundWindow().0 as isize;

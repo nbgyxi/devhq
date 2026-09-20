@@ -332,12 +332,11 @@ fn startup_folders() -> Vec<(std::path::PathBuf, &'static str, bool)> {
 fn shortcut_target(lnk: &std::path::Path) -> Option<String> {
     use windows::core::Interface;
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
-        STGM_READ,
+        CoCreateInstance, IPersistFile, CLSCTX_INPROC_SERVER, STGM_READ,
     };
     use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let _apartment = crate::com::Apartment::multi_threaded();
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
         link.cast::<IPersistFile>()
             .ok()?
@@ -546,13 +545,57 @@ pub fn close(exe: &str) -> Result<String, String> {
             asked += 1;
         }
     }
-    if asked == 0 {
-        return Err("It has no window to close — it only runs in the background.".into());
+    if asked > 0 {
+        return Ok(format!(
+            "Asked {wanted} to close ({asked} window{}).",
+            if asked == 1 { "" } else { "s" }
+        ));
     }
-    Ok(format!(
-        "Asked {asked} window{} to close.",
-        if asked == 1 { "" } else { "s" }
-    ))
+
+    // No window to ask. A tray app of the older kind has none — its only
+    // window is a message sink, which is not something that can be asked to
+    // close — so the process is ended instead. Nothing of this kind holds
+    // unsaved work, and the alternative is a Close button that does nothing.
+    let mut ended = 0;
+    let mut refused = Vec::new();
+    for pid in process_ids(&wanted) {
+        match crate::procs::kill(pid, "", &wanted) {
+            Ok(()) => ended += 1,
+            Err(error) => refused.push(error),
+        }
+    }
+    if ended > 0 {
+        return Ok(format!(
+            "{wanted} had no window to ask, so it was ended ({ended} process{}).",
+            if ended == 1 { "" } else { "es" }
+        ));
+    }
+    Err(refused
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| format!("{wanted} is not running any more.")))
+}
+
+/// The ids of every process running one program, by image name.
+fn process_ids(image: &str) -> Vec<u32> {
+    let Some(text) = crate::util::run_lossy("tasklist", &["/fo", "csv", "/nh"], None) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for line in text.lines() {
+        // "name.exe","1234","Console","1","12,345 K"
+        let mut cells = line.split("\",\"");
+        let (Some(name), Some(pid)) = (cells.next(), cells.next()) else {
+            continue;
+        };
+        if !name.trim_matches('"').trim().eq_ignore_ascii_case(image) {
+            continue;
+        }
+        if let Ok(pid) = pid.trim_matches('"').trim().parse::<u32>() {
+            found.push(pid);
+        }
+    }
+    found
 }
 
 /// What Windows would run to remove a program, from the same Uninstall keys

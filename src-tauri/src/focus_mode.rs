@@ -209,11 +209,11 @@ fn hide_matching(sidebar: isize) -> FocusState {
 /// screen with no button. `ITaskbarList::AddTab` puts the button back. It
 /// talks to Explorer, not to the window's app, so a hung app cannot stall it.
 fn reveal(handles: &[isize]) -> usize {
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
     use windows::Win32::UI::Shell::{ITaskbarList, TaskbarList};
     use windows::Win32::UI::WindowsAndMessaging::{IsWindow, ShowWindowAsync, SW_SHOWNA};
     let taskbar: Option<ITaskbarList> = unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let _apartment = crate::com::Apartment::multi_threaded();
         CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER)
             .ok()
             .filter(|list: &ITaskbarList| list.HrInit().is_ok())

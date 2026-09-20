@@ -475,8 +475,11 @@
     }
   });
 
-  loadSuggestions();
-  setInterval(() => { if (!document.hidden) loadSuggestions(); }, SUGGEST_REFRESH_MS);
+  // The heaviest read the rail does — every window, then the shell's icon for
+  // each suggestion — for a menu that only a right-click opens. It waits until
+  // the rail is up and running, and then keeps itself fresh in the background.
+  setTimeout(loadSuggestions, 2500);
+  setInterval(() => { if (!document.hidden && !suggesting) loadSuggestions(); }, SUGGEST_REFRESH_MS);
 
   // ---- the notification area ------------------------------------------------------
   // The rail's own tray. It reads the way the real one does: a row of icons
@@ -487,10 +490,13 @@
   // Everything the menus need is read on a timer and kept here, because a
   // native menu cannot show a spinner or change once it is open.
   const trayBox = document.querySelector("[data-tray-apps]");
-  const TRAY_REFRESH_MS = 15_000;
-  const NET_REFRESH_MS = 10_000;
-  const CONNECTIONS_REFRESH_MS = 20_000;
-  const WIFI_REFRESH_MS = 20_000;
+  // Only what is drawn is on a timer. The connections and the networks in
+  // range are read when the menu that shows them opens and again when it
+  // closes, because nothing on the rail displays them — polling them every
+  // twenty seconds meant a netstat, a tasklist and a radio scan, three times a
+  // minute, for a list nobody was looking at.
+  const TRAY_REFRESH_MS = 30_000;
+  const NET_REFRESH_MS = 15_000;
   const NET_GLYPH = { wifi: "wifi", wired: "lan", offline: "public_off" };
   // WinT's own tools that are about the network, for the menu's last section.
   const NET_TOOLS = [
@@ -513,6 +519,8 @@
   let wifiNetworks = [];
   let connections = null;
   let connectionsLoading = null;
+  /** True while a native menu from the rail is up. */
+  let networkMenuOpen = false;
 
   /// A line in the readout at the foot of the rail, put back after a moment.
   /// The rail is too narrow for an error on an icon.
@@ -607,15 +615,20 @@
   }
 
   // ---- what the menus are built from ---------------------------------------------
+  let netLoading = null;
   function refreshNetwork() {
-    return invoke("sidebar_network").then((status) => {
-      netStatus = status;
-      paintTray();
-    }, () => {});
+    netLoading ??= invoke("sidebar_network")
+      .then((status) => { netStatus = status; paintTray(); }, () => {})
+      .finally(() => { netLoading = null; });
+    return netLoading;
   }
 
+  let wifiLoading = null;
   function loadWifi() {
-    return invoke("sidebar_wifi_networks").then((found) => { wifiNetworks = found; }, () => {});
+    wifiLoading ??= invoke("sidebar_wifi_networks")
+      .then((found) => { wifiNetworks = found; }, () => {})
+      .finally(() => { wifiLoading = null; });
+    return wifiLoading;
   }
 
   function loadConnections() {
@@ -646,13 +659,16 @@
   const note = (text) => MenuItem.new({ text: text.replaceAll("&", "&&"), enabled: false });
   const act = (text, action) => MenuItem.new({ text: text.replaceAll("&", "&&"), action });
 
-  let networkMenuOpen = false;
+
   async function openNetworkMenu() {
     if (networkMenuOpen) return;
     networkMenuOpen = true;
     try {
-      // Only the very first click, before the first read is back, waits.
+      // The menu's own two lists are read here rather than on a timer. The
+      // first click waits for them; every later one shows what the close of
+      // the last menu already fetched.
       if (!connections) await loadConnections();
+      if (!wifiNetworks.length) await loadWifi();
       const items = [await note(netStatus.name || "No network")];
       const detail = netDetail();
       if (detail) items.push(await note(detail));
@@ -768,14 +784,21 @@
       .finally(refreshWindows);
   });
 
-  refreshNetwork();
-  loadWifi();
-  loadConnections();
-  loadTrayApps();
-  setInterval(() => { if (!document.hidden) refreshNetwork(); }, NET_REFRESH_MS);
-  setInterval(() => { if (!document.hidden) loadWifi(); }, WIFI_REFRESH_MS);
-  setInterval(() => { if (!document.hidden) loadConnections(); }, CONNECTIONS_REFRESH_MS);
-  setInterval(() => { if (!document.hidden) loadTrayApps(); }, TRAY_REFRESH_MS);
+  // Spread out, not fired together. Each of these opens process handles,
+  // reads version resources or shells out, and the rail comes up while the app
+  // is still building its windows — asking for all of them in one tick put
+  // seconds of work in front of the first paint. The window list is what the
+  // rail is mostly for, so it goes first and the rest follow it.
+  //
+  // The connections and the networks in range are not read here at all: the
+  // menu that shows them reads them when it opens.
+  setTimeout(refreshNetwork, 400);
+  setTimeout(loadTrayApps, 1200);
+  // A menu is a still picture of what was read before it opened; refreshing
+  // underneath it costs work nobody can see.
+  const idle = () => !document.hidden && !networkMenuOpen;
+  setInterval(() => { if (idle()) refreshNetwork(); }, NET_REFRESH_MS);
+  setInterval(() => { if (idle()) loadTrayApps(); }, TRAY_REFRESH_MS);
 
   // ---- dragging the width ------------------------------------------------------
   // The grip sits on the inner edge. Re-docking moves the work area and every
@@ -816,9 +839,10 @@
 
   // The Docked Sidebar tool page can change the edge or width too.
   window.__TAURI__.event.listen("sidebar:state", (event) => { state = event.payload; paint(); });
+  invoke("health_note", { text: "Sidebar: the rail is up" }).catch(() => {});
   ask("sidebar_state");
   refreshWindows();
   setInterval(() => {
-    if (!document.hidden && !list.hidden) refreshWindows();
+    if (!document.hidden && !list.hidden && !networkMenuOpen) refreshWindows();
   }, REFRESH_MS);
 })();

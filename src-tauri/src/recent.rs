@@ -37,8 +37,7 @@ fn item(path: String) -> RecentItem {
 pub fn jump_list(aumid: &str) -> Vec<RecentItem> {
     use windows::core::HSTRING;
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER,
-        COINIT_MULTITHREADED,
+        CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER,
     };
     use windows::Win32::UI::Shell::Common::IObjectArray;
     use windows::Win32::UI::Shell::{
@@ -47,7 +46,7 @@ pub fn jump_list(aumid: &str) -> Vec<RecentItem> {
     };
     let mut found = Vec::new();
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let _apartment = crate::com::Apartment::multi_threaded();
         let Ok(lists) = CoCreateInstance::<_, IApplicationDocumentLists>(
             &ApplicationDocumentLists,
             None,

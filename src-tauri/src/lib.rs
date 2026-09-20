@@ -13,7 +13,9 @@ pub mod conpty;
 mod cwd;
 pub mod disk_space;
 pub mod dns;
+pub mod com;
 pub mod explorer;
+pub mod health;
 mod download;
 pub mod git;
 pub mod github;
@@ -710,12 +712,60 @@ fn epoch_ms() -> u64 {
 /// Runs blocking work off the UI thread. Every command that touches the disk or
 /// spawns a process goes through here, because a synchronous `#[tauri::command]`
 /// runs on the main thread and freezes the window for as long as it takes.
-async fn off_thread<T, F>(work: F) -> Option<T>
+///
+/// Because everything comes through this one door, it is also where work is
+/// counted: each call is noted while it runs, so that when the watchdog finds
+/// the window stuck there is a list of what was in flight at that moment.
+/// `#[track_caller]` means the caller's own file and line identify it, with
+/// nothing to pass and nothing to keep in step.
+#[track_caller]
+fn off_thread<T, F>(work: F) -> impl std::future::Future<Output = Option<T>>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    tauri::async_runtime::spawn_blocking(work).await.ok()
+    let origin = std::panic::Location::caller();
+    // Leaked once per call site, never per call: the set of call sites is
+    // fixed at compile time, so this is a handful of short strings for the
+    // life of the process.
+    let origin: &'static str = Box::leak(
+        format!(
+            "{}:{}",
+            origin.file().rsplit(['\\', '/']).next().unwrap_or(origin.file()),
+            origin.line()
+        )
+        .into_boxed_str(),
+    );
+    async move {
+        let job = health::job_started(origin);
+        let done = tauri::async_runtime::spawn_blocking(work).await.ok();
+        health::job_finished(job);
+        done
+    }
+}
+
+/// The health log's tail, and what the app is doing right now.
+#[tauri::command]
+async fn health_report() -> health::Report {
+    off_thread(|| health::report(400)).await.unwrap_or_else(|| health::report(0))
+}
+
+/// Show the health log in Explorer, so it can be read, kept or sent on.
+#[tauri::command]
+async fn health_reveal() -> Result<(), String> {
+    off_thread(|| {
+        let path = health::log_path().ok_or("Windows did not provide LOCALAPPDATA.")?;
+        startup::reveal(&path.display().to_string())
+    })
+    .await
+    .unwrap_or_else(|| Err("Could not open Explorer.".into()))
+}
+
+/// A line from the front end, so what the window was doing sits in the same
+/// log as what the backend was doing when it stopped answering.
+#[tauri::command]
+async fn health_note(text: String) {
+    health::record("ui", text.chars().take(300).collect::<String>());
 }
 
 /// Everything that starts with Windows, for the Startup and tray tool. It
@@ -2604,6 +2654,12 @@ pub fn run() {
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
+            // Before anything else can go wrong: the panic hook and the log
+            // this run writes to, then the watchdog on the thread that draws
+            // the window.
+            health::start(&app.package_info().version.to_string());
+            health::watch(app.handle().clone());
+
             // A run that hid the taskbar and then died without undocking left
             // it hidden. Put it back before anything else can dock again.
             #[cfg(windows)]
@@ -2893,6 +2949,9 @@ pub fn run() {
             appbar::sidebar_wifi_picker,
             appbar::sidebar_connections,
             appbar::sidebar_tray_apps,
+            health_report,
+            health_reveal,
+            health_note,
             startup_entries,
             startup_set_enabled,
             startup_tray_icons,

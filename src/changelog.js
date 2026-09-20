@@ -16,6 +16,31 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.120.0",
+      date: "2026-09-20",
+      title: "It records why it froze",
+      changes: [
+        ["fix", "A crash that could happen at any time, and was likeliest when the app was busiest. Reading a file icon released a COM apartment it had not taken - the thread was already in one, put there by another read - so often enough COM was torn down underneath work that was still using it, and the process went down with it. Every place that enters an apartment now leaves only what it entered."],
+        ["new", "App health, a new tool in Windows tools: what WinT itself was doing when it stopped answering. A watchdog asks the thread that draws the window to answer every second and writes down any moment it does not, along with everything that was in flight at the time; every slow call and every panic is recorded the same way. It is kept in a small log file you can read, filter and send on."],
+        ["better", "The sidebar asks for far less. The open connections and the networks in range are read when the menu that shows them opens, not three times a minute for a list nobody is looking at, and nothing refreshes underneath an open menu. What the rail reads at startup is spread out instead of fired in one tick, which is what was putting seconds of work in front of the first paint."],
+      ],
+    },
+    {
+      version: "0.119.0",
+      date: "2026-09-20",
+      title: "Close it, uninstall it, or ask an agent why it starts",
+      changes: [
+        ["new", "Security Sweep has a new area, Why these start. It hands the agent the startup and tray lists WinT has already read, so instead of rediscovering them it explains each one: what it is, who signed it, why it starts, and whether it earns its place. The tray icons WinT cannot account for are chased to the service, scheduled task or parent that really starts them, and every fix it proposes is reversible."],
+        ["new", "Every row in Startup and tray now has Close and Uninstall next to its switch, each asking once before it acts. Close asks the program windows to close; a tray app with no window to ask is ended outright, and the message says which happened. Uninstall starts the program own uninstaller and steps back."],
+        ["new", "Right-clicking an icon in the sidebar tray offers Show it, Close it, and a way through to Startup and tray."],
+        ["fix", "Tray icons in the sidebar and in Startup and tray now show the program real icon. Both asked the shell for a thumbnail, which for a program is refused by design - an exe has an icon, not a thumbnail - so anything without a window of its own came back blank."],
+        ["fix", "The sidebar tray shows every icon when closed, not the first few. The chevron names them rather than revealing more of them, which is what it was always meant to do."],
+        ["better", "The lists in Startup and tray are laid out as rows that keep their shape in a narrow window, instead of a table whose columns collapsed to one word per line when the tool was popped out."],
+        ["better", "Turning a startup entry on or off shows on its row at once, with a spinner while the write is in flight, rather than waiting for the next read."],
+        ["better", "A startup entry is named by what Windows calls it, so the Logitech one reads as Logitech Download Assistant rather than Windows host process, and a path holding an environment variable is filled in before it is used."],
+      ],
+    },
+    {
       version: "0.118.0",
       date: "2026-09-20",
       title: "Startup and tray, and a tray on the sidebar",
