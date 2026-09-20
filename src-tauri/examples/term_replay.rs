@@ -16,7 +16,7 @@
 //! cargo run --example term_replay -- C:\tmp\termlog\<key>.bin --chunk 4096
 //! ```
 
-use devhq_lib::vt::{Cell, Grid};
+use wint_lib::vt::{Cell, Grid};
 
 fn text(cells: &[Cell]) -> String {
     let mut s: String = cells.iter().map(|c| c.ch).collect();

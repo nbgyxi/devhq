@@ -995,6 +995,322 @@ pub fn delete(paths: Vec<String>, _recycle: bool) -> Result<(), String> {
     delete_outright(&targets)
 }
 
+fn refuse_zip(paths: &[String], what: &str) -> Result<(), String> {
+    match paths.iter().find(|path| inside_zip(path)) {
+        Some(path) => Err(format!(
+            "{} is inside a zip — files in an archive cannot be {what} here.",
+            name_of(Path::new(path.as_str()))
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Renames one file or folder in place and returns its new path. A new name
+/// is a name, not a path: anything that would move the item elsewhere is
+/// refused instead of quietly obeyed.
+pub fn rename(path: String, new_name: String) -> Result<String, String> {
+    refuse_zip(std::slice::from_ref(&path), "renamed")?;
+    let name = new_name.trim().trim_end_matches(['.', ' ']);
+    if name.is_empty() || name == "." || name == ".." {
+        return Err("A name cannot be empty.".into());
+    }
+    if let Some(bad) = name.chars().find(|c| "\\/:*?\"<>|".contains(*c) || c.is_control()) {
+        return Err(format!("A name cannot contain {bad}"));
+    }
+    let from = PathBuf::from(&path);
+    let parent = from.parent().ok_or("The top of a drive cannot be renamed.")?;
+    let to = parent.join(name);
+    // A change of case only is the same item to Windows, so it must not be
+    // mistaken for a clash with itself.
+    let same_item = to.to_string_lossy().eq_ignore_ascii_case(&from.to_string_lossy());
+    if to.exists() && !same_item {
+        return Err(format!("{name} already exists here."));
+    }
+    std::fs::rename(&from, &to).map_err(|error| readable(&path, error))?;
+    Ok(to.to_string_lossy().into_owned())
+}
+
+/// Makes "New folder" - or "New folder (2)" and so on when that is taken -
+/// and returns its path so the list can put it straight into rename.
+pub fn new_folder(dir: String) -> Result<String, String> {
+    refuse_zip(std::slice::from_ref(&dir), "changed")?;
+    let base = PathBuf::from(&dir);
+    for n in 1..1000 {
+        let name = if n == 1 { "New folder".to_string() } else { format!("New folder ({n})") };
+        let path = base.join(name);
+        if path.exists() {
+            continue;
+        }
+        std::fs::create_dir(&path).map_err(|error| readable(&dir, error))?;
+        return Ok(path.to_string_lossy().into_owned());
+    }
+    Err("Could not find a free name for a new folder.".into())
+}
+
+/// Copies or moves items into a folder through the shell, which is what gives
+/// the familiar progress window, the "replace or skip" question and Ctrl+Z in
+/// Windows Explorer afterwards. Copying into the folder the items already sit
+/// in makes "- Copy" duplicates, the way Explorer does.
+#[cfg(windows)]
+pub fn transfer(paths: Vec<String>, dest: String, copy: bool) -> Result<(), String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::{
+        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION, FO_COPY,
+        FO_MOVE, SHFILEOPSTRUCTW,
+    };
+
+    refuse_zip(&paths, if copy { "copied" } else { "moved" })?;
+    refuse_zip(std::slice::from_ref(&dest), "changed")?;
+    let dest_dir = PathBuf::from(&dest);
+    if !dest_dir.is_dir() {
+        return Err(format!("{} is not a folder.", name_of(&dest_dir)));
+    }
+    let same = |a: &Path, b: &Path| a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy());
+    let sources: Vec<&String> = paths
+        .iter()
+        .filter(|path| {
+            let item = Path::new(path.as_str());
+            // Moving an item to where it already is, or a folder into itself,
+            // is nothing to do rather than an error to show.
+            let already_there = item.parent().is_some_and(|parent| same(parent, &dest_dir));
+            item.exists() && !dest_dir.starts_with(item) && (copy || !already_there)
+        })
+        .collect();
+    if sources.is_empty() {
+        return Ok(());
+    }
+    let into_own_folder = sources
+        .iter()
+        .any(|path| Path::new(path.as_str()).parent().is_some_and(|parent| same(parent, &dest_dir)));
+    let wide = |items: &[&String]| {
+        let mut buffer: Vec<u16> = Vec::new();
+        for item in items {
+            buffer.extend(std::ffi::OsStr::new(item.as_str()).encode_wide());
+            buffer.push(0);
+        }
+        buffer.push(0);
+        buffer
+    };
+    let from = wide(&sources);
+    let to = wide(&[&dest]);
+    let mut flags = FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR;
+    if into_own_folder {
+        flags |= FOF_RENAMEONCOLLISION;
+    }
+    let mut op = SHFILEOPSTRUCTW {
+        wFunc: if copy { FO_COPY } else { FO_MOVE },
+        pFrom: PCWSTR(from.as_ptr()),
+        pTo: PCWSTR(to.as_ptr()),
+        fFlags: flags.0 as u16,
+        ..Default::default()
+    };
+    let code = unsafe { SHFileOperationW(std::ptr::addr_of_mut!(op)) };
+    if code != 0 && !op.fAnyOperationsAborted.as_bool() {
+        return Err(format!(
+            "Windows could not {} the items (error {code}).",
+            if copy { "copy" } else { "move" }
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn transfer(_paths: Vec<String>, _dest: String, _copy: bool) -> Result<(), String> {
+    Err("Copying and moving is only available on Windows.".into())
+}
+
+#[derive(Serialize)]
+pub struct Clip {
+    pub paths: Vec<String>,
+    pub cut: bool,
+}
+
+#[cfg(windows)]
+fn preferred_effect_format() -> u32 {
+    use windows::core::w;
+    unsafe { windows::Win32::System::DataExchange::RegisterClipboardFormatW(w!("Preferred DropEffect")) }
+}
+
+/// The Windows clipboard, opened with a few retries: another program holding
+/// it for a moment is normal, not a failure.
+#[cfg(windows)]
+fn with_clipboard<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    use windows::Win32::System::DataExchange::{CloseClipboard, OpenClipboard};
+    let mut opened = false;
+    for _ in 0..10 {
+        if unsafe { OpenClipboard(None) }.is_ok() {
+            opened = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    if !opened {
+        return Err("Another program is holding the clipboard.".into());
+    }
+    let result = work();
+    let _ = unsafe { CloseClipboard() };
+    result
+}
+
+/// Puts files on the Windows clipboard the way Explorer does - a file list
+/// plus "cut" or "copy" - so they paste into Explorer, another Files window or
+/// anything else that takes files.
+#[cfg(windows)]
+pub fn clipboard_set(paths: Vec<String>, cut: bool) -> Result<(), String> {
+    use windows::Win32::Foundation::{HANDLE, HGLOBAL};
+    use windows::Win32::System::DataExchange::{EmptyClipboard, SetClipboardData};
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows::Win32::UI::Shell::DROPFILES;
+
+    refuse_zip(&paths, if cut { "cut" } else { "copied" })?;
+    let global = |bytes: &[u8]| -> Result<HGLOBAL, String> {
+        unsafe {
+            let handle = GlobalAlloc(GMEM_MOVEABLE, bytes.len()).map_err(|e| e.to_string())?;
+            let target = GlobalLock(handle) as *mut u8;
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), target, bytes.len());
+            let _ = GlobalUnlock(handle);
+            Ok(handle)
+        }
+    };
+    let header = std::mem::size_of::<DROPFILES>();
+    let mut drop = vec![0u8; header];
+    drop[0..4].copy_from_slice(&(header as u32).to_le_bytes());
+    // fWide is the last field of the header.
+    drop[header - 4..header].copy_from_slice(&1u32.to_le_bytes());
+    for path in &paths {
+        for unit in std::ffi::OsStr::new(path.as_str()).encode_wide().chain([0]) {
+            drop.extend(unit.to_le_bytes());
+        }
+    }
+    drop.extend([0, 0]);
+    let effect: u32 = if cut { 2 } else { 1 };
+    let files = global(&drop)?;
+    let mode = global(&effect.to_le_bytes())?;
+    with_clipboard(|| unsafe {
+        EmptyClipboard().map_err(|e| e.to_string())?;
+        // CF_HDROP
+        SetClipboardData(15, Some(HANDLE(files.0))).map_err(|e| e.to_string())?;
+        SetClipboardData(preferred_effect_format(), Some(HANDLE(mode.0))).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+/// The files on the Windows clipboard, if it holds any - whoever put them there.
+#[cfg(windows)]
+pub fn clipboard_get() -> Result<Option<Clip>, String> {
+    use windows::Win32::Foundation::HGLOBAL;
+    use windows::Win32::System::DataExchange::GetClipboardData;
+    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+    use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
+
+    with_clipboard(|| unsafe {
+        let Ok(handle) = GetClipboardData(15) else {
+            return Ok(None);
+        };
+        let drop = HDROP(handle.0);
+        let count = DragQueryFileW(drop, u32::MAX, None);
+        let mut paths = Vec::new();
+        for index in 0..count {
+            let len = DragQueryFileW(drop, index, None) as usize;
+            let mut buffer = vec![0u16; len + 1];
+            DragQueryFileW(drop, index, Some(&mut buffer));
+            paths.push(String::from_utf16_lossy(&buffer[..len]));
+        }
+        let cut = match GetClipboardData(preferred_effect_format()) {
+            Ok(mode) => {
+                let global = HGLOBAL(mode.0);
+                let data = GlobalLock(global) as *const u32;
+                let value = if data.is_null() { 1 } else { data.read_unaligned() };
+                let _ = GlobalUnlock(global);
+                value & 2 != 0
+            }
+            Err(_) => false,
+        };
+        Ok((!paths.is_empty()).then_some(Clip { paths, cut }))
+    })
+}
+
+#[cfg(not(windows))]
+pub fn clipboard_set(_paths: Vec<String>, _cut: bool) -> Result<(), String> {
+    Err("The file clipboard is only available on Windows.".into())
+}
+
+#[cfg(not(windows))]
+pub fn clipboard_get() -> Result<Option<Clip>, String> {
+    Ok(None)
+}
+
+/// Hands files to Windows as a real drag, so they can be dropped on Windows
+/// Explorer, the desktop, another Files window or any program that takes
+/// files. Must run on the window's own thread - that is where the mouse
+/// button is held - and returns once the drop lands. Windows keeps the window
+/// painting through the drag, the same as Explorer's own drags.
+#[cfg(windows)]
+pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
+    use windows::core::{implement, BOOL, HRESULT, PCWSTR};
+    use windows::Win32::Foundation::{
+        DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, S_OK,
+    };
+    use windows::Win32::System::Com::IDataObject;
+    use windows::Win32::System::Ole::{
+        DoDragDrop, IDropSource, IDropSource_Impl, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_MOVE,
+        DROPEFFECT_NONE,
+    };
+    use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
+    use windows::Win32::UI::Shell::{
+        BHID_DataObject, ILCreateFromPathW, ILFree, SHCreateShellItemArrayFromIDLists,
+    };
+
+    #[implement(IDropSource)]
+    struct Source;
+    impl IDropSource_Impl for Source_Impl {
+        fn QueryContinueDrag(&self, escape: BOOL, keys: MODIFIERKEYS_FLAGS) -> HRESULT {
+            if escape.as_bool() {
+                DRAGDROP_S_CANCEL
+            } else if keys.0 & MK_LBUTTON.0 == 0 {
+                DRAGDROP_S_DROP
+            } else {
+                S_OK
+            }
+        }
+        fn GiveFeedback(&self, _effect: DROPEFFECT) -> HRESULT {
+            DRAGDROP_S_USEDEFAULTCURSORS
+        }
+    }
+
+    refuse_zip(paths, "dragged out")?;
+    let mut pidls = Vec::new();
+    for path in paths {
+        let wide: Vec<u16> = std::ffi::OsStr::new(path.as_str()).encode_wide().chain([0]).collect();
+        let pidl = unsafe { ILCreateFromPathW(PCWSTR(wide.as_ptr())) };
+        if !pidl.is_null() {
+            pidls.push(pidl as *const _);
+        }
+    }
+    let result = (|| {
+        if pidls.is_empty() {
+            return Err("Nothing to drag.".to_string());
+        }
+        let items = unsafe { SHCreateShellItemArrayFromIDLists(&pidls) }.map_err(|e| e.to_string())?;
+        let data: IDataObject =
+            unsafe { items.BindToHandler(None, &BHID_DataObject) }.map_err(|e| e.to_string())?;
+        let source: IDropSource = Source.into();
+        let mut effect = DROPEFFECT_NONE;
+        let _ = unsafe { DoDragDrop(&data, &source, DROPEFFECT_COPY | DROPEFFECT_MOVE, &mut effect) };
+        Ok(if effect.0 & DROPEFFECT_MOVE.0 != 0 {
+            "move"
+        } else if effect.0 & DROPEFFECT_COPY.0 != 0 {
+            "copy"
+        } else {
+            "none"
+        })
+    })();
+    for pidl in pidls {
+        unsafe { ILFree(Some(pidl)) };
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

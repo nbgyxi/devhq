@@ -16,6 +16,50 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.118.0",
+      date: "2026-09-20",
+      title: "Startup and tray, and a tray on the sidebar",
+      changes: [
+        ["new", "A new tool, Startup and tray: everything that starts with Windows, from the registry and both Startup folders, each with a switch that turns it off the way Task Manager does - Windows own approval flag, so nothing is deleted and turning it back on is one click."],
+        ["new", "The same tool lists the notification area and traces every icon back to what starts it, so the way to stop something coming back is on the row itself. An icon nothing in Startup explains says so - it is a service, a scheduled task, or you opened it."],
+        ["new", "The docked sidebar carries its own tray: the network first, then the icons of the running apps Windows has a tray icon for. It reads the tray Windows itself records, shows the ones it promotes onto the taskbar, and a chevron opens the rest into a named list."],
+        ["new", "The network icon opens the Wi-Fi: the networks in range with their signal, one click to join a saved one, Disconnect, and a way through to Windows own list for a network that needs its password. Under it are the open connections, busiest first, and shortcuts to the network tools."],
+        ["better", "Clicking a tray app with no window to show now starts it again instead of doing nothing, which is how a single-instance app - Greenshot, NordVPN - is asked to show itself."],
+      ],
+    },
+    {
+      version: "0.117.0",
+      date: "2026-09-20",
+      title: "The sidebar carries the tray and the network",
+      changes: [
+        ["new", "The docked sidebar shows the network it is on - the Wi-Fi name and signal, or the wired adapter - and clicking it lists every connection open right now, busiest first. Clicking a connection jumps to the app behind it."],
+        ["new", "Under it sits the notification area: the running apps Windows has a tray icon for, with their own icons. The ones Windows keeps on the taskbar show straight away and a chevron reveals the rest, the way the real tray opens. Clicking one brings its window back; an app with no window to show is listed but greyed."],
+        ["better", "Both are buttons like any other, so either can be turned off from Docked Sidebar in Windows tools."],
+        ["fix", "A menu opened from the sidebar no longer sinks behind the bar after a few seconds. The bar was re-claiming the top of the z-order every time the shell told it to reposition, which put it over its own menu."],
+      ],
+    },
+    {
+      version: "0.116.0",
+      date: "2026-09-19",
+      title: "Files can rename, copy, move and drag",
+      changes: [
+        ["new", "Files renames in place: press F2 or pick Rename from the right-click menu, Enter keeps the new name and Escape leaves it alone."],
+        ["new", "Cut, Copy and Paste in Files (Ctrl+X, Ctrl+C, Ctrl+V) use the Windows clipboard, so files move freely between Files and Windows Explorer."],
+        ["new", "Right-click an empty part of the list for New folder (Ctrl+Shift+N), Paste, a shell or Refresh."],
+        ["new", "Drag files out of Files onto another Files window, Windows Explorer or the desktop, and drop files onto a folder row, the tree or the path bar to move them there - another drive copies instead."],
+        ["better", "The right-click menu in Files is grouped, and shows the shortcut for each action."],
+      ],
+    },
+    {
+      version: "0.115.1",
+      date: "2026-09-18",
+      title: "Dialogs show over open tools",
+      buildChecksum: "92afff0223ba0ce3a9e94bfb345421d12ad727a9366f05a8dd486bbb051ed7ea",
+      changes: [
+        ["fix", "The close confirmation, and every other confirmation, now shows while a tool is open - the tool steps aside until you answer and comes straight back."],
+      ],
+    },
+    {
       version: "0.115.0",
       date: "2026-09-18",
       title: "Closing asks first, and a Window & tray page",

@@ -8,7 +8,7 @@ fn main() {
         .nth(1)
         .unwrap_or_else(|| "/overview".into());
     let visitor = "devhq-cli-check";
-    match devhq_lib::analytics::page_view(visitor, &path) {
+    match wint_lib::analytics::page_view(visitor, &path) {
         Ok(()) => println!("sent {path} as {visitor}"),
         Err(why) => {
             eprintln!("not sent: {why}");

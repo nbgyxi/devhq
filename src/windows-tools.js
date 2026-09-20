@@ -16,6 +16,7 @@
     { id: "stall-watch", name: "Input Stall Watch", icon: "mouse", hint: "catch the moments the mouse or the whole PC freezes, and see what caused them", keywords: "mouse freeze freezes frozen stutter stutters lag laggy hitch hiccup slow pointer cursor jumps jumping sticks sticky input stall stalls latency dpc interrupt isr driver latencymon diagnose diagnostics monitor watch background paging hard faults cpu spike wireless receiver usb power saving hook" },
     { id: "focus-mode", name: "Focus mode", icon: "shield_lock", hint: "one press or shortcut hides the windows you choose - gone from the taskbar, not just minimized - and the next brings them back", keywords: "focus mode panic boss key hide windows hidden taskbar alt tab privacy distraction distractions screen share sharing presentation quick hide stealth chrome discord youtube games" },
     { id: "keep-awake", name: "Keep Awake", icon: "coffee", hint: "keep Windows and the display awake for as long as you need", keywords: "keep awake stay awake sleep no sleep power display screen monitor timeout screensaver lock idle prevent caffeine caffeinate insomnia presentation meeting build download transfer render chat presence away status active green jiggle nudge mouse mover pointer idle timer stay active schedule scheduled hours weekdays weekends working hours 9 to 5 automatic recurring daily" },
+    { id: "startup", name: "Startup and tray", icon: "rocket_launch", hint: "what starts with Windows and what sits in the tray - where each icon comes from, and the switch that stops it coming back", keywords: "startup start up autostart auto start autorun auto-run autoruns boot login logon sign in run key runonce registry hkcu hklm startup folder shell:startup task manager msconfig startup apps startup programs launch on login slow boot slow startup boot time disable enable turn off stop prevent block remove delete tray system tray notification area notification icons hidden icons overflow chevron icon icons background app apps background programs running silently what is this program where did it come from origin trace who started it discord steam onedrive teams spotify nordvpn greenshot docker updater helper agent daemon bloat bloatware" },
     { id: "sidebar", name: "Docked Sidebar", icon: "dock_to_right", hint: "a rail docked to the edge of the screen that Windows reserves room for, with the real taskbar out of the way", keywords: "sidebar side bar rail dock docked appbar app bar taskbar task bar replacement replace edge left right screen edge reserve work area maximize maximized under behind overlap always on top topmost launcher launch bar shortcuts autohide auto-hide auto hide hidden explorer shell desktop" },
     { id: "time-tracker", name: "Active Window Time Tracker", icon: "schedule", hint: "local time by application and window title", keywords: "time tracker tracking activity active window title productivity apps applications usage screen time hours focus idle away log history what did i do local private" },
   ];
@@ -276,6 +277,7 @@
     if (active === "time-tracker") renderTimeTracker(tool);
     if (active === "security-audit") renderSecurityAudit(tool);
     if (active === "stall-watch") renderStallWatch(tool);
+    if (active === "startup") renderStartupTray(tool);
     if (active === "focus-mode") renderFocusMode(tool);
     if (active === "sidebar") renderSidebar(tool);
     if (active === "repair-swap") renderAudioChooser(tool);
@@ -330,7 +332,7 @@
   // What the rail draws. This page runs in an isolated webview with storage of
   // its own, so the settings are kept by the backend, which also hands every
   // change to the docked rail as it is made.
-  const DOCK_SLOTS = [["brand", "WinT (opens Search)", "dashboard"], ["start", "Windows Start", "grid_view"], ["clipboard", "Clipboard", "content_paste"], ["focus", "Focus mode", "shield_lock"], ["windows", "Open windows", "select_window"], ["geometry", "Edge and width readout", "straighten"], ["tray", "Tray icons", "expand_less"], ["taskbar", "Show / hide taskbar", "visibility_off"], ["edge", "Flip side", "swap_horiz"], ["close", "Undock", "close"]];
+  const DOCK_SLOTS = [["brand", "WinT (opens Search)", "dashboard"], ["start", "Windows Start", "grid_view"], ["clipboard", "Clipboard", "content_paste"], ["focus", "Focus mode", "shield_lock"], ["network", "Network and connections", "wifi"], ["windows", "Open windows", "select_window"], ["geometry", "Edge and width readout", "straighten"], ["trayapps", "Notification area", "apps"], ["tray", "Tray icons", "expand_less"], ["taskbar", "Show / hide taskbar", "visibility_off"], ["edge", "Flip side", "swap_horiz"], ["close", "Undock", "close"]];
   let bar = { textSize: 10, iconSize: 22, slots: {}, tools: [] };
   // Every tool a shortcut can point at. This page has no catalog of the whole
   // app, so it asks the main window, which answers with one event.
@@ -408,6 +410,20 @@
     script.src = "stall-watch.js";
     script.onload = mount;
     script.onerror = () => { node.innerHTML = '<div class="win-empty">Input Stall Watch could not load.</div>'; };
+    document.head.appendChild(script);
+  }
+
+  // Its own file: the tool is two long lists with their own refresh, and the
+  // page is only ever open when someone is looking at it.
+  function renderStartupTray(tool) {
+    host.innerHTML = header(tool, '<div data-startup-host></div>');
+    const node = host.querySelector("[data-startup-host]");
+    const mount = () => { if (node.isConnected) window.wintStartupTray.mount(node); };
+    if (window.wintStartupTray) return mount();
+    const script = document.createElement("script");
+    script.src = "startup-tray.js";
+    script.onload = mount;
+    script.onerror = () => { node.innerHTML = '<div class="win-empty">Startup and tray could not load.</div>'; };
     document.head.appendChild(script);
   }
 

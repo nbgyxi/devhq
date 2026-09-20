@@ -11,8 +11,8 @@
 
 #[cfg(windows)]
 fn main() {
-    use devhq_lib::conpty::{self, ConPty};
-    use devhq_lib::vt::{Cell, Grid, DEFAULT_COLOR};
+    use wint_lib::conpty::{self, ConPty};
+    use wint_lib::vt::{Cell, Grid, DEFAULT_COLOR};
     use std::sync::{Arc, Mutex};
 
     let dir = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());

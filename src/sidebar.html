@@ -82,6 +82,21 @@
   /* Shortcuts to WinT tools sit on their own under a divider, apart from the
      bar's own controls below them. */
   .bar-tools { display: flex; flex-direction: column; gap: 2px; flex: none; padding-top: 6px; border-top: 1px solid var(--line, #262a36); }
+  /* The rail's own notification area: a few icons, then the chevron that
+     shows the rest, the way the real tray opens. */
+  /* Closed, the tray is a row of icons with no names, wrapping as often as the
+     rail's width needs; open, it is the same rows named, like every other list
+     in the bar. */
+  .bar-tray {
+    display: flex; flex-wrap: wrap; gap: 2px; flex: none;
+    padding-top: 6px; border-top: 1px solid var(--line, #262a36);
+  }
+  .bar-tray.expanded { flex-direction: column; flex-wrap: nowrap; }
+  .bar-tray .bar-win.icon-only {
+    display: grid; grid-template-columns: auto; justify-items: center;
+    padding: 5px; flex: none;
+  }
+  .bar-tray .bar-win.chevron .ms { color: var(--muted, #8b93a7); }
   .bar-geometry { display: grid; gap: 1px; padding: 6px 4px; color: var(--muted, #8b93a7); font-size: 10px; text-align: center; }
   .bar-geometry code { font-size: 10px; }
 </style>
@@ -98,6 +113,7 @@
   <div class="bar-spacer" data-spacer hidden></div>
   <div class="bar-geometry" data-geometry data-slot="geometry"></div>
   <div class="bar-tools" data-tools aria-label="Tool shortcuts" hidden></div>
+  <div class="bar-tray" data-tray-apps aria-label="Notification area" hidden></div>
   <button class="bar-slot" type="button" data-action="tray" data-slot="tray"><span class="ms" aria-hidden="true">expand_less</span><small>Tray icons</small></button>
   <button class="bar-slot" type="button" data-action="taskbar" data-slot="taskbar"><span class="ms" aria-hidden="true">visibility_off</span><small>Hide taskbar</small></button>
   <button class="bar-slot" type="button" data-action="edge" data-slot="edge"><span class="ms" aria-hidden="true">swap_horiz</span><small>Flip side</small></button>

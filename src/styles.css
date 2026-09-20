@@ -3349,6 +3349,10 @@ html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
 .fx-context button.danger{color:var(--red)}
 .fx-context button.danger .ms{color:var(--red)}
 .fx-context button.danger:hover{background:color-mix(in srgb,var(--red) 14%,transparent)}
+.fx-context hr{margin:4px 6px;border:0;border-top:1px solid var(--line)}
+.fx-context kbd{margin-left:auto;padding-left:18px;color:var(--dim2);font:inherit;font-size:11px}
+.fx-rename{flex:1;min-width:0;height:23px;padding:0 6px;border:1px solid var(--accent);border-radius:4px;background:var(--bg);color:var(--text);font:inherit;font-weight:600;outline:none}
+.fx-drop{outline:2px solid var(--accent) !important;outline-offset:-2px;background:color-mix(in srgb,var(--accent) 14%,transparent) !important}
 /* Disk Space Usage ------------------------------------------------------ */
 .disk-page{flex:1 1 0;inline-size:100%;block-size:0;min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--bg)}
 .disk-page[hidden]{display:none}
@@ -4766,3 +4770,42 @@ body.projects-window #status-term-popout{display:none!important}
 .native-frame #root>.titlebar{display:none}
 .status-settings{display:none}.native-frame .status-settings{display:inline-flex;align-items:center}
 .status-settings .win-icon{width:14px;height:14px;fill:currentColor}.status-settings.on{color:var(--accent)}
+
+/* Startup and tray. Two lists of programs, each row an icon, a name and the
+   switch that decides whether it comes back tomorrow. A grid, not a table:
+   the tool is often a narrow popped-out window, and a table column holding a
+   sentence collapses to one word per line. Every row keeps its shape at every
+   width — name left, switch right, and everything of unpredictable length on
+   its own line underneath. */
+.startup-head{margin:22px 0 8px;font-size:13px}
+.startup-note{margin:0 0 10px;color:var(--dim2);font-size:11.5px;max-width:78ch;line-height:1.5}
+.startup-check{flex-direction:row!important;align-items:center;gap:7px;height:34px}
+.startup-check span{color:var(--dim);font-weight:600}
+.startup-list{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--bg1)}
+.startup-row{
+  display:grid;gap:3px 10px;align-items:center;padding:10px 12px;
+  grid-template-columns:20px minmax(0,1fr) auto;
+  grid-template-areas:"icon name actions" "icon meta actions";
+  border-bottom:1px solid var(--line);
+}
+.startup-row:last-child{border-bottom:0}
+.startup-icon{grid-area:icon;align-self:start;margin-top:2px;width:20px;height:20px;font-size:20px;line-height:20px;color:var(--dim2)}
+.startup-name{grid-area:name;display:flex;align-items:baseline;gap:8px;min-width:0}
+.startup-name strong{font-weight:600;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.startup-name small{color:var(--dim2);font-size:10.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.startup-meta{grid-area:meta;display:flex;flex-wrap:wrap;align-items:center;gap:5px;min-width:0}
+.startup-meta code{font:10.5px/1.5 'Cascadia Mono',Consolas,monospace;color:var(--dim2);overflow-wrap:anywhere;user-select:text}
+.startup-meta small{color:var(--dim2);font-size:10.5px}
+.startup-meta .state-pill{white-space:nowrap}
+.startup-run-pill{background:rgba(110,168,254,.12);color:var(--accent)}
+.startup-idle-pill{background:rgba(255,255,255,.06);color:var(--dim2)}
+.startup-tray-pill{background:rgba(242,181,68,.12);color:var(--amber)}
+.startup-actions{grid-area:actions;display:flex;gap:6px;align-items:center;justify-content:flex-end}
+.startup-actions .btn{white-space:nowrap}
+.startup-off .startup-icon,.startup-off .startup-name{opacity:.55}
+/* Narrow enough that the switch no longer fits beside the name: it drops
+   under the row rather than squeezing everything else out of shape. */
+@media (max-width:560px){
+  .startup-row{grid-template-columns:20px minmax(0,1fr);grid-template-areas:"icon name" "icon meta" "actions actions"}
+  .startup-actions{justify-content:flex-start;margin-top:6px}
+}

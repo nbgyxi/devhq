@@ -264,11 +264,13 @@ function showNextConfirm() {
       <button class="btn ${request.tone === "danger" ? "danger" : "primary"}" type="button" data-confirm="accept">${esc(request.confirmLabel)}</button></div>
   </section>`;
   document.body.appendChild(layer);
+  coverEmbeddedTool();
   let settled = false;
   const settle = (accepted) => {
     if (settled) return;
     settled = true;
     layer.remove();
+    uncoverEmbeddedTool();
     confirmOpen = false;
     request.resolve(accepted);
     showNextConfirm();
@@ -390,6 +392,7 @@ function askBeforeClose() {
       </div>
     </section>`;
     document.body.appendChild(layer);
+    coverEmbeddedTool();
     const list = layer.querySelector(".close-list");
     whatClosesWithApp().then((items) => {
       if (!layer.isConnected) return;
@@ -404,6 +407,7 @@ function askBeforeClose() {
       if (!layer.isConnected) return;
       const remember = layer.querySelector("#close-remember").checked;
       layer.remove();
+      uncoverEmbeddedTool();
       resolve({ action, remember });
     };
     layer.querySelectorAll("[data-close]").forEach((button) => {
@@ -2009,13 +2013,24 @@ async function retryEmbeddedTool(id) {
 /** Keep the isolated tracker exactly over the ordinary Windows-tools host.
  * Its child webview is a native sibling of the shell webview, not an iframe,
  * so a blocked tracker event loop cannot prevent the shell from responding. */
+/** The tool is a native webview layered over the shell, so no HTML dialog
+ *  can draw above it. While a modal is up the tool steps aside (hidden, not
+ *  destroyed) and comes back when the last one closes. */
+let embeddedToolCovers = 0;
+function coverEmbeddedTool() {
+  if (embeddedToolCovers++ === 0) syncEmbeddedTool();
+}
+function uncoverEmbeddedTool() {
+  if (embeddedToolCovers > 0 && --embeddedToolCovers === 0) syncEmbeddedTool();
+}
+
 function syncEmbeddedTool() {
   const id = state.isolatedToolId;
   const isolated = state.activeView === "isolated-tool" && Boolean(id);
   // One session per live webview, reused for as long as that webview lives.
   if (isolated) state.isolatedToolSession = sessionForTool(id);
   const host = el["isolated-tool-slot"];
-  if (!isolated || !host || host.hidden) {
+  if (!isolated || !host || host.hidden || embeddedToolCovers > 0) {
     hideEmbeddedToolLoading();
     endWork(EMBEDDED_TOOL_WORK);
     embeddedToolReadyId = "";

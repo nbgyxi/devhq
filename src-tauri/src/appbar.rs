@@ -33,8 +33,9 @@ use windows::Win32::UI::Shell::{
     ABS_ALWAYSONTOP, ABS_AUTOHIDE, APPBARDATA,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    SetWindowPos, HWND_BOTTOM, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WM_APP,
-    WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_WINDOWPOSCHANGED,
+    GetWindowLongW, SetWindowPos, GWL_EXSTYLE, HWND_BOTTOM, HWND_TOPMOST, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_APP, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_WINDOWPOSCHANGED, WS_EX_TOPMOST,
 };
 
 use crate::off_thread;
@@ -143,14 +144,21 @@ unsafe fn place(hwnd: HWND) {
     SHAppBarMessage(ABM_SETPOS, &mut data);
 
     let rc = data.rc;
+    // Asking for HWND_TOPMOST again does not just keep the rail topmost, it
+    // raises it to the front of the topmost band — over the rail's own popup
+    // menus, which are topmost windows too. The shell sends these
+    // notifications every few seconds, so a menu would sink behind the bar
+    // while it was still open. The z-order only needs setting when the window
+    // is not topmost already.
+    let topmost = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0 != 0;
     let _ = SetWindowPos(
         hwnd,
-        Some(HWND_TOPMOST),
+        if topmost { None } else { Some(HWND_TOPMOST) },
         rc.left,
         rc.top,
         rc.right - rc.left,
         rc.bottom - rc.top,
-        SWP_NOACTIVATE,
+        if topmost { SWP_NOACTIVATE | SWP_NOZORDER } else { SWP_NOACTIVATE },
     );
 }
 
@@ -924,6 +932,37 @@ pub(crate) unsafe fn icon_to_data_url(icon: windows::Win32::UI::WindowsAndMessag
     crate::explorer::rgba_to_data_url(SIZE as u32, SIZE as u32, &pixels).ok().flatten()
 }
 
+/// The program behind a window, whatever kind of window it is: the owner is
+/// followed first, so a tool window or a dialog answers with its application.
+pub(crate) unsafe fn window_program(hwnd: HWND) -> String {
+    window_exe(app_window(hwnd))
+}
+
+/// The icon a program file carries.
+///
+/// `explorer::thumbnail` cannot answer this and is not meant to: it asks the
+/// shell for a real extracted picture and refuses the generic type icon, which
+/// for a program is the only thing there is. This reads the icon resource out
+/// of the file instead, which is what Explorer draws for an exe.
+pub(crate) fn program_icon(exe: &str) -> Option<String> {
+    use windows::core::HSTRING;
+    use windows::Win32::UI::Shell::ExtractIconExW;
+    use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, HICON};
+    if exe.is_empty() {
+        return None;
+    }
+    let path = HSTRING::from(exe);
+    let mut large = HICON::default();
+    unsafe {
+        if ExtractIconExW(&path, 0, Some(&mut large), None, 1) == 0 || large.is_invalid() {
+            return None;
+        }
+        let url = icon_to_data_url(large);
+        let _ = DestroyIcon(large);
+        url
+    }
+}
+
 /// The icon for one window's button: its own icon when it has one, else the
 /// icon of the program behind it.
 #[tauri::command]
@@ -937,11 +976,11 @@ pub async fn sidebar_window_icon(id: String) -> Option<String> {
                 return Some(url);
             }
         }
-        let exe = window_exe(app);
-        if exe.is_empty() {
-            return None;
-        }
-        crate::explorer::thumbnail(exe, 32).ok().flatten()
+        // The program's own icon, not a thumbnail of it: the shell's thumbnail
+        // call refuses the generic type icon, which for a program is the only
+        // picture there is. A tray app whose window carries no icon — it has
+        // no window worth the name — would otherwise come back blank.
+        program_icon(&window_exe(app))
     })
     .await
     .flatten()
@@ -1042,7 +1081,7 @@ pub struct WindowMenu {
 }
 
 /// `FileDescription` from the exe's version resource, in its first language.
-fn exe_description(exe: &str) -> Option<String> {
+pub(crate) fn exe_description(exe: &str) -> Option<String> {
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::Storage::FileSystem::{
         GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
@@ -1244,4 +1283,422 @@ pub async fn sidebar_suggest_launch(target: String) -> Result<(), String> {
     off_thread(move || crate::suggest::launch(&target))
         .await
         .unwrap_or_else(|| Err("Could not start it.".into()))
+}
+
+// ---- the network pill ------------------------------------------------------------
+// The rail's approximation of the taskbar's network icon: what this machine is
+// connected through, and — on a click — who is talking over it right now.
+// Both are read off-thread and cached by the page, because a native menu
+// cannot show a spinner once it is open.
+
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NetStatus {
+    /// `wifi`, `wired` or `offline` — which glyph the button draws.
+    pub kind: String,
+    /// The SSID on Wi-Fi, else the adapter's own description.
+    pub name: String,
+    /// Signal strength in percent, 0 when the link is not wireless.
+    pub signal: u32,
+    pub ipv4: String,
+    pub gateway: String,
+}
+
+/// A fixed-size C string out of an IP Helper struct. Its bytes are `CHAR`,
+/// which the windows crate spells as `i8`.
+fn c_string(bytes: &[i8]) -> String {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    let bytes: Vec<u8> = bytes[..end].iter().map(|&b| b as u8).collect();
+    String::from_utf8_lossy(&bytes).trim().to_string()
+}
+
+/// The adapter carrying the default route: the first one with an address and a
+/// gateway that are not all zeroes. `GetAdaptersInfo` is IPv4-only, which is
+/// exactly what a one-line readout wants.
+fn default_adapter() -> Option<(u32, String, String, String)> {
+    use windows::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
+    use windows::Win32::NetworkManagement::IpHelper::{GetAdaptersInfo, IP_ADAPTER_INFO};
+    unsafe {
+        let mut len = 0u32;
+        if GetAdaptersInfo(None, &mut len) != ERROR_BUFFER_OVERFLOW.0 || len == 0 {
+            return None;
+        }
+        // The list is a chain of structs inside one buffer, so the buffer has
+        // to stay aligned for `IP_ADAPTER_INFO` rather than be plain bytes.
+        let count = (len as usize).div_ceil(std::mem::size_of::<IP_ADAPTER_INFO>()) + 1;
+        let mut buffer: Vec<IP_ADAPTER_INFO> = vec![std::mem::zeroed(); count];
+        len = (count * std::mem::size_of::<IP_ADAPTER_INFO>()) as u32;
+        if GetAdaptersInfo(Some(buffer.as_mut_ptr()), &mut len) != 0 {
+            return None;
+        }
+        let mut node = buffer.as_ptr();
+        while !node.is_null() {
+            let adapter = &*node;
+            let ip = c_string(&adapter.IpAddressList.IpAddress.String);
+            let gateway = c_string(&adapter.GatewayList.IpAddress.String);
+            if !ip.is_empty() && ip != "0.0.0.0" && !gateway.is_empty() && gateway != "0.0.0.0" {
+                return Some((adapter.Type, c_string(&adapter.Description), ip, gateway));
+            }
+            node = adapter.Next;
+        }
+    }
+    None
+}
+
+/// What the rail's network button shows: the link this machine is on.
+#[tauri::command]
+pub async fn sidebar_network() -> NetStatus {
+    off_thread(|| {
+        // IF_TYPE_IEEE80211, spelled out so it needs no extra crate feature.
+        const WIRELESS: u32 = 71;
+        let Some((kind, description, ipv4, gateway)) = default_adapter() else {
+            return NetStatus {
+                kind: "offline".into(),
+                name: "No network".into(),
+                ..Default::default()
+            };
+        };
+        let wireless = kind == WIRELESS;
+        let (ssid, signal) = if wireless {
+            crate::wifi::current().unwrap_or_default()
+        } else {
+            Default::default()
+        };
+        NetStatus {
+            kind: if wireless { "wifi".into() } else { "wired".into() },
+            name: if ssid.is_empty() { description } else { ssid },
+            signal,
+            ipv4,
+            gateway,
+        }
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Every network in range. The radio is asked to look again at the same
+/// time, so opening the menu twice in a row shows a fresher list the second
+/// time — a scan takes seconds, which is longer than a menu waits.
+#[tauri::command]
+pub async fn sidebar_wifi_networks() -> Vec<crate::wifi::Network> {
+    off_thread(|| {
+        let found = crate::wifi::networks();
+        crate::wifi::scan();
+        found
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Join a network Windows already has a profile for.
+#[tauri::command]
+pub async fn sidebar_wifi_connect(ssid: String) -> Result<(), String> {
+    off_thread(move || crate::wifi::connect(&ssid))
+        .await
+        .unwrap_or_else(|| Err("Could not reach the Wi-Fi service.".into()))
+}
+
+/// Drop the current Wi-Fi connection. Windows reconnects on its own if the
+/// profile says to, which is its business, not the rail's.
+#[tauri::command]
+pub async fn sidebar_wifi_disconnect() -> Result<(), String> {
+    off_thread(crate::wifi::disconnect)
+        .await
+        .unwrap_or_else(|| Err("Could not reach the Wi-Fi service.".into()))
+}
+
+/// Windows' own Wi-Fi flyout, for a network this rail cannot join on its own:
+/// a new one, which needs its password typed somewhere trustworthy.
+#[tauri::command]
+pub async fn sidebar_wifi_picker() -> Result<(), String> {
+    off_thread(crate::wifi::open_picker)
+        .await
+        .unwrap_or_else(|| Err("Could not open the Wi-Fi list.".into()))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Connection {
+    /// The image name of the process holding the socket, as tasklist spells it.
+    pub process: String,
+    pub pid: u32,
+    /// `address:port` of the far end.
+    pub remote: String,
+    /// How many sockets this process holds open to that same address.
+    pub count: u32,
+    /// A window of the same program, when it has one, so that clicking the row
+    /// jumps to the app behind the traffic.
+    pub window: Option<String>,
+}
+
+/// Every established connection, one row per process and far end. This shells
+/// out to `netstat` and `tasklist`, so it never runs on the thread that draws
+/// the window.
+#[tauri::command]
+pub async fn sidebar_connections(app: AppHandle) -> Vec<Connection> {
+    use std::collections::HashMap;
+    let sidebar = sidebar_hwnd(&app);
+    off_thread(move || {
+        let mut names: HashMap<u32, String> = HashMap::new();
+        if let Some(text) = crate::util::run_lossy("tasklist", &["/fo", "csv", "/nh"], None) {
+            for line in text.lines() {
+                // "name.exe","1234","Console","1","12,345 K"
+                let mut cells = line.split("\",\"");
+                let (Some(name), Some(pid)) = (cells.next(), cells.next()) else {
+                    continue;
+                };
+                if let Ok(pid) = pid.trim_matches('"').trim().parse::<u32>() {
+                    names.insert(pid, name.trim_matches('"').to_string());
+                }
+            }
+        }
+        // A window to jump to, keyed by the file name of the program behind it.
+        // The socket usually belongs to a child process with no window of its
+        // own — every browser works this way — so this matches the program,
+        // not the process.
+        let mut windows: HashMap<String, String> = HashMap::new();
+        for win in list_windows(sidebar) {
+            if let Some(file) = std::path::Path::new(&win.exe).file_name() {
+                windows
+                    .entry(file.to_string_lossy().to_ascii_lowercase())
+                    .or_insert(win.id);
+            }
+        }
+
+        let Some(text) = crate::util::run_lossy("netstat", &["-ano", "-p", "TCP"], None) else {
+            return Vec::new();
+        };
+        let mut grouped: HashMap<(u32, String), u32> = HashMap::new();
+        for line in text.lines() {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            // TCP  <local>  <remote>  ESTABLISHED  <pid>
+            if fields.len() < 5 || !fields[0].eq_ignore_ascii_case("tcp") {
+                continue;
+            }
+            if !fields[3].eq_ignore_ascii_case("ESTABLISHED") {
+                continue;
+            }
+            let Ok(pid) = fields[4].parse::<u32>() else {
+                continue;
+            };
+            let remote = fields[2];
+            // A developer's machine talks to itself constantly — a dev server,
+            // a database, a language server. None of that is what "who is on
+            // the network?" means, so loopback is left out.
+            if remote.starts_with("127.") || remote.starts_with("[::1]") {
+                continue;
+            }
+            *grouped.entry((pid, remote.to_string())).or_default() += 1;
+        }
+        let mut rows: Vec<Connection> = grouped
+            .into_iter()
+            .map(|((pid, remote), count)| {
+                let process = names
+                    .get(&pid)
+                    .cloned()
+                    .unwrap_or_else(|| format!("pid {pid}"));
+                let window = windows.get(&process.to_ascii_lowercase()).cloned();
+                Connection { process, pid, remote, count, window }
+            })
+            .collect();
+        // Busiest first, so the top of the menu is the app doing the talking.
+        rows.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.process.to_lowercase().cmp(&b.process.to_lowercase()))
+                .then_with(|| a.remote.cmp(&b.remote))
+        });
+        rows.truncate(40);
+        rows
+    })
+    .await
+    .unwrap_or_default()
+}
+
+// ---- the notification area ---------------------------------------------------------
+// The tray's icons cannot be drawn by anyone but Explorer — there is no API
+// that hands them over. What Windows 11 does write down is the list itself:
+// one key per icon under `Control Panel\NotifyIconSettings`, naming the program
+// that registered it and whether the icon is promoted onto the taskbar or kept
+// in the overflow flyout. That is the list this section shows, matched against
+// the programs that are actually running, so the rail carries the same icons
+// the tray does and splits them the same way.
+//
+// Where that key does not exist, the rail falls back to the shape a
+// tray-resident app has: running, owns windows, and not one of them is a window
+// the taskbar would show a button for.
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrayApp {
+    /// A window of the app, for its icon and for showing it again.
+    pub id: String,
+    /// What the program calls itself, else its file name.
+    pub name: String,
+    pub exe: String,
+    /// Whether the window behind `id` is one that can be put on screen: a
+    /// titled, captioned window rather than a message sink.
+    pub can_show: bool,
+    /// Whether Windows keeps this icon on the taskbar rather than in the
+    /// overflow — which is what the rail shows without being expanded.
+    pub promoted: bool,
+}
+
+/// What the notification area holds: every running program with a tray icon.
+#[tauri::command]
+pub async fn sidebar_tray_apps() -> Vec<TrayApp> {
+    use std::collections::HashMap;
+    use windows::core::BOOL;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetShellWindow, GetWindowLongW, GetWindowTextLengthW, GWL_STYLE, WS_CAPTION,
+    };
+
+    unsafe extern "system" fn collect(hwnd: HWND, found: LPARAM) -> BOOL {
+        let found = &mut *(found.0 as *mut Vec<isize>);
+        found.push(hwnd.0 as isize);
+        true.into()
+    }
+
+    /// One program, across every window and process it owns.
+    struct Group {
+        /// Whether the taskbar shows a button for any of its windows.
+        shown: bool,
+        exe: String,
+        best: isize,
+        can_show: bool,
+    }
+
+    off_thread(move || {
+        let mut handles: Vec<isize> = Vec::new();
+        let shell = unsafe {
+            let _ = EnumWindows(Some(collect), LPARAM(std::ptr::addr_of_mut!(handles) as isize));
+            // The desktop's own window belongs to Explorer, which owns several
+            // of the tray's icons (volume, network, safely remove). Leaving the
+            // shell out is what keeps those from being listed as an app.
+            window_exe(GetShellWindow()).to_ascii_lowercase()
+        };
+        let own = std::env::current_exe()
+            .map(|path| path.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+
+        // Grouped by program rather than by process: a browser's socket-owning
+        // child has hidden windows of its own while the browser is plainly on
+        // screen, and that child is not an app in the tray.
+        let mut apps: HashMap<String, Group> = HashMap::new();
+        for raw in handles {
+            let hwnd = HWND(raw as *mut c_void);
+            let (exe, shown, titled, captioned) = unsafe {
+                (
+                    window_exe(app_window(hwnd)),
+                    is_taskbar_window(hwnd),
+                    GetWindowTextLengthW(hwnd) > 0,
+                    GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CAPTION.0 != 0,
+                )
+            };
+            if exe.is_empty() {
+                continue;
+            }
+            let key = exe.to_ascii_lowercase();
+            if key == own || key == shell {
+                continue;
+            }
+            let entry = apps.entry(key).or_insert(Group {
+                shown: false,
+                exe: exe.clone(),
+                best: raw,
+                can_show: false,
+            });
+            entry.shown |= shown;
+            // The window worth offering is one that could actually appear.
+            if titled && captioned && !entry.can_show {
+                entry.best = raw;
+                entry.can_show = true;
+            }
+        }
+
+        let icons = crate::tray::lookup();
+        let mut rows: Vec<TrayApp> = apps
+            .into_iter()
+            .filter_map(|(key, group)| {
+                let promoted = if icons.is_empty() {
+                    // No list to match against: fall back to the shape of a
+                    // tray app, and treat none of them as promoted.
+                    if group.shown || !group.can_show {
+                        return None;
+                    }
+                    false
+                } else {
+                    let file = std::path::Path::new(&key)
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    *icons.get(&key).or_else(|| icons.get(&file))?
+                };
+                Some(TrayApp {
+                    id: group.best.to_string(),
+                    name: exe_description(&group.exe).unwrap_or_else(|| {
+                        std::path::Path::new(&group.exe)
+                            .file_stem()
+                            .map(|stem| stem.to_string_lossy().into_owned())
+                            .unwrap_or_default()
+                    }),
+                    exe: group.exe,
+                    can_show: group.can_show,
+                    promoted,
+                })
+            })
+            .collect();
+        // The icons Windows keeps on the taskbar come first, exactly as they
+        // do there; the rest are what the rail's own chevron reveals.
+        rows.sort_by(|a, b| {
+            b.promoted
+                .cmp(&a.promoted)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        rows
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Show a tray app. Its window is put back on screen when it has one; when it
+/// has none — a tray app whose only windows are message sinks, which is most
+/// of the ones written before Windows 10 — the program is started again
+/// instead. Nearly every app of this kind is single-instance and answers a
+/// second start by showing itself, which is the same thing clicking its tray
+/// icon would have done. Nothing here can click the icon itself: Windows keeps
+/// the tray's callbacks to Explorer.
+#[tauri::command]
+pub async fn sidebar_reveal(id: String, exe: Option<String>) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, GetWindowTextLengthW, IsWindow, GWL_STYLE, WS_CAPTION,
+    };
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    let raw: isize = id.parse().map_err(|_| "Not a window.".to_string())?;
+    off_thread(move || unsafe {
+        let hwnd = HWND(raw as *mut c_void);
+        let showable = IsWindow(Some(hwnd)).as_bool()
+            && GetWindowTextLengthW(hwnd) > 0
+            && GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CAPTION.0 != 0;
+        if showable {
+            bring_forward(hwnd);
+            return Ok(());
+        }
+        let exe = exe
+            .filter(|exe| !exe.is_empty())
+            .or_else(|| Some(window_exe(app_window(hwnd))).filter(|exe| !exe.is_empty()))
+            .ok_or("That app has no window to show.")?;
+        let mut command = std::process::Command::new(&exe);
+        if let Some(dir) = std::path::Path::new(&exe).parent() {
+            command.current_dir(dir);
+        }
+        command
+            .creation_flags(DETACHED_PROCESS)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Could not open it: {e}"))
+    })
+    .await
+    .unwrap_or_else(|| Err("Could not reach that app.".into()))
 }

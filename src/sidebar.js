@@ -103,7 +103,7 @@
   // runs in an isolated webview with storage of its own, so every change
   // reaches this rail as a `sidebar:settings` event, the moment it is made.
   const DEFAULT_SETTINGS = {
-    slots: { brand: true, start: true, clipboard: true, focus: true, windows: true, geometry: true, tray: true, taskbar: true, edge: true, close: true },
+    slots: { brand: true, start: true, clipboard: true, focus: true, network: true, windows: true, geometry: true, trayapps: true, tray: true, taskbar: true, edge: true, close: true },
     textSize: 10,
     iconSize: 22,
     hideTaskbar: true,
@@ -126,6 +126,7 @@
     // at the bottom.
     document.querySelector("[data-spacer]").hidden = settings.slots.windows !== false;
     paintTools();
+    paintTray();
     document.documentElement.style.setProperty("--bar-text", `${settings.textSize}px`);
     document.documentElement.style.setProperty("--bar-icon", `${settings.iconSize}px`);
   }
@@ -358,7 +359,7 @@
   // The taskbar's own right-click, approximated: the app's name starts another
   // copy of it, then the window's minimize / restore / maximize and close. It
   // is a native popup, so it is not clipped to the width of the rail.
-  const { Menu, MenuItem, PredefinedMenuItem } = window.__TAURI__.menu;
+  const { Menu, MenuItem, PredefinedMenuItem, Submenu } = window.__TAURI__.menu;
 
   function windowCommand(button, id, command) {
     return invoke("sidebar_window_command", { id, command })
@@ -476,6 +477,305 @@
 
   loadSuggestions();
   setInterval(() => { if (!document.hidden) loadSuggestions(); }, SUGGEST_REFRESH_MS);
+
+  // ---- the notification area ------------------------------------------------------
+  // The rail's own tray. It reads the way the real one does: a row of icons
+  // with no names, the network first, and a chevron that opens the rest into a
+  // named list. The icons Windows promotes onto its taskbar are the ones shown
+  // while it is closed.
+  //
+  // Everything the menus need is read on a timer and kept here, because a
+  // native menu cannot show a spinner or change once it is open.
+  const trayBox = document.querySelector("[data-tray-apps]");
+  const TRAY_REFRESH_MS = 15_000;
+  const NET_REFRESH_MS = 10_000;
+  const CONNECTIONS_REFRESH_MS = 20_000;
+  const WIFI_REFRESH_MS = 20_000;
+  const NET_GLYPH = { wifi: "wifi", wired: "lan", offline: "public_off" };
+  // WinT's own tools that are about the network, for the menu's last section.
+  const NET_TOOLS = [
+    ["ports", "Ports and processes"],
+    ["dns", "DNS"],
+    ["hosts", "Hosts file"],
+    ["network", "Packet capture"],
+    ["path-ping", "Path and ping"],
+    ["startup", "Startup and tray"],
+  ];
+
+  // Icons are keyed by program, not by window: the handle changes between
+  // reads, the icon does not.
+  const trayIcons = new Map();
+  let trayApps = null;
+  let trayLoading = null;
+  let trayExpanded = false;
+  let trayDrawn = "";
+  let netStatus = { kind: "offline", name: "" };
+  let wifiNetworks = [];
+  let connections = null;
+  let connectionsLoading = null;
+
+  /// A line in the readout at the foot of the rail, put back after a moment.
+  /// The rail is too narrow for an error on an icon.
+  function say(text) {
+    geometry.textContent = String(text);
+    clearTimeout(say.timer);
+    say.timer = setTimeout(paint, 4000);
+  }
+
+  function netDetail() {
+    return [
+      netStatus.signal ? `${netStatus.signal}% signal` : "",
+      netStatus.ipv4 ? `IP ${netStatus.ipv4}` : "",
+      netStatus.gateway ? `gateway ${netStatus.gateway}` : "",
+    ].filter(Boolean).join(" · ");
+  }
+
+  function tile(kind, glyph, iconUrl, label, title) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = trayExpanded ? "bar-win" : "bar-win icon-only";
+    button.dataset[kind] = "";
+    button.title = title;
+    if (iconUrl) {
+      const img = document.createElement("img");
+      img.alt = "";
+      img.draggable = false;
+      img.src = iconUrl;
+      button.append(img);
+    } else {
+      const span = document.createElement("span");
+      span.className = "ms";
+      span.setAttribute("aria-hidden", "true");
+      span.textContent = glyph;
+      button.append(span);
+    }
+    if (trayExpanded) {
+      const small = document.createElement("small");
+      small.textContent = label;
+      button.append(small);
+    }
+    return button;
+  }
+
+  function paintTray() {
+    const showNetwork = settings.slots.network !== false;
+    const showApps = settings.slots.trayapps !== false;
+    // Every icon shows either way: what the chevron opens is the names, not
+    // more of the tray. A rail that hid half of them would be answering a
+    // question nobody asked — the tray is there to be glanced at whole.
+    const shown = showApps && trayApps ? trayApps : [];
+
+    trayBox.hidden = !showNetwork && !apps.length;
+    trayBox.classList.toggle("expanded", trayExpanded);
+    const key = JSON.stringify([
+      trayExpanded, showNetwork, netStatus.kind, netStatus.name,
+      shown.map((app) => [app.id, app.name, !!trayIcons.get(app.exe)]),
+    ]);
+    if (key === trayDrawn) return;
+    trayDrawn = key;
+
+    const items = [];
+    if (showNetwork) {
+      const detail = netDetail();
+      items.push(tile(
+        "trayNetwork",
+        NET_GLYPH[netStatus.kind] || "public_off",
+        null,
+        netStatus.name || "No network",
+        detail ? `${netStatus.name} — ${detail}` : "No network",
+      ));
+    }
+    for (const app of shown) {
+      items.push(tile("trayApp", "web_asset", trayIcons.get(app.exe), app.name, app.name));
+    }
+    if (shown.length) {
+      const more = tile(
+        "trayMore",
+        trayExpanded ? "expand_less" : "expand_more",
+        null,
+        "Icons only",
+        trayExpanded ? "Back to icons only" : `Name all ${shown.length} of them`,
+      );
+      more.classList.add("chevron");
+      items.push(more);
+    }
+    for (const [index, app] of shown.entries()) {
+      items[index + (showNetwork ? 1 : 0)].dataset.trayApp = app.id;
+      items[index + (showNetwork ? 1 : 0)].dataset.trayExe = app.exe;
+    }
+    trayBox.replaceChildren(...items);
+  }
+
+  // ---- what the menus are built from ---------------------------------------------
+  function refreshNetwork() {
+    return invoke("sidebar_network").then((status) => {
+      netStatus = status;
+      paintTray();
+    }, () => {});
+  }
+
+  function loadWifi() {
+    return invoke("sidebar_wifi_networks").then((found) => { wifiNetworks = found; }, () => {});
+  }
+
+  function loadConnections() {
+    connectionsLoading ??= invoke("sidebar_connections")
+      .then((rows) => { connections = rows; }, () => { connections ??= []; })
+      .finally(() => { connectionsLoading = null; });
+    return connectionsLoading;
+  }
+
+  function loadTrayApps() {
+    trayLoading ??= (async () => {
+      const apps = await invoke("sidebar_tray_apps").catch(() => []);
+      // An icon is read once per program and kept; only a program never seen
+      // before costs a call.
+      await Promise.all(apps.map(async (app) => {
+        if (trayIcons.has(app.exe)) return;
+        const url = await invoke("sidebar_window_icon", { id: app.id }).catch(() => null);
+        if (url) trayIcons.set(app.exe, url);
+      }));
+      trayApps = apps;
+      paintTray();
+    })().finally(() => { trayLoading = null; });
+    return trayLoading;
+  }
+
+  // ---- the network menu ------------------------------------------------------------
+  // A menu row that is only there to be read.
+  const note = (text) => MenuItem.new({ text: text.replaceAll("&", "&&"), enabled: false });
+  const act = (text, action) => MenuItem.new({ text: text.replaceAll("&", "&&"), action });
+
+  let networkMenuOpen = false;
+  async function openNetworkMenu() {
+    if (networkMenuOpen) return;
+    networkMenuOpen = true;
+    try {
+      // Only the very first click, before the first read is back, waits.
+      if (!connections) await loadConnections();
+      const items = [await note(netStatus.name || "No network")];
+      const detail = netDetail();
+      if (detail) items.push(await note(detail));
+      items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+
+      // Wi-Fi: what is in range, and the one we are on.
+      if (wifiNetworks.length) {
+        items.push(await note("Wi-Fi"));
+        for (const network of wifiNetworks.slice(0, 12)) {
+          const marks = [`${network.signal}%`];
+          if (network.secured) marks.push("secured");
+          if (!network.known) marks.push("not saved");
+          const text = `${network.connected ? "• " : "   "}${network.ssid}  (${marks.join(", ")})`;
+          items.push(await act(text, () => {
+            if (network.connected) return;
+            // A network Windows has no profile for needs a password, which
+            // belongs in Windows' own flyout, not in a sidebar.
+            const call = network.known
+              ? invoke("sidebar_wifi_connect", { ssid: network.ssid })
+              : invoke("sidebar_wifi_picker");
+            say(network.known ? `Joining ${network.ssid}` : "Opening the Wi-Fi list");
+            call.catch((error) => say(error)).finally(() => {
+              setTimeout(() => { refreshNetwork(); loadWifi(); }, 1500);
+            });
+          }));
+        }
+        const connected = wifiNetworks.some((network) => network.connected);
+        if (connected) {
+          items.push(await act("Disconnect", () => {
+            say("Disconnecting");
+            invoke("sidebar_wifi_disconnect")
+              .catch((error) => say(error))
+              .finally(() => { refreshNetwork(); loadWifi(); });
+          }));
+        }
+        items.push(await act("Other networks and settings…", () =>
+          invoke("sidebar_wifi_picker").catch((error) => say(error))));
+        items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+      }
+
+      // Who is using the connection, tucked away so the menu stays short.
+      const rows = await Promise.all(connections.slice(0, 25).map((connection) => {
+        const text = `${connection.process} → ${connection.remote}`
+          + (connection.count > 1 ? ` ×${connection.count}` : "");
+        // A connection whose program has a window jumps to it; the rest are
+        // background services with nothing to bring forward.
+        return connection.window
+          ? act(text, () => invoke("sidebar_activate", { id: connection.window })
+              .catch(() => {})
+              .finally(refreshWindows))
+          : note(text);
+      }));
+      items.push(await Submenu.new({
+        text: `Open connections (${connections.length})`,
+        enabled: rows.length > 0,
+        items: rows,
+      }));
+      items.push(await Submenu.new({
+        text: "Network tools",
+        items: await Promise.all(NET_TOOLS.map(([id, name]) => act(name, () =>
+          window.__TAURI__.event.emit("sidebar:open-tool", { id }).catch((error) => say(error))))),
+      }));
+
+      const menu = await Menu.new({ items });
+      await menu.popup();
+    } catch (error) {
+      say(error);
+    } finally {
+      networkMenuOpen = false;
+      // The lists a menu was just built from are the stalest they will ever be.
+      loadConnections();
+      loadWifi();
+    }
+  }
+
+  // Right-clicking an icon does what right-clicking a tray icon does: the few
+  // things worth doing to the program behind it. Its own tray menu is out of
+  // reach — Windows keeps those callbacks to Explorer — so this is WinT's own
+  // short version of it.
+  trayBox.addEventListener("contextmenu", async (event) => {
+    const button = event.target.closest("[data-tray-app]");
+    if (!button) return;
+    event.preventDefault();
+    const { trayApp: id, trayExe: exe } = button.dataset;
+    const name = button.title || "this app";
+    const items = [
+      await act("Show it", () => invoke("sidebar_reveal", { id, exe })
+        .catch((error) => say(error))
+        .finally(refreshWindows)),
+      await act("Close it", () => invoke("startup_close", { exe })
+        .then(say, say)
+        .finally(() => { refreshWindows(); loadTrayApps(); })),
+      await PredefinedMenuItem.new({ item: "Separator" }),
+      // Where the rest of it lives: what starts it, and the switch for it.
+      await act("Startup and tray…", () =>
+        window.__TAURI__.event.emit("sidebar:open-tool", { id: "startup" }).catch((error) => say(error))),
+    ];
+    const menu = await Menu.new({ items: [await note(name), await PredefinedMenuItem.new({ item: "Separator" }), ...items] });
+    await menu.popup();
+  });
+
+  trayBox.addEventListener("click", (event) => {
+    if (event.target.closest("[data-tray-more]")) {
+      trayExpanded = !trayExpanded;
+      paintTray();
+      return;
+    }
+    if (event.target.closest("[data-tray-network]")) return openNetworkMenu();
+    const button = event.target.closest("[data-tray-app]");
+    if (!button) return;
+    invoke("sidebar_reveal", { id: button.dataset.trayApp, exe: button.dataset.trayExe })
+      .catch((error) => say(error))
+      .finally(refreshWindows);
+  });
+
+  refreshNetwork();
+  loadWifi();
+  loadConnections();
+  loadTrayApps();
+  setInterval(() => { if (!document.hidden) refreshNetwork(); }, NET_REFRESH_MS);
+  setInterval(() => { if (!document.hidden) loadWifi(); }, WIFI_REFRESH_MS);
+  setInterval(() => { if (!document.hidden) loadConnections(); }, CONNECTIONS_REFRESH_MS);
+  setInterval(() => { if (!document.hidden) loadTrayApps(); }, TRAY_REFRESH_MS);
 
   // ---- dragging the width ------------------------------------------------------
   // The grip sits on the inner edge. Re-docking moves the work area and every

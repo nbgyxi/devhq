@@ -72,6 +72,10 @@ const fx = {
    *  across re-sorts and re-filters so turning preview off and on again does
    *  not ask Windows for the same pictures a second time. */
   thumbs: new Map(),
+  /** The row being renamed in place: { path, draft, fresh }. */
+  rename: null,
+  /** Paths cut to the clipboard from this window, drawn faded until pasted. */
+  cut: [],
 };
 
 const SIDE_MIN = 64;
@@ -518,12 +522,190 @@ async function askDelete(paths) {
     const orphaned = fx.bookmarks.filter((mark) => targets.some((path) => same(path, mark)));
     if (orphaned.length) setBookmarks(fx.bookmarks.filter((mark) => !orphaned.includes(mark)));
     for (const path of targets) { fx.thumbs.delete(path); fx.tree.delete(path); fx.open.delete(path); }
-    refresh();
+    announce(targets.map(parentOf));
   } catch (error) {
     fx.error = String(error);
     dirty();
   } finally {
     window.wintWork?.endWork("explorer-delete");
+  }
+}
+
+// ------------------------------------------------- rename, copy, move, drag
+
+/** Somewhere the tool may change: a real folder, not This PC or a zip. */
+const writable = (path) => !!path && path !== THIS_PC && !isInsideZip(path);
+const nameOf = (path) => segments(path).slice(-1)[0]?.name || path;
+const parentOf = (path) => String(path || "").replace(/\\+$/, "").replace(/\\[^\\]*$/, "") || path;
+
+/** A short line in the status bar for an answer that needs no dialog. */
+function note(message) {
+  window.wintWork?.beginWork("explorer-note", message);
+  setTimeout(() => window.wintWork?.endWork("explorer-note"), 4000);
+}
+
+/** Tell every Files window which folders just changed, this one included, so
+ *  a move from one window to another empties the first and fills the second. */
+function announce(dirs) {
+  const unique = [...new Set(dirs.filter(Boolean))];
+  const event = window.__TAURI__.event;
+  if (event?.emit) event.emit("explorer-changed", { dirs: unique }).catch(() => changed(unique));
+  else changed(unique);
+}
+
+function changed(dirs) {
+  for (const dir of dirs) fx.tree.delete(dir);
+  if (fx.path !== THIS_PC && dirs.some((dir) => same(dir, fx.path))) {
+    openFolder(fx.path, { push: false, keepFilter: true, focusPath: fx.pendingFocus || null });
+  } else dirty();
+}
+
+function startRename(path) {
+  if (!writable(path) || !(fx.listing?.entries || []).some((entry) => same(entry.path, path))) return;
+  fx.rename = { path, draft: nameOf(path), fresh: true };
+  dirty();
+}
+
+async function commitRename() {
+  const rename = fx.rename;
+  if (!rename) return;
+  fx.rename = null;
+  const draft = rename.draft.trim();
+  if (!draft || draft === nameOf(rename.path)) return void dirty();
+  window.wintWork?.beginWork("explorer-rename", `Renaming ${nameOf(rename.path)}`);
+  try {
+    const renamed = await invoke("explorer_rename", { path: rename.path, newName: draft });
+    const marked = fx.bookmarks.findIndex((mark) => same(mark, rename.path));
+    if (marked >= 0) setBookmarks(fx.bookmarks.map((mark, index) => (index === marked ? renamed : mark)));
+    if (same(fx.selected, rename.path)) fx.selected = renamed;
+    fx.thumbs.delete(rename.path);
+    fx.pendingFocus = renamed;
+    announce([parentOf(rename.path)]);
+  } catch (error) {
+    note(String(error));
+    dirty();
+  } finally {
+    window.wintWork?.endWork("explorer-rename");
+  }
+}
+
+async function newFolder() {
+  if (!writable(fx.path)) return;
+  window.wintWork?.beginWork("explorer-new-folder", "Making a new folder");
+  try {
+    const path = await invoke("explorer_new_folder", { dir: fx.path });
+    // It lands in rename, the way a new folder does in Windows Explorer.
+    fx.rename = { path, draft: nameOf(path), fresh: true };
+    fx.pendingFocus = path;
+    announce([fx.path]);
+  } catch (error) {
+    note(String(error));
+  } finally {
+    window.wintWork?.endWork("explorer-new-folder");
+  }
+}
+
+/** Cut and copy go through the Windows clipboard, so a file copied here
+ *  pastes in Windows Explorer and the other way round. */
+async function toClipboard(paths, cut) {
+  const targets = paths.filter(writable);
+  if (!targets.length) return;
+  try {
+    await invoke("explorer_clipboard_set", { paths: targets, cut });
+    fx.cut = cut ? targets : [];
+    dirty();
+    note(`${cut ? "Cut" : "Copied"} ${targets.length === 1 ? nameOf(targets[0]) : `${targets.length} items`}`);
+  } catch (error) {
+    note(String(error));
+  }
+}
+
+async function paste(dest = fx.path) {
+  if (!writable(dest)) return;
+  let clip = null;
+  try { clip = await invoke("explorer_clipboard_get"); } catch (error) { return note(String(error)); }
+  if (!clip?.paths?.length) return note("There are no files on the clipboard");
+  await transfer(clip.paths, dest, !clip.cut);
+  if (clip.cut) fx.cut = [];
+}
+
+/** Explorer's rule for a plain drop: the same drive moves, another drive copies. */
+const sameDrive = (a, b) => String(a).slice(0, 2).toLowerCase() === String(b).slice(0, 2).toLowerCase();
+
+async function transfer(paths, dest, copy) {
+  if (!writable(dest) || !paths.length) return;
+  const what = paths.length === 1 ? nameOf(paths[0]) : `${paths.length} items`;
+  window.wintWork?.beginWork("explorer-transfer", `${copy ? "Copying" : "Moving"} ${what} to ${nameOf(dest)}`);
+  try {
+    await invoke("explorer_transfer", { paths, dest, copy });
+  } catch (error) {
+    note(String(error));
+  } finally {
+    window.wintWork?.endWork("explorer-transfer");
+    announce([dest, ...(copy ? [] : paths.map(parentOf))]);
+  }
+}
+
+/** The folder under a point: a folder row, a tree node or a crumb - otherwise
+ *  the folder that is open. */
+function dropTarget(x, y) {
+  const hit = document.elementFromPoint(x, y);
+  if (!hit || !fx.host?.contains(hit)) return null;
+  const row = hit.closest('[data-fx-item][data-fx-dir="true"]');
+  if (row && !(fx.listing?.entries || []).some((entry) => same(entry.path, row.dataset.fxItem) && entry.isArchive)) {
+    return { el: row, path: row.dataset.fxItem };
+  }
+  const node = hit.closest("[data-fx-open]");
+  if (node && writable(asPath(node.dataset.fxOpen)) && !isZipRoot(asPath(node.dataset.fxOpen))) {
+    return { el: node, path: asPath(node.dataset.fxOpen) };
+  }
+  return writable(fx.path) && !isZipRoot(fx.path) ? { el: null, path: fx.path } : null;
+}
+
+function paintDrop(target) {
+  for (const el of fx.host?.querySelectorAll(".fx-drop") || []) el.classList.remove("fx-drop");
+  if (target) (target.el || fx.host.querySelector(".fx-rows"))?.classList.add("fx-drop");
+}
+
+/** Files dropped from anywhere - another Files window, Windows Explorer, the
+ *  desktop - arrive as Tauri drag-drop events with physical coordinates. */
+function listenForDrops() {
+  const webview = window.__TAURI__.webview?.getCurrentWebview?.();
+  if (!webview?.onDragDropEvent) return;
+  webview.onDragDropEvent(({ payload }) => {
+    if (!fx.host?.isConnected || !fx.host.offsetParent) return;
+    const scale = window.devicePixelRatio || 1;
+    const at = payload.position ? dropTarget(payload.position.x / scale, payload.position.y / scale) : null;
+    if (payload.type === "enter" || payload.type === "over") return paintDrop(at);
+    paintDrop(null);
+    if (payload.type !== "drop" || !at || !payload.paths?.length) return;
+    transfer(payload.paths, at.path, !payload.paths.every((path) => sameDrive(path, at.path)));
+  }).catch(() => {});
+}
+
+/** Dragging a row hands it to Windows as a real file drag once the pointer
+ *  has moved a few pixels with the button held. */
+let dragFrom = null;
+let dragJustEnded = 0;
+function watchDrag(event) {
+  const row = event.target.closest("[data-fx-item]");
+  if (event.button !== 0 || !row || event.target.closest(".fx-rename, button") || !writable(row.dataset.fxItem)) return;
+  dragFrom = { x: event.clientX, y: event.clientY, path: row.dataset.fxItem };
+}
+async function maybeDrag(event) {
+  if (!dragFrom) return;
+  if (!(event.buttons & 1)) { dragFrom = null; return; }
+  if (Math.hypot(event.clientX - dragFrom.x, event.clientY - dragFrom.y) < 6) return;
+  const { path } = dragFrom;
+  dragFrom = null;
+  try {
+    // Explorer often moves without saying so, so the folder is always re-read.
+    await invoke("explorer_drag_out", { paths: [path] });
+    announce([parentOf(path)]);
+  } catch (error) {
+    note(String(error));
+  } finally {
+    dragJustEnded = Date.now();
   }
 }
 
@@ -798,8 +980,12 @@ function renderRows(shown) {
       ? `<span class="fx-thumb${thumb ? " has-image" : ""}"${thumb ? ` style="background-image:url('${thumb}')"` : ""}>${thumb ? "" : icon(kindById(kind).icon)}</span>`
       : icon(entry.isArchive ? "folder_zip" : entry.isDir ? "folder" : kindById(kind).icon);
     const canDelete = !isInsideZip(fx.path);
-    return `<div class="fx-row${entry.isDir ? " dir" : ""}${entry.hidden ? " dim" : ""}${same(fx.selected, entry.path) ? " picked" : ""}${canDelete ? " has-del" : ""}" tabindex="0" role="row" data-fx-item="${esc(entry.path)}" data-fx-dir="${entry.isDir}" title="${esc(entry.path)}">
-    <span class="fx-cell name">${slot}<strong>${esc(entry.name)}</strong></span>
+    const renaming = same(fx.rename?.path, entry.path);
+    const name = renaming
+      ? `<input class="fx-rename" type="text" spellcheck="false" aria-label="New name for ${esc(entry.name)}">`
+      : `<strong>${esc(entry.name)}</strong>`;
+    return `<div class="fx-row${entry.isDir ? " dir" : ""}${entry.hidden || fx.cut.some((path) => same(path, entry.path)) ? " dim" : ""}${same(fx.selected, entry.path) ? " picked" : ""}${canDelete ? " has-del" : ""}" tabindex="0" role="row" data-fx-item="${esc(entry.path)}" data-fx-dir="${entry.isDir}" title="${esc(entry.path)}">
+    <span class="fx-cell name">${slot}${name}</span>
     <span class="fx-cell type">${esc(typeLabel(entry))}</span>
     <span class="fx-cell size">${entry.isDir && !entry.isArchive ? "" : bytes(entry.bytes)}</span>
     <span class="fx-cell modified">${esc(when(entry.modified))}</span>
@@ -808,11 +994,18 @@ function renderRows(shown) {
   }).join("");
 }
 
+/** True while a paint replaces the DOM, so the rename box being swapped out
+ *  is not mistaken for the user clicking away from it. */
+let painting = false;
+
 function render() {
   if (!fx.host) return;
   const live = fx.host.querySelector(".fx-search input");
   const typing = live === document.activeElement;
   const caret = typing ? live.selectionStart ?? fx.filter.length : 0;
+  const liveRename = fx.host.querySelector(".fx-rename");
+  const renameSel = liveRename === document.activeElement ? [liveRename.selectionStart, liveRename.selectionEnd] : null;
+  painting = true;
   // Keep the list and tree where the user left them across a rebuild.
   const rowsScroll = fx.host.querySelector(".fx-rows")?.scrollTop ?? 0;
   const treeScroll = fx.host.querySelector(".fx-tree")?.scrollTop ?? 0;
@@ -887,6 +1080,19 @@ function render() {
     search.value = fx.filter;
     if (typing) { search.focus(); search.setSelectionRange(caret, caret); }
   }
+  const renameBox = fx.host.querySelector(".fx-rename");
+  if (renameBox && fx.rename) {
+    renameBox.value = fx.rename.draft;
+    renameBox.focus();
+    if (fx.rename.fresh) {
+      // Like Explorer: the name is selected, the extension is left alone.
+      const dot = fx.rename.draft.lastIndexOf(".");
+      const isDir = (fx.listing?.entries || []).some((entry) => same(entry.path, fx.rename.path) && entry.isDir);
+      renameBox.setSelectionRange(0, dot > 0 && !isDir ? dot : fx.rename.draft.length);
+      fx.rename.fresh = false;
+    } else if (renameSel) renameBox.setSelectionRange(renameSel[0], renameSel[1]);
+  }
+  painting = false;
   const rows = fx.host.querySelector(".fx-rows");
   if (rows) rows.scrollTop = rowsScroll;
   const tree = fx.host.querySelector(".fx-tree");
@@ -976,6 +1182,7 @@ function closeContext() { document.querySelector(".fx-context")?.remove(); }
 function mount(host) {
   fx.host = host;
   host.addEventListener("click", (event) => {
+    if (event.target.closest(".fx-rename")) return;
     const pop = event.target.closest("[data-popout-tool]");
     const pin = event.target.closest("[data-pin-tool]");
     const go = event.target.closest("[data-open-tool]");
@@ -1017,18 +1224,45 @@ function mount(host) {
     // wait for the second click, because opening a program by accident is a
     // worse mistake than an extra click.
     const row = event.target.closest("[data-fx-item]");
-    if (row) {
+    // The release that ends a drag is not a click on the row it started on.
+    if (row && Date.now() - dragJustEnded > 400) {
       if (row.dataset.fxDir === "true") openFolder(row.dataset.fxItem);
       else select(row.dataset.fxItem);
     }
   });
   host.addEventListener("dblclick", (event) => {
-    if (event.target.closest("[data-fx-delete]")) return;
+    if (event.target.closest("[data-fx-delete], .fx-rename")) return;
     const row = event.target.closest("[data-fx-item]");
     if (row) activate(row.dataset.fxItem, row.dataset.fxDir === "true");
   });
   host.addEventListener("keydown", (event) => {
+    if (event.target.closest(".fx-rename")) {
+      if (event.key === "Enter") { event.preventDefault(); commitRename(); }
+      else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); fx.rename = null; dirty(); }
+      return;
+    }
     const row = event.target.closest("[data-fx-item]");
+    const typingText = !!event.target.closest("input, textarea");
+    const key = event.key.toLowerCase();
+    const current = row?.dataset.fxItem || fx.selected;
+    if (event.key === "F2" && current) {
+      event.preventDefault();
+      return startRename(current);
+    }
+    if (event.ctrlKey && !event.altKey && !typingText) {
+      if ((key === "c" || key === "x") && current && !event.shiftKey) {
+        event.preventDefault();
+        return void toClipboard([current], key === "x");
+      }
+      if (key === "v" && !event.shiftKey) {
+        event.preventDefault();
+        return void paste();
+      }
+      if (key === "n" && event.shiftKey) {
+        event.preventDefault();
+        return void newFolder();
+      }
+    }
     if (row && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault();
       activate(row.dataset.fxItem, row.dataset.fxDir === "true");
@@ -1045,10 +1279,18 @@ function mount(host) {
     }
   });
   host.addEventListener("input", (event) => {
+    if (event.target.closest(".fx-rename")) { if (fx.rename) fx.rename.draft = event.target.value; return; }
     if (!event.target.closest(".fx-search")) return;
     fx.filter = event.target.value;
     dirty();
   });
+  // Clicking away from the rename box keeps the new name, as in Explorer.
+  host.addEventListener("focusout", (event) => {
+    if (!painting && event.target.closest(".fx-rename")) commitRename();
+  });
+  host.addEventListener("pointerdown", watchDrag);
+  host.addEventListener("pointermove", maybeDrag);
+  host.addEventListener("pointerup", () => { dragFrom = null; });
   // Drag the splitters. Widths are applied as CSS variables so the list can
   // reflow without a full re-render fighting the pointer.
   host.addEventListener("pointerdown", (event) => {
@@ -1112,33 +1354,53 @@ function mount(host) {
   }
   host.addEventListener("contextmenu", (event) => {
     const target = event.target.closest("[data-fx-item], [data-fx-open]");
-    if (!target) return;
+    const blank = !target && !!event.target.closest(".fx-rows") && writable(fx.path) && !isZipRoot(fx.path);
+    if (!target && !blank) return;
     event.preventDefault();
-    const path = asPath(target.dataset.fxItem || target.dataset.fxOpen);
+    const path = target ? asPath(target.dataset.fxItem || target.dataset.fxOpen) : fx.path;
     if (path === THIS_PC) return;
-    const isDir = target.dataset.fxDir !== "false";
+    const isDir = !target || target.dataset.fxDir !== "false";
     const nested = isInsideZip(path);
+    const inList = !!target?.dataset.fxItem && writable(path);
     const marked = fx.bookmarks.some((mark) => same(mark, path));
     closeContext();
     const menu = document.createElement("div");
     menu.className = "fx-context";
     menu.style.left = `${event.clientX}px`;
     menu.style.top = `${event.clientY}px`;
+    const item = (action, glyph, label, key = "", danger = false) =>
+      `<button type="button"${danger ? ' class="danger"' : ""} data-do="${action}">${icon(glyph)}${label}${key ? `<kbd>${key}</kbd>` : ""}</button>`;
     // Inside a zip the archive is read-only: no delete, no shell, no bookmark.
     // Reveal always points at a real path Windows can show.
-    menu.innerHTML = `<button type="button" data-do="open">${icon(isDir ? "folder_open" : "open_in_new")}${isDir ? "Open folder" : "Open file"}</button>
-      ${isDir ? `<button type="button" data-do="new-window">${icon("tab_duplicate")}Open in new window</button>` : ""}
-      <button type="button" data-do="reveal">${icon("frame_inspect")}${nested ? "Show archive in Windows Explorer" : "Show in Windows Explorer"}</button>
-      ${nested ? "" : `<button type="button" data-do="terminal">${icon("terminal")}Open a shell here</button>`}
-      <button type="button" data-do="copy">${icon("content_copy")}Copy path</button>
-      ${isDir && !nested ? `<button type="button" data-do="bookmark">${icon(marked ? "bookmark_remove" : "bookmark_add")}${marked ? "Remove from bookmarks" : "Add to bookmarks"}</button>` : ""}
-      ${nested ? "" : `<button type="button" class="danger" data-do="delete">${icon("delete")}Delete…</button>`}`;
+    menu.innerHTML = blank
+      ? [
+          item("new-folder", "create_new_folder", "New folder", "Ctrl+Shift+N"),
+          item("paste", "content_paste", "Paste", "Ctrl+V"),
+          "<hr>",
+          item("terminal", "terminal", "Open a shell here"),
+          item("reveal", "frame_inspect", "Show in Windows Explorer"),
+          item("refresh", "refresh", "Refresh"),
+        ].join("")
+      : [
+          item("open", isDir ? "folder_open" : "open_in_new", isDir ? "Open folder" : "Open file"),
+          isDir ? item("new-window", "tab_duplicate", "Open in new window") : "",
+          inList ? "<hr>" + item("cut", "content_cut", "Cut", "Ctrl+X") + item("copy-item", "content_copy", "Copy", "Ctrl+C") : "",
+          isDir && writable(path) && !isZipRoot(path) ? item("paste", "content_paste", "Paste into folder") : "",
+          inList ? item("rename", "edit", "Rename", "F2") : "",
+          "<hr>",
+          item("copy", "link", "Copy path"),
+          item("reveal", "frame_inspect", nested ? "Show archive in Windows Explorer" : "Show in Windows Explorer"),
+          nested ? "" : item("terminal", "terminal", "Open a shell here"),
+          isDir && !nested ? item("bookmark", marked ? "bookmark_remove" : "bookmark_add", marked ? "Remove from bookmarks" : "Add to bookmarks") : "",
+          writable(path) && !isZipRoot(path) ? "<hr>" + item("delete", "delete", "Delete…", inList ? "Del" : "", true) : "",
+        ].join("");
     menu.addEventListener("click", (click) => {
       const action = click.target.closest("[data-do]")?.dataset.do;
+      if (!action) return;
       menu.remove();
       if (action === "open") activate(path, isDir);
       else if (action === "new-window") void openInNewWindow(path);
-      else if (action === "reveal") invoke("open_in", { path: revealPath(path), target: "reveal" }).catch(() => {});
+      else if (action === "reveal") invoke("open_in", { path: revealPath(path), target: blank ? "explorer" : "reveal" }).catch(() => {});
       else if (action === "terminal") {
         const shellAt = isZipRoot(path)
           ? path.replace(/\\[^\\]+$/i, "") || path
@@ -1146,12 +1408,23 @@ function mount(host) {
         invoke("open_in", { path: isInsideZip(shellAt) ? revealPath(shellAt) : shellAt, target: "terminal" }).catch(() => {});
       }
       else if (action === "copy") navigator.clipboard?.writeText(path).catch(() => {});
+      else if (action === "cut" || action === "copy-item") void toClipboard([path], action === "cut");
+      else if (action === "paste") void paste(path);
+      else if (action === "rename") startRename(path);
+      else if (action === "new-folder") void newFolder();
+      else if (action === "refresh") refresh();
       else if (action === "bookmark") toggleBookmark(path);
       else if (action === "delete") askDelete([path]);
     });
     document.body.appendChild(menu);
+    // Keep the menu on screen near the bottom and right edges.
+    const box = menu.getBoundingClientRect();
+    if (box.bottom > innerHeight) menu.style.top = `${Math.max(4, innerHeight - box.height - 4)}px`;
+    if (box.right > innerWidth) menu.style.left = `${Math.max(4, innerWidth - box.width - 4)}px`;
     setTimeout(() => document.addEventListener("click", closeContext, { once: true }), 0);
   });
+  listenForDrops();
+  window.__TAURI__.event?.listen?.("explorer-changed", ({ payload }) => changed(payload?.dirs || []))?.catch?.(() => {});
   render();
 }
 

@@ -29,6 +29,8 @@
   const AREAS = [
     { id: "Autostart", chip: "Autostart", glyph: "restart_alt", admin: false, name: "Autostart and persistence",
       what: "Run keys, startup folders, scheduled tasks outside \\Microsoft\\, auto-start services, Winlogon and IFEO debuggers — each target resolved and its signature checked." },
+    { id: "Startup", chip: "Startup", glyph: "rocket_launch", admin: false, name: "Why these start",
+      what: "WinT's own list of what starts with Windows and what sits in the tray, handed to the agent to explain one by one: what each program is, why it starts, whether it is needed, and what stopping it would cost. The ones WinT cannot account for — a tray icon with no startup entry — are chased down to the service, task or parent that starts them." },
     { id: "Running processes", chip: "Processes", glyph: "memory", admin: false, name: "Running processes",
       what: "What is running, from where, whether it is signed, and which ports and connections it holds." },
     { id: "Browser extensions", chip: "Extensions", glyph: "extension", admin: false, name: "Browser extensions",
@@ -108,6 +110,9 @@
      *  the newest stall id the agent has been told about in this run. */
     stallWatch: null,
     stallMark: 0,
+
+    /** WinT's own startup and tray lists, for the "Why these start" area. */
+    startup: null,
   };
 
   const savePrefs = () => {
@@ -346,6 +351,27 @@ Rules for the block: list every command you ran this turn in "activity". Finding
     return st.stallWatch;
   }
 
+  const startupInScope = () => st.scope.includes("Startup");
+
+  /** What starts with Windows and what is in the tray, from WinT's own reader
+   *  — the same lists the Startup and tray tool shows. The agent is handed
+   *  these rather than being asked to go and find them: they are already
+   *  measured, and what is worth an agent's time is the part WinT cannot
+   *  answer, which is why each one is there. */
+  async function loadStartup() {
+    try {
+      const [entries, icons] = await Promise.all([
+        invoke("startup_entries"),
+        invoke("startup_tray_icons"),
+      ]);
+      st.startup = { entries, icons };
+    } catch {
+      st.startup = { entries: [], icons: [] };
+    }
+    dirty();
+    return st.startup;
+  }
+
   const stallsInScope = () => st.scope.includes("Stalls");
 
   function stallDigest(stalls) {
@@ -373,6 +399,43 @@ Find what is actually behind them. Look for the pattern across stalls first: sam
 
 Report each distinct cause as a finding in area "Stalls", with the ids of the stalls it explains in its evidence under the label "Stalls". Its fix is the change most likely to stop them (driver update or rollback, a power setting, a device setting, removing a hook), with backup and undo. Say which stalls remain unexplained, if any.`;
 
+  const STARTUP_TASK = `Account for everything that starts on this PC. The list below is WinT's own reading, so do not go and rediscover it: every Run value in HKCU and HKLM, everything in both Startup folders, and every program Windows has a notification-area icon recorded for, each already matched to the startup entry that starts it where one does.\n\nYour job is the part that list cannot answer.\n\n1. Say what each one actually is, in a sentence a non-expert understands: the product, who publishes it, and what it does while it sits there. Check the signature and publisher of each exe (Get-AuthenticodeSignature) and say when something is unsigned, signed by someone other than the product's vendor, or living somewhere a program of that name should not (a user temp folder, a random AppData subfolder).\n2. Explain why it starts. For an entry in the list, that is the entry. For anything with \"origin\": \"No startup entry\" — running, with a tray icon, and nothing in Startup that accounts for it — find what really starts it: an auto-start service (Get-CimInstance Win32_Service, StartMode Auto), a scheduled task with a logon or boot trigger (Get-ScheduledTask, look outside \\Microsoft\\ first), a packaged app's StartupTask (Get-StartApps / the Appx manifest), a parent process that spawns it (a launcher, an updater, a vendor 'host' or 'agent' service), a shell extension, or a browser auto-launch. Name the exact mechanism and where it lives. If you genuinely cannot tell, say so plainly rather than guessing.\n3. Judge it. Put in \"passed\" the ones that earn their place — the ones the user obviously chose (a chat app, a VPN, a backup client) and the ones Windows itself needs — with one line each saying what it is and why it is fine. Report as findings the ones worth acting on: an updater or 'helper' that could run on demand instead, a vendor bloat agent, duplicates of the same product started twice, something the user almost certainly never installed on purpose, and anything the signature check made suspicious (severity high for those).\n4. For each finding, the fix is how to stop it starting, and it must be reversible and never delete anything. Prefer, in order: WinT's own switch, which is the flag Task Manager writes — reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run\" /v \"<value name>\" /t REG_BINARY /d 03000000000000000000000000 /f (use StartupFolder for a Startup folder shortcut, Run32 for a 32-bit HKLM entry); Disable-ScheduledTask for a task; Set-Service -StartupType Manual for a service, which leaves it able to start when something asks for it. Say in the finding what the user loses by stopping it — no auto-update, no cloud sync, the tray icon gone — so the choice is an informed one. Back up the current value first and give the undo.\n\nReport findings in area \"Startup\". Put the programs in the list you are happy with in \"passed\", so the user ends with every single one accounted for.`;
+
+  function startupBlock() {
+    const data = st.startup || { entries: [], icons: [] };
+    // Trimmed to what the agent reasons about: the shape of the row, not the
+    // shape of WinT's structs.
+    const entries = (data.entries || []).map((entry) => ({
+      name: entry.name,
+      product: entry.description || undefined,
+      command: entry.command,
+      exe: entry.exe || undefined,
+      startsFrom: entry.source,
+      allUsers: entry.machineWide || undefined,
+      switchedOff: entry.enabled ? undefined : true,
+      runningNow: entry.running || undefined,
+      hasTrayIcon: entry.tray || undefined,
+    }));
+    const icons = (data.icons || [])
+      .filter((item) => item.running)
+      .map((item) => ({
+        name: item.name,
+        exe: item.exe,
+        tooltip: item.tooltip || undefined,
+        origin: item.startupId ? item.origin : "No startup entry",
+      }));
+    const unexplained = icons.filter((item) => item.origin === "No startup entry").length;
+    return `What starts with Windows, as WinT reads it. JSON:
+${JSON.stringify(entries)}
+
+In the notification area right now. JSON:
+${JSON.stringify(icons)}
+
+${unexplained
+  ? `${unexplained} of those tray icons have no startup entry behind them. Those are the ones to chase: find what starts each one.`
+  : "Every tray icon has a startup entry behind it."}`;
+  }
+
   function stallsBlock(stalls, later) {
     const status = st.stallWatch || {};
     const n = stalls.length;
@@ -391,6 +454,7 @@ Judge each group. Many are normal on every Windows PC and need nothing: Distribu
   function scanPrompt() {
     const events = st.scope.includes("Event logs") ? `\n${EVENT_TASK}\n` : "";
     const stalls =stallsInScope() ? `\n${STALL_TASK}\n\n${stallsBlock(st.stallWatch?.stalls || [], false)}\n` : "";
+    const startup = startupInScope() ? `\n${STARTUP_TASK}\n\n${startupBlock()}\n` : "";
     const rights = st.ranAsAdmin
       ? "Your shell runs as Administrator."
       : "Your shell runs WITHOUT administrator rights. When a check needs admin, list it under passed with detail \"skipped — needs administrator\" and move on; do not try to elevate.";
@@ -400,7 +464,7 @@ Judge each group. Many are normal on every Windows PC and need nothing: Distribu
 
 Scan these areas now, and only these:
 ${areas}
-${events}${stalls}${expected.length ? `\nThe user has marked these as expected; do not report them again:\n${expected.map((k) => `- ${k}`).join("\n")}\n` : ""}
+${events}${stalls}${startup}${expected.length ? `\nThe user has marked these as expected; do not report them again:\n${expected.map((k) => `- ${k}`).join("\n")}\n` : ""}
 ${RULES}
 
 ${FORMAT}`;
@@ -916,6 +980,20 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
     return `<small class="sa-stall-line">${icon(s.watching ? "monitoring" : "mouse")}${esc(counts)} · Input Stall Watch is ${s.watching ? "watching" : "off, so nothing new will be caught"}</small>`;
   }
 
+  /** What there is to account for, drawn on the startup scan's card. */
+  function startupLine() {
+    if (!st.startup) return `<small><i class="sk" style="width:220px"></i></small>`;
+    const entries = st.startup.entries || [];
+    const running = (st.startup.icons || []).filter((item) => item.running);
+    const unexplained = running.filter((item) => !item.startupId).length;
+    const counts = [
+      `${entries.length} startup entr${entries.length === 1 ? "y" : "ies"}`,
+      `${running.length} tray icon${running.length === 1 ? "" : "s"}`,
+      unexplained ? `${unexplained} unaccounted for` : "all accounted for",
+    ].join(" · ");
+    return `<small class="sa-stall-line">${icon("rocket_launch")}${esc(counts)}</small>`;
+  }
+
   function setupHtml() {
     const installed = (st.agents || []).filter((a) => a.installed);
     const needsAdmin = st.scope.some((id) => areaOf(id)?.admin);
@@ -937,7 +1015,7 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
       return `<button type="button" class="sa-area${on ? " on" : ""}" data-sa-area="${esc(a.id)}">
         <span class="sa-tick">${icon(on ? "radio_button_checked" : "radio_button_unchecked")}</span>
         <span class="sa-area-name"><strong>${esc(a.name)}</strong>${a.admin ? `<em class="sa-pill warn">Administrator</em>` : ""}</span>
-        <small>${esc(a.what)}</small>${a.id === "Stalls" ? stallLine() : ""}</button>`;
+        <small>${esc(a.what)}</small>${a.id === "Stalls" ? stallLine() : ""}${a.id === "Startup" ? startupLine() : ""}</button>`;
     }).join("");
     const kept = st.findings.length || st.log.length;
     return `<div class="sa-setup"><div class="sa-setup-scroll" data-sa-scroll="setup"><div class="sa-setup-body">
@@ -1183,7 +1261,7 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
     const rights = get("rights");
     if (rights) { st.elevated = rights === "admin"; savePrefs(); return dirty(); }
     const area = get("area");
-    if (area) { st.scope = [area]; savePrefs(); if (area === "Stalls") loadStalls(); return dirty(); }
+    if (area) { st.scope = [area]; savePrefs(); if (area === "Stalls") loadStalls(); if (area === "Startup") loadStartup(); return dirty(); }
 
     const runId = get("run");
     if (runId) return openRun(runId);
@@ -1324,6 +1402,7 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
       if (!st.agents && !agentsLoading) loadAgents();
       if (!st.historyLoaded && !historyLoading) loadHistory();
       loadStalls();
+      if (startupInScope()) loadStartup();
     }, 0);
   }
 

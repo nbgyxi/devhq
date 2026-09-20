@@ -44,11 +44,14 @@ mod security_audit;
 mod stall_watch;
 mod workspace;
 mod term;
+pub mod startup;
 pub mod todo;
 mod tool_window;
+pub mod tray;
 mod util;
 #[cfg(windows)]
 pub mod vt;
+pub mod wifi;
 pub mod windows_tools;
 
 use procs::{ProcessSnapshot, RunningProc};
@@ -713,6 +716,60 @@ where
     T: Send + 'static,
 {
     tauri::async_runtime::spawn_blocking(work).await.ok()
+}
+
+/// Everything that starts with Windows, for the Startup and tray tool. It
+/// reads the registry, two folders and the process list, so it goes
+/// off-thread like every other read of real work.
+#[tauri::command]
+async fn startup_entries() -> Vec<startup::Entry> {
+    off_thread(startup::entries).await.unwrap_or_default()
+}
+
+/// Switch one startup entry on or off, the way Task Manager does — by writing
+/// Windows' own approval flag, never by deleting the entry.
+#[tauri::command]
+async fn startup_set_enabled(id: String, enabled: bool) -> Result<(), String> {
+    off_thread(move || startup::set_enabled(&id, enabled))
+        .await
+        .unwrap_or_else(|| Err("Could not write that switch.".into()))
+}
+
+/// Every icon the notification area has a record of, and what starts it.
+#[tauri::command]
+async fn startup_tray_icons() -> Vec<startup::TrayIcon> {
+    off_thread(startup::tray_icons).await.unwrap_or_default()
+}
+
+/// One program's icon, for a row in that tool.
+#[tauri::command]
+async fn startup_icon(exe: String) -> Option<String> {
+    off_thread(move || startup::icon(&exe)).await.flatten()
+}
+
+/// Close a program that is running now, by asking its windows to close.
+#[tauri::command]
+async fn startup_close(exe: String) -> Result<String, String> {
+    off_thread(move || startup::close(&exe))
+        .await
+        .unwrap_or_else(|| Err("Could not reach that program.".into()))
+}
+
+/// Start the vendor uninstaller for a program. Nothing is removed here: the
+/// uninstaller takes over, with its own prompts.
+#[tauri::command]
+async fn startup_uninstall(exe: String) -> Result<String, String> {
+    off_thread(move || startup::uninstall(&exe))
+        .await
+        .unwrap_or_else(|| Err("Could not start the uninstaller.".into()))
+}
+
+/// Show a startup entry's program in Explorer, so it is obvious where it lives.
+#[tauri::command]
+async fn startup_reveal(path: String) -> Result<(), String> {
+    off_thread(move || startup::reveal(&path))
+        .await
+        .unwrap_or_else(|| Err("Could not open Explorer.".into()))
 }
 
 #[tauri::command]
@@ -1712,6 +1769,66 @@ async fn explorer_materialize(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn explorer_rename(path: String, new_name: String) -> Result<String, String> {
+    off_thread(move || explorer::rename(path, new_name))
+        .await
+        .unwrap_or_else(|| Err("The rename did not finish.".into()))
+}
+
+#[tauri::command]
+async fn explorer_new_folder(dir: String) -> Result<String, String> {
+    off_thread(move || explorer::new_folder(dir))
+        .await
+        .unwrap_or_else(|| Err("The folder was not made.".into()))
+}
+
+#[tauri::command]
+async fn explorer_transfer(paths: Vec<String>, dest: String, copy: bool) -> Result<(), String> {
+    off_thread(move || explorer::transfer(paths, dest, copy))
+        .await
+        .unwrap_or_else(|| Err("The copy did not finish.".into()))
+}
+
+#[tauri::command]
+async fn explorer_clipboard_set(paths: Vec<String>, cut: bool) -> Result<(), String> {
+    off_thread(move || explorer::clipboard_set(paths, cut))
+        .await
+        .unwrap_or_else(|| Err("The clipboard was not set.".into()))
+}
+
+#[tauri::command]
+async fn explorer_clipboard_get() -> Result<Option<explorer::Clip>, String> {
+    off_thread(explorer::clipboard_get)
+        .await
+        .unwrap_or_else(|| Err("The clipboard could not be read.".into()))
+}
+
+/// The one Files call that runs on the window's thread: a drag belongs to the
+/// thread the mouse is held on. Windows pumps messages throughout, so the
+/// window keeps drawing while the drag is in the air.
+#[tauri::command]
+async fn explorer_drag_out(app: AppHandle, paths: Vec<String>) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.run_on_main_thread(move || {
+            let _ = tx.send(explorer::drag_out(&paths));
+        })
+        .map_err(|e| e.to_string())?;
+        off_thread(move || rx.recv().unwrap_or_else(|_| Err("The drag did not finish.".into())))
+            .await
+            .unwrap_or_else(|| Err("The drag did not finish.".into()))
+            .map(str::to_string)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, paths);
+        Err("Dragging files out is only available on Windows.".into())
+    }
+}
+
+
+#[tauri::command]
 async fn disk_space_drives() -> Result<Vec<disk_space::Drive>, String> {
     off_thread(disk_space::drives)
         .await
@@ -2626,6 +2743,12 @@ pub fn run() {
             explorer_thumbnail,
             explorer_delete,
             explorer_materialize,
+            explorer_rename,
+            explorer_new_folder,
+            explorer_transfer,
+            explorer_drag_out,
+            explorer_clipboard_set,
+            explorer_clipboard_get,
             disk_space_drives,
             disk_space_scan,
             disk_space_scan_start,
@@ -2763,6 +2886,21 @@ pub fn run() {
             appbar::sidebar_suggestions,
             appbar::sidebar_suggest_icon,
             appbar::sidebar_suggest_launch,
+            appbar::sidebar_network,
+            appbar::sidebar_wifi_networks,
+            appbar::sidebar_wifi_connect,
+            appbar::sidebar_wifi_disconnect,
+            appbar::sidebar_wifi_picker,
+            appbar::sidebar_connections,
+            appbar::sidebar_tray_apps,
+            startup_entries,
+            startup_set_enabled,
+            startup_tray_icons,
+            startup_icon,
+            startup_reveal,
+            startup_close,
+            startup_uninstall,
+            appbar::sidebar_reveal,
             appbar::sidebar_settings,
             appbar::sidebar_settings_set,
             tool_window::search_show,
@@ -2907,6 +3045,12 @@ pub fn run() {
         explorer_thumbnail,
         explorer_delete,
         explorer_materialize,
+        explorer_rename,
+        explorer_new_folder,
+        explorer_transfer,
+        explorer_drag_out,
+        explorer_clipboard_set,
+        explorer_clipboard_get,
         disk_space_drives,
         disk_space_scan,
         disk_space_scan_start,

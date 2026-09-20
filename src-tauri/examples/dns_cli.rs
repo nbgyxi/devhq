@@ -6,9 +6,9 @@ fn main() {
         .nth(1)
         .unwrap_or_else(|| "example.com".into());
 
-    println!("system resolvers: {:?}", devhq_lib::dns::system_resolvers());
+    println!("system resolvers: {:?}", wint_lib::dns::system_resolvers());
 
-    let lookup = devhq_lib::dns::lookup(&name, "", &[]);
+    let lookup = wint_lib::dns::lookup(&name, "", &[]);
     println!(
         "\n{} via {} ({}) in {}ms — {}",
         lookup.name,
@@ -36,7 +36,7 @@ fn main() {
     }
 
     println!("\nresolvers:");
-    for answer in devhq_lib::dns::compare(&name, "A") {
+    for answer in wint_lib::dns::compare(&name, "A") {
         println!(
             "  {:<12} {:<16} {:>5}ms  {}",
             answer.name,
@@ -50,11 +50,11 @@ fn main() {
         );
     }
 
-    if let Some(first) = devhq_lib::dns::lookup(&name, "", &["A".into()])
+    if let Some(first) = wint_lib::dns::lookup(&name, "", &["A".into()])
         .records
         .first()
     {
-        let back = devhq_lib::dns::reverse(&first.value);
+        let back = wint_lib::dns::reverse(&first.value);
         println!(
             "\nreverse of {}: {}",
             first.value,
@@ -65,7 +65,7 @@ fn main() {
         );
     }
 
-    let hosts = devhq_lib::dns::hosts_read();
+    let hosts = wint_lib::dns::hosts_read();
     println!(
         "\n{} — {} lines, writable: {}, elevated: {}, {} backups",
         hosts.path,
@@ -90,7 +90,7 @@ fn main() {
             .to_string_lossy()
             .into_owned()
     });
-    let domains = devhq_lib::dns::project_domains(vec![here.clone()], vec![String::new()]);
+    let domains = wint_lib::dns::project_domains(vec![here.clone()], vec![String::new()]);
     println!("\nnames found in {here}: {}", domains.len());
     for row in domains {
         println!("  {:<20} {:<32} {}", row.project, row.host, row.note);
