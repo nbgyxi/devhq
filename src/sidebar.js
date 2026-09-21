@@ -190,6 +190,11 @@
   // is (its AppUserModelID, which is one per browser profile, or its exe) and
   // which of that app's windows it is, and the dragged order of keys is saved.
   // A window that opens later takes the place its key had last time.
+  //
+  // A row is either a window or a pin (see below). Both carry `data-bar`, and
+  // everything that treats the rail as a list — the saved order, the drag,
+  // the click — works off that; `data-window` and `data-pin` only say which
+  // kind a row is.
   const list = document.querySelector("[data-windows]");
   const rows = new Map();
   const REFRESH_MS = 1000;
@@ -201,7 +206,7 @@
   if (!Array.isArray(order)) order = [];
 
   function saveOrder() {
-    const shown = [...list.querySelectorAll("[data-window]")].map((button) => button.dataset.key);
+    const shown = [...list.querySelectorAll("[data-bar]")].map((button) => button.dataset.key);
     // Apps that are closed right now keep their remembered places.
     order = [...shown, ...order.filter((key) => !shown.includes(key))].slice(0, ORDER_LIMIT);
     try { localStorage.setItem(ORDER_KEY, JSON.stringify(order)); } catch (_) { /* order lasts this run */ }
@@ -219,7 +224,7 @@
     const rank = order.indexOf(button.dataset.key);
     let before = list.querySelector(".skeleton");
     if (rank !== -1) {
-      for (const other of list.querySelectorAll("[data-window]")) {
+      for (const other of list.querySelectorAll("[data-bar]")) {
         const otherRank = order.indexOf(other.dataset.key);
         if (otherRank === -1 || otherRank > rank) { before = other; break; }
       }
@@ -239,13 +244,220 @@
         entry.img.src = url;
         entry.img.hidden = false;
         entry.glyph.hidden = true;
+        // A pinned app's row keeps the last icon its window wore, so the pin
+        // does not fall back to a blank glyph once the app is closed.
+        const pin = pinned(entry.app);
+        if (pin && pin.icon !== url) { pin.icon = url; savePins(); }
       });
+  }
+
+  // ---- pinned apps -------------------------------------------------------------
+  // A pin keeps an app on the rail after its last window has gone: the row
+  // stays where it was, dimmed, and a click starts the app again. It is keyed
+  // by the same thing a window row is — the AppUserModelID, or the exe — so a
+  // pinned app and its window are the same place on the rail, and the pin's
+  // row simply gives way the moment a real window takes over.
+  //
+  // The name, the icon and how to start it are all remembered here. Once the
+  // window is gone there is nothing left to ask.
+  const PINS_KEY = "wint.sidebar.pins";
+  let pins = [];
+  try { pins = JSON.parse(localStorage.getItem(PINS_KEY) || "[]"); } catch (_) { pins = []; }
+  if (!Array.isArray(pins)) pins = [];
+  pins = pins.filter((pin) => pin?.key && pin?.target);
+
+  /// The rows standing in for pinned apps that are not running, by pin key.
+  const ghosts = new Map();
+
+  function savePins() {
+    try { localStorage.setItem(PINS_KEY, JSON.stringify(pins)); } catch (_) { /* pins last this run */ }
+  }
+
+  /** A pin's key and a window row's key are the same string, so a pin holds
+   *  the place the app's first window had. */
+  function pinKey(app) {
+    return String(app || "").toLowerCase();
+  }
+
+  function pinned(app) {
+    return pins.find((pin) => pin.key === pinKey(app));
+  }
+
+  function addPin(pin) {
+    pins = [...pins.filter((other) => other.key !== pin.key), pin];
+    savePins();
+    // The pin's place is the place its window holds right now.
+    saveOrder();
+    refreshWindows();
+  }
+
+  function removePin(key) {
+    pins = pins.filter((pin) => pin.key !== key);
+    savePins();
+    refreshWindows();
+  }
+
+  function ghostRow(pin) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "bar-win pinned";
+    button.dataset.bar = "pin";
+    button.dataset.pin = pin.key;
+    button.dataset.key = `${pin.key}#0`;
+    button.title = `Start ${pin.name}`;
+    const img = document.createElement("img");
+    img.alt = "";
+    img.draggable = false;
+    img.hidden = !pin.icon;
+    if (pin.icon) img.src = pin.icon;
+    const glyph = document.createElement("span");
+    glyph.className = "ms";
+    glyph.setAttribute("aria-hidden", "true");
+    glyph.textContent = "window";
+    glyph.hidden = !!pin.icon;
+    const label = document.createElement("small");
+    label.textContent = pin.name;
+    button.append(img, glyph, label);
+    return button;
+  }
+
+  /** Draw a row for every pinned app that has no window of its own open, and
+   *  take away the ones whose app has just started. */
+  function paintPins(windows) {
+    const running = new Set(windows.map((win) => pinKey(win.app)));
+    for (const [key, ghost] of ghosts) {
+      if (running.has(key) || !pins.some((pin) => pin.key === key)) {
+        ghost.remove();
+        ghosts.delete(key);
+      }
+    }
+    for (const pin of pins) {
+      if (running.has(pin.key) || ghosts.has(pin.key)) continue;
+      const ghost = ghostRow(pin);
+      ghosts.set(pin.key, ghost);
+      placeNew(ghost);
+    }
+  }
+
+  // Starting a pinned app takes a moment and opens nothing here, so the row
+  // says what it is doing until the app's own window arrives and replaces it.
+  function launchPin(button) {
+    const pin = pins.find((other) => other.key === button.dataset.pin);
+    if (!pin || button.disabled) return;
+    const label = button.querySelector("small");
+    const text = label.textContent;
+    button.disabled = true;
+    label.textContent = `Starting ${pin.name}`;
+    invoke("sidebar_suggest_launch", { target: pin.target })
+      .then(() => { label.textContent = text; })
+      .catch((error) => { label.textContent = text; flash(button, error); })
+      .finally(() => { button.disabled = false; refreshWindows(); });
+  }
+
+  // ---- dividers ----------------------------------------------------------------
+  // A divider is a titled line in the list of rows. It opens nothing; it is
+  // there to group what is under it, so two projects being worked on at once
+  // do not read as one heap of windows. It is a row like any other — it has a
+  // key, it drags, and the saved order keeps it where it was put — so the
+  // windows and pins around it simply flow above and below it.
+  //
+  // Its name is an <input> mounted once when the divider appears and never
+  // replaced, so a refresh in the middle of typing cannot take the caret.
+  const DIVIDERS_KEY = "wint.sidebar.dividers";
+  let dividers = [];
+  try { dividers = JSON.parse(localStorage.getItem(DIVIDERS_KEY) || "[]"); } catch (_) { dividers = []; }
+  if (!Array.isArray(dividers)) dividers = [];
+  dividers = dividers.filter((divider) => divider?.key);
+
+  /// The rows standing for each divider, by key.
+  const dividerRows = new Map();
+
+  function saveDividers() {
+    try { localStorage.setItem(DIVIDERS_KEY, JSON.stringify(dividers)); } catch (_) { /* dividers last this run */ }
+  }
+
+  function dividerRow(divider) {
+    const box = document.createElement("div");
+    box.className = "bar-divider";
+    box.dataset.bar = "divider";
+    box.dataset.divider = divider.key;
+    box.dataset.key = divider.key;
+    box.title = "Drag to move this divider; right-click to rename or remove it";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = divider.name || "";
+    input.placeholder = "Divider";
+    input.spellcheck = false;
+    // Read-only until Rename is chosen, so the whole row - name included -
+    // drags as one piece and a press on the text never puts a caret there.
+    input.readOnly = true;
+    input.setAttribute("aria-label", "Divider name");
+    // Typed straight into the rail, saved as it is typed. Nothing else reads
+    // the name, so there is no round trip to wait for.
+    input.addEventListener("input", () => {
+      divider.name = input.value;
+      saveDividers();
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === "Escape") input.blur();
+    });
+    // Leaving the name ends the rename; the row goes back to being a row.
+    input.addEventListener("blur", () => { input.readOnly = true; });
+    box.append(input);
+    return box;
+  }
+
+  /** Draw a row for every divider there is, and take away the ones that have
+   *  been removed. Existing rows are left alone — that is what keeps a name
+   *  being typed from being rebuilt under the caret. */
+  function paintDividers() {
+    for (const [key, box] of dividerRows) {
+      if (dividers.some((divider) => divider.key === key)) continue;
+      box.remove();
+      dividerRows.delete(key);
+    }
+    for (const divider of dividers) {
+      if (dividerRows.has(divider.key)) continue;
+      const box = dividerRow(divider);
+      dividerRows.set(divider.key, box);
+      placeNew(box);
+    }
+  }
+
+  /** Put a divider's name into edit: as it is created, and again whenever
+   *  Rename is chosen from its menu. Those are the only two ways in, so an
+   *  ordinary press on the row - its title included - stays a drag. */
+  function renameDivider(key) {
+    const input = dividerRows.get(key)?.querySelector("input");
+    if (!input) return;
+    input.readOnly = false;
+    input.focus();
+    input.select();
+  }
+
+  /** A new divider goes at the end of the list, and its name is put straight
+   *  into edit — it is created to be titled, so the caret is already there. */
+  function addDivider() {
+    const divider = { key: `divider#${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, name: "" };
+    dividers = [...dividers, divider];
+    saveDividers();
+    paintDividers();
+    saveOrder();
+    renameDivider(divider.key);
+  }
+
+  function removeDivider(key) {
+    dividers = dividers.filter((divider) => divider.key !== key);
+    saveDividers();
+    paintDividers();
+    saveOrder();
   }
 
   function row(win) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "bar-win";
+    button.dataset.bar = "window";
     button.dataset.window = win.id;
     button.dataset.key = keyFor(win);
     const img = document.createElement("img");
@@ -262,6 +474,10 @@
   }
 
   function paintWindows(windows) {
+    // Before the rows, so a pin whose app has just started gives up its place
+    // to that app's window rather than sitting beside it.
+    paintPins(windows);
+    paintDividers();
     const seen = new Set(windows.map((win) => win.id));
     for (const [id, entry] of rows) {
       if (!seen.has(id)) {
@@ -311,8 +527,11 @@
   let swallowClick = false;
 
   list.addEventListener("pointerdown", (event) => {
-    const button = event.target.closest("[data-window]");
+    const button = event.target.closest("[data-bar]");
     if (!button || event.button !== 0) return;
+    // The whole divider drags, its name included. Only while that name is
+    // being renamed does the press belong to the text instead.
+    if (event.target.matches("input:not([readonly])")) return;
     press = { button, y: event.clientY, pointer: event.pointerId };
   });
 
@@ -330,9 +549,9 @@
     // the DOM drops its pointer capture and ends the drag after one step.
     const next = moving.nextElementSibling;
     const prev = moving.previousElementSibling;
-    if (next?.dataset.window && event.clientY > next.getBoundingClientRect().top + next.offsetHeight / 2) {
+    if (next?.dataset.bar && event.clientY > next.getBoundingClientRect().top + next.offsetHeight / 2) {
       list.insertBefore(next, moving);
-    } else if (prev?.dataset.window && event.clientY < prev.getBoundingClientRect().top + prev.offsetHeight / 2) {
+    } else if (prev?.dataset.bar && event.clientY < prev.getBoundingClientRect().top + prev.offsetHeight / 2) {
       list.insertBefore(prev, moving.nextElementSibling);
     }
     // Near the ends of a list that scrolls, keep it scrolling.
@@ -359,9 +578,14 @@
   list.addEventListener("lostpointercapture", endPress);
 
   list.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-window]");
+    const button = event.target.closest("[data-bar]");
     if (!button) return;
     if (swallowClick) { swallowClick = false; return; }
+    // A divider is a label, not a launcher.
+    if (button.dataset.divider) return;
+    // A pinned app that is not running has no window to switch to; its row
+    // starts it instead.
+    if (button.dataset.pin) return launchPin(button);
     invoke("sidebar_activate", { id: button.dataset.window })
       .catch(() => {})
       .finally(refreshWindows);
@@ -389,7 +613,7 @@
   let menuOpen = false;
 
   list.addEventListener("contextmenu", async (event) => {
-    const button = event.target.closest("[data-window]");
+    const button = event.target.closest("[data-bar]");
     if (!button) return;
     event.preventDefault();
     // This right-click has been answered. Without this it carries on up to
@@ -399,6 +623,30 @@
     if (menuOpen) return;
     menuOpen = true;
     try {
+      // A divider: rename it in place, another one under it, or take it away.
+      if (button.dataset.divider) {
+        const key = button.dataset.divider;
+        const menu = await Menu.new({ items: [
+          await MenuItem.new({ text: "Rename divider", action: () => renameDivider(key) }),
+          await MenuItem.new({ text: "Create divider", action: () => addDivider() }),
+          await PredefinedMenuItem.new({ item: "Separator" }),
+          await MenuItem.new({ text: "Remove divider", action: () => removeDivider(key) }),
+        ] });
+        await menu.popup();
+        return;
+      }
+      // A pinned app with nothing running: start it, or take the pin away.
+      if (button.dataset.pin) {
+        const pin = pins.find((other) => other.key === button.dataset.pin);
+        if (!pin) return;
+        const menu = await Menu.new({ items: [
+          await MenuItem.new({ text: pin.name.replaceAll("&", "&&"), action: () => launchPin(button) }),
+          await PredefinedMenuItem.new({ item: "Separator" }),
+          await MenuItem.new({ text: "Unpin from sidebar", action: () => removePin(pin.key) }),
+        ] });
+        await menu.popup();
+        return;
+      }
       const id = button.dataset.window;
       let info, recent;
       try {
@@ -415,15 +663,6 @@
       // A single "&" in a native menu marks the underlined access key.
       const item = (text, action, enabled = true) => MenuItem.new({ text: text.replaceAll("&", "&&"), enabled, action });
       const items = [];
-      // Recent files and folders sit on top, as in the taskbar's jump list.
-      if (recent.length) {
-        items.push(await item("Recent", () => {}, false));
-        for (const entry of recent) {
-          items.push(await item(entry.name, () =>
-            invoke("sidebar_launch_new", { id, path: entry.path }).catch((error) => flash(button, error))));
-        }
-        items.push(await PredefinedMenuItem.new({ item: "Separator" }));
-      }
       items.push(
         await item(info.name || "New window", () =>
           invoke("sidebar_launch_new", { id }).catch((error) => flash(button, error)), info.canLaunch),
@@ -439,6 +678,33 @@
         items.push(await item(`Close all ${siblings.length} windows`, () => {
           for (const other of siblings) windowCommand(rows.get(other)?.button || button, other, "close");
         }));
+      }
+      // Last, where the taskbar puts it: keep this app on the rail after its
+      // last window has gone. Only an app there is a way back into can be
+      // pinned — a pin that could not start anything would be a dead row.
+      const winRow = rows.get(id);
+      const existing = pinned(app);
+      items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+      items.push(existing
+        ? await item("Unpin from sidebar", () => removePin(existing.key))
+        : await item("Pin to sidebar", () => addPin({
+          key: pinKey(app),
+          name: info.name || app,
+          target: info.target,
+          icon: winRow && !winRow.img.hidden ? winRow.img.src : "",
+        }), Boolean(app) && Boolean(info.target)));
+      // Recent files and folders go at the bottom. The taskbar puts them on
+      // top, but there they push what the menu is actually for — minimize,
+      // close, pin — down to wherever this app's history happens to end, so
+      // the same command is in a different place for every app. Below the
+      // fixed commands, every app's menu starts the same way.
+      if (recent.length) {
+        items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+        items.push(await item("Recent", () => {}, false));
+        for (const entry of recent) {
+          items.push(await item(entry.name, () =>
+            invoke("sidebar_launch_new", { id, path: entry.path }).catch((error) => flash(button, error))));
+        }
       }
       const menu = await Menu.new({ items });
       await menu.popup();
@@ -484,7 +750,7 @@
   // this one, both at once, which is what wedged the app.
   document.addEventListener("contextmenu", async (event) => {
     event.preventDefault();
-    if (event.target.closest("[data-window]") || menuOpen) return;
+    if (event.target.closest("[data-bar]") || menuOpen) return;
     menuOpen = true;
     suggesting = true;
     try {
@@ -494,6 +760,7 @@
       const items = [
         await MenuItem.new({ text: "Dock settings", action: () =>
           window.__TAURI__.event.emit("sidebar:open-settings").catch(() => {}) }),
+        await MenuItem.new({ text: "Create divider", action: () => addDivider() }),
         await PredefinedMenuItem.new({ item: "Separator" }),
         await MenuItem.new({ text: "Suggested apps", enabled: false }),
       ];
@@ -1194,6 +1461,12 @@
           .catch((error) => say(error))
           .finally(refreshWindows)),
         await act("Close it", () => invoke("startup_close", { exe })
+          .then(say, say)
+          .finally(() => { refreshWindows(); loadTrayApps(); })),
+        // Closing asks, and a tray app is the kind of program that says no —
+        // ignoring the close is how it stays in the notification area. This
+        // one does not ask.
+        await act("Force close", () => invoke("startup_force_close", { exe })
           .then(say, say)
           .finally(() => { refreshWindows(); loadTrayApps(); })),
         await PredefinedMenuItem.new({ item: "Separator" }),

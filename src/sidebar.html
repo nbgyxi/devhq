@@ -55,6 +55,14 @@
     border-radius: 2px; background: var(--accent, #6ea8fe);
   }
   body[data-edge="right"] .bar-win.active::before { left: auto; right: 0; }
+  /* A pinned app with nothing running: still in its place, but plainly not
+     open. Dimmed rather than hidden, so the rail keeps the same shape whether
+     the app is running or not. Hovering it brings it back to full strength —
+     it is a launcher, and it should look like one under the pointer. */
+  .bar-win.pinned { opacity: .45; }
+  .bar-win.pinned img { filter: grayscale(1); }
+  .bar-win.pinned:hover { opacity: 1; }
+  .bar-win.pinned:hover img { filter: none; }
   /* The row being dragged lifts off the list; everything else stops reacting. */
   .bar-win.dragging { background: var(--hover, #1c2030); box-shadow: 0 4px 14px rgba(0,0,0,.45); z-index: 2; cursor: grabbing; }
   body.reordering, body.reordering * { cursor: grabbing !important; }
@@ -79,6 +87,28 @@
     background-size: 400% 100%; animation: shimmer 1.4s ease infinite;
   }
   .bar-spacer { flex: 1 1 auto; }
+  /* A divider is a row like any other - it drags and it keeps its place - but
+     it opens nothing. It names the group of rows under it, so two projects'
+     worth of windows can be told apart at a glance. Its name is an input
+     mounted once and never replaced, so typing survives every refresh. */
+  .bar-divider {
+    display: flex; align-items: center; gap: 8px; flex: none;
+    padding: 10px 10px 4px; cursor: default; position: relative;
+  }
+  .bar-divider input {
+    flex: 0 1 auto; min-width: 0; width: 100%;
+    background: transparent; border: 0; padding: 0; margin: 0;
+    color: var(--muted, #8b93a7); font: inherit; font-size: var(--bar-text);
+    letter-spacing: .08em; text-transform: uppercase; font-weight: 700;
+    text-overflow: ellipsis; cursor: inherit; user-select: none;
+  }
+  .bar-divider input:not([readonly]) { cursor: text; user-select: text; }
+  .bar-divider input:focus { outline: 0; color: var(--text, #e6e8ef); }
+  .bar-divider::after {
+    content: ""; flex: 1 1 auto; min-width: 8px; height: 1px;
+    background: var(--line, #262a36);
+  }
+  .bar-divider.dragging { background: var(--hover, #1c2030); box-shadow: 0 4px 14px rgba(0,0,0,.45); z-index: 2; cursor: grabbing; }
   /* Shortcuts to WinT tools sit on their own under a divider, apart from the
      bar's own controls below them. */
   .bar-tools { display: flex; flex-direction: column; gap: 2px; flex: none; padding-top: 6px; border-top: 1px solid var(--line, #262a36); }

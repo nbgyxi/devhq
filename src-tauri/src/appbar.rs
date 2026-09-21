@@ -17,6 +17,7 @@
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::OnceLock;
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -33,9 +34,10 @@ use windows::Win32::UI::Shell::{
     ABS_ALWAYSONTOP, ABS_AUTOHIDE, APPBARDATA,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowLongW, SetWindowPos, GWL_EXSTYLE, HWND_BOTTOM, HWND_TOPMOST, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_APP, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
-    WM_ENTERMENULOOP, WM_EXITMENULOOP, WM_WINDOWPOSCHANGED, WS_EX_TOPMOST,
+    ChangeWindowMessageFilterEx, GetWindowLongW, RegisterWindowMessageW, SetWindowPos, GWL_EXSTYLE,
+    HWND_BOTTOM, HWND_TOPMOST, MSGFLT_ALLOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    WM_APP, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENTERMENULOOP, WM_EXITMENULOOP,
+    WM_WINDOWPOSCHANGED, WS_EX_TOPMOST,
 };
 
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -78,6 +80,51 @@ static TASKBAR_WAS: AtomicU32 = AtomicU32::new(u32::MAX);
 static IN_MENU: AtomicBool = AtomicBool::new(false);
 /// A shell notification that arrived while a menu was up.
 static PLACE_DEFERRED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the real taskbar should be auto-hidden while we hold the edge, as
+/// the last dock or configure asked for. Remembered because a shell that has
+/// just restarted brings its taskbar back visible, and the sidebar has to ask
+/// again for what the user already chose.
+static HIDE_TASKBAR: AtomicBool = AtomicBool::new(true);
+
+/// `TaskbarCreated`: the message a newly started Explorer broadcasts to every
+/// top-level window. It is the only announcement that a new shell exists, and
+/// registering the string is how a window gets to recognise it.
+fn taskbar_created() -> u32 {
+    static MSG: OnceLock<u32> = OnceLock::new();
+    *MSG.get_or_init(|| unsafe { RegisterWindowMessageW(windows::core::w!("TaskbarCreated")) })
+}
+
+/// A broadcast from Explorer, which runs unelevated, is filtered out of an
+/// elevated process unless the window asks for it by name. WinT can be run as
+/// administrator, and a sidebar that silently never came back after a shell
+/// restart would be the same bug either way.
+unsafe fn allow_taskbar_created(hwnd: HWND) {
+    let _ = ChangeWindowMessageFilterEx(hwnd, taskbar_created(), MSGFLT_ALLOW, None);
+}
+
+/// A new shell is up: whatever Explorer knew about this appbar died with the
+/// old one. Registering again is the only way back — nothing is inherited,
+/// and until it happens the reserved edge is gone and maximized windows run
+/// underneath the rail.
+///
+/// This runs for any restart, not only the one the Clean Shell repair asks
+/// for: an Explorer that crashed on its own leaves exactly the same hole.
+unsafe fn reclaim(hwnd: HWND) {
+    if HOST.load(Ordering::SeqCst) == 0 {
+        return;
+    }
+    // The old registration is not removed first. `ABM_REMOVE` is a round trip
+    // into the shell, and the shell it would be asking is the one that just
+    // died or is still hanging — which is the call this file already warns
+    // never comes back. The new Explorer has no record of us to clear.
+    let mut data = appbar_data(hwnd);
+    shell(ABM_NEW, "SHAppBarMessage ABM_NEW (shell restarted)", &mut data);
+    if HIDE_TASKBAR.load(Ordering::SeqCst) {
+        auto_hide_taskbar();
+    }
+    place(hwnd);
+}
 
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -434,6 +481,11 @@ unsafe extern "system" fn sidebar_proc(
     _id: usize,
     _data: usize,
 ) -> LRESULT {
+    // Registered at run time, so it cannot be a match arm.
+    if msg == taskbar_created() {
+        reclaim(hwnd);
+        return DefSubclassProc(hwnd, msg, wparam, lparam);
+    }
     match msg {
         APPBAR_CALLBACK => {
             match wparam.0 as u32 {
@@ -509,11 +561,13 @@ unsafe fn undock(hwnd: HWND) {
 /// the subclass belongs to the thread that owns the window.
 unsafe fn dock(hwnd: HWND, hide_taskbar: bool) {
     MAIN_THREAD.store(GetCurrentThreadId(), Ordering::SeqCst);
+    HIDE_TASKBAR.store(hide_taskbar, Ordering::SeqCst);
     let raw = hwnd.0 as isize;
     if HOST.swap(raw, Ordering::SeqCst) != raw {
         let mut data = appbar_data(hwnd);
         shell(ABM_NEW, "SHAppBarMessage ABM_NEW", &mut data);
         let _ = SetWindowSubclass(hwnd, Some(sidebar_proc), SUBCLASS_ID, 0);
+        allow_taskbar_created(hwnd);
     }
     if hide_taskbar {
         auto_hide_taskbar();
@@ -641,8 +695,14 @@ pub async fn sidebar_configure(
             let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
             on_window_thread(&app, hwnd, move |hwnd| unsafe {
                 match hide_taskbar {
-                    Some(true) => auto_hide_taskbar(),
-                    Some(false) => show_taskbar(),
+                    Some(true) => {
+                        HIDE_TASKBAR.store(true, Ordering::SeqCst);
+                        auto_hide_taskbar()
+                    }
+                    Some(false) => {
+                        HIDE_TASKBAR.store(false, Ordering::SeqCst);
+                        show_taskbar()
+                    }
                     None => {}
                 }
                 place(hwnd)
@@ -895,7 +955,7 @@ pub(crate) fn list_windows(sidebar: isize) -> Vec<OpenWindow> {
                 id: raw.to_string(),
                 title: String::from_utf16_lossy(&title[..len]),
                 exe: exe.clone(),
-                app: app_id(hwnd).unwrap_or(exe),
+                app: window_app_id(hwnd).unwrap_or(exe),
                 active: raw == active,
                 minimized: IsIconic(hwnd).as_bool(),
             }
@@ -1202,6 +1262,47 @@ unsafe fn app_id(hwnd: HWND) -> Option<String> {
     id.filter(|id| !id.is_empty())
 }
 
+/// The AppUserModelID of the *package* a window's process runs under.
+///
+/// Most packaged apps never set an ID on the window itself — Notepad is one —
+/// because the shell reads it off the process instead. Asking the window is
+/// still worth doing first: a browser sets a per-profile ID there, which is
+/// finer than the one ID its package would give.
+unsafe fn process_app_id(hwnd: HWND) -> Option<String> {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{CloseHandle, ERROR_SUCCESS};
+    use windows::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+    let mut buffer = [0u16; 512];
+    let mut len = buffer.len() as u32;
+    let status = GetApplicationUserModelId(process, &mut len, Some(PWSTR(buffer.as_mut_ptr())));
+    let _ = CloseHandle(process);
+    if status != ERROR_SUCCESS || len == 0 {
+        // Not a packaged process at all, which is the ordinary answer.
+        return None;
+    }
+    // The length counts the terminator.
+    let id = String::from_utf16_lossy(&buffer[..(len as usize).saturating_sub(1)]);
+    (!id.is_empty()).then_some(id)
+}
+
+/// What the shell calls this window's app, however the app says so: the ID the
+/// window sets, the one the window inside its frame sets, or the one its
+/// package was installed under. This is the one thing the rail identifies an
+/// app by — the key its row keeps its place under, and the way back in for a
+/// pinned app whose windows have all closed.
+pub(crate) unsafe fn window_app_id(hwnd: HWND) -> Option<String> {
+    let inner = app_window(hwnd);
+    app_id(hwnd)
+        .or_else(|| (inner != hwnd).then(|| app_id(inner)).flatten())
+        .or_else(|| process_app_id(inner))
+        .or_else(|| (inner != hwnd).then(|| process_app_id(hwnd)).flatten())
+}
+
 // ---- the right-click menu --------------------------------------------------------
 // What the taskbar's jump list offers for every app, without the per-app list
 // Windows keeps privately: start another copy of the app, and the window's own
@@ -1218,6 +1319,11 @@ pub struct WindowMenu {
     /// exe from us, and a Store app with no AppUserModelID has no way in.
     pub can_launch: bool,
     pub minimized: bool,
+    /// What starts this app with no window to go by: its exe, or its
+    /// AppUserModelID when the exe cannot be run directly. A pin keeps this,
+    /// so a pinned app can still be started once its last window is gone.
+    /// Empty when there is no way in.
+    pub target: String,
 }
 
 /// `FileDescription` from the exe's version resource, in its first language.
@@ -1281,10 +1387,12 @@ pub async fn sidebar_window_menu(id: String) -> Result<WindowMenu, String> {
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_default()
         });
+        let target = if packaged { window_app_id(hwnd).unwrap_or_default() } else { exe.clone() };
         Ok(WindowMenu {
             name,
-            can_launch: !packaged || app_id(hwnd).is_some(),
+            can_launch: !target.is_empty(),
             minimized: IsIconic(hwnd).as_bool(),
+            target,
         })
     })
     .await
@@ -1314,7 +1422,7 @@ pub async fn sidebar_launch_new(id: String, path: Option<String>) -> Result<(), 
             command.arg(path);
             command
         } else if is_packaged(&exe) {
-            let aumid = app_id(hwnd).ok_or("This app cannot be started from here.")?;
+            let aumid = window_app_id(hwnd).ok_or("This app cannot be started from here.")?;
             let mut command = std::process::Command::new("explorer.exe");
             command.arg(format!(r"shell:AppsFolder\{aumid}"));
             command
@@ -1350,7 +1458,7 @@ pub async fn sidebar_window_recent(id: String) -> Vec<crate::recent::RecentItem>
         if !own.is_empty() {
             return own;
         }
-        app_id(hwnd).map(|aumid| crate::recent::jump_list(&aumid)).unwrap_or_default()
+        window_app_id(hwnd).map(|aumid| crate::recent::jump_list(&aumid)).unwrap_or_default()
     })
     .await
     .unwrap_or_default()
@@ -1715,11 +1823,30 @@ pub async fn sidebar_tray_apps(app: AppHandle) -> Vec<TrayApp> {
     // one exception is the main window once it has gone to the tray — WinT is
     // then a tray app like any other, and a rail that shows every one of them
     // has to show itself too.
-    let own_window = app
-        .get_webview_window("main")
+    // `get_window`, never `get_webview_window`: the latter answers with
+    // nothing as soon as the main window hosts an embedded tool, because a
+    // window only counts as a webview window while every webview on it
+    // carries the window's own label. That is why this drew no row — the rail
+    // asked while a tool was open, and Tauri said WinT had no main window.
+    let main = app.get_window("main");
+    let own_window = main
+        .as_ref()
         .filter(|window| !window.is_visible().unwrap_or(true))
         .and_then(|window| window.hwnd().ok())
         .map(|hwnd| hwnd.0 as isize);
+    // Said out loud, because this is the one row whose absence cannot be seen
+    // by looking at the rail: there is no way to tell a WinT that decided not
+    // to draw itself from a WinT that never asked.
+    crate::health::record(
+        "tray",
+        match (&main, own_window) {
+            (None, _) => "the rail found no main window to draw for WinT".to_string(),
+            (Some(_), Some(raw)) => {
+                format!("WinT is in the notification area; the rail draws {raw:#x} for it")
+            }
+            (Some(_), None) => "WinT's main window is on screen, so the rail leaves it out".to_string(),
+        },
+    );
 
     off_thread(move || {
         let mut handles: Vec<isize> = Vec::new();
@@ -1934,7 +2061,7 @@ unsafe fn shell_activation(hwnd: HWND) -> Option<std::process::Command> {
     if !exe.contains(r"\windowsapps\") && !exe.ends_with(r"\applicationframehost.exe") {
         return None;
     }
-    let aumid = app_id(app_window(hwnd)).or_else(|| app_id(hwnd))?;
+    let aumid = window_app_id(hwnd)?;
     let mut command = std::process::Command::new("explorer.exe");
     command.arg(format!(r"shell:AppsFolder\{aumid}"));
     Some(command)
@@ -2068,7 +2195,7 @@ pub async fn sidebar_reveal(
                 // is opened the way the Start menu opens it, by its
                 // AppUserModelID, and the app puts up its own window.
                 if !on_screen(found) {
-                    if let Some(command) = shell_activation(found) {
+                    if let Some(mut command) = shell_activation(found) {
                         return command
                             .creation_flags(DETACHED_PROCESS)
                             .spawn()
@@ -2082,7 +2209,7 @@ pub async fn sidebar_reveal(
         }
         if showable_window(hwnd) {
             if !on_screen(hwnd) {
-                if let Some(command) = shell_activation(hwnd) {
+                if let Some(mut command) = shell_activation(hwnd) {
                     return command
                         .creation_flags(DETACHED_PROCESS)
                         .spawn()

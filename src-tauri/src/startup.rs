@@ -577,6 +577,38 @@ pub fn close(exe: &str) -> Result<String, String> {
 }
 
 /// The ids of every process running one program, by image name.
+/// End a program outright, without asking its windows first.
+///
+/// What [`close`] does is post WM_CLOSE, and a tray app is precisely the kind
+/// of program that ignores it: staying alive when its window is closed is the
+/// whole point of living in the notification area. That leaves a Close that
+/// reports success and changes nothing, which is why this exists — it goes
+/// straight to the process, and says how many it ended.
+pub fn force_close(exe: &str) -> Result<String, String> {
+    let wanted = file_name(exe);
+    if wanted.is_empty() {
+        return Err("There is no program on that entry to close.".into());
+    }
+    let mut ended = 0;
+    let mut refused = Vec::new();
+    for pid in process_ids(&wanted) {
+        match crate::procs::kill(pid, "", &wanted) {
+            Ok(()) => ended += 1,
+            Err(error) => refused.push(error),
+        }
+    }
+    if ended > 0 {
+        return Ok(format!(
+            "Ended {wanted} ({ended} process{}).",
+            if ended == 1 { "" } else { "es" }
+        ));
+    }
+    Err(refused
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| format!("{wanted} is not running any more.")))
+}
+
 fn process_ids(image: &str) -> Vec<u32> {
     let Some(text) = crate::util::run_lossy("tasklist", &["/fo", "csv", "/nh"], None) else {
         return Vec::new();

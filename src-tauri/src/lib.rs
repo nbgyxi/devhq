@@ -838,6 +838,30 @@ async fn startup_close(exe: String) -> Result<String, String> {
         .unwrap_or_else(|| Err("Could not reach that program.".into()))
 }
 
+/// End a program outright: no window is asked, the processes are ended.
+///
+/// WinT itself goes down its own close path instead — a process cannot
+/// terminate itself, and the sessions it holds open deserve the same cleanup
+/// they get from Quit.
+#[tauri::command]
+async fn startup_force_close(app: AppHandle, exe: String) -> Result<String, String> {
+    let own = std::env::current_exe()
+        .map(|path| path.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if !own.is_empty() && exe.to_ascii_lowercase() == own {
+        // `get_window`: with a tool open, the main window is no longer a
+        // webview window as far as Tauri is concerned.
+        if let Some(window) = app.get_window("main") {
+            let _ = window.destroy();
+        }
+        app.exit(0);
+        return Ok("Closing WinT.".into());
+    }
+    off_thread(move || startup::force_close(&exe))
+        .await
+        .unwrap_or_else(|| Err("Could not reach that program.".into()))
+}
+
 /// Start the vendor uninstaller for a program. Nothing is removed here: the
 /// uninstaller takes over, with its own prompts.
 #[tauri::command]
@@ -3001,6 +3025,7 @@ pub fn run() {
             installed_app_launch,
             startup_reveal,
             startup_close,
+            startup_force_close,
             startup_uninstall,
             appbar::sidebar_reveal,
             appbar::sidebar_settings,

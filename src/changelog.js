@@ -16,6 +16,62 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.130.0",
+      date: "2026-09-21",
+      title: "Dividers on the sidebar",
+      buildChecksum: "ddd6b2241726f47856f2dcb36917f487712afe246e10af30f786edf43873af4f",
+      changes: [
+        ["new", "Right-click the sidebar and choose Create divider to drop a titled line into the rail, then drag it anywhere among the windows and pinned apps to group what belongs together - one divider per project when two are open at once. The whole row drags, its title included; the title is typed as the divider is created, and right-clicking it offers Rename and Remove. Where it sits and what it is called are remembered."],
+      ],
+    },
+    {
+      version: "0.129.0",
+      date: "2026-09-21",
+      title: "Restart Explorer from anywhere",
+      changes: [
+        ["new", "Ctrl+Alt+R restarts Explorer and purges the icon and thumbnail caches from anywhere, without WinT having to be in front. It asks first, and answers itself after three seconds so one press is enough - press Esc or click Cancel within those three seconds to stop it."],
+        ["fix", "The docked sidebar now takes its screen edge back when Explorer restarts or crashes. Until now the reserved space was lost with the old shell and never asked for again, so maximized windows ran underneath the rail until the sidebar was undocked and docked by hand."],
+        ["fix", "A sidebar set to hide the real taskbar hides it again after a shell restart, instead of leaving the taskbar back on top of the rail."],
+      ],
+    },
+    {
+      version: "0.128.1",
+      date: "2026-09-21",
+      title: "Store apps can be pinned too",
+      changes: [
+        ["better", "Recent files now sit at the bottom of a window's right-click menu instead of the top. Minimize, Maximize, Close and Pin are in the same place for every app, rather than starting wherever that app's history happens to end."],
+        ["fix", "Store apps can be pinned. Notepad, Outlook, WhatsApp and the like never write an app ID on their windows - the shell reads it off the package instead - so Pin to sidebar was greyed out for them and the rail had no way to start them again. It now asks the package when the window says nothing, which also gives those apps their New window entry and their recent files."],
+      ],
+    },
+    {
+      version: "0.128.0",
+      date: "2026-09-21",
+      title: "Pinned apps stay on the rail",
+      changes: [
+        ["new", "Right-clicking an app on the sidebar now offers Pin to sidebar. A pinned app keeps its place on the rail after its last window closes, drawn dimmed, and a click starts it again - so the apps you reach for every day are always in the same spot, whether they are running or not."],
+        ["new", "A pinned app that is not running has a right-click menu of its own: start it, or unpin it."],
+        ["better", "Pinned rows can be dragged into place alongside open windows, and a pin holds the spot its app's window had, so an app does not move when it starts or closes."],
+      ],
+    },
+    {
+      version: "0.127.3",
+      date: "2026-09-21",
+      title: "WinT in its own tray, and a close that closes",
+      changes: [
+        ["fix", "WinT now really does appear among the tray apps on the sidebar while it waits in the notification area, and clicking it brings the window back. It was left out whenever a tool was open, which is most of the time: with a tool docked into the main window, WinT could no longer find that window to ask whether it was hidden."],
+        ["new", "Right-clicking a tray icon on the sidebar now offers Force close beside Close it, and the Startup and tray tool has it on every running row. Close asks the program's windows to close, and a tray app is exactly the kind of program that ignores being asked - sitting in the notification area with its window closed is the whole point - so Close often reported success and changed nothing. Force close ends the processes instead. Anything unsaved is lost, so it asks once first."],
+        ["better", "WinT's own row says what it is doing: the health log now records whether the sidebar drew WinT among the tray's apps and why, so a missing row can be traced instead of guessed at."],
+      ],
+    },
+    {
+      version: "0.127.2",
+      date: "2026-09-21",
+      title: "Store apps open properly from the sidebar tray",
+      changes: [
+        ["fix", "Clicking Microsoft Defender, or any other Store app, in the sidebar tray no longer puts a black rectangle on screen. Windows starts these apps in the background at sign-in and leaves them asleep with a window that has never been drawn, so showing that window showed an empty frame. The sidebar now opens an app that is not already on screen the way the Start menu opens it, and the app puts up its own window."],
+      ],
+    },
+    {
       version: "0.127.1",
       date: "2026-09-21",
       title: "A clock on the rail",

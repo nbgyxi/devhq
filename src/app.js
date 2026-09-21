@@ -251,6 +251,11 @@ function appConfirm(options = {}) {
       alternateLabel: options.alternateLabel || "",
       iconName: options.icon || "warning",
       tone: options.tone === "danger" ? "danger" : "accent",
+      // Seconds until the dialog answers itself with "yes". Only for actions
+      // reached by a shortcut pressed when something is already wrong, where
+      // doing nothing is the worse outcome and the dialog is there to catch a
+      // mis-press rather than to ask a real question.
+      countdown: Number(options.countdown) > 0 ? Math.round(options.countdown) : 0,
       resolve,
     });
     showNextConfirm();
@@ -275,9 +280,11 @@ function showNextConfirm() {
   document.body.appendChild(layer);
   coverEmbeddedTool();
   let settled = false;
+  let ticker = 0;
   const settle = (accepted) => {
     if (settled) return;
     settled = true;
+    if (ticker) clearInterval(ticker);
     layer.remove();
     uncoverEmbeddedTool();
     confirmOpen = false;
@@ -308,6 +315,21 @@ function showNextConfirm() {
     if (event.key !== "Escape") return;
     event.preventDefault(); event.stopPropagation(); settle(false);
   });
+  if (request.countdown) {
+    const accept = layer.querySelector('[data-confirm="accept"]');
+    let left = request.countdown;
+    // The count goes on the button that is about to be pressed, so what is
+    // about to happen and how long there is to stop it read as one thing.
+    const draw = () => { accept.textContent = `${request.confirmLabel} · ${left}`; };
+    draw();
+    ticker = setInterval(() => {
+      left -= 1;
+      if (left <= 0) settle(true);
+      else draw();
+    }, 1000);
+  }
+  // Cancel keeps the focus even while the clock runs: Enter and Esc both stop
+  // the action, so no key pressed by reflex can start one.
   requestAnimationFrame(() => layer.querySelector('[data-confirm="cancel"]')?.focus());
 }
 
@@ -4374,7 +4396,7 @@ const HOTKEY_DEFAULTS = {
   "tool:ports": "Ctrl+Shift+P", "tool:network": "Ctrl+Shift+N",
   "tool:registry": "Ctrl+Shift+R", "tool:clipboard": "Ctrl+Shift+V",
   "tool:github": "Ctrl+Shift+G", "tool:git": "Ctrl+Alt+G",
-  "command:focus-mode": "Ctrl+Alt+H",
+  "command:focus-mode": "Ctrl+Alt+H", "command:repair-shell": "Ctrl+Alt+R",
 };
 
 function hotkeyCatalog() {
@@ -4406,6 +4428,11 @@ function hotkeyCatalog() {
     { id: "command:clipboard-tool", kind: "global", name: "Open Clipboard History tool", icon: "inventory_2", hint: "Open the full history for searching, pinning and removing entries", action: () => openTool("clipboard") },
     { id: "command:palette", kind: "global", name: "Command palette", icon: "search", hint: "Find any command, tool or action", action: () => openSearchCommands({ fresh: true }) },
     { id: "command:focus-mode", kind: "global", name: "Focus mode: hide or bring back windows", icon: "shield_lock", hint: "Hide the windows your Focus mode rules pick, or bring them back. Always system-wide.", action: () => invoke("focus_mode_toggle").catch(() => {}) },
+    // Reached when Explorer is already hung, so it runs the repair itself
+    // rather than opening the tool that holds it: a window to click through
+    // is the one thing a broken shell makes hard. Always system-wide, because
+    // a shortcut that needs WinT in front is no use at that point.
+    { id: "command:repair-shell", kind: "global", name: "Restart Explorer and purge shell caches", icon: "desktop_windows", hint: "Runs the Clean Shell & Cache Purger straight away, after a three second countdown you can cancel. Always system-wide.", action: () => runShellRepair() },
     { id: "command:rescan", kind: "global", name: "Rescan projects", icon: "refresh", hint: "Scan every configured project folder again", action: () => rescan() },
     { id: "command:terminal-panel", kind: "global", name: "Toggle terminal panel", icon: "terminal", hint: "Show or hide docked terminals", action: () => setDockOpen(!window.termsState.open) },
     // The popped-out variant: a shell in a window of its own, with no dock and
@@ -4449,9 +4476,43 @@ function hotkeyConflicts() {
   return new Set([...bindings.values()].filter((ids) => ids.length > 1).flat());
 }
 
-// The Focus mode shortcut is only any use from outside WinT, so it is always global.
+// Two shortcuts are only any use from outside WinT, so they are always
+// global: Focus mode, and the Explorer restart you reach for when the shell
+// has stopped answering and nothing can be clicked.
 function isGlobalHotkey(id) {
-  return id === "command:focus-mode" || state.hotkeyGlobals.has(id);
+  return id === "command:focus-mode" || id === "command:repair-shell" || state.hotkeyGlobals.has(id);
+}
+
+/** The Clean Shell & Cache Purger, run without its tool. The countdown is the
+ *  whole safety story: the shortcut is a single gesture, and three seconds of
+ *  a labelled dialog is what stands between a mis-press and a dead taskbar. */
+async function runShellRepair() {
+  // Three seconds is not long enough to read a paragraph, and a wall of text
+  // under a running clock only makes the choice feel risky. One short
+  // line, and the reassurance rather than the detail: what this actually does
+  // is already in the title.
+  const go = await appConfirm({
+    title: "Restart Explorer?",
+    message: "The taskbar blinks. Other applications are not affected.",
+    confirmLabel: "Restart Explorer", cancelLabel: "Cancel",
+    icon: "desktop_windows", tone: "accent", countdown: 3,
+  });
+  if (go !== true) {
+    beginWork("repair-shell-done", "Explorer restart cancelled");
+    setTimeout(() => endWork("repair-shell-done"), 2500);
+    return;
+  }
+  beginWork("repair-shell", "Restarting Explorer", "closing the shell and deleting the icon and thumbnail caches");
+  let line = "Explorer restarted and shell caches purged";
+  try {
+    const result = await invoke("repair_run", { id: "shell" });
+    if (result?.ok === false) line = `Explorer restart failed: ${result.error || "no reason given"}`;
+  } catch (error) {
+    line = `Explorer restart failed: ${String(error)}`;
+  }
+  endWork("repair-shell");
+  beginWork("repair-shell-done", line);
+  setTimeout(() => endWork("repair-shell-done"), 5000);
 }
 
 const globalHotkeyErrors = new Map();

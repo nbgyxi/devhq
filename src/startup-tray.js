@@ -65,19 +65,26 @@
     return `<button class="btn" data-startup-toggle="${esc(id)}" data-startup-want="${enabled ? "off" : "on"}">${enabled ? "Turn off" : "Turn on"}</button>`;
   }
 
-  /** Close and Uninstall, and the second click that means it.
+  /** Close, Force close and Uninstall, and the second click that means it.
    *  Close asks the program's windows to close, so it can still refuse or ask
-   *  the user about unsaved work; Uninstall only starts the vendor's own
-   *  uninstaller. Neither is offered for a program with nothing to act on. */
+   *  the user about unsaved work — and a tray app usually does refuse, since
+   *  ignoring the close is how it stays in the notification area. Force close
+   *  ends the processes instead, with nothing asked. Uninstall only starts the
+   *  vendor's own uninstaller. None is offered for a program with nothing to
+   *  act on. */
   function rowActions(exe, running) {
     if (!exe) return "";
     const close = `close:${exe}`;
+    const force = `force:${exe}`;
     const remove = `uninstall:${exe}`;
     const parts = [];
     if (running) {
       parts.push(st.confirm === close
         ? `<button class="btn danger armed" data-startup-do="${esc(close)}">Close it?</button>`
         : `<button class="btn" data-startup-ask="${esc(close)}" title="Ask its windows to close">${icon("close")}</button>`);
+      parts.push(st.confirm === force
+        ? `<button class="btn danger armed" data-startup-do="${esc(force)}">End it?</button>`
+        : `<button class="btn" data-startup-ask="${esc(force)}" title="End it without asking — anything unsaved is lost">${icon("bolt")}</button>`);
     }
     parts.push(st.confirm === remove
       ? `<button class="btn danger armed" data-startup-do="${esc(remove)}">Uninstall it?</button>`
@@ -287,9 +294,13 @@
     invalidate();
     draw();
     const name = fileName(exe);
-    status(verb === "close" ? `Asking ${name} to close…` : `Starting the uninstaller for ${name}…`);
+    const command = { close: "startup_close", force: "startup_force_close" }[verb] || "startup_uninstall";
+    status({
+      close: `Asking ${name} to close…`,
+      force: `Ending ${name}…`,
+    }[verb] || `Starting the uninstaller for ${name}…`);
     try {
-      status(await invoke(verb === "close" ? "startup_close" : "startup_uninstall", { exe }));
+      status(await invoke(command, { exe }));
     } catch (error) {
       status(String(error));
     } finally {
