@@ -135,6 +135,25 @@ struct IntentRoute {
 fn dirs(root: &Path) -> (PathBuf, PathBuf) {
     (root.join("ai/runtime/b10516"), root.join("ai/models"))
 }
+impl Status {
+    /// The catalog flattened for the shared model registry: id, name, download
+    /// size, memory it wants, and whether it is already on disk.
+    pub fn catalog_entries(&self) -> Vec<(String, String, String, String, bool)> {
+        self.catalog
+            .iter()
+            .map(|c| {
+                (
+                    c.id.clone(),
+                    c.display_name.clone(),
+                    size(c.size),
+                    c.recommended_memory.clone(),
+                    c.installed,
+                )
+            })
+            .collect()
+    }
+}
+
 fn item(id: &str) -> Result<Manifest, String> {
     CATALOG
         .iter()

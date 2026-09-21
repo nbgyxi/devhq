@@ -169,6 +169,157 @@ fn audits_root() -> PathBuf {
         .join("audits")
 }
 
+/// Working directories to start the agent in, best first. The audit folder is
+/// where the agent writes, so it is always tried first - but on a PC where
+/// `%LOCALAPPDATA%` is redirected to a share, or points at a profile that has
+/// been moved or emptied, `CreateProcess` rejects it with "the directory name
+/// is invalid" and no agent of any kind can start. That is the PC's problem,
+/// not the audit's: the agent is handed absolute paths and never depends on
+/// where it was started, so any real local folder will do to keep going.
+fn cwd_choices(dir: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut add = |path: PathBuf| {
+        let text = path.to_string_lossy().into_owned();
+        if !text.is_empty() && !out.contains(&text) {
+            out.push(text);
+        }
+    };
+    add(PathBuf::from(dir));
+    add(std::env::temp_dir());
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        add(PathBuf::from(root).join("Temp"));
+    }
+    add(PathBuf::from(r"C:\"));
+    out
+}
+
+/// What the person is told when Windows refuses every one of them. The front
+/// end matches on "Could not start the agent" to offer the setup guide, so the
+/// elevated host's copy of this message says the same thing.
+fn start_failed(dir: &str, why: &str) -> String {
+    format!("Could not start the agent. Windows refused every working directory WinT tried, including its audit folder {dir}. ({why})")
+}
+
+/* ------------------------------------------ repairing a PC that starts nothing */
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairStep {
+    /// `ok` - it was already fine. `fixed` - WinT put it back.
+    /// `bad` - broken, and not something WinT may fix on its own.
+    status: &'static str,
+    label: String,
+    detail: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Repair {
+    steps: Vec<RepairStep>,
+    /// Whether an agent can be started at all now. False means scanning again
+    /// is pointless until the person changes something themselves.
+    usable: bool,
+}
+
+/// Can a process actually be started with this folder as its working
+/// directory? The only honest test is to start one: `is_dir` answers yes for a
+/// redirected folder that `CreateProcess` then refuses, which is the whole
+/// reason the audit failed in the first place.
+fn can_start_in(path: &Path) -> Result<(), String> {
+    Command::new("cmd.exe")
+        .raw_arg("/d /s /c \"exit\"")
+        .current_dir(path)
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|mut child| {
+            let _ = child.wait();
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Creates the folder if it is missing, then proves it by starting a process
+/// in it, and says which of those two things happened.
+fn repair_dir(label: &str, path: &Path) -> (RepairStep, bool) {
+    let missing = !path.is_dir();
+    let made = missing && std::fs::create_dir_all(path).is_ok();
+    let shown = path.display();
+    let step = match can_start_in(path) {
+        Ok(()) if made => RepairStep {
+            status: "fixed",
+            label: label.into(),
+            detail: format!("{shown} was missing. WinT created it, and a program starts there now."),
+        },
+        Ok(()) => RepairStep {
+            status: "ok",
+            label: label.into(),
+            detail: format!("{shown} is there and a program starts in it."),
+        },
+        Err(why) => RepairStep {
+            status: "bad",
+            label: label.into(),
+            detail: format!("Windows will not start a program in {shown}. ({why})"),
+        },
+    };
+    let good = step.status != "bad";
+    (step, good)
+}
+
+/// What the Fix button in the setup guide runs. Everything it does is safe to
+/// do twice and stays inside folders Windows already expects to exist: it puts
+/// back the two that a cleanup tool deletes, proves each candidate by starting
+/// a process in it, and reports what it cannot repair. It deliberately never
+/// touches the registry - Local AppData pointing at a share is a decision
+/// somebody made about this PC, not a fault WinT may quietly undo.
+#[tauri::command]
+pub async fn audit_repair() -> Result<Repair, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let mut steps = Vec::new();
+        let mut usable = false;
+
+        for (label, path) in [
+            ("The audit folder", audits_root()),
+            ("The TEMP folder", std::env::temp_dir()),
+        ] {
+            let (step, good) = repair_dir(label, &path);
+            usable |= good;
+            steps.push(step);
+        }
+
+        // A last resort that exists on every Windows install. If even this is
+        // refused, nothing is wrong with the folders and the PC itself is.
+        let (step, good) = repair_dir("A fallback folder", Path::new(r"C:\Windows\Temp"));
+        usable |= good;
+        steps.push(step);
+
+        // Not repaired, only reported: this is the usual cause on a managed PC,
+        // and putting it back is the person's call, not WinT's.
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let local = local.to_string_lossy().into_owned();
+            let redirected = local.starts_with(r"\\") || local.to_lowercase().contains("onedrive");
+            steps.push(if redirected {
+                RepairStep {
+                    status: "bad",
+                    label: "Local AppData is not a local folder".into(),
+                    detail: format!("It points at {local}. Windows cannot reliably start a program there, which is why no agent starts on this PC. Point Local AppData back at the local profile - WinT will not change that for you."),
+                }
+            } else {
+                RepairStep {
+                    status: "ok",
+                    label: "Local AppData is a local folder".into(),
+                    detail: format!("It points at {local}."),
+                }
+            });
+        }
+
+        Ok(Repair { steps, usable })
+    })
+    .await
+    .unwrap_or_else(|_| Err("The check could not be run.".into()))
+}
+
 /// A folder handed back by the front end, accepted only if it is one of ours.
 fn audit_dir(dir: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(dir);
@@ -389,15 +540,26 @@ fn cancel_now() {
 
 fn run_direct(app: AppHandle, run: String, line: String, prompt: String, dir: String) -> Result<(), String> {
     cancel_now();
-    let mut child = Command::new("cmd.exe")
-        .raw_arg(format!("/d /s /c \"{line}\""))
-        .current_dir(&dir)
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Could not start the agent: {e}"))?;
+    let mut started = None;
+    let mut why = String::new();
+    for cwd in cwd_choices(&dir) {
+        match Command::new("cmd.exe")
+            .raw_arg(format!("/d /s /c \"{line}\""))
+            .current_dir(&cwd)
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => {
+                started = Some(child);
+                break;
+            }
+            Err(e) => why = e.to_string(),
+        }
+    }
+    let mut child = started.ok_or_else(|| start_failed(&dir, &why))?;
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(prompt.as_bytes());
     }
@@ -536,17 +698,30 @@ while ($true) {
   if ($null -eq $line) { break }
   if ($line -eq 'cancel' -or $line -eq '') { continue }
   $req = $enc.GetString([Convert]::FromBase64String($line)) | ConvertFrom-Json
-  $psi = New-Object System.Diagnostics.ProcessStartInfo('cmd.exe', [string]$req.args)
-  $psi.WorkingDirectory = [string]$req.cwd
-  $psi.UseShellExecute = $false
-  $psi.CreateNoWindow = $true
-  $psi.RedirectStandardInput = $true
-  $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError = $true
-  $psi.StandardOutputEncoding = $enc
-  $psi.StandardErrorEncoding = $enc
-  try { $p = [System.Diagnostics.Process]::Start($psi) } catch {
-    $writer.WriteLine('E -1 ' + (B64 ("Could not start the agent: " + $_)))
+  # The audit folder is where the agent writes, so it is tried first - but an
+  # elevated session can be handed a path Windows will not start a process in
+  # (a redirected %LOCALAPPDATA%, a profile that has moved), and the audit must
+  # not die because of it. The agent works in absolute paths either way.
+  $cwd = [string]$req.cwd
+  if ($cwd -and -not (Test-Path -LiteralPath $cwd -PathType Container)) {
+    try { New-Item -ItemType Directory -Force -Path $cwd | Out-Null } catch { }
+  }
+  $p = $null
+  $why = ''
+  foreach ($try in @($cwd, $env:TEMP, "$env:SystemRoot\Temp", 'C:\') | Where-Object { $_ } | Select-Object -Unique) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo('cmd.exe', [string]$req.args)
+    $psi.WorkingDirectory = $try
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = $enc
+    $psi.StandardErrorEncoding = $enc
+    try { $p = [System.Diagnostics.Process]::Start($psi); break } catch { $why = "$_" }
+  }
+  if ($null -eq $p) {
+    $writer.WriteLine('E -1 ' + (B64 ("Could not start the agent. Windows refused every working directory WinT tried, including its audit folder " + $cwd + ". (" + $why + ")")))
     continue
   }
   $bytes = $enc.GetBytes([string]$req.stdin)

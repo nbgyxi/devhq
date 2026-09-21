@@ -40,6 +40,13 @@ pub struct CloudStatus {
     cursor_configured: bool,
     credential_storage: String,
 }
+impl CloudStatus {
+    /// Read by the shared model registry, which needs to know which API
+    /// models are usable without being able to see the keys themselves.
+    pub fn claude_configured(&self) -> bool { self.claude_configured }
+    pub fn openai_configured(&self) -> bool { self.openai_configured }
+    pub fn cursor_configured(&self) -> bool { self.cursor_configured }
+}
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Chunk {
@@ -805,4 +812,75 @@ pub fn cancel() {
             );
         }
     }
+}
+
+/// What "Verify" in Settings does: one cheap authenticated request per
+/// provider, so a typo in a key is found while the person is still looking at
+/// the box rather than halfway through their first question.
+///
+/// A key already saved is verified by passing an empty `key`, which is what
+/// lets the button re-check something typed in an earlier session without
+/// showing the secret again.
+pub async fn verify(provider: &str, key: String) -> Result<String, String> {
+    let key = {
+        let typed = key.trim().to_string();
+        if !typed.is_empty() {
+            typed
+        } else {
+            let v = keys()
+                .lock()
+                .map_err(|_| "Could not access the API key store.".to_string())?;
+            match provider {
+                "claude" => v.anthropic.clone(),
+                "cursor" => v.cursor.clone(),
+                "openai" => v.openai.clone(),
+                _ => return Err("Unknown cloud provider.".into()),
+            }
+        }
+    };
+    if key.is_empty() {
+        return Err("There is no key to check yet.".into());
+    }
+    // Cursor is a signed-in CLI rather than an endpoint of ours to call, so
+    // the honest check is that the CLI is actually there to run.
+    if provider == "cursor" {
+        return if crate::cursor::find_agent().is_some() {
+            Ok("Cursor Agent is installed and the key is saved.".into())
+        } else {
+            Err("The key is saved, but Cursor Agent is not installed on this PC.".into())
+        };
+    }
+    let client = reqwest::Client::builder()
+        .user_agent("WinT")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = match provider {
+        "claude" => {
+            client
+                .get("https://api.anthropic.com/v1/models?limit=1")
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01")
+                .send()
+                .await
+        }
+        "openai" => client
+            .get("https://api.openai.com/v1/models")
+            .bearer_auth(key)
+            .send()
+            .await,
+        _ => return Err("Unknown cloud provider.".into()),
+    }
+    .map_err(|e| format!("Could not reach the provider: {e}"))?;
+
+    let status = response.status();
+    if status.is_success() {
+        return Ok("The key works.".into());
+    }
+    // 401 and 403 mean the key, anything else means the service - worth
+    // telling apart, because only one of them is the person's to fix.
+    Err(match status.as_u16() {
+        401 | 403 => "That key was rejected. Check you copied all of it, and that it is for this provider.".into(),
+        429 => "The key is valid, but the account is rate limited right now.".into(),
+        other => format!("The provider answered {other}."),
+    })
 }

@@ -1324,6 +1324,9 @@ pub struct WindowMenu {
     /// so a pinned app can still be started once its last window is gone.
     /// Empty when there is no way in.
     pub target: String,
+    /// What has to go on the target's command line for it to come back as the
+    /// same thing this window is — the browser profile, today. Usually empty.
+    pub args: Vec<String>,
 }
 
 /// `FileDescription` from the exe's version resource, in its first language.
@@ -1369,6 +1372,130 @@ fn is_packaged(exe: &str) -> bool {
     lower.is_empty() || lower.contains(r"\windowsapps\") || lower.ends_with(r"\applicationframehost.exe")
 }
 
+// ---- browser profiles ------------------------------------------------------------
+// A Chromium browser gives every profile its own AppUserModelID — Edge's
+// second profile is `MSEdge.UserData.Profile1` — so the rail already tells two
+// profiles apart and each can be pinned on its own. Its exe, though, is one
+// exe: started with no argument it opens whichever profile it feels like, so
+// a pin made from the second profile's window opened the first one.
+//
+// The profile is read back out of the AppUserModelID. Its last part is the
+// profile's folder under the browser's user data with everything but letters
+// and digits taken out ("Profile 1"), and starting the exe with
+// `--profile-directory=Profile 1` opens that profile and no other.
+
+/// The exes this is worth trying at all. Every one of them is Chromium, lays
+/// its install out the same way and writes the same kind of AppUserModelID.
+const CHROMIUM_EXES: [&str; 6] =
+    ["msedge", "chrome", "brave", "vivaldi", "opera", "thorium"];
+
+/// Where a Chromium browser keeps its profiles. It is read off the exe's own
+/// path rather than a list of browsers: every one of them installs as
+/// `…\<Vendor>\<Product>\Application\<browser>.exe` and keeps its profiles in
+/// `%LOCALAPPDATA%\<Vendor>\<Product>\User Data`. Taking the vendor and the
+/// product from the path is what makes a side-by-side channel — Chrome Beta,
+/// Chrome SxS, Edge Dev — find its own profiles instead of stable's, and what
+/// makes a per-user install (Chrome puts itself under Local AppData) work
+/// without a second entry. The candidates are tried in order and the first
+/// folder that is really there wins.
+fn user_data_dirs(exe: &str) -> Vec<std::path::PathBuf> {
+    let path = std::path::Path::new(exe);
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+    if !CHROMIUM_EXES.contains(&stem.as_str()) {
+        return Vec::new();
+    }
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else { return Vec::new() };
+    let local = std::path::Path::new(&local);
+    let mut candidates = Vec::new();
+    // `…\Google\Chrome\Application\chrome.exe` → `Google\Chrome`, and the
+    // product on its own for the browsers that skip the vendor folder.
+    if let Some(product) = path.parent().filter(|dir| dir.ends_with("Application")).and_then(std::path::Path::parent)
+    {
+        if let Some(name) = product.file_name() {
+            if let Some(vendor) = product.parent().and_then(std::path::Path::file_name) {
+                candidates.push(local.join(vendor).join(name).join("User Data"));
+            }
+            candidates.push(local.join(name).join("User Data"));
+        }
+    }
+    // An install that is laid out some other way still has the usual home.
+    for tail in match stem.as_str() {
+        "msedge" => &[r"Microsoft\Edge\User Data"][..],
+        "chrome" => &[r"Google\Chrome\User Data"][..],
+        "brave" => &[r"BraveSoftware\Brave-Browser\User Data"][..],
+        "vivaldi" => &[r"Vivaldi\User Data"][..],
+        "opera" => &[r"Opera Software\Opera Stable"][..],
+        _ => &[][..],
+    } {
+        candidates.push(local.join(tail));
+    }
+    candidates.retain(|dir| dir.is_dir());
+    candidates.dedup();
+    candidates
+}
+
+/// The folder name a profile's part of an AppUserModelID is made from.
+fn profile_id(dir: &str) -> String {
+    dir.chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_ascii_lowercase()
+}
+
+/// The browser profile a window belongs to: the folder to start the browser
+/// with, and the name the user gave that profile ("Gyxi"). `None` for anything
+/// that is not a Chromium window, and for the profile a plain start opens.
+fn browser_profile(exe: &str, aumid: &str) -> Option<(String, Option<String>)> {
+    // `MSEdge.UserData.Profile1`: the browser, the user data folder, the
+    // profile folder — each with everything but letters and digits taken out.
+    let parts: Vec<String> = aumid.split('.').map(profile_id).collect();
+    let tail = parts.last().filter(|tail| !tail.is_empty())?;
+    for data in user_data_dirs(exe) {
+        // The folder the AppUserModelID was built from has to be the folder
+        // being read, or this is a different install of the same browser —
+        // stable's profiles answering for Canary's, or a browser started
+        // against some other `--user-data-dir` altogether.
+        let named = data.file_name().map(|name| profile_id(&name.to_string_lossy()));
+        if parts.len() > 2 && named.as_deref() != parts.get(parts.len() - 2).map(String::as_str) {
+            continue;
+        }
+        let dir = std::fs::read_dir(&data)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_dir())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .find(|name| &profile_id(name) == tail);
+        if let Some(dir) = dir {
+            let name = profile_name(&data, &dir);
+            return Some((dir, name));
+        }
+    }
+    None
+}
+
+/// What the browser calls a profile, out of its `Local State`. The name the
+/// user typed, else nothing — the folder name on its own ("Profile 7") says
+/// no more than the row already does.
+fn profile_name(data: &std::path::Path, dir: &str) -> Option<String> {
+    let text = std::fs::read_to_string(data.join("Local State")).ok()?;
+    let state: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let info = state.get("profile")?.get("info_cache")?.get(dir)?;
+    let name = info
+        .get("shortcut_name")
+        .and_then(serde_json::Value::as_str)
+        .filter(|name| !name.is_empty())
+        .or_else(|| info.get("name").and_then(serde_json::Value::as_str))?;
+    (!name.is_empty() && name != dir).then(|| name.to_string())
+}
+
+/// The arguments that start one window's app as the same profile it is.
+unsafe fn profile_args(hwnd: HWND, exe: &str) -> Vec<String> {
+    let Some(aumid) = window_app_id(hwnd) else { return Vec::new() };
+    match browser_profile(exe, &aumid) {
+        Some((dir, _)) => vec![format!("--profile-directory={dir}")],
+        None => Vec::new(),
+    }
+}
+
 /// What the right-click menu needs to know about one window.
 #[tauri::command]
 pub async fn sidebar_window_menu(id: String) -> Result<WindowMenu, String> {
@@ -1388,11 +1515,23 @@ pub async fn sidebar_window_menu(id: String) -> Result<WindowMenu, String> {
                 .unwrap_or_default()
         });
         let target = if packaged { window_app_id(hwnd).unwrap_or_default() } else { exe.clone() };
+        // A browser profile is its own app on the rail, so it is named as one:
+        // "Gyxi — Microsoft Edge", not a second row called Microsoft Edge.
+        let profile = window_app_id(hwnd).and_then(|aumid| browser_profile(&exe, &aumid));
+        let name = match &profile {
+            Some((_, Some(profile))) => format!("{profile} — {name}"),
+            _ => name,
+        };
+        let args = match &profile {
+            Some((dir, _)) => vec![format!("--profile-directory={dir}")],
+            None => Vec::new(),
+        };
         Ok(WindowMenu {
             name,
             can_launch: !target.is_empty(),
             minimized: IsIconic(hwnd).as_bool(),
             target,
+            args,
         })
     })
     .await
@@ -1413,12 +1552,18 @@ pub async fn sidebar_launch_new(id: String, path: Option<String>) -> Result<(), 
         // A recent item goes to the app it was listed under. A Store app
         // cannot be handed a path on its command line, so its item opens
         // with whatever Windows opens that file with.
+        // A new window of a browser profile has to name that profile, or the
+        // browser opens whichever one it opened last.
+        let profile = profile_args(hwnd, &exe);
         let mut command = if let Some(path) = path {
             let mut command = if is_packaged(&exe) {
                 std::process::Command::new("explorer.exe")
             } else {
                 std::process::Command::new(&exe)
             };
+            if !is_packaged(&exe) {
+                command.args(&profile);
+            }
             command.arg(path);
             command
         } else if is_packaged(&exe) {
@@ -1428,6 +1573,7 @@ pub async fn sidebar_launch_new(id: String, path: Option<String>) -> Result<(), 
             command
         } else {
             let mut command = std::process::Command::new(&exe);
+            command.args(&profile);
             if let Some(dir) = std::path::Path::new(&exe).parent() {
                 command.current_dir(dir);
             }
@@ -1527,10 +1673,51 @@ pub async fn sidebar_suggest_icon(target: String) -> Option<String> {
 }
 
 #[tauri::command]
-pub async fn sidebar_suggest_launch(target: String) -> Result<(), String> {
-    off_thread(move || crate::suggest::launch(&target))
-        .await
-        .unwrap_or_else(|| Err("Could not start it.".into()))
+pub async fn sidebar_suggest_launch(
+    target: String,
+    args: Option<Vec<String>>,
+    name: Option<String>,
+    app: Option<String>,
+) -> Result<(), String> {
+    let mut args = args.unwrap_or_default();
+    off_thread(move || unsafe {
+        // What a pin stands for is its AppUserModelID, and for a browser that
+        // is one per profile — so the profile can be worked out here even for
+        // a pin made before any of this existed and saved with no arguments
+        // of its own. Without it such a pin falls back on the window it finds,
+        // which is whichever profile happened to be open.
+        if args.is_empty() {
+            if let Some((dir, _)) = app
+                .as_deref()
+                .filter(|app| !crate::suggest::is_path(app))
+                .and_then(|app| browser_profile(&target, app))
+            {
+                args = vec![format!("--profile-directory={dir}")];
+            }
+        }
+        // The app may be running already with nothing on screen — sitting in
+        // the tray, which is where Signal, Teams and Discord spend most of
+        // their time. Starting a second copy of one of those is what put an
+        // empty frame on screen: the new process hands over to the one that
+        // is already there and leaves, and what it leaves behind is a window
+        // nobody ever drew. So the window is looked for first and put back
+        // exactly the way the rail's tray does it; only an app with no window
+        // anywhere is started.
+        //
+        // A pin carrying arguments is skipped: those say which browser
+        // profile it stands for, and a window that is already up may well be
+        // a different one.
+        let path = crate::suggest::is_path(&target) && target.to_ascii_lowercase().ends_with(".exe");
+        if args.is_empty() && path {
+            let want = app.as_deref().filter(|app| !crate::suggest::is_path(app));
+            if let Some(found) = app_window_for(&target, name.as_deref().unwrap_or_default(), want) {
+                return reveal_app(found, Some(target), name);
+            }
+        }
+        crate::suggest::launch(&target, &args)
+    })
+    .await
+    .unwrap_or_else(|| Err("Could not start it.".into()))
 }
 
 // ---- the network pill ------------------------------------------------------------
@@ -2132,17 +2319,6 @@ pub async fn sidebar_reveal(
     exe: Option<String>,
     name: Option<String>,
 ) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    use windows::core::BOOL;
-    use windows::Win32::UI::WindowsAndMessaging::EnumWindows;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-
-    unsafe extern "system" fn collect(hwnd: HWND, found: LPARAM) -> BOOL {
-        let found = &mut *(found.0 as *mut Vec<isize>);
-        found.push(hwnd.0 as isize);
-        true.into()
-    }
-
     let raw: isize = id.parse().map_err(|_| "Not a window.".to_string())?;
     // WinT itself: its main window was hidden rather than minimized, so
     // putting it back is Tauri's job — and that is also what retires the
@@ -2155,61 +2331,91 @@ pub async fn sidebar_reveal(
         crate::show_main_window(&app);
         return Ok(());
     }
-    off_thread(move || unsafe {
-        let hwnd = HWND(raw as *mut c_void);
-        let own_exe = window_exe(app_window(hwnd));
-        let want = exe
-            .clone()
-            .filter(|exe| !exe.is_empty())
-            .unwrap_or(own_exe)
-            .to_ascii_lowercase();
-        let name = name.unwrap_or_default();
-        if !want.is_empty() {
-            // The program's own processes and everything they started: the
-            // window worth showing can belong to either.
-            let family = family_pids(&want);
-            let mut handles: Vec<isize> = Vec::new();
-            let _ = EnumWindows(Some(collect), LPARAM(std::ptr::addr_of_mut!(handles) as isize));
-            let mut best: Option<((u8, u8, u8, i64), HWND)> = None;
-            for other in handles {
-                let candidate = HWND(other as *mut c_void);
-                if window_exe(app_window(candidate)).to_ascii_lowercase() != want
-                    && !family.contains(&window_pid(candidate))
-                {
-                    continue;
-                }
-                let Some(rank) = reveal_rank(candidate, &want, &name) else {
-                    continue;
-                };
-                if best.is_none_or(|(had, _)| rank > had) {
-                    best = Some((rank, candidate));
-                }
-            }
-            if let Some((_, found)) = best {
-                // A packaged app keeps a window it has never drawn: Windows
-                // starts it in the background at sign-in and leaves it
-                // suspended until the shell activates it. Showing that window
-                // ourselves puts a black rectangle on screen - the frame is
-                // real, the app behind it was never asked to paint. Windows
-                // Defender is one. So a window that is not on screen already
-                // is opened the way the Start menu opens it, by its
-                // AppUserModelID, and the app puts up its own window.
-                if !on_screen(found) {
-                    if let Some(mut command) = shell_activation(found) {
-                        return command
-                            .creation_flags(DETACHED_PROCESS)
-                            .spawn()
-                            .map(|_| ())
-                            .map_err(|e| format!("Could not open it: {e}"));
-                    }
-                }
-                bring_forward(found);
-                return Ok(());
-            }
+    off_thread(move || unsafe { reveal_app(HWND(raw as *mut c_void), exe, name) })
+        .await
+        .unwrap_or_else(|| Err("Could not reach that app.".into()))
+}
+
+/// The body of `sidebar_reveal`, and what a pin falls back on: `hwnd` is a
+/// window of the app to start from, or a null handle when all that is known is
+/// which program it is.
+/// The window that best answers "show me that app", among every window the
+/// program and the processes it started own — on screen, minimized, or hidden
+/// in the tray. `None` when the app has no window worth showing anywhere,
+/// which is when it has to be started instead.
+///
+/// `want_app` is the AppUserModelID the caller is after, when it knows one. A
+/// window wearing that ID wins over every other window of the same program,
+/// which is what keeps one browser profile from answering for another: they
+/// are one exe and one process, told apart by nothing else.
+pub(crate) unsafe fn app_window_for(exe: &str, name: &str, want_app: Option<&str>) -> Option<HWND> {
+    use windows::core::BOOL;
+    use windows::Win32::UI::WindowsAndMessaging::EnumWindows;
+
+    unsafe extern "system" fn collect(hwnd: HWND, found: LPARAM) -> BOOL {
+        let found = &mut *(found.0 as *mut Vec<isize>);
+        found.push(hwnd.0 as isize);
+        true.into()
+    }
+
+    let want = exe.to_ascii_lowercase();
+    if want.is_empty() {
+        return None;
+    }
+    // The program's own processes and everything they started: the window
+    // worth showing can belong to either.
+    let family = family_pids(&want);
+    let mut handles: Vec<isize> = Vec::new();
+    let _ = EnumWindows(Some(collect), LPARAM(std::ptr::addr_of_mut!(handles) as isize));
+    let wanted = want_app.map(str::to_ascii_lowercase).filter(|app| !app.is_empty());
+    let mut best: Option<((u8, (u8, u8, u8, i64)), HWND)> = None;
+    for other in handles {
+        let candidate = HWND(other as *mut c_void);
+        if window_exe(app_window(candidate)).to_ascii_lowercase() != want
+            && !family.contains(&window_pid(candidate))
+        {
+            continue;
         }
-        if showable_window(hwnd) {
-            if !on_screen(hwnd) {
-                if let Some(mut command) = shell_activation(hwnd) {
+        let Some(rank) = reveal_rank(candidate, &want, name) else {
+            continue;
+        };
+        // Ahead of everything else the ranking weighs: an app that says which
+        // of itself this window is has answered the question outright.
+        let same = u8::from(
+            wanted.as_deref().is_some_and(|app| {
+                window_app_id(candidate).is_some_and(|id| id.to_ascii_lowercase() == app)
+            }),
+        );
+        if best.is_none_or(|(had, _)| (same, rank) > had) {
+            best = Some(((same, rank), candidate));
+        }
+    }
+    best.map(|(_, found)| found)
+}
+
+unsafe fn reveal_app(hwnd: HWND, exe: Option<String>, name: Option<String>) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+    let own_exe = if hwnd.0.is_null() { String::new() } else { window_exe(app_window(hwnd)) };
+    let want = exe
+        .clone()
+        .filter(|exe| !exe.is_empty())
+        .unwrap_or(own_exe)
+        .to_ascii_lowercase();
+    let name = name.unwrap_or_default();
+    if !want.is_empty() {
+        if let Some(found) = app_window_for(&want, &name, None) {
+            // A packaged app keeps a window it has never drawn: Windows
+            // starts it in the background at sign-in and leaves it
+            // suspended until the shell activates it. Showing that window
+            // ourselves puts a black rectangle on screen - the frame is
+            // real, the app behind it was never asked to paint. Windows
+            // Defender is one. So a window that is not on screen already
+            // is opened the way the Start menu opens it, by its
+            // AppUserModelID, and the app puts up its own window.
+            if !on_screen(found) {
+                if let Some(mut command) = shell_activation(found) {
                     return command
                         .creation_flags(DETACHED_PROCESS)
                         .spawn()
@@ -2217,33 +2423,49 @@ pub async fn sidebar_reveal(
                         .map_err(|e| format!("Could not open it: {e}"));
                 }
             }
-            bring_forward(hwnd);
+            bring_forward(found);
             return Ok(());
         }
-        let exe = exe
-            .filter(|exe| !exe.is_empty())
-            .or_else(|| Some(window_exe(app_window(hwnd))).filter(|exe| !exe.is_empty()))
-            .ok_or("That app has no window to show.")?;
-        // An exe under WindowsApps cannot be started by its path: the package
-        // has to be activated, or Windows answers with nothing at all.
-        let mut command = match shell_activation(hwnd) {
-            Some(command) if is_packaged(&exe) => command,
-            _ => {
-                let mut command = std::process::Command::new(&exe);
-                if let Some(dir) = std::path::Path::new(&exe).parent() {
-                    command.current_dir(dir);
-                }
-                command
+    }
+    if showable_window(hwnd) {
+        if !on_screen(hwnd) {
+            if let Some(mut command) = shell_activation(hwnd) {
+                return command
+                    .creation_flags(DETACHED_PROCESS)
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|e| format!("Could not open it: {e}"));
             }
-        };
-        command
-            .creation_flags(DETACHED_PROCESS)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("Could not open it: {e}"))
-    })
-    .await
-    .unwrap_or_else(|| Err("Could not reach that app.".into()))
+        }
+        bring_forward(hwnd);
+        return Ok(());
+    }
+    let exe = exe
+        .filter(|exe| !exe.is_empty())
+        .or_else(|| {
+            (!hwnd.0.is_null())
+                .then(|| window_exe(app_window(hwnd)))
+                .filter(|exe| !exe.is_empty())
+        })
+        .ok_or("That app has no window to show.")?;
+    // An exe under WindowsApps cannot be started by its path: the package
+    // has to be activated, or Windows answers with nothing at all.
+    let activation = (!hwnd.0.is_null()).then(|| shell_activation(hwnd)).flatten();
+    let mut command = match activation {
+        Some(command) if is_packaged(&exe) => command,
+        _ => {
+            let mut command = std::process::Command::new(&exe);
+            if let Some(dir) = std::path::Path::new(&exe).parent() {
+                command.current_dir(dir);
+            }
+            command
+        }
+    };
+    command
+        .creation_flags(DETACHED_PROCESS)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Could not open it: {e}"))
 }
 
 // ---- the volume, the battery and the language --------------------------------------
@@ -2307,3 +2529,4 @@ pub async fn sidebar_open_settings(page: String) -> Result<(), String> {
         .await
         .unwrap_or_else(|| Err("Could not open that settings page.".into()))
 }
+

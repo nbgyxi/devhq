@@ -1,6 +1,7 @@
 pub mod cloud;
 pub mod model_manager;
 pub mod provider;
+pub mod registry;
 pub mod tools;
 
 pub use crate::assistant::RouteOption;

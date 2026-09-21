@@ -76,7 +76,7 @@ fn expand_known_folder(name: &str) -> String {
     name.to_string()
 }
 
-fn is_path(target: &str) -> bool {
+pub(crate) fn is_path(target: &str) -> bool {
     target.len() > 2 && target.as_bytes()[1] == b':'
 }
 
@@ -305,12 +305,15 @@ pub fn icon(target: &str) -> Option<String> {
 }
 
 /// Start a suggestion: an exe directly, anything else (a shortcut, a Store
-/// app) the way Explorer would.
-pub fn launch(target: &str) -> Result<(), String> {
+/// app) the way Explorer would. `args` is what a pin remembered it needs on
+/// the command line — the browser profile it stands for — and only an exe
+/// started directly can be given any.
+pub fn launch(target: &str, args: &[String]) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     let mut command = if is_path(target) && target.to_ascii_lowercase().ends_with(".exe") {
         let mut command = std::process::Command::new(target);
+        command.args(args);
         if let Some(dir) = std::path::Path::new(target).parent() {
             command.current_dir(dir);
         }

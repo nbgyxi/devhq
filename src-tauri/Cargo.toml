@@ -90,3 +90,15 @@ lto = true
 opt-level = "s"
 panic = "abort"
 strip = true
+
+# Debug builds are never shipped and never stepped through in a debugger —
+# this repo is verified with `cargo check`, `cargo clippy` and the CLI
+# examples. Full debuginfo on a crate this size was costing tens of GB in
+# `target/debug/deps` for information nothing here reads; line tables keep
+# the file and line numbers in a backtrace, which is the part that is used.
+#
+# Note that this does nothing about accumulation: Cargo never deletes an old
+# artifact, so `target` still grows forever across dependency bumps and
+# toolchain changes. `cargo sweep --time 30` is what prunes it.
+[profile.dev]
+debug = "line-tables-only"

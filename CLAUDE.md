@@ -6,6 +6,14 @@ reports git status, running processes and detected tech at a glance.
 - `src/` — the front end (plain JS, no framework, no build step).
 - `src-tauri/src/` — the Rust backend and the `#[tauri::command]` surface.
 
+The app is a shell around a set of **tools**, each one a webview of its own
+registered in `src/windows-tools.js`. When a name comes up that is not a file
+or a command — **PC Detective**, Startup and tray, Input Stall Watch, Awake —
+it is one of those tools, not a separate project. PC Detective is the security
+sweep in `src/security-audit.js` and `src-tauri/src/security_audit.rs`: it
+drives an already-installed coding agent (Claude Code, Codex, Gemini, Copilot,
+Cursor) over this PC, optionally through an elevated PowerShell host.
+
 ## The window must never block
 
 This is the rule the whole app is built around. **Every click reacts within one

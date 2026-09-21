@@ -5,7 +5,7 @@
   const data = load();
   if (data.pinned !== true) { data.pinned = true; save(); }
   data.toolCallCap = clampToolCallCap(data.toolCallCap);
-  let host, button, open = false, status = null, cloud = null, loading = false, running = "", pull = null, forceScroll = false, chatScrollTop = 0, chatFollowBottom = true;
+  let host, button, open = false, status = null, cloud = null, registry = null, loading = false, running = "", pull = null, forceScroll = false, chatScrollTop = 0, chatFollowBottom = true;
 
   function load() {
     try { return { chats: [], active: "", model: "", pinned: false, open: false, think: false, toolCallCap: 20, ...JSON.parse(localStorage.getItem(STORE) || "{}") }; }
@@ -66,25 +66,25 @@
   }
   async function refresh() {
     loading = true; render();
-    try { [status, cloud] = await Promise.all([invoke("assistant_status"), invoke("assistant_cloud_status")]); }
+    try { [status, cloud, registry] = await Promise.all([invoke("assistant_status"), invoke("assistant_cloud_status"), invoke("ai_models")]); }
     catch (error) { status = { available: false, models: [], error: String(error) }; }
     loading = false;
+    // Settings owns the choice now, and it is kept by the backend so every
+    // window agrees on it. This panel only falls back to its own when the
+    // shared one names something this panel cannot run.
+    if (!data.model && registry?.selected && cloudModels().some((m) => m.name === registry.selected)) data.model = registry.selected;
     if (!data.model && status.models?.length) data.model = status.models[0].name;
-    if (!data.model && cloud?.openaiConfigured) data.model = "gpt:gpt-5.6-luna";
     save(); render();
   }
   function installed(name) { return status?.models?.some((model) => model.name === name); }
+
+  /** The API-key models, from the shared registry rather than a list of its
+   *  own - so a key added in Settings shows up here without this file
+   *  knowing which models that key unlocks. */
   function cloudModels() {
-    const models = [];
-    if (cloud?.claudeConfigured) models.push({ name: "claude:claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", size: "Cloud" });
-    if (cloud?.openaiConfigured) models.push(
-      { name: "codex:gpt-5.3-codex", displayName: "Codex · GPT-5.3-Codex", size: "Cloud" },
-      { name: "gpt:gpt-5.6-luna", displayName: "GPT · 5.6 Luna", size: "Cloud · default" },
-      { name: "gpt:gpt-5.6-terra", displayName: "GPT · 5.6 Terra", size: "Cloud" },
-      { name: "gpt:gpt-5.6-sol", displayName: "GPT · 5.6 Sol", size: "Cloud" }
-    );
-    if (cloud?.cursorConfigured) models.push({ name: "cursor:agent", displayName: "Cursor Agent", size: "CLI" });
-    return models;
+    return (registry?.models || [])
+      .filter((m) => m.kind === "api" && m.ready && m.enabled !== false)
+      .map((m) => ({ name: m.id, displayName: m.label, size: m.detail }));
   }
   function humanSize(bytes) { return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`; }
   // Megabytes, grouped. A paused download is quoted in the same unit the live
@@ -241,6 +241,10 @@
       const removed = (model) => !key && (model?.startsWith(`${provider}:`) || (provider === "openai" && (model?.startsWith("codex:") || model?.startsWith("gpt:"))));
       if (removed(data.model)) data.model = "";
       for (const item of data.chats) if (removed(item.model)) item.model = "";
+      // A key is what makes a whole group of models usable, so the shared list
+      // this panel and Settings both read has just changed.
+      registry = await invoke("ai_models").catch(() => registry);
+      window.dispatchEvent(new CustomEvent("wint:ai-models-changed"));
       save(); render(); modelLayer();
     } catch (error) { const layer = host.querySelector(".assistant-layer"); if (layer) layer.insertAdjacentHTML("afterbegin", `<div class="assistant-notice">${esc(String(error))}</div>`); }
   }

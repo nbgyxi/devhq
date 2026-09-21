@@ -483,7 +483,7 @@ window.wintOnTermThemeChanged = () => {
   if (state.activeView === "settings") syncTermThemeControls();
 };
 
-window.addEventListener("wint:time-tracker-always-changed", (event) => {
+window.addEventListener("wint:time-tracker-changed", (event) => {
   const control = el["settings-host"]?.querySelector("#setting-time-tracker");
   if (control) control.checked = event.detail?.enabled === true;
 });
@@ -1846,14 +1846,6 @@ function openUtilTool(id) {
 function openWindowsTool(id) {
   const entry = window.wintWindowsTools?.catalog?.().find((tool) => tool.id === id);
   if (!entry) return;
-  if (state.activeView === "windows-tools" && state.windowsToolId === "time-tracker" && id !== "time-tracker") {
-    const permission = window.wintTimeTracker?.confirmLeave?.();
-    if (permission && typeof permission.then === "function") {
-      permission.then((leave) => { if (leave) openWindowsTool(id); });
-      return;
-    }
-    if (permission === false) return;
-  }
   const same = state.activeView === "windows-tools" && state.windowsToolId === id;
   state.windowsToolId = id;
   savePrefs();
@@ -6066,6 +6058,299 @@ async function refreshDockOnStartSetting(saved = null) {
 // The tool page's box changes the same setting; follow it while settings are open.
 listen("sidebar:settings", (event) => refreshDockOnStartSetting(event.payload || {}));
 
+/* -------------------------------------------------- the shared model screen */
+
+/* Settings -> Assistant is about making models *available*, not about picking
+ * one for a conversation - that choice belongs where the conversation is. So
+ * every row here is a switch plus whatever action would make it usable:
+ * download it, key it, install it, check it. */
+
+const MODEL_GROUPS = [
+  { kind: "agent", title: "Coding agents", icon: "smart_toy",
+    blurb: "Agents you installed and signed into yourself. WinT chooses no model for these and passes none - each answers with whatever you configured it to use." },
+  { kind: "api", title: "API keys", icon: "key",
+    blurb: "Reached directly with a key of yours, kept in Windows Credential Manager. Add a key once and every model behind it becomes available everywhere." },
+  { kind: "local", title: "On this PC", icon: "memory",
+    blurb: "Downloaded once and run by WinT's own llama.cpp. Nothing leaves the machine, and they work with no connection at all." },
+];
+
+/** Which providers have a key box, and where the key comes from. */
+const KEY_PROVIDERS = [
+  { id: "claude", name: "Anthropic", prefix: "sk-ant-", where: "console.anthropic.com" },
+  { id: "openai", name: "OpenAI", prefix: "sk-", where: "platform.openai.com" },
+  { id: "cursor", name: "Cursor", prefix: "", where: "cursor.com" },
+];
+
+let modelListCache = null;
+let cloudStatusCache = null;
+/** Per-row transient results - a verify answer, a download error. Keyed by
+ *  row id so a redraw does not lose what a button just reported. */
+const modelNotes = new Map();
+
+function modelNote(id) {
+  const note = modelNotes.get(id);
+  if (!note) return "";
+  const glyph = note.tone === "bad" ? "error" : note.tone === "ok" ? "check_circle" : "info";
+  // A problem WinT can describe is a problem it can act on, so the message
+  // carries the button rather than telling the person what to go and do.
+  const action = note.fix
+    ? `<button class="btn small primary" type="button" data-model-fix="${esc(note.fix)}" data-model-fix-id="${esc(id)}">${icon(note.fix === "signin" ? "login" : "download")}${esc(note.fixLabel || "Fix it")}</button>`
+    : "";
+  return `<p class="model-note ${esc(note.tone)}">${icon(glyph)}<span>${esc(note.text)}</span>${action}</p>`;
+}
+
+function modelSwitch(m) {
+  return `<label class="model-switch"><input type="checkbox" data-model-enable="${esc(m.id)}"${m.enabled ? " checked" : ""}${m.ready ? "" : " disabled"} /><span></span></label>`;
+}
+
+function agentRow(m) {
+  const agent = m.id.slice(6);
+  const actions = m.ready
+    ? `<button class="btn small" type="button" data-model-verify="${esc(agent)}">${icon("troubleshoot")}Verify</button>`
+    : `<button class="btn small" type="button" data-model-detect="${esc(agent)}">${icon("search")}Detect</button>
+       <button class="btn small primary" type="button" data-model-install="${esc(agent)}">${icon("download")}Install</button>`;
+  return `<div class="model-row" data-model-row="${esc(m.id)}">
+    ${modelSwitch(m)}
+    <span class="model-name">${esc(m.label)}</span>
+    <span class="model-detail">${esc(m.detail)}</span>
+    <span class="model-actions">${actions}</span>
+    ${m.ready ? "" : `<span class="model-hint">${esc(m.hint)}</span>`}
+    ${modelNote(m.id)}
+  </div>`;
+}
+
+function apiRow(m) {
+  return `<div class="model-row" data-model-row="${esc(m.id)}">
+    ${modelSwitch(m)}
+    <span class="model-name">${esc(m.label)}</span>
+    <span class="model-detail">${esc(m.detail)}</span>
+    <span class="model-actions"></span>
+    ${m.ready ? "" : `<span class="model-hint">${esc(m.hint)}</span>`}
+  </div>`;
+}
+
+function localRow(m) {
+  const actions = m.ready
+    ? `<button class="btn small danger" type="button" data-model-remove="${esc(m.id)}">${icon("delete")}Remove</button>`
+    : `<button class="btn small primary" type="button" data-model-download="${esc(m.id)}">${icon("download")}Download</button>`;
+  return `<div class="model-row" data-model-row="${esc(m.id)}">
+    ${modelSwitch(m)}
+    <span class="model-name">${esc(m.label)}</span>
+    <span class="model-detail">${esc(m.detail)}</span>
+    <span class="model-actions">${actions}</span>
+    ${m.ready ? "" : `<span class="model-hint">${esc(m.hint)}</span>`}
+    ${modelNote(m.id)}
+  </div>`;
+}
+
+/** The key box for one provider. A saved key is never shown again: there is
+ *  nothing useful to read back, and a masked value that looks editable invites
+ *  someone to edit half of it. */
+function keyBox(provider) {
+  const configured = provider.id === "claude" ? cloudStatusCache?.claudeConfigured
+    : provider.id === "openai" ? cloudStatusCache?.openaiConfigured
+    : cloudStatusCache?.cursorConfigured;
+  const store = cloudStatusCache?.credentialStorage || "Windows Credential Manager";
+  const placeholder = provider.prefix ? `${provider.prefix}…` : `Key from ${provider.where}`;
+  const body = configured
+    ? `<span class="model-key-state">Saved in ${esc(store)}</span>
+       <button class="btn small" type="button" data-key-verify="${esc(provider.id)}">${icon("troubleshoot")}Verify</button>
+       <button class="btn small danger" type="button" data-key-remove="${esc(provider.id)}">${icon("delete")}Remove</button>`
+    : `<input type="password" class="sort" data-key-input="${esc(provider.id)}" placeholder="${esc(placeholder)}" autocomplete="off" spellcheck="false" />
+       <button class="btn small" type="button" data-key-verify="${esc(provider.id)}">${icon("troubleshoot")}Verify</button>
+       <button class="btn small primary" type="button" data-key-save="${esc(provider.id)}">${icon("save")}Save</button>`;
+  return `<div class="model-key">
+    <span class="model-key-name">${icon(configured ? "check_circle" : "key")}${esc(provider.name)}</span>
+    ${body}
+    ${modelNote(`key:${provider.id}`)}
+  </div>`;
+}
+
+/** Rebuilt rather than patched. The one thing that must survive a redraw is a
+ *  half-typed key, so it is carried across explicitly. */
+function renderModelSetup() {
+  const node = el["settings-host"]?.querySelector("#setting-model-setup");
+  if (!node) return;
+  if (!modelListCache) {
+    node.innerHTML = `<div class="model-setup-empty">${icon("progress_activity")}Looking for models…</div>`;
+    return;
+  }
+  const typed = new Map();
+  for (const input of node.querySelectorAll("[data-key-input]")) {
+    if (input.value) typed.set(input.dataset.keyInput, input.value);
+  }
+  const models = modelListCache.models || [];
+  const groups = MODEL_GROUPS.map((group) => {
+    const rows = models.filter((m) => m.kind === group.kind);
+    if (!rows.length) return "";
+    const ready = rows.filter((m) => m.ready).length;
+    const draw = group.kind === "agent" ? agentRow : group.kind === "api" ? apiRow : localRow;
+    const keys = group.kind === "api" ? `<div class="model-keys">${KEY_PROVIDERS.map(keyBox).join("")}</div>` : "";
+    return `<section class="model-group">
+      <header>${icon(group.icon)}<div><strong>${esc(group.title)}</strong><small>${esc(group.blurb)}</small></div><span class="model-count">${ready} of ${rows.length} ready</span></header>
+      ${keys}${rows.map(draw).join("")}
+    </section>`;
+  }).join("");
+  node.innerHTML = groups || `<div class="model-setup-empty">${icon("error")}No models are available yet.</div>`;
+  for (const [id, value] of typed) {
+    const input = node.querySelector(`[data-key-input="${CSS.escape(id)}"]`);
+    if (input) input.value = value;
+  }
+}
+
+/** Asks the backend for the list. Called on the way into Settings and again
+ *  whenever a key, a download or an agent install could have changed it. */
+async function refreshModelSetup() {
+  try {
+    const [list, cloud] = await Promise.all([
+      invoke("ai_models"),
+      invoke("assistant_cloud_status").catch(() => cloudStatusCache),
+    ]);
+    modelListCache = list;
+    cloudStatusCache = cloud;
+  } catch {
+    modelListCache = { models: [], selected: "" };
+  }
+  renderModelSetup();
+}
+
+/* An npm install is a slow, quiet minute. Each agent streams its output on an
+ * event of its own, so the row says what is happening instead of sitting on
+ * "Installing…" long enough to look stuck. */
+for (const agent of ["claude", "codex", "gemini", "copilot", "cursor"]) {
+  listen(`${agent}:install`, ({ payload }) => {
+    if (!payload || payload.window !== appWindow.label) return;
+    if (state.activeView !== "settings") return;
+    const line = String(payload.line || "").trim();
+    if (!payload.done && line) setModelNote(`agent:${agent}`, "info", line);
+  }).catch(() => {});
+}
+
+function setModelNote(id, tone, text, fix = "", fixLabel = "") {
+  modelNotes.set(id, { tone, text, fix, fixLabel });
+  renderModelSetup();
+}
+
+/** Every button in the model screen. Each one ends by re-asking the backend,
+ *  because installing, keying or downloading changes what is ready. */
+async function handleModelAction(target) {
+  const busy = (node, label) => { if (node) { node.disabled = true; node.textContent = label; } };
+
+  const check = target.closest("[data-model-verify]") || target.closest("[data-model-detect]");
+  if (check) {
+    const id = check.dataset.modelVerify || check.dataset.modelDetect;
+    busy(check, "Checking…");
+    const result = await invoke("ai_agent_verify", { id })
+      .catch((error) => ({ state: "broken", summary: String(error), fix: "reinstall", fixLabel: "Reinstall" }));
+    setModelNote(`agent:${id}`, result.state === "ready" ? "ok" : "bad", result.summary, result.fix || "", result.fixLabel || "");
+    return refreshModelSetup();
+  }
+
+  const install = target.closest("[data-model-install]");
+  if (install) {
+    const id = install.dataset.modelInstall;
+    busy(install, "Installing…");
+    try {
+      await invoke(`${id}_install`, { window: appWindow.label });
+      setModelNote(`agent:${id}`, "ok", "Installed. Verify it next - it may still need you to sign in.");
+    } catch (error) {
+      setModelNote(`agent:${id}`, "bad", `Could not install it: ${String(error)}`);
+    }
+    return refreshModelSetup();
+  }
+
+  const download = target.closest("[data-model-download]");
+  if (download) {
+    const id = download.dataset.modelDownload;
+    busy(download, "Downloading…");
+    try {
+      await invoke("assistant_pull", { model: id });
+      setModelNote(id, "info", "Downloading. The AI sidebar shows how far along it is.");
+    } catch (error) {
+      setModelNote(id, "bad", String(error));
+    }
+    return refreshModelSetup();
+  }
+
+  const remove = target.closest("[data-model-remove]");
+  if (remove) {
+    const id = remove.dataset.modelRemove;
+    const allowed = await (window.wintConfirm?.({
+      title: "Remove this model?",
+      message: "The downloaded file is deleted. You can download it again later.",
+      confirmLabel: "Remove", tone: "danger", icon: "delete",
+    }) ?? Promise.resolve(true));
+    if (!allowed) return;
+    try { await invoke("assistant_model_delete", { model: id }); modelNotes.delete(id); }
+    catch (error) { setModelNote(id, "bad", String(error)); }
+    return refreshModelSetup();
+  }
+
+  const save = target.closest("[data-key-save]");
+  if (save) {
+    const id = save.dataset.keySave;
+    const input = el["settings-host"].querySelector(`[data-key-input="${CSS.escape(id)}"]`);
+    const key = input?.value.trim() || "";
+    if (!key) return setModelNote(`key:${id}`, "bad", "Enter a key first.");
+    busy(save, "Saving…");
+    try {
+      await invoke("assistant_cloud_configure", { provider: id, key });
+      setModelNote(`key:${id}`, "ok", "Saved. Verify it to be sure it works.");
+      window.dispatchEvent(new CustomEvent("wint:ai-models-changed"));
+    } catch (error) { setModelNote(`key:${id}`, "bad", String(error)); }
+    return refreshModelSetup();
+  }
+
+  const verifyKey = target.closest("[data-key-verify]");
+  if (verifyKey) {
+    const id = verifyKey.dataset.keyVerify;
+    const input = el["settings-host"].querySelector(`[data-key-input="${CSS.escape(id)}"]`);
+    busy(verifyKey, "Checking…");
+    try {
+      const message = await invoke("assistant_cloud_verify", { provider: id, key: input?.value.trim() || "" });
+      setModelNote(`key:${id}`, "ok", message);
+    } catch (error) { setModelNote(`key:${id}`, "bad", String(error)); }
+    return renderModelSetup();
+  }
+
+  const removeKey = target.closest("[data-key-remove]");
+  if (removeKey) {
+    const id = removeKey.dataset.keyRemove;
+    try { await invoke("assistant_cloud_remove", { provider: id }); modelNotes.delete(`key:${id}`); }
+    catch (error) { setModelNote(`key:${id}`, "bad", String(error)); }
+    window.dispatchEvent(new CustomEvent("wint:ai-models-changed"));
+    return refreshModelSetup();
+  }
+
+  const fix = target.closest("[data-model-fix]");
+  if (fix) {
+    const agent = fix.dataset.modelFixId.replace(/^agent:/, "");
+    const kind = fix.dataset.modelFix;
+    busy(fix, kind === "signin" ? "Opening…" : "Installing…");
+    if (kind === "signin") {
+      // The sign-in ends in a browser with their account, so WinT cannot do
+      // it for them - but it can start it and put the window in front of them
+      // instead of printing a command to go and type.
+      try {
+        await invoke("ai_agent_signin", { id: agent });
+        setModelNote(`agent:${agent}`, "info", "Finish signing in in the window that opened, then Verify again.");
+      } catch (error) {
+        setModelNote(`agent:${agent}`, "bad", String(error));
+      }
+      return;
+    }
+    try {
+      await invoke(`${agent}_install`, { window: appWindow.label });
+      setModelNote(`agent:${agent}`, "ok", kind === "reinstall" ? "Reinstalled. Checking it again…" : "Installed. Checking it…");
+      const again = await invoke("ai_agent_verify", { id: agent }).catch(() => null);
+      if (again) setModelNote(`agent:${agent}`, again.state === "ready" ? "ok" : "bad", again.summary, again.fix || "", again.fixLabel || "");
+    } catch (error) {
+      setModelNote(`agent:${agent}`, "bad", String(error));
+    }
+    return refreshModelSetup();
+  }
+}
+
 async function refreshCliSetting(status = null) {
   const host = el["settings-host"];
   const button = host?.querySelector("#setting-cli-toggle");
@@ -6171,7 +6456,7 @@ function renderSettings() {
             </div>
           </div>
           <label class="settings-row" for="setting-time-tracker">
-            <span><strong>Always track active-window usage</strong><small>Record application and window-title time while WinT is open, including when it is minimized or unfocused. Nothing is sent anywhere.</small></span>
+            <span><strong>Track active-window usage</strong><small>Record which application and window you are in, for as long as WinT is running - the tool does not have to be open. Kept on this PC for 90 days and sent nowhere.</small></span>
             <input class="setting-check" id="setting-time-tracker" type="checkbox" />
           </label>
           <div class="settings-row">
@@ -6225,9 +6510,13 @@ function renderSettings() {
         </section>
         <section class="settings-group" data-section="assistant">
           <h3>Assistant</h3>
+          <div class="settings-row settings-row-block">
+            <span><strong>Models</strong><small>Everything WinT can answer with, in one list. What you pick here is what the AI sidebar, PC Detective and a workspace's Agent panel all offer, because the choice is kept by the app rather than by one window.</small></span>
+          </div>
+          <div class="model-setup" id="setting-model-setup"></div>
           <div class="settings-row">
-            <span><strong>Models and providers</strong><small>Open the AI sidebar directly on model downloads, installed models, and cloud-provider keys.</small></span>
-            <button class="btn setting-control" id="setting-assistant-models" type="button">${icon("neurology")}Manage models</button>
+            <span><strong>The AI sidebar</strong><small>Downloads in progress, conversations and the model a chat is using live in the sidebar itself.</small></span>
+            <button class="btn setting-control" id="setting-assistant-models" type="button">${icon("neurology")}Open the sidebar</button>
           </div>
           <label class="settings-row" for="setting-assistant-tool-cap">
             <span><strong>Tool-call limit</strong><small>Maximum tools an answer may call before WinT stops it. Applies to local models, Claude, Codex, GPT, and Cursor.</small></span>
@@ -6309,9 +6598,11 @@ function renderSettings() {
   host.querySelector("#setting-native-decorations").checked = state.nativeDecorations;
   host.querySelector("#setting-always-tray").checked = state.alwaysMinimizeToTray;
   host.querySelector("#setting-analytics").checked = state.analyticsChosen && state.analytics;
-  host.querySelector("#setting-time-tracker").checked = window.wintTimeTracker?.getAlways() === true;
+  host.querySelector("#setting-time-tracker").checked = window.wintTimeTracker?.getEnabled() === true;
   syncKeepAwakeSetting(host);
   host.querySelector("#setting-assistant-tool-cap").value = window.wintAssistant?.getToolCallCap?.() || 20;
+  renderModelSetup();
+  refreshModelSetup();
   refreshCliSetting();
   refreshAutostartSetting();
   refreshDockOnStartSetting();
@@ -7212,6 +7503,7 @@ function wireShell() {
     } else if (e.target.closest('[data-settings="close"]')) closeSettings();
     else if (navItem) showSettingsSection(navItem.dataset.settingsSection);
     else if (e.target.closest("#setting-assistant-models")) window.wintAssistant?.openModels?.();
+    else if (e.target.closest("#setting-model-setup")) await handleModelAction(e.target);
     else if (e.target.closest("[data-hotkey-filter]")) {
       state.hotkeyFilter = e.target.closest("[data-hotkey-filter]").dataset.hotkeyFilter;
       renderHotkeys(el["settings-host"]);
@@ -7435,7 +7727,15 @@ function wireShell() {
       const minute = (Number(hours) * 60 + Number(minutes)) % 1440;
       saveKeepAwakeSetting(e.target.id === "setting-awake-from" ? { startMinute: minute } : { endMinute: minute });
     } else if (e.target.id === "setting-time-tracker") {
-      window.wintTimeTracker?.setAlways(e.target.checked);
+      window.wintTimeTracker?.setEnabled(e.target.checked);
+    } else if (e.target.dataset?.modelEnable) {
+      // Off is kept by the backend, so every place that offers models agrees
+      // about it - none of them share storage with this window.
+      const id = e.target.dataset.modelEnable;
+      const on = e.target.checked;
+      const entry = modelListCache?.models?.find((m) => m.id === id);
+      if (entry) entry.enabled = on;
+      invoke("ai_model_enabled", { id, enabled: on }).catch(() => refreshModelSetup());
     } else if (e.target.id === "setting-assistant-tool-cap") {
       e.target.value = window.wintAssistant?.setToolCallCap?.(e.target.value) || 20;
     } else if (e.target.id === "setting-terminal-shell") {
@@ -7908,6 +8208,12 @@ window.wintAssistantRoots = () => [...state.roots];
 /** The palette shortcut as the user has it bound, for panels that tell people
  * where to go next. Empty when the binding has been cleared. */
 window.wintPaletteHotkey = () => hotkeyBinding("command:palette");
+// A key added or removed in the sidebar changes which models are usable, and
+// the Settings screen showing that list may be open behind it.
+window.addEventListener("wint:ai-models-changed", () => {
+  if (state.activeView === "settings") refreshModelSetup();
+});
+
 window.addEventListener("wint:assistant-tool-cap-changed", (event) => {
   const input = document.getElementById("setting-assistant-tool-cap");
   if (input) input.value = event.detail?.value || 20;

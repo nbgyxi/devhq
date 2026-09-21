@@ -207,8 +207,24 @@
 
   function saveOrder() {
     const shown = [...list.querySelectorAll("[data-bar]")].map((button) => button.dataset.key);
-    // Apps that are closed right now keep their remembered places.
-    order = [...shown, ...order.filter((key) => !shown.includes(key))].slice(0, ORDER_LIMIT);
+    const open = new Set(shown);
+    // Apps that are closed right now keep their remembered places, and a place
+    // is a neighbour, not a number: every closed key is tied to the last open
+    // row above it and written back there. Listing them after the open rows
+    // instead would send an app that happened to be closed to the end of the
+    // rail — a window put under "Chat" and then closed to the tray came back
+    // below every other row rather than where it was left.
+    const trailing = new Map();
+    let anchor = null;
+    const head = [];
+    for (const key of order) {
+      if (open.has(key)) { anchor = key; continue; }
+      if (anchor === null) head.push(key);
+      else trailing.set(anchor, [...(trailing.get(anchor) || []), key]);
+    }
+    order = [...head];
+    for (const key of shown) order.push(key, ...(trailing.get(key) || []));
+    order = order.slice(0, ORDER_LIMIT);
     try { localStorage.setItem(ORDER_KEY, JSON.stringify(order)); } catch (_) { /* order lasts this run */ }
   }
 
@@ -219,15 +235,27 @@
   }
 
   /** Where a new row goes: before the first row that comes after it in the
-   *  saved order, or at the end when its key has never been placed. */
+   *  saved order. A row never placed before goes at the end of the rail's
+   *  first group — above the first divider — because everything under a
+   *  divider was deliberately put there, and a window dropping in below one
+   *  would read as belonging to that group. A divider itself is exempt: a new
+   *  divider is made to end the list. */
   function placeNew(button) {
     const rank = order.indexOf(button.dataset.key);
     let before = list.querySelector(".skeleton");
+    if (rank === -1 && button.dataset.bar !== "divider") {
+      before = list.querySelector('[data-bar="divider"]') || before;
+    }
     if (rank !== -1) {
+      before = null;
       for (const other of list.querySelectorAll("[data-bar]")) {
         const otherRank = order.indexOf(other.dataset.key);
-        if (otherRank === -1 || otherRank > rank) { before = other; break; }
+        // A row the order has never heard of says nothing about where this
+        // one belongs, so it is stepped over rather than stopping the walk —
+        // otherwise one unplaced row pulled every returning window up to it.
+        if (otherRank !== -1 && otherRank > rank) { before = other; break; }
       }
+      before ??= list.querySelector(".skeleton");
     }
     list.insertBefore(button, before);
   }
@@ -348,7 +376,7 @@
     const text = label.textContent;
     button.disabled = true;
     label.textContent = `Starting ${pin.name}`;
-    invoke("sidebar_suggest_launch", { target: pin.target })
+    invoke("sidebar_suggest_launch", { target: pin.target, args: pin.args || [], name: pin.name, app: pin.key })
       .then(() => { label.textContent = text; })
       .catch((error) => { label.textContent = text; flash(button, error); })
       .finally(() => { button.disabled = false; refreshWindows(); });
@@ -479,10 +507,12 @@
     paintPins(windows);
     paintDividers();
     const seen = new Set(windows.map((win) => win.id));
+    let changed = false;
     for (const [id, entry] of rows) {
       if (!seen.has(id)) {
         entry.button.remove();
         rows.delete(id);
+        changed = true;
       }
     }
     for (const win of windows) {
@@ -491,6 +521,7 @@
         entry = row(win);
         rows.set(win.id, entry);
         placeNew(entry.button);
+        changed = true;
       }
       const { button, label } = entry;
       if (label.textContent !== win.title) {
@@ -502,6 +533,11 @@
       button.classList.toggle("minimized", win.minimized);
     }
     list.querySelector(".skeleton")?.remove();
+    // A window that has just opened or just gone is written into the order
+    // straight away, anchored to the row above it, so the place it was given
+    // is the place it comes back to — waiting for a drag to save anything
+    // meant a first visit was never remembered at all.
+    if (changed) saveOrder();
   }
 
   let refreshing = false;
@@ -691,6 +727,9 @@
           key: pinKey(app),
           name: info.name || app,
           target: info.target,
+          // A browser profile shares its exe with every other profile, so what
+          // makes the pin that profile and not the first one is kept with it.
+          args: info.args || [],
           icon: winRow && !winRow.img.hidden ? winRow.img.src : "",
         }), Boolean(app) && Boolean(info.target)));
       // Recent files and folders go at the bottom. The taskbar puts them on
@@ -766,7 +805,7 @@
       ];
       if (!suggestions.length) items.push(await MenuItem.new({ text: "Nothing to suggest yet", enabled: false }));
       for (const app of suggestions) {
-        const action = () => invoke("sidebar_suggest_launch", { target: app.target })
+        const action = () => invoke("sidebar_suggest_launch", { target: app.target, name: app.name })
           .catch((error) => { geometry.textContent = String(error); })
           .finally(loadSuggestions);
         items.push(app.icon

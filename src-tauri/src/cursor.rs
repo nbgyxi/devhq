@@ -105,6 +105,30 @@ pub struct CursorStatus {
 /// The version doubles as a liveness check. Sign-in is a separate question:
 /// an install that cannot talk to Cursor yet is still an install, and the
 /// panel offers `agent login` rather than pretending nothing is there.
+/// Whether Cursor Agent is signed in, asked the way the CLI itself answers it.
+/// Shared with the model registry, which reports the same thing in Settings.
+pub fn signed_in(found: &FoundAgent) -> (bool, String) {
+    let (mut cmd, _) = found.command();
+    let status = silent(&mut cmd)
+        .args(["status", "--format", "json"])
+        .stdin(Stdio::null())
+        .output()
+        .ok()
+        .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok());
+    let ok = status
+        .as_ref()
+        .and_then(|value| value.get("isAuthenticated"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let email = status
+        .as_ref()
+        .and_then(|value| value.pointer("/userInfo/email"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    (ok, email)
+}
+
 #[tauri::command]
 pub async fn cursor_status() -> CursorStatus {
     tauri::async_runtime::spawn_blocking(|| {
@@ -387,6 +411,12 @@ fn is_model_id(value: &str) -> bool {
 /// A command line ConPTY can start. Extra arguments have to live *inside*
 /// the `cmd /k` string when the CLI is a `.cmd` shim, or they are eaten by
 /// `cmd.exe` and the pane opens onto Cursor with no conversation.
+/// The whole command line that signs in, for callers outside the workspace
+/// panel - Settings runs this in a console window of its own.
+pub fn login_command() -> Result<String, String> {
+    terminal_command("login")
+}
+
 fn terminal_command(args: &str) -> Result<String, String> {
     let extra = if args.is_empty() { String::new() } else { format!(" {args}") };
     if let Some(shim) = agent_shim() {

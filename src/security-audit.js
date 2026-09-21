@@ -73,6 +73,10 @@
     view: "setup",
     starting: false,
     error: "",
+
+    /** What the setup guide's Fix button found and put back, while it is on
+     *  screen. Never saved with the run: it describes the PC right now. */
+    repair: null,
     stamp: "",
     dir: "",
     computer: "",
@@ -203,7 +207,7 @@
     }
     Object.assign(st, {
       runId: id, dir: id, live: false, fresh: false, startedAt: run.startedAt, updatedAt: run.updatedAt, continuedFrom: run.continuedFrom || 0,
-      agent: st.agents?.some((x) => x.id === run.agent && x.installed) ? run.agent : st.agent,
+      agent: st.agents?.some((x) => x.id === run.agent && x.audits) ? run.agent : st.agent,
       ranAsAdmin: run.ranAsAdmin === true, scope: run.scope || st.scope, custom: typeof run.custom === "string" ? run.custom : st.custom, computer: run.computer || "",
       scannedAt: run.scannedAt || 0, scanSeconds: run.scanSeconds || 0, findings: run.findings || [], passed: run.passed || [],
       traces: run.traces || {}, threads: run.threads || {}, log: run.log || [], reply: run.reply || null, stallMark: run.stallMark || 0,
@@ -535,12 +539,38 @@ Then verify it worked. Put the finding in "resolved" if it did, or update it wit
   }
 
   let agentsLoading = false;
+
+  /** Everything the shared registry offers, in the shape this tool already
+   *  draws. The registry is the same list Settings and the AI sidebar show, so
+   *  a model chosen once is a model offered here too.
+   *
+   *  An audit needs an agent with a real shell: it runs PowerShell of its own
+   *  choosing - signature checks, CIM queries, registry edits - and WinT's own
+   *  tool set is a fixed allow-list with no way to run an arbitrary command.
+   *  So API and local models are listed, as asked, but marked for what they
+   *  are rather than quietly presented as equals. */
+  const AGENT_KIND = "agent";
   async function loadAgents() {
     agentsLoading = true;
-    try { st.agents = await invoke("audit_agents"); } catch { st.agents = []; }
+    try {
+      const registry = await invoke("ai_models");
+      st.agents = (registry?.models || []).filter((m) => m.enabled !== false).map((m) => ({
+        id: m.id.startsWith("agent:") ? m.id.slice(6) : m.id,
+        label: m.label,
+        installed: m.ready,
+        kind: m.kind,
+        detail: m.kind === AGENT_KIND
+          ? (m.ready ? "Installed · does the whole audit in its own shell" : "Not installed")
+          : `${m.detail} · cannot run an audit: it has no shell of its own`,
+        audits: m.kind === AGENT_KIND && m.ready,
+      }));
+      if (registry?.selected && !st.agent) {
+        const shared = st.agents.find((a) => `agent:${a.id}` === registry.selected || a.id === registry.selected);
+        if (shared?.audits) st.agent = shared.id;
+      }
+    } catch { st.agents = []; }
     agentsLoading = false;
-    const installed = st.agents.filter((a) => a.installed);
-    if (!installed.some((a) => a.id === st.agent)) st.agent = installed[0]?.id || "";
+    if (!st.agents.some((a) => a.id === st.agent && a.audits)) st.agent = st.agents.find((a) => a.audits)?.id || "";
     dirty();
   }
 
@@ -577,7 +607,7 @@ Then verify it worked. Put the finding in "resolved" if it did, or update it wit
       return dirty();
     }
     Object.assign(st, {
-      starting: false, view: "audit", findings: [], passed: [], traces: {}, threads: {}, log: [], reply: null,
+      starting: false, view: "audit", findings: [], passed: [], traces: {}, threads: {}, log: [], reply: null, repair: null,
       session: st.agent === "claude" ? crypto.randomUUID() : null, sel: "", area: "all", logFilter: "all",
       open: new Set(), hidden: new Set(), notice: "",
       runId: (parked = null, st.dir), live: true, fresh: false, startedAt: Date.now(), continuedFrom: 0, scannedAt: 0,
@@ -791,6 +821,60 @@ Then verify it worked. Put the finding in "resolved" if it did, or update it wit
   const list = (value) => (Array.isArray(value) ? value : []);
   const str = (value) => (value == null ? "" : String(value));
 
+  /** Windows refusing to start a process in any folder is the one failure
+   *  asking again cannot fix, and it is not the agent's fault: the same PC
+   *  fails to start Claude Code or Copilot from an editor too. It is worth
+   *  saying what to look at, because the cause is always one of four things
+   *  and the person cannot see any of them from in here. */
+  function startGuide(reason) {
+    if (!/could not start the agent/i.test(reason)) return null;
+    return [
+      ["folder_off", "Check the audit folder opens",
+        "Paste %LOCALAPPDATA%\\WinT\\audits into Explorer's address bar. If it does not open, the profile folder it points at has been moved, renamed or deleted."],
+      ["cloud_off", "Check Local AppData is a local folder",
+        "Run echo %LOCALAPPDATA% in a Command Prompt. If it answers with a \\\\server\\share path or a OneDrive folder, Windows cannot start a process there — point Local AppData back at the local profile."],
+      ["terminal", "Check TEMP still exists",
+        "Run echo %TEMP% and open what it prints. Cleanup tools delete that folder without putting it back, which breaks every agent on the PC, not only WinT."],
+      ["admin_panel_settings", "Try it without administrator",
+        "Turn Run as administrator off and scan again. If that works, it is the elevated account's profile that is broken, not yours."],
+    ];
+  }
+
+  /** The guide's Fix button. None of this needs the agent, which is the whole
+   *  point: the agent is exactly what cannot start yet. WinT puts back the
+   *  folders a program has to be started in and proves each one by starting a
+   *  program in it, because a folder that exists is not the same as a folder
+   *  Windows will accept. What it cannot fix on its own it reports instead. */
+  async function repairPc() {
+    if (st.repair?.busy) return;
+    st.repair = { busy: true, steps: [], usable: false, error: "" };
+    work("PC Detective · checking what this PC can start");
+    dirty();
+    try {
+      const out = await invoke("audit_repair");
+      st.repair = { busy: false, steps: out?.steps || [], usable: out?.usable === true, error: "" };
+    } catch (err) {
+      st.repair = { busy: false, steps: [], usable: false, error: String(err) };
+    }
+    work(null);
+    note(`PC Detective: repair check ${st.repair.usable ? "found a folder an agent can start in" : "found nowhere an agent can start"}`);
+    dirty();
+  }
+
+  const REPAIR_ICON = { ok: "check_circle", fixed: "build", bad: "error" };
+
+  function repairHtml() {
+    const r = st.repair;
+    if (r?.busy) return `<div class="sa-guide-result"><span class="sa-guide-busy">${icon("progress_activity")}Checking what this PC can start…</span></div>`;
+    if (!r) return "";
+    if (r.error) return `<div class="sa-guide-result"><span class="bad">${icon("error")}${esc(r.error)}</span></div>`;
+    const steps = r.steps.map((s) => `<div class="sa-guide-step ${esc(s.status)}">${icon(REPAIR_ICON[s.status] || "info")}<div><strong>${esc(s.label)}</strong><small>${esc(s.detail)}</small></div></div>`).join("");
+    const done = r.usable
+      ? `<div class="sa-row-actions"><button type="button" class="btn small primary" data-sa="retry">${icon("refresh")}Try the scan again</button></div>`
+      : `<p class="sa-guide-stuck">${icon("block")}Windows will not start a program anywhere WinT can reach, so scanning again will fail the same way. This stops every coding agent on this PC, not only WinT — fix what is marked above and try again.</p>`;
+    return `<div class="sa-guide-result">${steps}${done}</div>`;
+  }
+
   function finishTurn(ended) {
     finishTurnInner(ended);
     saveRun();
@@ -809,7 +893,7 @@ Then verify it worked. Put the finding in "resolved" if it did, or update it wit
     if (!block) {
       const reason = turn.cancelled ? "Stopped before the agent answered."
         : str(error).trim() || (turn.text || turn.pending ? "The agent answered without the JSON block WinT reads." : `The agent stopped without an answer (exit code ${code}).`);
-      st.reply = { summary: reason, failed: true, raw: turn.text || turn.pending, retry: turn };
+      st.reply = { summary: reason, failed: true, guide: startGuide(reason), raw: turn.text || turn.pending, retry: turn };
       if (turn.kind === "Trace") delete st.traces[turn.finding];
       if (turn.kind === "Agent") { const thread = st.threads[turn.finding]; if (thread?.length) thread[thread.length - 1].reply = { summary: reason, failed: true }; }
       return dirty();
@@ -1063,14 +1147,14 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
   }
 
   function setupHtml() {
-    const installed = (st.agents || []).filter((a) => a.installed);
+    const installed = (st.agents || []).filter((a) => a.audits);
     const needsAdmin = st.scope.some((id) => areaOf(id)?.admin);
     const agents = st.agents === null
       ? `<div class="sa-card skeleton"><strong>Looking for coding agents on this PC…</strong><i class="sk"></i></div>
          <div class="sa-card skeleton"><i class="sk"></i><i class="sk"></i></div>`
       : installed.length
-        ? cards(st.agents.map((a) => ({ id: a.id, name: a.label, glyph: "smart_toy", on: a.id === st.agent, disabled: !a.installed,
-            detail: a.installed ? "Installed · does the whole audit in its own shell" : "Not installed" })), "agent")
+        ? cards(st.agents.map((a) => ({ id: a.id, name: a.label, glyph: a.kind === "local" ? "memory" : a.kind === "api" ? "key" : "smart_toy",
+            on: a.id === st.agent, disabled: !a.audits, detail: a.detail })), "agent")
         : `<div class="sa-empty">No coding agent is installed. The audit is done entirely by one you already have — Claude Code, Codex, Gemini, GitHub Copilot or Cursor Agent. Install one from a workspace's Agent panel.
             <button type="button" class="btn" data-sa="agents">${icon("refresh")}Look again</button></div>`;
     const rights = cards([
@@ -1182,6 +1266,9 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
       <p>${icon(r.failed ? "error" : r.done ? "task_alt" : "smart_toy")}<span>${esc(r.summary)}</span></p>
       ${r.question ? `<p class="sa-question">${icon("help")}${esc(r.question)}</p>` : ""}
       ${options ? `<div class="sa-options">${options}</div>` : ""}
+      ${(r.guide || []).length ? `<div class="sa-guide"><span>${icon("troubleshoot")}Nothing on this PC can start an agent until one of these is fixed</span>${r.guide.map(([g, title, detail]) => `<div class="sa-guide-step">${icon(g)}<div><strong>${esc(title)}</strong><small>${esc(detail)}</small></div></div>`).join("")}
+        <div class="sa-row-actions"><button type="button" class="btn small primary" data-sa="repair"${st.repair?.busy ? " disabled" : ""}>${icon("build")}${st.repair ? "Check again" : "Check and fix this PC"}</button></div>
+        ${repairHtml()}</div>` : ""}
       ${r.failed ? `<div class="sa-row-actions">${r.raw ? `<button type="button" class="btn small" data-sa="raw">${icon("notes")}What the agent said</button>` : ""}<button type="button" class="btn small" data-sa="retry">${icon("refresh")}Ask again</button></div>` : ""}
     </div>`;
   }
@@ -1423,10 +1510,12 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
       case "report": return exportFile("report.md", markdown());
       case "log": return exportFile("log.md", logText());
       case "raw": st.reply.summary = `${st.reply.summary}\n\n${st.reply.raw}`; st.reply.raw = ""; return dirty();
+      case "repair": return repairPc();
       case "retry": {
         const last = st.reply?.retry;
         if (!last) return;
         st.reply = null;
+        st.repair = null;
         if (last.kind === "Scan" && !st.findings.length) st.session = st.agent === "claude" ? crypto.randomUUID() : null;
         const f = findingById(last.finding);
         const prompt = last.kind === "Scan" ? scanPrompt() : last.kind === "Trace" ? tracePrompt(f) : last.kind === "Fix" ? fixPrompt(f) : f && last.ask ? askPrompt(f, last.ask) : followPrompt(`The user says: ${last.label}`);

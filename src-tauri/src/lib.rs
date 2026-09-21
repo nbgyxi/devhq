@@ -47,6 +47,7 @@ mod gemini;
 #[cfg(windows)]
 mod security_audit;
 mod stall_watch;
+mod time_tracker;
 mod workspace;
 mod term;
 pub mod startup;
@@ -813,7 +814,7 @@ async fn installed_app_icons(targets: Vec<String>) -> Vec<Option<String>> {
 /// Start an installed application the way Explorer would.
 #[tauri::command]
 async fn installed_app_launch(target: String) -> Result<(), String> {
-    off_thread(move || suggest::launch(&target))
+    off_thread(move || suggest::launch(&target, &[]))
         .await
         .unwrap_or_else(|| Err("Could not start it.".into()))
 }
@@ -904,6 +905,13 @@ async fn assistant_cloud_configure(
         .unwrap_or_else(|| Err("The API key could not be saved.".into()))
 }
 
+/// Checks a key against the provider before it is trusted. Takes the typed
+/// key so it can be checked before saving, or nothing to re-check a saved one.
+#[tauri::command]
+async fn assistant_cloud_verify(provider: String, key: String) -> Result<String, String> {
+    ai::cloud::verify(&provider, key).await
+}
+
 #[tauri::command]
 async fn assistant_cloud_remove(provider: String) -> Result<ai::cloud::CloudStatus, String> {
     off_thread(move || ai::cloud::remove(&provider))
@@ -941,6 +949,54 @@ async fn shell_download_remove(profile: String) -> Result<(), String> {
     off_thread(move || shells::remove(&profile))
         .await
         .unwrap_or_else(|| Err("The shell could not be removed.".into()))
+}
+
+/// The one list of models, for every window that asks. Assembled fresh each
+/// time: an agent can be installed, a key added or a model downloaded while
+/// the app is open, and a cached list would be the stale one.
+#[tauri::command]
+async fn ai_models(app: AppHandle) -> ai::registry::ModelList {
+    let root = app.path().app_data_dir().unwrap_or_default();
+    let handle = app.clone();
+    off_thread(move || ai::registry::list(&handle, root))
+        .await
+        .unwrap_or_else(|| ai::registry::ModelList { models: Vec::new(), selected: String::new() })
+}
+
+/// Records the shared choice. Every window hears about it, including the
+/// isolated tool webviews that cannot read the main window storage.
+/// Starts an agent sign-in in its own console window.
+#[tauri::command]
+async fn ai_agent_signin(id: String) -> Result<(), String> {
+    off_thread(move || ai::registry::signin_agent(&id))
+        .await
+        .unwrap_or_else(|| Err("The sign-in could not be started.".into()))
+}
+
+/// Turns one model on or off for every place that offers models.
+#[tauri::command]
+async fn ai_model_enabled(app: AppHandle, id: String, enabled: bool) -> Result<(), String> {
+    ai::registry::set_enabled(&app, id, enabled)
+}
+
+/// Checks one agent CLI properly: that it is there, that it runs, and where
+/// WinT can tell, whether it is signed in.
+#[tauri::command]
+async fn ai_agent_verify(id: String) -> ai::registry::AgentCheck {
+    off_thread(move || ai::registry::verify_agent(&id))
+        .await
+        .unwrap_or_else(|| ai::registry::AgentCheck {
+            state: "broken",
+            summary: "The check could not be run.".into(),
+            version: String::new(),
+            fix: "",
+            fix_label: String::new(),
+        })
+}
+
+#[tauri::command]
+async fn ai_model_select(app: AppHandle, id: String) -> Result<(), String> {
+    ai::registry::select(&app, id)
 }
 
 #[tauri::command]
@@ -2748,6 +2804,8 @@ pub fn run() {
             windows_tools::keep_awake_status();
             // A stall watch left on keeps watching from the moment WinT is up.
             stall_watch::resume(app.handle().clone());
+            // So does a tracker: the sampler is the backend’s, not a window’s.
+            time_tracker::resume(app.handle().clone());
             if let Some(id) = tool_arg(&args) {
                 if let Ok(mut pending) = app.state::<PendingTool>().0.lock() {
                     *pending = Some(id);
@@ -2836,11 +2894,17 @@ pub fn run() {
             assistant_cloud_status,
             assistant_cloud_configure,
             assistant_cloud_remove,
+            assistant_cloud_verify,
             assistant_pull,
             assistant_pull_cancel,
             assistant_model_delete,
             assistant_chat,
             assistant_chat_cancel,
+            ai_models,
+            ai_model_select,
+            ai_model_enabled,
+            ai_agent_verify,
+            ai_agent_signin,
             app_version,
             project_run_command,
             app_is_official_build,
@@ -2934,6 +2998,10 @@ pub fn run() {
             stall_watch::stall_watch_mark,
             stall_watch::stall_watch_clear,
             stall_watch::stall_watch_events,
+            time_tracker::time_tracker_status,
+            time_tracker::time_tracker_sessions,
+            time_tracker::time_tracker_set,
+            time_tracker::time_tracker_clear,
             security_audit::audit_agents,
             security_audit::audit_begin,
             security_audit::audit_turn,
@@ -2943,6 +3011,7 @@ pub fn run() {
             security_audit::audit_delete,
             security_audit::audit_cancel,
             security_audit::audit_end,
+            security_audit::audit_repair,
             workspace::workspace_browser_show,
             workspace::workspace_browser_hide,
             workspace::workspace_browser_navigate,
@@ -3130,6 +3199,9 @@ pub fn run() {
                 // filtering this machine's traffic with nothing left to
                 // show for it.
                 network::shutdown();
+                // The tracker flushes on a timer while it samples; whatever
+                // the last flush missed is written down here.
+                time_tracker::shutdown();
                 // Closing the window is closing the app. The hidden Search and
                 // Clipboard windows would otherwise hold the event loop open,
                 // leaving a process with no way back to a window: the tray icon
@@ -3155,11 +3227,17 @@ pub fn run() {
         assistant_cloud_status,
         assistant_cloud_configure,
         assistant_cloud_remove,
+        assistant_cloud_verify,
         assistant_pull,
         assistant_pull_cancel,
         assistant_model_delete,
         assistant_chat,
         assistant_chat_cancel,
+        ai_models,
+        ai_model_select,
+        ai_model_enabled,
+        ai_agent_verify,
+        ai_agent_signin,
         app_version,
         project_run_command,
         app_is_official_build,
@@ -3293,6 +3371,10 @@ pub fn run() {
         ,stall_watch::stall_watch_mark
         ,stall_watch::stall_watch_clear
         ,stall_watch::stall_watch_events
+        ,time_tracker::time_tracker_status
+        ,time_tracker::time_tracker_sessions
+        ,time_tracker::time_tracker_set
+        ,time_tracker::time_tracker_clear
         ,security_audit::audit_agents
         ,security_audit::audit_begin
         ,security_audit::audit_turn
@@ -3302,6 +3384,7 @@ pub fn run() {
         ,security_audit::audit_delete
         ,security_audit::audit_cancel
         ,security_audit::audit_end
+        ,security_audit::audit_repair
         ,workspace::workspace_browser_show
         ,workspace::workspace_browser_hide
         ,workspace::workspace_browser_navigate

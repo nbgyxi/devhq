@@ -74,6 +74,7 @@ window.wintHome = (() => {
     ["cli", "Checking the wint command", () => invoke("cli_status")],
     ["awake", "Reading Keep Awake", () => invoke("keep_awake_status")],
     ["clip", "Reading clipboard history", () => invoke("clipboard_recording")],
+    ["tracker", "Reading active window tracking", () => invoke("time_tracker_status")],
   ];
 
   const home = {
@@ -302,8 +303,14 @@ window.wintHome = (() => {
 
   /* ---------------------------------------------------------- background */
 
+  window.addEventListener("wint:time-tracker-changed", (event) => {
+    if (!event.detail?.status) return;
+    home.readings.set("tracker", { value: event.detail.status });
+    render();
+  });
+
   /** Sources the background strip reads on every look, watched or not. */
-  const BACKGROUND_SOURCES = ["stall", "awake", "clip"];
+  const BACKGROUND_SOURCES = ["stall", "awake", "clip", "tracker"];
 
   /** What WinT does while nobody is looking: one row per thing that runs on
    *  its own. `records` marks the ones that keep information about this PC. */
@@ -311,7 +318,7 @@ window.wintHome = (() => {
     const clip = reading("clip");
     const stall = reading("stall");
     const awake = reading("awake");
-    const tracking = window.wintTimeTracker?.getEnabled?.() === true;
+    const tracker = reading("tracker");
     const pending = (key, iconName, label, tool) => ({ key, icon: iconName, label, tool, pending: true });
     return [
       clip ? {
@@ -320,10 +327,12 @@ window.wintHome = (() => {
           ? "Recording · keeps your last 250 copies, text and images, on this PC"
           : "Paused · nothing you copy is kept",
       } : pending("clip", "content_paste", "Clipboard history", "clipboard"),
-      {
-        key: "tracker", icon: "schedule", label: "Active window tracking", on: tracking, records: true, tool: "time-tracker",
-        detail: tracking ? "Recording · notes which window is in front every few seconds" : "Off · not noting which window you use",
-      },
+      tracker ? {
+        key: "tracker", icon: "schedule", label: "Active window tracking", on: tracker.value?.enabled === true, records: true, tool: "time-tracker",
+        detail: tracker.error ? "Could not be read" : tracker.value?.enabled
+          ? "Recording · notes which window is in front every few seconds, whether or not the tool is open"
+          : "Off · not noting which window you use",
+      } : pending("tracker", "schedule", "Active window tracking", "time-tracker"),
       stall ? {
         key: "stall", icon: "mouse", label: "Input stall tracking", on: stall.value?.watching === true, records: true, tool: "stall-watch",
         detail: stall.error ? "Could not be read" : stall.value?.watching
@@ -379,8 +388,7 @@ window.wintHome = (() => {
       if (key === "clip") {
         home.readings.set("clip", { value: await invoke("clipboard_recording_set", { on }) });
       } else if (key === "tracker") {
-        window.wintTimeTracker?.setAlways(on);
-        window.wintTimeTracker?.setEnabled(on);
+        home.readings.set("tracker", { value: await invoke("time_tracker_set", { enabled: on }) });
       } else if (key === "stall") {
         const thresholdMs = reading("stall")?.value?.thresholdMs || 100;
         home.readings.set("stall", { value: await invoke("stall_watch_set", { watching: on, thresholdMs }) });

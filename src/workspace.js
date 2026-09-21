@@ -2174,12 +2174,21 @@
   // Settings owns local model downloads and the user's active-model choice.
   // A Qwen workspace follows that choice when it is one of the coding models
   // this staged agent supports; otherwise it uses the smaller default.
+  //
+  // The choice comes from the backend, not from localStorage. A workspace runs
+  // in its own WebView2 data directory, so what the main window writes to
+  // localStorage is not visible here at all - reading it meant this always
+  // fell through to the default and the setting in Settings did nothing.
+  let sharedModel = "";
+  const loadSharedModel = () => invoke("ai_models")
+    .then((registry) => { sharedModel = registry?.selected || ""; })
+    .catch(() => {});
+  loadSharedModel();
+  listen("ai:model-changed", (event) => { sharedModel = event?.payload || ""; }).catch(() => {});
+
   const workspaceLocalModel = (spec) => {
     if (!spec?.localModel) return "";
-    try {
-      const selected = JSON.parse(localStorage.getItem("wint.assistant.v1") || "{}").model;
-      if (spec.localModels?.some((model) => model.id === selected)) return selected;
-    } catch {}
+    if (spec.localModels?.some((model) => model.id === sharedModel)) return sharedModel;
     return spec.localModel;
   };
 

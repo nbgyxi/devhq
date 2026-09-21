@@ -73,18 +73,14 @@
   let clipboardPinnedOnly = false;
   let clipboardSelected = "";
   let clipboardRows = [];
-  const TRACKER_DB = "wint-time-tracker";
-  const TRACKER_ALWAYS_KEY = "wint-time-tracker-always";
-  const TRACKER_IDLE_MS = 5 * 60 * 1000;
-  const TRACKER_SAMPLE_MS = 5000;
-  let trackerDb = null;
+  // The tracker is the backend's: it samples, keeps the history and remembers
+  // whether it is on, so every window - this tool, Home, a popped-out copy -
+  // reads one answer instead of keeping its own.
+  let trackerStatus = { enabled: false, idleMs: 0, idleAfterMs: 5 * 60 * 1000, sampleMs: 5000, total: 0, live: null };
   let trackerRows = [];
-  let trackerTimer = 0;
-  let trackerAlways = localStorage.getItem(TRACKER_ALWAYS_KEY) === "true";
-  let trackerEnabled = trackerAlways;
+  let trackerLoading = false;
   let trackerRange = "today";
   let trackerSelected = "";
-  const trackerCanSample = !location.pathname.endsWith("/tool.html");
   // The hold itself lives in the Rust backend — this is only what the page
   // last heard about it, refreshed every second while the tool is open. The
   // machine stays awake whether or not this tool, or its window, is still up.
@@ -134,29 +130,15 @@
     });
   } catch { /* no event bridge in this window; the list still loads on open */ }
 
-  const trackerReady = new Promise((resolve) => {
-    const request = indexedDB.open(TRACKER_DB, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("sessions", { keyPath: "id" });
-    request.onerror = () => resolve();
-    request.onsuccess = () => {
-      trackerDb = request.result;
-      const all = trackerDb.transaction("sessions", "readonly").objectStore("sessions").getAll();
-      all.onsuccess = () => { trackerRows = (all.result || []).sort((a, b) => b.end - a.end); resolve(); if (active === "time-tracker") renderTimeTracker(catalog.find((x) => x.id === active)); };
-      all.onerror = () => resolve();
-    };
-  });
-  trackerReady.then(() => { if (trackerEnabled && trackerCanSample) setTrackerEnabled(true); });
-  window.addEventListener("storage", (event) => {
-    if (event.key !== TRACKER_ALWAYS_KEY) return;
-    trackerAlways = event.newValue === "true";
-    if (trackerAlways) setTrackerEnabled(true);
-    if (active === "time-tracker" && host) renderTimeTracker(catalog.find((x) => x.id === active));
-  });
-
-  function saveTrackerRow(row) {
-    if (!trackerDb) return;
-    try { trackerDb.transaction("sessions", "readwrite").objectStore("sessions").put(row); } catch { /* keep this session in memory */ }
-  }
+  // Every window asks once on load and is told about every change after, so a
+  // switch flipped on Home is already true here before the tool is opened.
+  refreshTracker();
+  try {
+    window.__TAURI__.event.listen("time-tracker:changed", (event) => applyTrackerStatus(event.payload, true));
+    // One line per sample: an open tool follows the running session live
+    // instead of re-reading the whole history every five seconds.
+    window.__TAURI__.event.listen("time-tracker:sample", (event) => applyTrackerStatus(event.payload, false));
+  } catch { /* no event bridge in this window; the status still loads on open */ }
   function trackerCutoff() {
     const now = new Date();
     if (trackerRange === "today") return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -169,55 +151,68 @@
     for (const row of trackerVisibleRows()) { const key = row.process || "Unknown"; const item = groups.get(key) || { process: key, ms: 0, count: 0, title: row.title }; item.ms += row.end - row.start; item.count++; groups.set(key, item); }
     return [...groups.values()].sort((a, b) => b.ms - a.ms);
   }
-  async function sampleActiveWindow() {
-    if (!trackerEnabled) return;
+  /** Takes one status from the backend and, when the tool is open, folds the
+   *  session it names into the visible history. A sample only ever touches
+   *  the newest row, so the page redraws without re-reading the history. */
+  function applyTrackerStatus(status, reload) {
+    if (!status) return;
+    const was = trackerStatus.enabled;
+    trackerStatus = status;
+    // Only the window drawing the history needs to keep it up to date; the
+    // rest would be growing a list nobody reads.
+    if (status.live && active === "time-tracker") {
+      const index = trackerRows.findIndex((row) => row.id === status.live.id);
+      if (index >= 0) trackerRows[index] = status.live;
+      else if (status.live.end >= trackerCutoff()) trackerRows.unshift(status.live);
+    }
+    if (status.enabled !== was) window.dispatchEvent(new CustomEvent("wint:time-tracker-changed", { detail: { enabled: status.enabled, status } }));
+    if (reload && status.enabled !== was) { loadTrackerSessions(); return; }
+    if (active === "time-tracker" && host) renderTimeTracker(catalog.find((x) => x.id === active));
+  }
+
+  async function refreshTracker() {
+    try { applyTrackerStatus(await invoke("time_tracker_status"), false); }
+    catch { /* an older backend or a non-Windows build: the tool reads as off */ }
+  }
+
+  /** Reads the history for the range on screen. The backend keeps 90 days, so
+   *  a range change asks for its own slice rather than for everything. */
+  async function loadTrackerSessions() {
+    trackerLoading = true;
+    if (active === "time-tracker" && host) renderTimeTracker(catalog.find((x) => x.id === active));
+    try { trackerRows = await invoke("time_tracker_sessions", { since: trackerCutoff() }); }
+    catch { trackerRows = []; }
+    trackerLoading = false;
+    if (active === "time-tracker" && host) renderTimeTracker(catalog.find((x) => x.id === active));
+  }
+
+  async function setTrackerEnabled(enabled) {
+    try { applyTrackerStatus(await invoke("time_tracker_set", { enabled: enabled === true }), true); }
+    catch (error) { status(String(error), "bad"); }
+  }
+
+  async function clearTrackerHistory() {
+    const answer = await window.wintConfirm?.({
+      title: "Forget the recorded history?",
+      message: "Every session WinT has recorded on this PC is deleted. Tracking itself stays as it is.",
+      confirmLabel: "Forget everything",
+      icon: "delete",
+    });
+    if (answer !== true) return;
     try {
-      const shot = await invoke("active_window_snapshot");
-      const now = Date.now();
-      if (!shot.title || shot.idleMs >= TRACKER_IDLE_MS) { if (active === "time-tracker") updateTrackerLive(shot.idleMs); return; }
-      const activeAt = now - Math.max(0, shot.idleMs || 0);
-      const last = trackerRows[0];
-      if (last && last.process === shot.process && last.title === shot.title && activeAt - last.end < TRACKER_SAMPLE_MS * 2.5) last.end = Math.max(last.end, activeAt);
-      else trackerRows.unshift({ id: `${now}-${Math.random().toString(36).slice(2, 8)}`, start: activeAt, end: activeAt + TRACKER_SAMPLE_MS, title: shot.title, process: shot.process || "Unknown", path: shot.path || "", pid: shot.pid });
-      saveTrackerRow(trackerRows[0]);
-      if (active === "time-tracker") renderTimeTracker(catalog.find((x) => x.id === active));
-    } catch { /* a locked desktop can temporarily have no foreground window */ }
-  }
-  function setTrackerEnabled(enabled) {
-    trackerEnabled = enabled;
-    clearInterval(trackerTimer); trackerTimer = 0;
-    if (enabled && trackerCanSample) { sampleActiveWindow(); trackerTimer = setInterval(sampleActiveWindow, TRACKER_SAMPLE_MS); }
-    window.dispatchEvent(new CustomEvent("wint:time-tracker-changed", { detail: { enabled } }));
-  }
-  function setTrackerAlways(enabled) {
-    trackerAlways = enabled === true;
-    localStorage.setItem(TRACKER_ALWAYS_KEY, String(trackerAlways));
-    if (trackerAlways) setTrackerEnabled(true);
-    window.dispatchEvent(new CustomEvent("wint:time-tracker-always-changed", { detail: { enabled: trackerAlways } }));
+      applyTrackerStatus(await invoke("time_tracker_clear"), false);
+      trackerRows = [];
+      trackerSelected = "";
+    } catch (error) { status(String(error), "bad"); }
+    if (active === "time-tracker" && host) renderTimeTracker(catalog.find((x) => x.id === active));
   }
 
   window.wintTimeTracker = {
-    getEnabled: () => trackerEnabled,
+    getStatus: () => trackerStatus,
+    getEnabled: () => trackerStatus.enabled === true,
     setEnabled: (enabled) => setTrackerEnabled(enabled === true),
-    getAlways: () => trackerAlways,
-    setAlways: (enabled) => setTrackerAlways(enabled),
-    async confirmLeave() {
-      if (active !== "time-tracker" || !trackerEnabled || trackerAlways) return true;
-      const answer = await window.wintConfirm?.({
-        title: "Keep tracking active-window usage?",
-        message: "Tracking is running, but Always track is off. What should WinT do after you leave this tool?",
-        cancelLabel: "Cancel",
-        confirmLabel: "Stop tracking",
-        alternateLabel: "Continue tracking while tool is closed",
-        icon: "schedule",
-      });
-      if (answer === false || answer === undefined) return false;
-      if (answer === "alternate") setTrackerAlways(true);
-      else setTrackerEnabled(false);
-      return true;
-    },
+    refresh: refreshTracker,
   };
-  function updateTrackerLive(idleMs = 0) { const node = host?.querySelector("[data-tracker-live]"); if (node) node.textContent = idleMs >= TRACKER_IDLE_MS ? `Idle for ${duration(idleMs)} · not recording` : trackerEnabled ? "Recording locally while WinT is open" : "Tracking is paused"; }
 
   function readClips() {
     return clipboardRows.filter((row) => row && (typeof row.text === "string" || typeof row.dataUrl === "string")).slice(0, 250);
@@ -275,7 +270,7 @@
     if (active === "lock-inspector") renderLockInspector(tool);
     if (active === "clipboard") renderClipboard(tool);
     if (active === "keep-awake") renderKeepAwake(tool);
-    if (active === "time-tracker") renderTimeTracker(tool);
+    if (active === "time-tracker") { renderTimeTracker(tool); loadTrackerSessions(); }
     if (active === "security-audit") renderSecurityAudit(tool);
     if (active === "stall-watch") renderStallWatch(tool);
     if (active === "health") renderAppHealth(tool);
@@ -617,6 +612,14 @@
     host.innerHTML = header(tool, `<div class="event-toolbar"><div class="event-checks"><strong>Channels</strong>${['Application','System','Security'].map((x)=>`<label><input type="checkbox" data-event-channel value="${x}"${x!=='Security'?' checked':''}>${x}</label>`).join('')}</div><div class="event-checks"><strong>Levels</strong>${['Critical','Error','Warning','Information'].map((x)=>`<label><input type="checkbox" data-event-level value="${x}"${x!=='Information'?' checked':''}>${x==='Information'?'Info':x}</label>`).join('')}</div><label class="event-filter">${icon('filter_alt')}<input data-event-text placeholder="Regex filter provider, ID, or message"></label><button class="btn" data-win-refresh>${icon('refresh')}Read latest</button><button class="btn primary" data-event-stream>${icon('play_arrow')}Start</button></div><div class="event-presets"><span>Presets</span>${[['Unhandled exceptions','Unhandled exception|System\\.\\w+Exception'],['Win32 errors','0x[0-9A-Fa-f]{8}'],['Timeouts','timed out|ECONNREFUSED|Retrying'],['Access denied','Access is denied|0x80070005'],['Port collisions',':\\d{4,5}.*(?:bind|socket)']].map(([name,value])=>`<button data-event-preset="${esc(value)}">${esc(name)}</button>`).join('')}<button data-event-clear>${icon('delete_sweep')}Clear</button></div><div class="win-status event-status" data-win-status>Subscribed to Application and System · paused</div><div class="event-workspace"><section class="event-list"><header><span>Time</span><span>Level</span><span>Provider</span><span>ID</span><span>Channel</span></header><div data-event-results><div class="win-empty">Press Start to read the newest matching events.</div></div></section><aside class="event-detail" data-event-detail>${renderEventDetail()}</aside></div>`);
   }
 
+  /** The one sentence under the controls: what the tracker is doing now. */
+  function trackerLive() {
+    if (!trackerStatus.enabled) return "Tracking is off - nothing is being recorded";
+    if (trackerStatus.idleMs >= (trackerStatus.idleAfterMs || 300000)) return `Idle for ${duration(trackerStatus.idleMs)} - not counting this as time`;
+    const live = trackerStatus.live;
+    return live ? `Recording ${live.process} - kept on this PC, sent nowhere` : "Recording - kept on this PC, sent nowhere";
+  }
+
   function renderTimeTracker(tool) {
     const rows = trackerVisibleRows();
     const groups = trackerGroups();
@@ -626,9 +629,9 @@
     trackerSelected = selected;
     const selectedRows = rows.filter((row) => row.process === selected).sort((a, b) => b.end - a.end);
     const max = groups[0]?.ms || 1;
-    const groupHtml = groups.map((group) => `<button type="button" class="tracker-app${selected === group.process ? " on" : ""}" data-tracker-app="${esc(group.process)}"><span class="tracker-dot"></span><span><strong>${esc(group.process)}</strong><small>${group.count} session${group.count === 1 ? "" : "s"}</small></span><b>${duration(group.ms)}</b><i style="--usage:${Math.max(2, group.ms / max * 100)}%"></i></button>`).join("") || '<div class="win-empty">No recorded activity in this range.</div>';
+    const groupHtml = groups.map((group) => `<button type="button" class="tracker-app${selected === group.process ? " on" : ""}" data-tracker-app="${esc(group.process)}"><span class="tracker-dot"></span><span><strong>${esc(group.process)}</strong><small>${group.count} session${group.count === 1 ? "" : "s"}</small></span><b>${duration(group.ms)}</b><i style="--usage:${Math.max(2, group.ms / max * 100)}%"></i></button>`).join("") || `<div class="win-empty">${trackerLoading ? "Reading the recorded history…" : trackerStatus.enabled ? "Nothing recorded in this range yet." : "No recorded activity in this range."}</div>`;
     const sessions = selectedRows.slice(0, 100).map((row) => `<div class="tracker-session"><time>${esc(new Date(row.start).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}))}–${esc(new Date(row.end).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}))}</time><b>${duration(row.end - row.start)}</b><span><strong>${esc(row.title)}</strong><small>${esc(row.process)}${row.path ? ` · ${esc(row.path)}` : ""}</small></span></div>`).join("") || '<div class="win-empty">Choose an application to see its sessions.</div>';
-    host.innerHTML = header(tool, `<div class="tracker-controls"><div class="tracker-ranges">${[["today","Today"],["week","7 days"],["month","30 days"]].map(([id,label]) => `<button class="${trackerRange === id ? "on" : ""}" data-tracker-range="${id}">${label}</button>`).join("")}</div><span class="tracker-privacy">${icon("lock")}Local only · idle after 5m</span><button class="btn" data-tracker-export>${icon("download")}Export CSV</button><button class="btn ${trackerEnabled ? "tracking-on" : "primary"}" data-tracker-toggle>${icon(trackerEnabled ? "pause" : "play_arrow")}${trackerEnabled ? "Tracking" : "Start tracking"}</button></div><div class="win-status" data-tracker-live>${trackerEnabled ? "Recording locally while WinT is open" : "Tracking is paused"}</div><div class="tracker-stats"><section><small>Tracked</small><strong>${duration(total)}</strong><span>${rows.length} sessions</span></section><section><small>Applications</small><strong>${groups.length}</strong><span>in this range</span></section><section><small>Longest session</small><strong>${longest ? duration(longest.end - longest.start) : "—"}</strong><span>${esc(longest?.process || "No activity yet")}</span></section></div><div class="tracker-workspace"><section class="tracker-apps"><header><strong>Applications</strong><small>active time</small></header><div>${groupHtml}</div></section><section class="tracker-history"><header><div><strong>${esc(selected || "Focus sessions")}</strong><small>${selectedRows.length} session${selectedRows.length === 1 ? "" : "s"}</small></div></header><div>${sessions}</div></section></div>`);
+    host.innerHTML = header(tool, `<div class="tracker-controls"><div class="tracker-ranges">${[["today","Today"],["week","7 days"],["month","30 days"]].map(([id,label]) => `<button class="${trackerRange === id ? "on" : ""}" data-tracker-range="${id}">${label}</button>`).join("")}</div><span class="tracker-privacy">${icon("lock")}Local only · idle after 5m · runs whether or not this tool is open</span><button class="btn" data-tracker-export>${icon("download")}Export CSV</button><button class="btn" data-tracker-clear>${icon("delete")}Forget history</button><button class="btn ${trackerStatus.enabled ? "tracking-on" : "primary"}" data-tracker-toggle>${icon(trackerStatus.enabled ? "pause" : "play_arrow")}${trackerStatus.enabled ? "Tracking" : "Start tracking"}</button></div><div class="win-status" data-tracker-live>${esc(trackerLive())}</div><div class="tracker-stats"><section><small>Tracked</small><strong>${duration(total)}</strong><span>${rows.length} sessions</span></section><section><small>Applications</small><strong>${groups.length}</strong><span>in this range</span></section><section><small>Longest session</small><strong>${longest ? duration(longest.end - longest.start) : "—"}</strong><span>${esc(longest?.process || "No activity yet")}</span></section></div><div class="tracker-workspace"><section class="tracker-apps"><header><strong>Applications</strong><small>active time</small></header><div>${groupHtml}</div></section><section class="tracker-history"><header><div><strong>${esc(selected || "Focus sessions")}</strong><small>${selectedRows.length} session${selectedRows.length === 1 ? "" : "s"}</small></div></header><div>${sessions}</div></section></div>`);
   }
 
   function awakeElapsed() {
@@ -993,7 +996,7 @@
     if (pin) { window.wintShell?.toggleToolPin(pin.dataset.winPin); return render(); }
     const related=event.target.closest("[data-related-tool]");if(related){window.wintShell?.openTool(related.dataset.relatedTool);return;}
     if (event.target.closest("[data-win-refresh]")) return active === "events" ? loadEvents() : active === "registry" ? (regMode === "watch" ? pollRegistry() : loadRegistry()) : active === "system" ? (systemMode === "environment" ? loadSystem() : systemMode === "locks" ? inspectLocks() : loadLogTail()) : active === "log-tail" ? loadLogTail() : active === "lock-inspector" ? inspectLocks() : render();
-    if (event.target.closest("[data-tracker-toggle]")) { setTrackerEnabled(!trackerEnabled); return renderTimeTracker(catalog.find((x) => x.id === "time-tracker")); }
+    if (event.target.closest("[data-tracker-toggle]")) return setTrackerEnabled(!trackerStatus.enabled);
     if (event.target.closest("[data-awake-toggle]")) return setKeepAwake(!awakeActive, awakeDuration);
     const awakeFlag=event.target.closest("[data-awake-flag]");if(awakeFlag&&!awakeActive){const id=awakeFlag.dataset.awakeFlag;if(id==="system"){awakeSystem=!awakeSystem;if(!awakeSystem)awakeAway=false;}if(id==="display")awakeDisplay=!awakeDisplay;if(id==="away"){awakeAway=!awakeAway;if(awakeAway)awakeSystem=true;}return renderKeepAwake(catalog.find((x)=>x.id===active));}
     const awakeDurationButton=event.target.closest("[data-awake-duration]");if(awakeDurationButton&&!awakeActive){awakeDuration=Number(awakeDurationButton.dataset.awakeDuration);return renderKeepAwake(catalog.find((x)=>x.id===active));}
@@ -1005,7 +1008,8 @@
     const awakePreset=event.target.closest("[data-awake-preset]");if(awakePreset){const name=awakePreset.dataset.awakePresetName;awakeSystem=true;awakeDisplay=name==="Presenting"||name==="Attached debugger";awakeAway=name==="Overnight transfer";return setKeepAwake(true,Number(awakePreset.dataset.awakePreset));}
     const awakeCopy=event.target.closest("[data-awake-copy]");if(awakeCopy){const call=host.querySelector(".awake-call code")?.textContent||"";return window.wintCopy.copy(call,awakeCopy).catch(()=>{});}
     if (event.target.closest("[data-tracker-export]")) return exportTrackerCsv();
-    const trackerRangeButton=event.target.closest("[data-tracker-range]");if(trackerRangeButton){trackerRange=trackerRangeButton.dataset.trackerRange;trackerSelected="";return renderTimeTracker(catalog.find((x)=>x.id==="time-tracker"));}
+    if (event.target.closest("[data-tracker-clear]")) return clearTrackerHistory();
+    const trackerRangeButton=event.target.closest("[data-tracker-range]");if(trackerRangeButton){trackerRange=trackerRangeButton.dataset.trackerRange;trackerSelected="";return loadTrackerSessions();}
     const trackerApp=event.target.closest("[data-tracker-app]");if(trackerApp){trackerSelected=trackerApp.dataset.trackerApp;return renderTimeTracker(catalog.find((x)=>x.id==="time-tracker"));}
     const dropTool=event.target.closest("[data-dock-tool-remove]");if(dropTool){bar={...bar,tools:barTools().filter((tool)=>tool.id!==dropTool.dataset.dockToolRemove)};saveBar();return renderSidebar(catalog.find((x)=>x.id==="sidebar"));}
     if(event.target.closest("[data-dock-toggle]"))return dockCall(dock.docked?"sidebar_close":"sidebar_open",dock.docked?undefined:{edge:dock.edge,width:dock.width,hideTaskbar:bar.hideTaskbar!==false});
@@ -1096,14 +1100,14 @@
       audit: live ? window.wintSecurityAudit?.exportState?.() || null : null,
       regPath,regRows,regSelected,regMode,regWatch:[...regWatch],regFeed,eventRows,eventSelected,eventDetailTab,
       systemMode,systemScope,systemReport,systemSelected,clipboardKind,clipboardPinnedOnly,clipboardSelected,
-      trackerRows,trackerEnabled,trackerRange,trackerSelected };
+      trackerRange,trackerSelected };
   }
   function importState(state) {
     if(!state)return;
     clearInterval(timer);timer=0;clearInterval(awakeTimer);awakeTimer=0;
     ({armed,regPath,regRows,regSelected,regMode,regFeed,eventRows,eventSelected,eventDetailTab,
       systemMode,systemScope,systemReport,systemSelected,clipboardKind,clipboardPinnedOnly,clipboardSelected,
-      trackerRows,trackerEnabled,trackerRange,trackerSelected}=state);
+      trackerRange,trackerSelected}=state);
     regWatch=new Map(state.regWatch||[]);handoffHtml=state.html||"";handoffRunning=state.running===true;
     // Handed to PC Detective by its own mount, whenever that happens: the
     // tool is loaded on demand and may not exist yet.

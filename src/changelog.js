@@ -16,6 +16,91 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.134.2",
+      date: "2026-09-21",
+      title: "Fix it here, do not go and do it",
+      changes: [
+        ["fix", "Verify called a working GitHub Copilot broken. Copilot ships as a .bat inside its VS Code extension, and Windows cannot start a batch file the way it starts a program - so the version check failed and the row reported a perfectly good install as a leftover shim."],
+        ["better", "An agent that is installed and runs now just says so. It no longer carries a paragraph about sign-in being unconfirmable, which was a warning about nothing on a row that works."],
+        ["new", "Every problem the model screen reports now comes with the button that fixes it: Install when it is missing, Reinstall when it is there but will not run, Sign in when it is signed out. After an install it re-checks itself and tells you where you stand."],
+        ["fix", "The Install button failed immediately with an invalid-argument error: it was not telling the installer which window to report progress to."],
+        ["better", "An install streams what it is doing into the row, rather than sitting on Installing for a silent minute."],
+      ],
+    },
+    {
+      version: "0.134.1",
+      date: "2026-09-21",
+      title: "A pinned profile opens that profile, even an old pin",
+      changes: [
+        ["fix", "Clicking a pinned browser profile while a different profile was open just brought that other profile forward. One browser window looks like any other from outside - same program, same process - so the pin found the window that was already up and showed it. A pin now only answers to a window that is the profile it stands for, and starts the browser when that profile has no window."],
+        ["fix", "Pins made before profiles were understood work too, without being made again: what a pin stands for is enough to work the profile out when it is clicked."],
+      ],
+    },
+    {
+      version: "0.134.0",
+      date: "2026-09-21",
+      title: "Setting models up, not picking one",
+      changes: [
+        ["new", "Settings - Assistant is now about getting models working. Every coding agent, API model and local model is a switch you can turn on or off everywhere at once, with the action that would make it usable sitting next to it."],
+        ["new", "API keys are added, checked and removed without leaving Settings. Verify makes one real call to the provider, so a key with a character missing is caught while you are still looking at the box rather than partway through your first question - and it tells a rejected key apart from a rate-limited account or a provider having a bad day."],
+        ["new", "An agent that is not found has Detect and Install buttons. One that is found has Verify, which runs it rather than just looking for the file: a shim on PATH that cannot start is reported as broken rather than installed. Cursor Agent also reports whether it is signed in, and who as."],
+        ["better", "When an agent is installed but sign-in cannot be confirmed, WinT says exactly that instead of guessing, and offers to open the agent in a terminal so you can go through its own sign-in."],
+        ["better", "Turning a model off in Settings takes it out of the AI sidebar and PC Detective too, because what is switched off is remembered by the app rather than by one window."],
+      ],
+    },
+    {
+      version: "0.133.0",
+      date: "2026-09-21",
+      title: "One model list, everywhere",
+      changes: [
+        ["new", "Settings - Assistant now has the model setup screen: installed coding agents, models behind your own API keys, and models downloaded onto this PC, in one list with what is ready and what each one still needs. The agents are used exactly as before - WinT picks no model for them and passes none, so each keeps answering with whatever you configured it to use."],
+        ["better", "What you choose there is what the AI sidebar, PC Detective and a workspace Agent panel all offer. The choice is kept by the app rather than by one window, so all three agree on it."],
+        ["fix", "Choosing a local model in Settings had no effect on a workspace Agent panel, which always fell back to the smaller default. A workspace runs in its own webview and could not see the setting where it was stored, so it never read the choice at all."],
+        ["better", "Adding an API key in the sidebar no longer needs a restart to be noticed elsewhere: the models that key unlocks appear in Settings and everywhere else straight away."],
+      ],
+    },
+    {
+      version: "0.132.0",
+      date: "2026-09-21",
+      title: "Active window tracking actually keeps tracking",
+      changes: [
+        ["fix", "Home could say active window tracking was on while the tool said it was paused, and neither was recording. Tracking was kept by whichever window happened to be drawing it, so the main window, the Settings page and a popped-out tool each had their own answer, and a popped-out tool could never record at all - its Tracking button was decoration."],
+        ["new", "Tracking now belongs to WinT itself rather than to a window, the way Keep Awake and Input Stall Watch already did. It records from the moment you switch it on until you switch it off - tool closed, window minimised, popped out to another screen - and starts again with WinT if you left it on. There is one switch, and Home, Settings and the tool all show it."],
+        ["better", "The history is kept by WinT instead of by the browser storage of one window, so it is the same history everywhere and survives the things that used to lose it. Ninety days are kept, and Forget history in the tool deletes the lot."],
+        ["better", "The tool says what is happening in plain words - which application it is recording right now, or how long you have been idle - and the two switches for it are one. \"Always track\" is gone: tracking is either on or off, and on means on."],
+      ],
+    },
+    {
+      version: "0.131.2",
+      date: "2026-09-21",
+      title: "PC Detective starts, or says why it cannot",
+      changes: [
+        ["fix", "PC Detective could fail at the first step with \"could not start the agent: the directory name is invalid\", and never get as far as looking at anything. Windows was refusing to start a program in the audit folder - what happens when Local AppData is redirected to a network share or OneDrive, or the profile folder it points at has moved. The scan now falls back to a working directory that does work, so it runs anyway."],
+        ["new", "When nowhere works, the failure comes with a setup guide and a Check and fix this PC button that does the repair itself - no agent needed, which is the point, because the agent is what will not start. It puts back the audit folder and the TEMP folder if something deleted them, then proves each one by starting a program in it, since a folder that exists is not the same as a folder Windows will accept. What it cannot safely fix on its own - Local AppData pointing off this PC - it reports rather than quietly changing, and it offers the scan again as soon as somewhere works."],
+        ["better", "The guide names the four things worth checking, because this fault is the PC's and not the audit's: it is the same one that stops Claude Code or GitHub Copilot starting from an editor on that machine."],
+      ],
+    },
+    {
+      version: "0.131.1",
+      date: "2026-09-21",
+      title: "Pinned tray apps come back, not a blank frame",
+      changes: [
+        ["fix", "Clicking a pinned app that was sitting in the tray - Signal, and every app that hides there rather than closing - put an empty frame on screen. A second copy was being started, which handed over to the copy already running and left its own undrawn window behind. A pin now looks for the app's window first and puts it back the way clicking its tray icon does, and only starts the app when it has no window anywhere."],
+      ],
+    },
+    {
+      version: "0.131.0",
+      date: "2026-09-21",
+      title: "Browser profiles, and the sidebar stays put",
+      changes: [
+        ["fix", "A pinned browser profile opened that profile. Two profiles of the same browser could each be pinned, but clicking either one started whichever profile the browser opened last, because both pins came down to the same exe. A pin now remembers the profile it was made from, and \"New window\" on a profile's window opens that profile too. Edge, Chrome, Brave, Vivaldi and Opera, whichever channel they are and whether they were installed for everyone or just you."],
+        ["better", "A browser profile's row and its pin are named after the profile - \"Gyxi - Microsoft Edge\" - so two profiles are no longer two rows with the same name."],
+        ["fix", "An app closed to the tray came back where it was left. Its place was being pushed behind every open row each time the sidebar saved, so restoring it - Signal out of the tray, say - dropped it at the bottom instead of back under its divider."],
+        ["better", "A window seen for the first time is placed at the end of the group above the first divider, not below every divider. Everything under a divider was put there deliberately, and a new window landing there looked like it belonged to that group."],
+        ["better", "The place a window is given is remembered as soon as it opens, rather than only once something is dragged."],
+      ],
+    },
+    {
       version: "0.130.0",
       date: "2026-09-21",
       title: "Dividers on the sidebar",
