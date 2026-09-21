@@ -3,6 +3,8 @@ mod ai;
 mod appbar;
 #[cfg(windows)]
 mod focus_mode;
+#[cfg(windows)]
+pub mod indicators;
 mod autostart;
 pub mod analytics;
 mod assistant;
@@ -765,7 +767,7 @@ async fn health_reveal() -> Result<(), String> {
 /// log as what the backend was doing when it stopped answering.
 #[tauri::command]
 async fn health_note(text: String) {
-    health::record("ui", text.chars().take(300).collect::<String>());
+    health::note(text.chars().take(300).collect::<String>());
 }
 
 /// Everything that starts with Windows, for the Startup and tray tool. It
@@ -2949,6 +2951,13 @@ pub fn run() {
             appbar::sidebar_wifi_picker,
             appbar::sidebar_connections,
             appbar::sidebar_tray_apps,
+            appbar::sidebar_volume,
+            appbar::sidebar_set_volume,
+            appbar::sidebar_set_muted,
+            appbar::sidebar_battery,
+            appbar::sidebar_layouts,
+            appbar::sidebar_set_layout,
+            appbar::sidebar_open_settings,
             health_report,
             health_reveal,
             health_note,

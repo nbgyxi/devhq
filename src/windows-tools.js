@@ -334,7 +334,7 @@
   // What the rail draws. This page runs in an isolated webview with storage of
   // its own, so the settings are kept by the backend, which also hands every
   // change to the docked rail as it is made.
-  const DOCK_SLOTS = [["brand", "WinT (opens Search)", "dashboard"], ["start", "Windows Start", "grid_view"], ["clipboard", "Clipboard", "content_paste"], ["focus", "Focus mode", "shield_lock"], ["network", "Network and connections", "wifi"], ["windows", "Open windows", "select_window"], ["geometry", "Edge and width readout", "straighten"], ["trayapps", "Notification area", "apps"], ["tray", "Tray icons", "expand_less"], ["taskbar", "Show / hide taskbar", "visibility_off"], ["edge", "Flip side", "swap_horiz"], ["close", "Undock", "close"]];
+  const DOCK_SLOTS = [["brand", "WinT (opens Search)", "dashboard"], ["start", "Windows Start", "grid_view"], ["clipboard", "Clipboard", "content_paste"], ["focus", "Focus mode", "shield_lock"], ["network", "Network and connections", "wifi"], ["volume", "Volume", "volume_up"], ["battery", "Battery", "battery_full"], ["language", "Keyboard language", "language"], ["windows", "Open windows", "select_window"], ["geometry", "Edge and width readout", "straighten"], ["trayapps", "Notification area", "apps"], ["tray", "Show native tray", "expand_less"], ["taskbar", "Show / hide taskbar", "visibility_off"], ["edge", "Flip side", "swap_horiz"], ["close", "Undock", "close"]];
   let bar = { textSize: 10, iconSize: 22, slots: {}, tools: [] };
   // Every tool a shortcut can point at. This page has no catalog of the whole
   // app, so it asks the main window, which answers with one event.

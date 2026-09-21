@@ -103,7 +103,7 @@
   // runs in an isolated webview with storage of its own, so every change
   // reaches this rail as a `sidebar:settings` event, the moment it is made.
   const DEFAULT_SETTINGS = {
-    slots: { brand: true, start: true, clipboard: true, focus: true, network: true, windows: true, geometry: true, trayapps: true, tray: true, taskbar: true, edge: true, close: true },
+    slots: { brand: true, start: true, clipboard: true, focus: true, network: true, volume: true, battery: true, language: true, windows: true, geometry: true, trayapps: true, tray: true, taskbar: true, edge: true, close: true },
     textSize: 10,
     iconSize: 22,
     hideTaskbar: true,
@@ -127,6 +127,8 @@
     document.querySelector("[data-spacer]").hidden = settings.slots.windows !== false;
     paintTools();
     paintTray();
+    // A tile just switched back on has nothing read for it yet.
+    refreshIndicators();
     document.documentElement.style.setProperty("--bar-text", `${settings.textSize}px`);
     document.documentElement.style.setProperty("--bar-icon", `${settings.iconSize}px`);
   }
@@ -367,53 +369,74 @@
       .finally(refreshWindows);
   }
 
+  /// True while a native menu from the rail is up.
+  ///
+  /// One flag for all of them, and every menu takes it. Two menus at once is
+  /// not a cosmetic problem: opening one holds a lock inside Tauri until it
+  /// closes, and building the other needs that same lock, on the thread the
+  /// first menu is running on. Neither can finish, and the app is gone — no
+  /// work in flight, nothing to see, just a window that stops.
+  let menuOpen = false;
+
   list.addEventListener("contextmenu", async (event) => {
     const button = event.target.closest("[data-window]");
     if (!button) return;
     event.preventDefault();
-    const id = button.dataset.window;
-    let info, recent;
+    // This right-click has been answered. Without this it carries on up to
+    // the rail's own menu on `document`, which would build a second menu
+    // beside this one.
+    event.stopPropagation();
+    if (menuOpen) return;
+    menuOpen = true;
     try {
-      [info, recent] = await Promise.all([
-        invoke("sidebar_window_menu", { id }),
-        invoke("sidebar_window_recent", { id }).catch(() => []),
-      ]);
+      const id = button.dataset.window;
+      let info, recent;
+      try {
+        [info, recent] = await Promise.all([
+          invoke("sidebar_window_menu", { id }),
+          invoke("sidebar_window_recent", { id }).catch(() => []),
+        ]);
+      } catch (error) {
+        flash(button, error);
+        return;
+      }
+      const app = rows.get(id)?.app;
+      const siblings = [...rows].filter(([, entry]) => entry.app === app).map(([other]) => other);
+      // A single "&" in a native menu marks the underlined access key.
+      const item = (text, action, enabled = true) => MenuItem.new({ text: text.replaceAll("&", "&&"), enabled, action });
+      const items = [];
+      // Recent files and folders sit on top, as in the taskbar's jump list.
+      if (recent.length) {
+        items.push(await item("Recent", () => {}, false));
+        for (const entry of recent) {
+          items.push(await item(entry.name, () =>
+            invoke("sidebar_launch_new", { id, path: entry.path }).catch((error) => flash(button, error))));
+        }
+        items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+      }
+      items.push(
+        await item(info.name || "New window", () =>
+          invoke("sidebar_launch_new", { id }).catch((error) => flash(button, error)), info.canLaunch),
+        await PredefinedMenuItem.new({ item: "Separator" }),
+        info.minimized
+          ? await item("Restore", () => windowCommand(button, id, "restore"))
+          : await item("Minimize", () => windowCommand(button, id, "minimize")),
+        await item("Maximize", () => windowCommand(button, id, "maximize")),
+        await PredefinedMenuItem.new({ item: "Separator" }),
+        await item("Close window", () => windowCommand(button, id, "close")),
+      );
+      if (siblings.length > 1) {
+        items.push(await item(`Close all ${siblings.length} windows`, () => {
+          for (const other of siblings) windowCommand(rows.get(other)?.button || button, other, "close");
+        }));
+      }
+      const menu = await Menu.new({ items });
+      await menu.popup();
     } catch (error) {
       flash(button, error);
-      return;
+    } finally {
+      menuOpen = false;
     }
-    const app = rows.get(id)?.app;
-    const siblings = [...rows].filter(([, entry]) => entry.app === app).map(([other]) => other);
-    // A single "&" in a native menu marks the underlined access key.
-    const item = (text, action, enabled = true) => MenuItem.new({ text: text.replaceAll("&", "&&"), enabled, action });
-    const items = [];
-    // Recent files and folders sit on top, as in the taskbar's jump list.
-    if (recent.length) {
-      items.push(await item("Recent", () => {}, false));
-      for (const entry of recent) {
-        items.push(await item(entry.name, () =>
-          invoke("sidebar_launch_new", { id, path: entry.path }).catch((error) => flash(button, error))));
-      }
-      items.push(await PredefinedMenuItem.new({ item: "Separator" }));
-    }
-    items.push(
-      await item(info.name || "New window", () =>
-        invoke("sidebar_launch_new", { id }).catch((error) => flash(button, error)), info.canLaunch),
-      await PredefinedMenuItem.new({ item: "Separator" }),
-      info.minimized
-        ? await item("Restore", () => windowCommand(button, id, "restore"))
-        : await item("Minimize", () => windowCommand(button, id, "minimize")),
-      await item("Maximize", () => windowCommand(button, id, "maximize")),
-      await PredefinedMenuItem.new({ item: "Separator" }),
-      await item("Close window", () => windowCommand(button, id, "close")),
-    );
-    if (siblings.length > 1) {
-      items.push(await item(`Close all ${siblings.length} windows`, () => {
-        for (const other of siblings) windowCommand(rows.get(other)?.button || button, other, "close");
-      }));
-    }
-    const menu = await Menu.new({ items });
-    await menu.popup();
   });
 
   // ---- suggested apps ---------------------------------------------------------
@@ -445,9 +468,14 @@
   }
 
   let suggesting = false;
+  // Last in line: this fires for a right-click anywhere on the rail that
+  // nothing nearer has already answered and stopped. It used to fire for
+  // those too — a right-click on a tray icon opened that icon's menu and
+  // this one, both at once, which is what wedged the app.
   document.addEventListener("contextmenu", async (event) => {
     event.preventDefault();
-    if (event.target.closest("[data-window]") || suggesting) return;
+    if (event.target.closest("[data-window]") || menuOpen) return;
+    menuOpen = true;
     suggesting = true;
     try {
       // Only the very first right-click, before the first read is back, waits.
@@ -470,8 +498,11 @@
       }
       const menu = await Menu.new({ items });
       await menu.popup();
+    } catch (error) {
+      geometry.textContent = String(error);
     } finally {
       suggesting = false;
+      menuOpen = false;
     }
   });
 
@@ -497,6 +528,9 @@
   // minute, for a list nobody was looking at.
   const TRAY_REFRESH_MS = 30_000;
   const NET_REFRESH_MS = 15_000;
+  // The volume, the battery and the layout are three in-process reads, so they
+  // can be looked at more often than anything that shells out.
+  const INDICATOR_REFRESH_MS = 8_000;
   const NET_GLYPH = { wifi: "wifi", wired: "lan", offline: "public_off" };
   // WinT's own tools that are about the network, for the menu's last section.
   const NET_TOOLS = [
@@ -516,12 +550,15 @@
   let trayExpanded = false;
   let trayDrawn = "";
   let netStatus = { kind: "offline", name: "" };
+  // The three readings Windows keeps beside the network in its own tray. Each
+  // starts empty and its tile stays out of the row until it has been read, so
+  // the rail never shows a made-up zero.
+  let volume = null;
+  let battery = null;
+  let layouts = [];
   let wifiNetworks = [];
   let connections = null;
   let connectionsLoading = null;
-  /** True while a native menu from the rail is up. */
-  let networkMenuOpen = false;
-
   /// A line in the readout at the foot of the rail, put back after a moment.
   /// The rail is too narrow for an error on an icon.
   function say(text) {
@@ -529,6 +566,12 @@
     clearTimeout(say.timer);
     say.timer = setTimeout(paint, 4000);
   }
+
+  // A line in the health log, for the steps a freeze can happen inside. The
+  // watchdog cannot see a native menu or a window being created — neither is
+  // tracked work — so what the rail last said it was doing is the only thing
+  // naming where it stopped.
+  const trace = (text) => { invoke("health_note", { text: `Sidebar: ${text}` }).catch(() => {}); };
 
   function netDetail() {
     return [
@@ -538,13 +581,56 @@
     ].filter(Boolean).join(" · ");
   }
 
-  function tile(kind, glyph, iconUrl, label, title) {
+  /** What the volume tile draws: the same four states the tray's own icon has. */
+  function volumeGlyph() {
+    if (!volume?.present) return "volume_off";
+    if (volume.muted || volume.level === 0) return "volume_off";
+    if (volume.level < 34) return "volume_mute";
+    if (volume.level < 67) return "volume_down";
+    return "volume_up";
+  }
+
+  const volumeLabel = () => (!volume?.present ? "No playback device"
+    : volume.muted ? "Muted" : `Volume ${volume.level}%`);
+
+  /** The battery, drawn at the level Windows reports rather than as one full
+   *  or empty glyph — the whole point of the icon is the reading. */
+  function batteryGlyph() {
+    if (battery?.charging) return "battery_charging_full";
+    const bars = ["battery_0_bar", "battery_1_bar", "battery_2_bar", "battery_3_bar", "battery_4_bar", "battery_5_bar", "battery_6_bar"];
+    const percent = battery?.percent ?? 0;
+    if (percent >= 95) return "battery_full";
+    if (percent <= 10) return "battery_alert";
+    return bars[Math.min(bars.length - 1, Math.round((percent / 100) * (bars.length - 1)))];
+  }
+
+  function batteryDetail() {
+    if (!battery?.present) return "";
+    const hours = Math.floor(battery.minutes / 60);
+    const left = battery.minutes ? `${hours ? `${hours} h ` : ""}${battery.minutes % 60} min left` : "";
+    return [
+      battery.charging ? "charging" : battery.plugged ? "on mains power" : "on battery",
+      left,
+      battery.saver ? "battery saver on" : "",
+    ].filter(Boolean).join(" · ");
+  }
+
+  const activeLayout = () => layouts.find((layout) => layout.active) || layouts[0] || null;
+
+  function tile(kind, glyph, iconUrl, label, title, tag = "") {
     const button = document.createElement("button");
     button.type = "button";
     button.className = trayExpanded ? "bar-win" : "bar-win icon-only";
     button.dataset[kind] = "";
     button.title = title;
-    if (iconUrl) {
+    if (tag) {
+      // The language is three letters, the way the tray writes it — an icon
+      // would say "a keyboard", which is not the thing being shown.
+      const span = document.createElement("span");
+      span.className = "tray-tag";
+      span.textContent = tag;
+      button.append(span);
+    } else if (iconUrl) {
       const img = document.createElement("img");
       img.alt = "";
       img.draggable = false;
@@ -568,15 +654,23 @@
   function paintTray() {
     const showNetwork = settings.slots.network !== false;
     const showApps = settings.slots.trayapps !== false;
+    // Each of the three is drawn only once it has been read, and the battery
+    // only on a machine that has one — a desktop has nothing to say there.
+    const showVolume = settings.slots.volume !== false && !!volume;
+    const showBattery = settings.slots.battery !== false && !!battery?.present;
+    const showLanguage = settings.slots.language !== false && layouts.length > 0;
     // Every icon shows either way: what the chevron opens is the names, not
     // more of the tray. A rail that hid half of them would be answering a
     // question nobody asked — the tray is there to be glanced at whole.
     const shown = showApps && trayApps ? trayApps : [];
 
-    trayBox.hidden = !showNetwork && !apps.length;
+    trayBox.hidden = !showNetwork && !showVolume && !showBattery && !showLanguage && !shown.length;
     trayBox.classList.toggle("expanded", trayExpanded);
     const key = JSON.stringify([
       trayExpanded, showNetwork, netStatus.kind, netStatus.name,
+      showVolume && volumeGlyph(), showVolume && volumeLabel(),
+      showBattery && batteryGlyph(), showBattery && batteryDetail(), showBattery && battery.percent,
+      showLanguage && activeLayout()?.tag, showLanguage && activeLayout()?.name,
       shown.map((app) => [app.id, app.name, !!trayIcons.get(app.exe)]),
     ]);
     if (key === trayDrawn) return;
@@ -593,6 +687,31 @@
         detail ? `${netStatus.name} — ${detail}` : "No network",
       ));
     }
+    if (showVolume) {
+      items.push(tile(
+        "trayVolume",
+        volumeGlyph(),
+        null,
+        volumeLabel(),
+        volume.device ? `${volumeLabel()} — ${volume.device}` : volumeLabel(),
+      ));
+    }
+    if (showBattery) {
+      const detail = batteryDetail();
+      items.push(tile(
+        "trayBattery",
+        batteryGlyph(),
+        null,
+        `Battery ${battery.percent}%`,
+        detail ? `Battery ${battery.percent}% — ${detail}` : `Battery ${battery.percent}%`,
+      ));
+    }
+    if (showLanguage) {
+      const layout = activeLayout();
+      items.push(tile("trayLanguage", "language", null, layout.name, layout.name, layout.tag));
+    }
+    // The apps come after the three readings, the way the tray orders them.
+    const leading = items.length;
     for (const app of shown) {
       items.push(tile("trayApp", "web_asset", trayIcons.get(app.exe), app.name, app.name));
     }
@@ -608,8 +727,8 @@
       items.push(more);
     }
     for (const [index, app] of shown.entries()) {
-      items[index + (showNetwork ? 1 : 0)].dataset.trayApp = app.id;
-      items[index + (showNetwork ? 1 : 0)].dataset.trayExe = app.exe;
+      items[leading + index].dataset.trayApp = app.id;
+      items[leading + index].dataset.trayExe = app.exe;
     }
     trayBox.replaceChildren(...items);
   }
@@ -638,6 +757,18 @@
     return connectionsLoading;
   }
 
+  // The three readings beside the network. Each is one call, and each repaints
+  // on its own so a slow one never holds up the other two.
+  let indicatorsLoading = null;
+  function refreshIndicators() {
+    indicatorsLoading ??= Promise.all([
+      settings.slots.volume === false ? null : invoke("sidebar_volume").then((read) => { volume = read; }, () => {}),
+      settings.slots.battery === false ? null : invoke("sidebar_battery").then((read) => { battery = read; }, () => {}),
+      settings.slots.language === false ? null : invoke("sidebar_layouts").then((read) => { layouts = read; }, () => {}),
+    ]).then(paintTray).finally(() => { indicatorsLoading = null; });
+    return indicatorsLoading;
+  }
+
   function loadTrayApps() {
     trayLoading ??= (async () => {
       const apps = await invoke("sidebar_tray_apps").catch(() => []);
@@ -659,10 +790,17 @@
   const note = (text) => MenuItem.new({ text: text.replaceAll("&", "&&"), enabled: false });
   const act = (text, action) => MenuItem.new({ text: text.replaceAll("&", "&&"), action });
 
+  // The main window owns the pop-out handoff, so it is asked to do it. Never
+  // call this from inside a menu item: the window is created on the thread the
+  // menu is still holding. Park the id and open it once the menu has closed.
+  const openTool = (id) => window.__TAURI__.event.emit("sidebar:open-tool", { id })
+    .catch((error) => say(error));
+
 
   async function openNetworkMenu() {
-    if (networkMenuOpen) return;
-    networkMenuOpen = true;
+    if (menuOpen) return;
+    menuOpen = true;
+    let openAfter = "";
     try {
       // The menu's own two lists are read here rather than on a timer. The
       // first click waits for them; every later one shows what the close of
@@ -728,8 +866,8 @@
       }));
       items.push(await Submenu.new({
         text: "Network tools",
-        items: await Promise.all(NET_TOOLS.map(([id, name]) => act(name, () =>
-          window.__TAURI__.event.emit("sidebar:open-tool", { id }).catch((error) => say(error))))),
+        items: await Promise.all(NET_TOOLS.map(([id, name]) =>
+          act(name, () => { openAfter = id; }))),
       }));
 
       const menu = await Menu.new({ items });
@@ -737,12 +875,108 @@
     } catch (error) {
       say(error);
     } finally {
-      networkMenuOpen = false;
+      menuOpen = false;
+      if (openAfter) openTool(openAfter);
       // The lists a menu was just built from are the stalest they will ever be.
       loadConnections();
       loadWifi();
     }
   }
+
+  // ---- the volume, battery and language menus --------------------------------------
+  // A native menu cannot hold a slider, so the volume is offered as the steps
+  // a tray slider is nudged to anyway, and the wheel over the tile does the
+  // fine work. Everything past that — choosing an output device, a power plan,
+  // adding a language — is Windows' own page, opened rather than rebuilt.
+  // `build` is handed a park(id) its items call instead of opening a tool
+  // themselves, for the same reason: the window cannot be created while the
+  // menu still holds the thread.
+  async function openMenu(build) {
+    if (menuOpen) return;
+    menuOpen = true;
+    let openAfter = "";
+    try {
+      const menu = await Menu.new({ items: await build((id) => { openAfter = id; }) });
+      await menu.popup();
+    } catch (error) {
+      say(error);
+    } finally {
+      menuOpen = false;
+      if (openAfter) openTool(openAfter);
+      refreshIndicators();
+    }
+  }
+
+  const settingsItem = (text, page) => act(text, () =>
+    invoke("sidebar_open_settings", { page }).catch((error) => say(error)));
+
+  /** Set the level and show it at once, so the rail does not wait for the read. */
+  function setVolume(level) {
+    const wanted = Math.max(0, Math.min(100, Math.round(level)));
+    if (volume) volume = { ...volume, level: wanted, muted: false };
+    paintTray();
+    say(`Volume ${wanted}%`);
+    invoke("sidebar_set_volume", { level: wanted })
+      .catch((error) => say(error))
+      .finally(refreshIndicators);
+  }
+
+  function toggleMute() {
+    const muted = !volume?.muted;
+    if (volume) volume = { ...volume, muted };
+    paintTray();
+    say(muted ? "Muted" : "Unmuted");
+    invoke("sidebar_set_muted", { muted })
+      .catch((error) => say(error))
+      .finally(refreshIndicators);
+  }
+
+  const openVolumeMenu = () => openMenu(async (park) => {
+    const items = [await note(volume?.device || "No playback device")];
+    if (volume?.present) {
+      items.push(await note(volume.muted ? `Muted at ${volume.level}%` : `${volume.level}%`));
+      items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+      items.push(await act(volume.muted ? "Unmute" : "Mute", toggleMute));
+      for (const level of [100, 75, 50, 25, 10, 0]) {
+        items.push(await act(`${level === volume.level ? "• " : "   "}${level}%`, () => setVolume(level)));
+      }
+    }
+    items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+    // Which device is playing is the other half of the volume, and WinT has a
+    // tool for it that does more than Windows' own page: it sets all three
+    // roles at once and tests the device. So it comes first.
+    items.push(await act("Sound Device Switcher…", () => park("repair-swap")));
+    items.push(await settingsItem("Sound settings…", "sound"));
+    return items;
+  });
+
+  const openBatteryMenu = () => openMenu(async () => {
+    const items = [await note(`Battery ${battery?.percent ?? 0}%`)];
+    const detail = batteryDetail();
+    if (detail) items.push(await note(detail));
+    items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+    items.push(await settingsItem("Power and sleep…", "power"));
+    items.push(await settingsItem("Battery saver…", "battery"));
+    return items;
+  });
+
+  const openLanguageMenu = () => openMenu(async () => {
+    const items = [await note("Keyboard layout")];
+    items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+    for (const layout of layouts) {
+      items.push(await act(`${layout.active ? "• " : "   "}${layout.name} (${layout.tag})`, () => {
+        say(`Switching to ${layout.name}`);
+        invoke("sidebar_set_layout", { id: layout.id })
+          .catch((error) => say(error))
+          // Windows carries the request to the foreground window, which takes
+          // a moment to act on it; reading back too soon shows the old layout.
+          .finally(() => setTimeout(refreshIndicators, 300));
+      }));
+    }
+    items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+    items.push(await settingsItem("Language and keyboard settings…", "language"));
+    return items;
+  });
 
   // Right-clicking an icon does what right-clicking a tray icon does: the few
   // things worth doing to the program behind it. Its own tray menu is out of
@@ -752,22 +986,47 @@
     const button = event.target.closest("[data-tray-app]");
     if (!button) return;
     event.preventDefault();
-    const { trayApp: id, trayExe: exe } = button.dataset;
-    const name = button.title || "this app";
-    const items = [
-      await act("Show it", () => invoke("sidebar_reveal", { id, exe })
-        .catch((error) => say(error))
-        .finally(refreshWindows)),
-      await act("Close it", () => invoke("startup_close", { exe })
-        .then(say, say)
-        .finally(() => { refreshWindows(); loadTrayApps(); })),
-      await PredefinedMenuItem.new({ item: "Separator" }),
-      // Where the rest of it lives: what starts it, and the switch for it.
-      await act("Startup and tray…", () =>
-        window.__TAURI__.event.emit("sidebar:open-tool", { id: "startup" }).catch((error) => say(error))),
-    ];
-    const menu = await Menu.new({ items: [await note(name), await PredefinedMenuItem.new({ item: "Separator" }), ...items] });
-    await menu.popup();
+    // Answered here. Left to carry on, this same click also reaches the
+    // rail's menu on `document`, and two menus built at once deadlock the
+    // app — one holds a lock while it is open that the other needs to be
+    // built, on the very thread the open one is running on.
+    event.stopPropagation();
+    // Like every other menu on the rail: while it is up, the timers that
+    // reread the tray stay off. paintTray() rebuilds the very row the menu is
+    // anchored to, and every refresh underneath it is IPC queueing up behind a
+    // native menu that holds the thread — which is what left the rail wedged.
+    if (menuOpen) return;
+    menuOpen = true;
+    // Opening a tool creates a window, and Windows only creates one on the
+    // thread the menu is running on. It waits until the menu has gone.
+    let openAfter = "";
+    try {
+      const { trayApp: id, trayExe: exe } = button.dataset;
+      const name = button.title || "this app";
+      const items = [
+        await act("Show it", () => invoke("sidebar_reveal", { id, exe })
+          .catch((error) => say(error))
+          .finally(refreshWindows)),
+        await act("Close it", () => invoke("startup_close", { exe })
+          .then(say, say)
+          .finally(() => { refreshWindows(); loadTrayApps(); })),
+        await PredefinedMenuItem.new({ item: "Separator" }),
+        // Where the rest of it lives: what starts it, and the switch for it.
+        await act("Startup and tray…", () => { openAfter = "startup"; }),
+      ];
+      const menu = await Menu.new({ items: [await note(name), await PredefinedMenuItem.new({ item: "Separator" }), ...items] });
+      trace(`opening the tray menu for ${name}`);
+      await menu.popup();
+      trace(`the tray menu for ${name} closed`);
+    } catch (error) {
+      say(error);
+    } finally {
+      menuOpen = false;
+      if (openAfter) {
+        trace(`opening the ${openAfter} tool from the tray menu`);
+        openTool(openAfter);
+      }
+    }
   });
 
   trayBox.addEventListener("click", (event) => {
@@ -777,6 +1036,9 @@
       return;
     }
     if (event.target.closest("[data-tray-network]")) return openNetworkMenu();
+    if (event.target.closest("[data-tray-volume]")) return openVolumeMenu();
+    if (event.target.closest("[data-tray-battery]")) return openBatteryMenu();
+    if (event.target.closest("[data-tray-language]")) return openLanguageMenu();
     const button = event.target.closest("[data-tray-app]");
     if (!button) return;
     invoke("sidebar_reveal", { id: button.dataset.trayApp, exe: button.dataset.trayExe })
@@ -792,12 +1054,35 @@
   //
   // The connections and the networks in range are not read here at all: the
   // menu that shows them reads them when it opens.
+  // The wheel over the volume tile does what it does over the tray's own icon:
+  // five points a notch, applied straight away and shown before the read comes
+  // back. The writes are coalesced, so a long spin is one call per frame, not
+  // one per notch.
+  let wheelPending = 0;
+  trayBox.addEventListener("wheel", (event) => {
+    if (!event.target.closest("[data-tray-volume]") || !volume?.present) return;
+    event.preventDefault();
+    const level = Math.max(0, Math.min(100, (volume.level ?? 0) + (event.deltaY < 0 ? 5 : -5)));
+    volume = { ...volume, level, muted: false };
+    paintTray();
+    if (wheelPending) return;
+    wheelPending = requestAnimationFrame(() => {
+      wheelPending = 0;
+      setVolume(volume.level);
+    });
+  }, { passive: false });
+
   setTimeout(refreshNetwork, 400);
+  setTimeout(refreshIndicators, 700);
   setTimeout(loadTrayApps, 1200);
   // A menu is a still picture of what was read before it opened; refreshing
   // underneath it costs work nobody can see.
-  const idle = () => !document.hidden && !networkMenuOpen;
+  const idle = () => !document.hidden && !menuOpen;
   setInterval(() => { if (idle()) refreshNetwork(); }, NET_REFRESH_MS);
+  // The volume and the layout change from outside this app — the keyboard's
+  // own keys, Alt+Shift, another window — so they are read on the same footing
+  // as the network rather than only when clicked.
+  setInterval(() => { if (idle()) refreshIndicators(); }, INDICATOR_REFRESH_MS);
   setInterval(() => { if (idle()) loadTrayApps(); }, TRAY_REFRESH_MS);
 
   // ---- dragging the width ------------------------------------------------------
@@ -843,6 +1128,6 @@
   ask("sidebar_state");
   refreshWindows();
   setInterval(() => {
-    if (!document.hidden && !list.hidden && !networkMenuOpen) refreshWindows();
+    if (!document.hidden && !list.hidden && !menuOpen) refreshWindows();
   }, REFRESH_MS);
 })();

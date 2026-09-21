@@ -16,7 +16,7 @@
 //! `teardown` is called from every path that ends the app.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -35,8 +35,10 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongW, SetWindowPos, GWL_EXSTYLE, HWND_BOTTOM, HWND_TOPMOST, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_APP, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
-    WM_WINDOWPOSCHANGED, WS_EX_TOPMOST,
+    WM_ENTERMENULOOP, WM_EXITMENULOOP, WM_WINDOWPOSCHANGED, WS_EX_TOPMOST,
 };
+
+use windows::Win32::System::Threading::GetCurrentThreadId;
 
 use crate::off_thread;
 
@@ -61,6 +63,21 @@ static WIDTH: AtomicU32 = AtomicU32::new(DEFAULT_WIDTH);
 /// The taskbar's auto-hide state as we found it, so undocking can put it back.
 /// `u32::MAX` means we have not touched it.
 static TASKBAR_WAS: AtomicU32 = AtomicU32::new(u32::MAX);
+
+/// True while this thread is inside a menu's modal loop.
+///
+/// `SHAppBarMessage` is not a message — it is a blocking round trip into
+/// Explorer, and it may only be made from a thread that is free to answer
+/// Explorer back. A tracking menu is exactly when this thread is not: it has
+/// the mouse captured and the shell is busy with its own notification area,
+/// so the call goes out and never returns. The window is then dead for good,
+/// with no work in flight to point at and nothing left to do but kill it.
+///
+/// So while a menu is up, this thread makes no such call. What the shell
+/// asked for is remembered and done when the menu closes.
+static IN_MENU: AtomicBool = AtomicBool::new(false);
+/// A shell notification that arrived while a menu was up.
+static PLACE_DEFERRED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -87,6 +104,23 @@ fn state() -> SidebarState {
     }
 }
 
+/// Every `SHAppBarMessage` in this file goes through here.
+///
+/// It is a blocking round trip into Explorer, and when it does not come back
+/// the window is dead with nothing in flight to explain it. Naming the call
+/// and the thread that made it is what turns that into a line in the log.
+unsafe fn shell(message: u32, what: &'static str, data: &mut APPBARDATA) -> usize {
+    let on_main = MAIN_THREAD.load(Ordering::SeqCst) == GetCurrentThreadId();
+    let tracked = crate::health::native_started(what, on_main);
+    let result = SHAppBarMessage(message, data);
+    crate::health::native_finished(tracked);
+    result
+}
+
+/// The thread that draws the window, noted the first time it docks, so a
+/// blocking call can say which side of the rule it is on.
+static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
+
 fn appbar_data(hwnd: HWND) -> APPBARDATA {
     APPBARDATA {
         cbSize: std::mem::size_of::<APPBARDATA>() as u32,
@@ -94,6 +128,35 @@ fn appbar_data(hwnd: HWND) -> APPBARDATA {
         uCallbackMessage: APPBAR_CALLBACK,
         ..Default::default()
     }
+}
+
+/// Tell the shell the bar has moved, without waiting for it to answer.
+///
+/// This one is only a nudge — nothing is read back — so it does not need
+/// the drawing thread, and that thread must not be the one to block on it.
+/// A drag or a resize sends a burst of these, so they settle into one call.
+fn notify_pos_changed(hwnd: HWND) {
+    static PENDING: AtomicBool = AtomicBool::new(false);
+    if PENDING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let raw = hwnd.0 as isize;
+    std::thread::Builder::new()
+        .name("wint-appbar-pos".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            PENDING.store(false, Ordering::SeqCst);
+            unsafe {
+                use windows::Win32::UI::WindowsAndMessaging::IsWindow;
+                let hwnd = HWND(raw as *mut c_void);
+                if !IsWindow(Some(hwnd)).as_bool() {
+                    return;
+                }
+                let mut data = appbar_data(hwnd);
+                shell(ABM_WINDOWPOSCHANGED, "SHAppBarMessage ABM_WINDOWPOSCHANGED", &mut data);
+            }
+        })
+        .ok();
 }
 
 /// Claim the edge and move the window onto it.
@@ -135,13 +198,13 @@ unsafe fn place(hwnd: HWND) {
             bottom: screen.bottom,
         }
     };
-    SHAppBarMessage(ABM_QUERYPOS, &mut data);
+    shell(ABM_QUERYPOS, "SHAppBarMessage ABM_QUERYPOS", &mut data);
     if edge == ABE_RIGHT {
         data.rc.left = data.rc.right - thickness;
     } else {
         data.rc.right = data.rc.left + thickness;
     }
-    SHAppBarMessage(ABM_SETPOS, &mut data);
+    shell(ABM_SETPOS, "SHAppBarMessage ABM_SETPOS", &mut data);
 
     let rc = data.rc;
     // Asking for HWND_TOPMOST again does not just keep the rail topmost, it
@@ -168,7 +231,7 @@ unsafe fn taskbar_state() -> u32 {
         cbSize: std::mem::size_of::<APPBARDATA>() as u32,
         ..Default::default()
     };
-    SHAppBarMessage(ABM_GETSTATE, &mut data) as u32
+    shell(ABM_GETSTATE, "SHAppBarMessage ABM_GETSTATE", &mut data) as u32
 }
 
 unsafe fn set_taskbar_state(value: u32) {
@@ -177,7 +240,7 @@ unsafe fn set_taskbar_state(value: u32) {
         lParam: LPARAM(value as isize),
         ..Default::default()
     };
-    SHAppBarMessage(ABM_SETSTATE, &mut data);
+    shell(ABM_SETSTATE, "SHAppBarMessage ABM_SETSTATE", &mut data);
 }
 
 /// Ask the real taskbar to auto-hide, remembering what it was so undocking can
@@ -375,7 +438,17 @@ unsafe extern "system" fn sidebar_proc(
         APPBAR_CALLBACK => {
             match wparam.0 as u32 {
                 // Another appbar appeared, moved or resized: re-claim our edge.
-                ABN_POSCHANGED | ABN_WINDOWARRANGE | ABN_STATECHANGE => place(hwnd),
+                // `place` asks the shell for a rectangle and waits for the
+                // answer, so it waits for the menu instead. Nothing is lost by
+                // waiting: moving the bar out from under an open menu is not
+                // something to do anyway.
+                ABN_POSCHANGED | ABN_WINDOWARRANGE | ABN_STATECHANGE => {
+                    if IN_MENU.load(Ordering::SeqCst) {
+                        PLACE_DEFERRED.store(true, Ordering::SeqCst);
+                    } else {
+                        place(hwnd);
+                    }
+                }
                 // A game or a video went fullscreen. Staying topmost would draw
                 // this bar over it, so drop to the bottom until it comes back.
                 ABN_FULLSCREENAPP => {
@@ -396,10 +469,23 @@ unsafe extern "system" fn sidebar_proc(
         }
         // A monitor was added, removed, rescaled or re-resolutioned; the edge
         // we are docked to has moved underneath us.
-        WM_DISPLAYCHANGE | WM_DPICHANGED => place(hwnd),
-        WM_WINDOWPOSCHANGED => {
-            let mut data = appbar_data(hwnd);
-            SHAppBarMessage(ABM_WINDOWPOSCHANGED, &mut data);
+        WM_DISPLAYCHANGE | WM_DPICHANGED => {
+            if IN_MENU.load(Ordering::SeqCst) {
+                PLACE_DEFERRED.store(true, Ordering::SeqCst);
+            } else {
+                place(hwnd);
+            }
+        }
+        WM_WINDOWPOSCHANGED => notify_pos_changed(hwnd),
+        // A menu is opening. Every menu on the rail goes through here,
+        // including the one a right-click on a tray icon opens, which is
+        // where this thread and Explorer used to meet head on.
+        WM_ENTERMENULOOP => IN_MENU.store(true, Ordering::SeqCst),
+        WM_EXITMENULOOP => {
+            IN_MENU.store(false, Ordering::SeqCst);
+            if PLACE_DEFERRED.swap(false, Ordering::SeqCst) {
+                place(hwnd);
+            }
         }
         // The window is going away without anyone calling `sidebar_close` —
         // the app is exiting, or the webview died. Give the work area back.
@@ -414,7 +500,7 @@ unsafe fn undock(hwnd: HWND) {
         return;
     }
     let mut data = appbar_data(hwnd);
-    SHAppBarMessage(ABM_REMOVE, &mut data);
+    shell(ABM_REMOVE, "SHAppBarMessage ABM_REMOVE", &mut data);
     let _ = RemoveWindowSubclass(hwnd, Some(sidebar_proc), SUBCLASS_ID);
     restore_taskbar();
 }
@@ -422,10 +508,11 @@ unsafe fn undock(hwnd: HWND) {
 /// Register as an appbar (once) and take the edge. Must run on the main thread:
 /// the subclass belongs to the thread that owns the window.
 unsafe fn dock(hwnd: HWND, hide_taskbar: bool) {
+    MAIN_THREAD.store(GetCurrentThreadId(), Ordering::SeqCst);
     let raw = hwnd.0 as isize;
     if HOST.swap(raw, Ordering::SeqCst) != raw {
         let mut data = appbar_data(hwnd);
-        SHAppBarMessage(ABM_NEW, &mut data);
+        shell(ABM_NEW, "SHAppBarMessage ABM_NEW", &mut data);
         let _ = SetWindowSubclass(hwnd, Some(sidebar_proc), SUBCLASS_ID, 0);
     }
     if hide_taskbar {
@@ -679,6 +766,64 @@ unsafe fn is_taskbar_window(hwnd: HWND) -> bool {
         std::mem::size_of::<u32>() as u32,
     );
     cloaked == 0
+}
+
+/// The smallest a restored window can be and still be a window somebody was
+/// looking at. Message sinks and the hidden helpers a tray app keeps around
+/// are 0x0 or a few pixels square.
+const REAL_WINDOW_MIN: i32 = 160;
+
+/// Whether this window is one the user could actually be shown — whether or
+/// not it is on screen right now, because a tray app's main window is hidden
+/// by definition.
+///
+/// A title and a caption are not enough on their own. Steam, and most of the
+/// older tray apps, keep hidden windows that have both: a broadcast sink, an
+/// overlay host, an IPC window, all titled after the app and all with a
+/// caption style they never draw. Bringing one of those forward is what put a
+/// tiny empty window on screen instead of the app. What separates them from
+/// the real thing is that they were never given a size.
+unsafe fn showable_window(hwnd: HWND) -> bool {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindow, GetWindowLongW, GetWindowPlacement, GetWindowRect, GetWindowTextLengthW,
+        IsWindow, GWL_EXSTYLE, GWL_STYLE, GW_OWNER, WINDOWPLACEMENT, WS_CAPTION, WS_EX_APPWINDOW,
+        WS_EX_TOOLWINDOW,
+    };
+    if !IsWindow(Some(hwnd)).as_bool() || GetWindowTextLengthW(hwnd) == 0 {
+        return false;
+    }
+    if GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CAPTION.0 == 0 {
+        return false;
+    }
+    let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+    if ex & WS_EX_APPWINDOW.0 == 0 {
+        // A tool window is a palette, and an owned window is a dialog or a
+        // popup belonging to something else — neither is the app itself.
+        if ex & WS_EX_TOOLWINDOW.0 != 0 {
+            return false;
+        }
+        if GetWindow(hwnd, GW_OWNER).is_ok_and(|owner| !owner.0.is_null()) {
+            return false;
+        }
+    }
+    // The restored rectangle, not the current one: a window hidden in the tray
+    // still remembers the size it had when it was last on screen, while a sink
+    // never had one.
+    let mut placement = WINDOWPLACEMENT {
+        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    let rect = if GetWindowPlacement(hwnd, &mut placement).is_ok() {
+        placement.rcNormalPosition
+    } else {
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return false;
+        }
+        rect
+    };
+    rect.right - rect.left >= REAL_WINDOW_MIN && rect.bottom - rect.top >= REAL_WINDOW_MIN
 }
 
 unsafe fn window_exe(hwnd: HWND) -> String {
@@ -1545,7 +1690,7 @@ pub async fn sidebar_tray_apps() -> Vec<TrayApp> {
     use std::collections::HashMap;
     use windows::core::BOOL;
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetShellWindow, GetWindowLongW, GetWindowTextLengthW, GWL_STYLE, WS_CAPTION,
+        EnumWindows, GetShellWindow,
     };
 
     unsafe extern "system" fn collect(hwnd: HWND, found: LPARAM) -> BOOL {
@@ -1560,7 +1705,9 @@ pub async fn sidebar_tray_apps() -> Vec<TrayApp> {
         shown: bool,
         exe: String,
         best: isize,
-        can_show: bool,
+        /// How good `best` is: 2 for a window the taskbar would show, 1 for
+        /// one that is hidden but real, 0 for nothing worth offering.
+        rank: u8,
     }
 
     off_thread(move || {
@@ -1582,12 +1729,11 @@ pub async fn sidebar_tray_apps() -> Vec<TrayApp> {
         let mut apps: HashMap<String, Group> = HashMap::new();
         for raw in handles {
             let hwnd = HWND(raw as *mut c_void);
-            let (exe, shown, titled, captioned) = unsafe {
+            let (exe, shown, showable) = unsafe {
                 (
                     window_exe(app_window(hwnd)),
                     is_taskbar_window(hwnd),
-                    GetWindowTextLengthW(hwnd) > 0,
-                    GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CAPTION.0 != 0,
+                    showable_window(hwnd),
                 )
             };
             if exe.is_empty() {
@@ -1601,13 +1747,23 @@ pub async fn sidebar_tray_apps() -> Vec<TrayApp> {
                 shown: false,
                 exe: exe.clone(),
                 best: raw,
-                can_show: false,
+                rank: 0,
             });
             entry.shown |= shown;
-            // The window worth offering is one that could actually appear.
-            if titled && captioned && !entry.can_show {
+            // The window worth offering is the best one the program has, not
+            // the first that looked plausible. A program keeps several, and
+            // EnumWindows hands them over in Z-order, so the hidden helper
+            // sitting in front of the real window used to win.
+            let rank = if shown {
+                2
+            } else if showable {
+                1
+            } else {
+                0
+            };
+            if rank > entry.rank {
                 entry.best = raw;
-                entry.can_show = true;
+                entry.rank = rank;
             }
         }
 
@@ -1618,7 +1774,7 @@ pub async fn sidebar_tray_apps() -> Vec<TrayApp> {
                 let promoted = if icons.is_empty() {
                     // No list to match against: fall back to the shape of a
                     // tray app, and treat none of them as promoted.
-                    if group.shown || !group.can_show {
+                    if group.shown || group.rank == 0 {
                         return None;
                     }
                     false
@@ -1638,7 +1794,7 @@ pub async fn sidebar_tray_apps() -> Vec<TrayApp> {
                             .unwrap_or_default()
                     }),
                     exe: group.exe,
-                    can_show: group.can_show,
+                    can_show: group.rank > 0,
                     promoted,
                 })
             })
@@ -1666,19 +1822,58 @@ pub async fn sidebar_tray_apps() -> Vec<TrayApp> {
 #[tauri::command]
 pub async fn sidebar_reveal(id: String, exe: Option<String>) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongW, GetWindowTextLengthW, IsWindow, GWL_STYLE, WS_CAPTION,
-    };
+    use windows::core::BOOL;
+    use windows::Win32::UI::WindowsAndMessaging::EnumWindows;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+    unsafe extern "system" fn collect(hwnd: HWND, found: LPARAM) -> BOOL {
+        let found = &mut *(found.0 as *mut Vec<isize>);
+        found.push(hwnd.0 as isize);
+        true.into()
+    }
+
     let raw: isize = id.parse().map_err(|_| "Not a window.".to_string())?;
     off_thread(move || unsafe {
         let hwnd = HWND(raw as *mut c_void);
-        let showable = IsWindow(Some(hwnd)).as_bool()
-            && GetWindowTextLengthW(hwnd) > 0
-            && GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CAPTION.0 != 0;
-        if showable {
+        if showable_window(hwnd) {
             bring_forward(hwnd);
             return Ok(());
+        }
+        // The handle came from a list built a moment ago, and it may be a
+        // sink: the program moved on, or it keeps several windows and this
+        // was not the one. Rather than relaunch — which for a program
+        // already running does nothing visible — look again for a window
+        // of the same program, and prefer one the taskbar would show.
+        let own_exe = window_exe(app_window(hwnd));
+        let want = exe
+            .clone()
+            .filter(|exe| !exe.is_empty())
+            .unwrap_or(own_exe)
+            .to_ascii_lowercase();
+        if !want.is_empty() {
+            let mut handles: Vec<isize> = Vec::new();
+            let _ = EnumWindows(Some(collect), LPARAM(std::ptr::addr_of_mut!(handles) as isize));
+            let mut best: Option<(u8, HWND)> = None;
+            for other in handles {
+                let candidate = HWND(other as *mut c_void);
+                if window_exe(app_window(candidate)).to_ascii_lowercase() != want {
+                    continue;
+                }
+                let rank = if is_taskbar_window(candidate) {
+                    2
+                } else if showable_window(candidate) {
+                    1
+                } else {
+                    continue;
+                };
+                if best.is_none() || best.is_some_and(|(had, _)| rank > had) {
+                    best = Some((rank, candidate));
+                }
+            }
+            if let Some((_, found)) = best {
+                bring_forward(found);
+                return Ok(());
+            }
         }
         let exe = exe
             .filter(|exe| !exe.is_empty())
@@ -1696,4 +1891,66 @@ pub async fn sidebar_reveal(id: String, exe: Option<String>) -> Result<(), Strin
     })
     .await
     .unwrap_or_else(|| Err("Could not reach that app.".into()))
+}
+
+// ---- the volume, the battery and the language --------------------------------------
+// The three indicators Windows keeps beside the network in its own tray. The
+// readings are cheap, but each goes off-thread all the same: Core Audio can
+// block while a device is being switched, and the rail must not.
+
+/// The default playback device's level, for the rail's volume tile.
+#[tauri::command]
+pub async fn sidebar_volume() -> crate::indicators::Volume {
+    off_thread(crate::indicators::volume)
+        .await
+        .unwrap_or_default()
+}
+
+/// Move the master volume from the rail's menu.
+#[tauri::command]
+pub async fn sidebar_set_volume(level: u32) -> Result<(), String> {
+    off_thread(move || crate::indicators::set_volume(level))
+        .await
+        .unwrap_or_else(|| Err("Could not reach the audio service.".into()))
+}
+
+/// Mute or unmute the default playback device.
+#[tauri::command]
+pub async fn sidebar_set_muted(muted: bool) -> Result<(), String> {
+    off_thread(move || crate::indicators::set_muted(muted))
+        .await
+        .unwrap_or_else(|| Err("Could not reach the audio service.".into()))
+}
+
+/// What is left in the battery, and whether it is filling or emptying.
+#[tauri::command]
+pub async fn sidebar_battery() -> crate::indicators::Battery {
+    off_thread(crate::indicators::battery)
+        .await
+        .unwrap_or_default()
+}
+
+/// Every keyboard layout loaded, with the one being typed in marked.
+#[tauri::command]
+pub async fn sidebar_layouts() -> Vec<crate::indicators::Layout> {
+    off_thread(crate::indicators::layouts)
+        .await
+        .unwrap_or_default()
+}
+
+/// Switch the window in front to another keyboard layout.
+#[tauri::command]
+pub async fn sidebar_set_layout(id: String) -> Result<(), String> {
+    off_thread(move || crate::indicators::set_layout(&id))
+        .await
+        .unwrap_or_else(|| Err("Could not change the keyboard layout.".into()))
+}
+
+/// Open the Windows page behind one of these tiles: sound, power, battery or
+/// language.
+#[tauri::command]
+pub async fn sidebar_open_settings(page: String) -> Result<(), String> {
+    off_thread(move || crate::indicators::open_settings(&page))
+        .await
+        .unwrap_or_else(|| Err("Could not open that settings page.".into()))
 }

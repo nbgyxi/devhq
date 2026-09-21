@@ -16,6 +16,107 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.123.0",
+      date: "2026-09-20",
+      title: "Right-clicking a tray icon no longer kills the rail",
+      buildChecksum: "7dc50acd078709b35294fa54e956ded38b86df56a9fbeca8a99e5742bb11d4b0",
+      changes: [
+        ["fix", "Right-clicking an icon in the sidebar tray could freeze the whole app, leaving Windows to grey the window out with nothing to do but end it. The click opened the icon own menu and then carried on up to the rail menu behind it, so two menus were built at once. An open menu holds a lock inside Tauri until it closes, and building the second one needs that same lock, on the very thread the first is running on - so neither ever finished. A right-click is now answered once, by the nearest menu, and stops there."],
+        ["fix", "Every menu on the rail now takes the same one flag while it is up, so no two can overlap however they were opened. The window list menu took no flag at all, and the rail own menu took a different one from the rest."],
+        ["fix", "A menu that fails while it is being built now releases that flag instead of leaving the rail thinking a menu is still open."],
+      ],
+    },
+    {
+      version: "0.122.3",
+      date: "2026-09-20",
+      title: "A freeze writes down where the thread is",
+      changes: [
+        ["new", "A window that has been frozen for more than five seconds now has its stack read the way a debugger reads it - the thread is stopped, walked, and let go - and the frames are written into the log. When a freeze has no work in flight and no call open, that is the only thing left that can name the cause."],
+        ["better", "The rail own window handle is written beside the handle of whatever owns the open menu, so the two can be told apart."],
+      ],
+    },
+    {
+      version: "0.122.2",
+      date: "2026-09-20",
+      title: "Telling a wedged window from an open menu",
+      changes: [
+        ["better", "The freeze check now asks Windows what the drawing thread is actually doing, and writes it down: whether a menu is open, which window owns it, what has the mouse, and whether Windows considers the window hung - the same judgement behind the grey frame it paints over a dead app."],
+        ["fix", "An open menu no longer reads as a freeze. A menu runs a message loop of its own, so the check went unanswered for as long as the menu was up and reported it as a window that had stopped, whether or not anything was wrong."],
+      ],
+    },
+    {
+      version: "0.122.1",
+      date: "2026-09-20",
+      title: "A freeze names the call it is sitting in",
+      changes: [
+        ["better", "A frozen window is now written down the moment it has been frozen for a second and a half, rather than once the check gives up ten seconds later. A freeze ended straight away used to leave no line at all, which is the kind most worth having one for."],
+        ["better", "Every call the app makes into the shell and waits on is now named while it is open, along with whether the thread that draws the window is the one waiting. A freeze with no work in flight can now say what it is sitting in instead of leaving it to be guessed at."],
+      ],
+    },
+    {
+      version: "0.122.0",
+      date: "2026-09-20",
+      title: "The rail no longer freezes when a menu opens",
+      changes: [
+        ["fix", "Opening a menu on the sidebar - most often by right-clicking a tray icon - could freeze the whole window for good, leaving Windows to draw the grey frame and nothing to do but end it. Telling the shell where the bar sits is a call that waits for Explorer to answer, and it was being made from the thread drawing the window, at the one moment that thread cannot answer Explorer back. Neither side moved again. The rail now makes no such call while a menu is open, and does what the shell asked for once the menu closes."],
+        ["better", "Telling the shell the bar has moved no longer holds up the window at all: nothing is read back, so it is sent from somewhere else, and a drag now sends one message instead of one per frame."],
+      ],
+    },
+    {
+      version: "0.121.5",
+      date: "2026-09-20",
+      title: "A freeze now says where it stopped",
+      changes: [
+        ["better", "A window that stops answering is reported every five seconds for as long as it stays stopped, instead of once. A freeze the app never came back from used to leave a single line, so there was no telling a few slow seconds from one that had to be killed."],
+        ["better", "Each of those lines now carries the last thing the front end said it was doing. A deadlock has no work in flight to point at - the thread is stopped, not busy - so the step the window had reached is what names it."],
+        ["new", "The sidebar writes that step down around the parts a freeze can happen inside: opening a tray icon menu, closing it, and opening a tool from it."],
+      ],
+    },
+    {
+      version: "0.121.4",
+      date: "2026-09-20",
+      title: "Showing a tray app shows the app",
+      changes: [
+        ["fix", "Showing a program from the sidebar tray now brings up the program, not one of the hidden windows it keeps beside it. Steam and most apps written before Windows 10 hold several windows that are titled after the app and carry a caption they never draw — a broadcast sink, an overlay host, an IPC window — and one of those could win, which is where the tiny empty window came from. A window now also has to be a size somebody could have been looking at."],
+        ["better", "When the window the rail noted has gone by the time you click, it looks again for the same program rather than starting it a second time, and picks the one on the taskbar over one that is hidden."],
+      ],
+    },
+    {
+      version: "0.121.3",
+      date: "2026-09-20",
+      title: "The sidebar's tray menu stops wedging the rail",
+      changes: [
+        ["fix", "Right-clicking a tray icon on the sidebar and choosing Startup and tray no longer leaves the rail unresponsive. The menu now holds back the timers that reread the tray underneath it — one of which rebuilt the row the menu was anchored to — and the tool's window is opened after the menu closes rather than while it still has the thread."],
+        ["fix", "The same wait now applies to Sound Device Switcher and the network menu's tools, which opened their windows from inside an open menu too."],
+      ],
+    },
+    {
+      version: "0.121.2",
+      date: "2026-09-20",
+      title: "Show native tray",
+      changes: [
+        ["better", "The sidebar's Tray icons button is now called Show native tray, which is what it does: it opens Windows' own hidden-icons flyout. The rail has a tray of its own now, and two things called the same would not say which one a click reaches."],
+      ],
+    },
+    {
+      version: "0.121.1",
+      date: "2026-09-20",
+      title: "The volume knows where the sound goes",
+      changes: [
+        ["better", "The sidebar's volume menu opens the Sound Device Switcher, which is the half of the volume Windows' own slider does not cover: it sets the default playback or recording device for all three roles at once and can test it. It sits above Sound settings, which is still there for everything else."],
+      ],
+    },
+    {
+      version: "0.121.0",
+      date: "2026-09-20",
+      title: "Volume, battery and language on the rail",
+      changes: [
+        ["new", "The sidebar's tray now carries the three readings Windows keeps beside the network: the volume, the battery and the keyboard language. The volume icon shows the level and whether it is muted, the battery is drawn at the charge Windows reports and says how long is left, and the language is written as the three letters the tray writes. A machine with no battery does not get a battery tile."],
+        ["new", "Clicking the volume opens mute and the usual steps, and rolling the wheel over it changes the level five points a notch, as the tray's own icon does. Clicking the language lists every keyboard layout loaded and switches the window in front to the one you pick. The battery opens what Windows has to say about power and battery saver."],
+        ["better", "Each of the three can be turned off on its own from the Docked Sidebar page, alongside the slots already there."],
+      ],
+    },
+    {
       version: "0.120.0",
       date: "2026-09-20",
       title: "It records why it froze",
