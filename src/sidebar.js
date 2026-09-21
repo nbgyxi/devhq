@@ -54,6 +54,8 @@
     if (action === "terminal") return openTerminal(button);
     if (action === "clipboard") return invoke("clipboard_picker_show", {}).catch(() => {});
     if (action === "focus") return invoke("focus_mode_toggle").catch((error) => flash(button, error));
+    if (action === "time") return openClockMenu();
+    if (action === "date") return toggleCalendar(button);
     // Tool shortcuts always open in a window of their own. The main window
     // owns the pop-out handoff, so it is asked to do it.
     if (action === "tool") {
@@ -103,10 +105,13 @@
   // runs in an isolated webview with storage of its own, so every change
   // reaches this rail as a `sidebar:settings` event, the moment it is made.
   const DEFAULT_SETTINGS = {
-    slots: { brand: true, start: true, clipboard: true, focus: true, network: true, volume: true, battery: true, language: true, windows: true, geometry: true, trayapps: true, tray: true, taskbar: true, edge: true, close: true },
+    slots: { brand: true, start: true, clipboard: true, focus: true, network: true, volume: true, battery: true, language: true, time: true, date: true, windows: true, geometry: true, trayapps: true, tray: true, taskbar: true, edge: true, close: true },
     textSize: 10,
     iconSize: 22,
     hideTaskbar: true,
+    // The clock is written the way Windows writes it here - 24 hours, zero
+    // padded - and the seconds are off until someone asks for them.
+    clockSeconds: false,
     // [{ id, name, icon }], in the order they were added. Name and icon are
     // kept with the id so the rail can draw them without the tool catalog.
     tools: [],
@@ -127,6 +132,11 @@
     document.querySelector("[data-spacer]").hidden = settings.slots.windows !== false;
     paintTools();
     paintTray();
+    // The format may have changed under it, so the last text drawn is no
+    // longer a reason to skip the paint.
+    timeDrawn = "";
+    dateDrawn = "";
+    paintClock();
     // A tile just switched back on has nothing read for it yet.
     refreshIndicators();
     document.documentElement.style.setProperty("--bar-text", `${settings.textSize}px`);
@@ -512,6 +522,173 @@
   setTimeout(loadSuggestions, 2500);
   setInterval(() => { if (!document.hidden && !suggesting) loadSuggestions(); }, SUGGEST_REFRESH_MS);
 
+  // ---- the clock -------------------------------------------------------------------
+  // Two rows at the end of the rail, where the tray's clock is: the time, and
+  // the date under it. Both are drawn from this machine's own formats, and
+  // neither costs a call — a clock that asked Rust what time it was would be
+  // one IPC round trip a second for something the webview already knows.
+  const timeLabel = document.querySelector("[data-time]");
+  const dateLabel = document.querySelector("[data-date]");
+  const timeButton = document.querySelector("[data-action=time]");
+  const dateButton = document.querySelector("[data-action=date]");
+  const clockRow = document.querySelector("[data-clock-row]");
+  // The two readings are tracked apart, because they change at very different
+  // rates: the date once a day, the time once a minute - once a second with
+  // the seconds on. Touching the date's text and title on every tick made its
+  // tooltip flicker under a held pointer and re-measured a row that had not
+  // changed.
+  let timeDrawn = "";
+  let dateDrawn = "";
+
+  /** The time, in the 24-hour zero-padded shape Windows uses here. The
+   *  seconds are off by default: the rail is glanced at, and a figure that
+   *  changes under the eye every second is noise. Turning them on in the
+   *  Docked Sidebar page puts them on the rail as well as in the flyout. */
+  function clockTime(now, seconds = settings.clockSeconds === true) {
+    return now.toLocaleTimeString([], {
+      hour: "2-digit", minute: "2-digit",
+      ...(seconds ? { second: "2-digit" } : {}),
+      hour12: false,
+    });
+  }
+
+  function paintClock() {
+    const now = new Date();
+    const time = clockTime(now);
+    // Short enough for a narrow rail, and the full date is in the tooltip.
+    const date = now.toLocaleDateString([], { day: "numeric", month: "short" });
+    const full = now.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    let changed = false;
+    if (time !== timeDrawn) {
+      timeDrawn = time;
+      timeLabel.textContent = time;
+      timeButton.title = `${time} — ${full}`;
+      changed = true;
+    }
+    if (date !== dateDrawn) {
+      dateDrawn = date;
+      dateLabel.textContent = date;
+      dateButton.title = full;
+      changed = true;
+    }
+    // Only a reading that actually changed can change what fits on a line.
+    if (changed) fitClock();
+  }
+
+  /** One line if both readings fit on it, two if they do not.
+   *
+   *  The rail's width is the user's to drag and its text and icon sizes are
+   *  theirs to set, so no width in pixels can answer this. The row is put side
+   *  by side and kept there only if neither label had to be cut short — the
+   *  measurement is the answer. With one of the two switched off there is
+   *  nothing to pair, so it stays as it is. */
+  function fitClock() {
+    // Never while a native menu is up. It holds this thread, the window is
+    // covered by it, and a row that reflows under an open menu is a blink the
+    // user did nothing to ask for - nothing can be resized while it is there
+    // anyway, so the answer cannot have changed.
+    if (menuOpen) return;
+    const both = settings.slots.time !== false && settings.slots.date !== false;
+    // An empty box would still cost the gap above the buttons under it.
+    clockRow.hidden = !both && settings.slots.time === false && settings.slots.date === false;
+    if (!both) return clockRow.classList.remove("wide");
+    clockRow.classList.add("wide");
+    const cut = (label) => label.scrollWidth > label.clientWidth + 1;
+    if (cut(timeLabel) || cut(dateLabel)) clockRow.classList.remove("wide");
+  }
+
+  paintClock();
+  // The rail is resized by dragging its grip, which changes nothing this page
+  // draws - but it changes what fits on a line.
+  new ResizeObserver(fitClock).observe(document.body);
+  // Ticked every second, painted only when the minute turns: waking up often
+  // enough that the rail is never a minute behind costs nothing, and the paint
+  // is skipped when the text has not changed.
+  setInterval(() => { if (!document.hidden) paintClock(); }, 1000);
+
+  /** The calendar is a window of its own — the rail is as narrow as the user
+   *  dragged it, and a month grid is not. It is placed against the rail's
+   *  inner edge, its foot level with the date that opened it. */
+  function toggleCalendar(button) {
+    const box = button.getBoundingClientRect();
+    const theme = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+    const width = 300;
+    const height = 356;
+    const x = state.edge === "right"
+      ? window.screenX - width - 6
+      : window.screenX + window.innerWidth + 6;
+    const y = window.screenY + box.bottom - height;
+    invoke("calendar_visible")
+      .then((open) => (open
+        ? invoke("calendar_hide")
+        : invoke("calendar_show", { theme, x: Math.max(0, x), y: Math.max(0, y) })))
+      .catch((error) => flash(button, error));
+  }
+
+  /** What the time offers: the readings the rail cannot draw, and Windows'
+   *  own pages for everything past looking — setting the clock is its job. */
+  // The calendar is opened after the menu has gone, never from inside it: a
+  // window is created on the thread the menu is running on, and one built
+  // while the menu still holds it wedges the rail.
+  function openClockMenu() {
+    let wanted = false;
+    return openMenu(() => clockMenuItems(() => { wanted = true; }))
+      .then(() => { if (wanted) toggleCalendar(dateButton); });
+  }
+
+  async function clockMenuItems(wantCalendar) {
+    const now = new Date();
+    const items = [
+      await note(clockTime(now, true)),
+      await note(now.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long", year: "numeric" })),
+      await note(`Week ${isoWeek(now)} · ${Intl.DateTimeFormat().resolvedOptions().timeZone || "local time"}`),
+      await PredefinedMenuItem.new({ item: "Separator" }),
+      await act("Copy the time", () => copyClock(clockTime(new Date(), true))),
+      await act("Copy the date", () => copyClock(now.toLocaleDateString([], { dateStyle: "full" }))),
+      await act("Copy as ISO 8601", () => copyClock(isoStamp(now))),
+      await PredefinedMenuItem.new({ item: "Separator" }),
+      await act(`${settings.clockSeconds === true ? "• " : "   "}Show seconds`, toggleSeconds),
+      await act("Calendar…", wantCalendar),
+      await settingsItem("Date and time settings…", "datetime"),
+      await settingsItem("Region and formats…", "region"),
+    ];
+    return items;
+  }
+
+  /** The ISO week number, which is the one thing about today neither the tile
+   *  nor Windows' own clock says. */
+  function isoWeek(date) {
+    const day = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    // Thursday decides which year the week belongs to.
+    day.setUTCDate(day.getUTCDate() + 4 - (day.getUTCDay() || 7));
+    const start = new Date(Date.UTC(day.getUTCFullYear(), 0, 1));
+    return Math.ceil(((day - start) / 86400000 + 1) / 7);
+  }
+
+  /** The local time written the way a log or a filename wants it, offset and
+   *  all — not the UTC that toISOString() would give. */
+  function isoStamp(date) {
+    const pad = (value, size = 2) => String(Math.abs(value)).padStart(size, "0");
+    const offset = -date.getTimezoneOffset();
+    const zone = offset === 0 ? "Z" : `${offset > 0 ? "+" : "-"}${pad(offset / 60 | 0)}:${pad(offset % 60)}`;
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+      + `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${zone}`;
+  }
+
+  /** The same switch the Docked Sidebar page has, within reach of the clock
+   *  itself. It is kept by the backend, which hands it back to this rail. */
+  function toggleSeconds() {
+    const clockSeconds = settings.clockSeconds !== true;
+    settings = { ...settings, clockSeconds };
+    timeDrawn = "";
+    paintClock();
+    invoke("sidebar_settings_set", { settings: { ...settings } }).catch((error) => say(error));
+  }
+
+  function copyClock(text) {
+    navigator.clipboard.writeText(text).then(() => say(`Copied ${text}`), (error) => say(error));
+  }
+
   // ---- the notification area ------------------------------------------------------
   // The rail's own tray. It reads the way the real one does: a row of icons
   // with no names, the network first, and a chevron that opens the rest into a
@@ -729,6 +906,9 @@
     for (const [index, app] of shown.entries()) {
       items[leading + index].dataset.trayApp = app.id;
       items[leading + index].dataset.trayExe = app.exe;
+      // The name goes along so the backend can tell the app own window from
+      // the hidden helpers it keeps, which are named after nothing.
+      items[leading + index].dataset.trayName = app.name;
     }
     trayBox.replaceChildren(...items);
   }
@@ -769,7 +949,10 @@
     return indicatorsLoading;
   }
 
-  function loadTrayApps() {
+  // `force` waits for a sweep already in flight rather than settling for its
+  // answer: it was read before the thing that asked for this one happened.
+  function loadTrayApps(force = false) {
+    if (force && trayLoading) return trayLoading.catch(() => {}).then(() => loadTrayApps());
     trayLoading ??= (async () => {
       const apps = await invoke("sidebar_tray_apps").catch(() => []);
       // An icon is read once per program and kept; only a program never seen
@@ -904,6 +1087,9 @@
       menuOpen = false;
       if (openAfter) openTool(openAfter);
       refreshIndicators();
+      // Held back while the menu was up: the seconds may have been switched
+      // on from inside it, which changes what fits on a line.
+      fitClock();
     }
   }
 
@@ -1004,7 +1190,7 @@
       const { trayApp: id, trayExe: exe } = button.dataset;
       const name = button.title || "this app";
       const items = [
-        await act("Show it", () => invoke("sidebar_reveal", { id, exe })
+        await act("Show it", () => invoke("sidebar_reveal", { id, exe, name })
           .catch((error) => say(error))
           .finally(refreshWindows)),
         await act("Close it", () => invoke("startup_close", { exe })
@@ -1041,7 +1227,7 @@
     if (event.target.closest("[data-tray-language]")) return openLanguageMenu();
     const button = event.target.closest("[data-tray-app]");
     if (!button) return;
-    invoke("sidebar_reveal", { id: button.dataset.trayApp, exe: button.dataset.trayExe })
+    invoke("sidebar_reveal", { id: button.dataset.trayApp, exe: button.dataset.trayExe, name: button.dataset.trayName })
       .catch((error) => say(error))
       .finally(refreshWindows);
   });
@@ -1124,6 +1310,10 @@
 
   // The Docked Sidebar tool page can change the edge or width too.
   window.__TAURI__.event.listen("sidebar:state", (event) => { state = event.payload; paint(); });
+  // WinT went to the notification area, or came back from it: the rail carries
+  // it among the tray's apps while it is away, and a row that only turns up on
+  // the next sweep is a row nobody trusts.
+  window.__TAURI__.event.listen("sidebar:tray", () => loadTrayApps(true));
   invoke("health_note", { text: "Sidebar: the rail is up" }).catch(() => {});
   ask("sidebar_state");
   refreshWindows();

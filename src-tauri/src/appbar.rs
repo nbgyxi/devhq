@@ -1686,7 +1686,7 @@ pub struct TrayApp {
 
 /// What the notification area holds: every running program with a tray icon.
 #[tauri::command]
-pub async fn sidebar_tray_apps() -> Vec<TrayApp> {
+pub async fn sidebar_tray_apps(app: AppHandle) -> Vec<TrayApp> {
     use std::collections::HashMap;
     use windows::core::BOOL;
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -1709,6 +1709,17 @@ pub async fn sidebar_tray_apps() -> Vec<TrayApp> {
         /// one that is hidden but real, 0 for nothing worth offering.
         rank: u8,
     }
+
+    // WinT's own windows are left out below: the rail is drawn by one of
+    // them, and the tools it opens are not apps in the notification area. The
+    // one exception is the main window once it has gone to the tray — WinT is
+    // then a tray app like any other, and a rail that shows every one of them
+    // has to show itself too.
+    let own_window = app
+        .get_webview_window("main")
+        .filter(|window| !window.is_visible().unwrap_or(true))
+        .and_then(|window| window.hwnd().ok())
+        .map(|hwnd| hwnd.0 as isize);
 
     off_thread(move || {
         let mut handles: Vec<isize> = Vec::new();
@@ -1799,6 +1810,27 @@ pub async fn sidebar_tray_apps() -> Vec<TrayApp> {
                 })
             })
             .collect();
+        if let Some(raw) = own_window {
+            let file = std::path::Path::new(&own)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            rows.push(TrayApp {
+                id: raw.to_string(),
+                name: exe_description(&own).unwrap_or_else(|| "WinT".to_string()),
+                exe: own.clone(),
+                can_show: true,
+                // Windows writes the icon's record down in its own time, and a
+                // record that is not there yet must not cost WinT the only row
+                // that brings it back: unknown counts as promoted, so the row
+                // is there without the rail being expanded.
+                promoted: icons
+                    .get(&own)
+                    .or_else(|| icons.get(&file))
+                    .copied()
+                    .unwrap_or(true),
+            });
+        }
         // The icons Windows keeps on the taskbar come first, exactly as they
         // do there; the rest are what the rail's own chevron reveals.
         rows.sort_by(|a, b| {
@@ -1812,6 +1844,148 @@ pub async fn sidebar_tray_apps() -> Vec<TrayApp> {
     .unwrap_or_default()
 }
 
+/// Every process that a process running `exe` started, directly or through
+/// something it started in turn — and those processes themselves.
+///
+/// A tray app's real window often belongs to a helper it launched rather than
+/// to the exe the notification area has on record. Steam is the clearest case:
+/// the only titled window `steam.exe` keeps is a hidden sink called "Untitled",
+/// while the window everyone means by "Steam" belongs to `steamwebhelper.exe`.
+unsafe fn family_pids(exe: &str) -> std::collections::HashSet<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    let mut family = std::collections::HashSet::new();
+    let want = std::path::Path::new(exe)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_else(|| exe.to_ascii_lowercase());
+    let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+        return family;
+    };
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut parents: Vec<(u32, u32)> = Vec::new();
+    if Process32FirstW(snapshot, &mut entry).is_ok() {
+        loop {
+            let len = entry
+                .szExeFile
+                .iter()
+                .position(|c| *c == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..len]).to_ascii_lowercase();
+            if name == want {
+                family.insert(entry.th32ProcessID);
+            }
+            parents.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            if Process32NextW(snapshot, &mut entry).is_err() {
+                break;
+            }
+        }
+    }
+    let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+    // Walk down: a child of anything already in the family joins it, until a
+    // pass adds nobody. The table is small and the loop is bounded by it.
+    loop {
+        let before = family.len();
+        for (pid, parent) in &parents {
+            if family.contains(parent) {
+                family.insert(*pid);
+            }
+        }
+        if family.len() == before {
+            break;
+        }
+    }
+    family
+}
+
+/// Whether the window is on screen right now - drawn, or minimized to the
+/// taskbar, but in either case a window Windows is keeping for the user. A
+/// window hidden to the tray is not, and neither is a packaged app suspended
+/// in the background, which Windows cloaks rather than hides.
+unsafe fn on_screen(hwnd: HWND) -> bool {
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+    use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+    if !IsWindowVisible(hwnd).as_bool() {
+        return false;
+    }
+    let mut cloaked = 0u32;
+    let _ = DwmGetWindowAttribute(
+        hwnd,
+        DWMWA_CLOAKED,
+        std::ptr::addr_of_mut!(cloaked).cast(),
+        std::mem::size_of::<u32>() as u32,
+    );
+    cloaked == 0
+}
+
+/// The command that opens a packaged app the way the Start menu does, when the
+/// window belongs to one and it says which package it is.
+unsafe fn shell_activation(hwnd: HWND) -> Option<std::process::Command> {
+    // Not is_packaged: that counts an unreadable path as packaged, which is
+    // right for the menu that would rather offer a launch than refuse one, and
+    // wrong here - an elevated window hides its path too, and it is a plain
+    // program whose window should simply be brought forward.
+    let exe = window_exe(app_window(hwnd)).to_ascii_lowercase();
+    if !exe.contains(r"\windowsapps\") && !exe.ends_with(r"\applicationframehost.exe") {
+        return None;
+    }
+    let aumid = app_id(app_window(hwnd)).or_else(|| app_id(hwnd))?;
+    let mut command = std::process::Command::new("explorer.exe");
+    command.arg(format!(r"shell:AppsFolder\{aumid}"));
+    Some(command)
+}
+
+unsafe fn window_pid(hwnd: HWND) -> u32 {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    pid
+}
+
+/// How good a window is as the answer to "show me that app". Higher wins;
+/// `None` is a window the user could not be shown at all.
+///
+/// Ranked the way somebody looking at the screen would rank them: a window
+/// named after the app beats one that is not, a window the program asked the
+/// taskbar to carry beats one it never did, and the program's own window beats
+/// a helper's. Size settles the rest — the real window is the big one.
+unsafe fn reveal_rank(hwnd: HWND, want_exe: &str, name: &str) -> Option<(u8, u8, u8, i64)> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowPlacement, GetWindowTextW, WINDOWPLACEMENT, WS_EX_APPWINDOW,
+    };
+    if !showable_window(hwnd) {
+        return None;
+    }
+    let mut text = [0u16; 256];
+    let len = GetWindowTextW(hwnd, &mut text).max(0) as usize;
+    let title = String::from_utf16_lossy(&text[..len]).to_ascii_lowercase();
+    let name = name.trim().to_ascii_lowercase();
+    // "Untitled" is not the app's name; "Steam" is. Two characters is the
+    // shortest either side can be and still mean anything.
+    let named = u8::from(
+        name.len() >= 2 && title.len() >= 2 && (title.contains(&name) || name.contains(&title)),
+    );
+    let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+    let taskbar = u8::from(ex & WS_EX_APPWINDOW.0 != 0 || is_taskbar_window(hwnd));
+    let own = u8::from(window_exe(app_window(hwnd)).to_ascii_lowercase() == want_exe);
+    let mut placement = WINDOWPLACEMENT {
+        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    let area = if GetWindowPlacement(hwnd, &mut placement).is_ok() {
+        let rect = placement.rcNormalPosition;
+        i64::from(rect.right - rect.left) * i64::from(rect.bottom - rect.top)
+    } else {
+        0
+    };
+    Some((named, taskbar, own, area))
+}
+
 /// Show a tray app. Its window is put back on screen when it has one; when it
 /// has none — a tray app whose only windows are message sinks, which is most
 /// of the ones written before Windows 10 — the program is started again
@@ -1819,8 +1993,18 @@ pub async fn sidebar_tray_apps() -> Vec<TrayApp> {
 /// second start by showing itself, which is the same thing clicking its tray
 /// icon would have done. Nothing here can click the icon itself: Windows keeps
 /// the tray's callbacks to Explorer.
+///
+/// Which window is decided by looking at all of them, not by trusting the one
+/// the list happened to record: that handle is a moment old, and for a program
+/// that splits itself across processes it was never the right one to begin
+/// with.
 #[tauri::command]
-pub async fn sidebar_reveal(id: String, exe: Option<String>) -> Result<(), String> {
+pub async fn sidebar_reveal(
+    app: AppHandle,
+    id: String,
+    exe: Option<String>,
+    name: Option<String>,
+) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     use windows::core::BOOL;
     use windows::Win32::UI::WindowsAndMessaging::EnumWindows;
@@ -1833,56 +2017,98 @@ pub async fn sidebar_reveal(id: String, exe: Option<String>) -> Result<(), Strin
     }
 
     let raw: isize = id.parse().map_err(|_| "Not a window.".to_string())?;
+    // WinT itself: its main window was hidden rather than minimized, so
+    // putting it back is Tauri's job — and that is also what retires the
+    // tray icon it left behind.
+    let own = std::env::current_exe()
+        .map(|path| path.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if !own.is_empty() && exe.as_deref().map(str::to_ascii_lowercase).as_deref() == Some(own.as_str())
+    {
+        crate::show_main_window(&app);
+        return Ok(());
+    }
     off_thread(move || unsafe {
         let hwnd = HWND(raw as *mut c_void);
-        if showable_window(hwnd) {
-            bring_forward(hwnd);
-            return Ok(());
-        }
-        // The handle came from a list built a moment ago, and it may be a
-        // sink: the program moved on, or it keeps several windows and this
-        // was not the one. Rather than relaunch — which for a program
-        // already running does nothing visible — look again for a window
-        // of the same program, and prefer one the taskbar would show.
         let own_exe = window_exe(app_window(hwnd));
         let want = exe
             .clone()
             .filter(|exe| !exe.is_empty())
             .unwrap_or(own_exe)
             .to_ascii_lowercase();
+        let name = name.unwrap_or_default();
         if !want.is_empty() {
+            // The program's own processes and everything they started: the
+            // window worth showing can belong to either.
+            let family = family_pids(&want);
             let mut handles: Vec<isize> = Vec::new();
             let _ = EnumWindows(Some(collect), LPARAM(std::ptr::addr_of_mut!(handles) as isize));
-            let mut best: Option<(u8, HWND)> = None;
+            let mut best: Option<((u8, u8, u8, i64), HWND)> = None;
             for other in handles {
                 let candidate = HWND(other as *mut c_void);
-                if window_exe(app_window(candidate)).to_ascii_lowercase() != want {
+                if window_exe(app_window(candidate)).to_ascii_lowercase() != want
+                    && !family.contains(&window_pid(candidate))
+                {
                     continue;
                 }
-                let rank = if is_taskbar_window(candidate) {
-                    2
-                } else if showable_window(candidate) {
-                    1
-                } else {
+                let Some(rank) = reveal_rank(candidate, &want, &name) else {
                     continue;
                 };
-                if best.is_none() || best.is_some_and(|(had, _)| rank > had) {
+                if best.is_none_or(|(had, _)| rank > had) {
                     best = Some((rank, candidate));
                 }
             }
             if let Some((_, found)) = best {
+                // A packaged app keeps a window it has never drawn: Windows
+                // starts it in the background at sign-in and leaves it
+                // suspended until the shell activates it. Showing that window
+                // ourselves puts a black rectangle on screen - the frame is
+                // real, the app behind it was never asked to paint. Windows
+                // Defender is one. So a window that is not on screen already
+                // is opened the way the Start menu opens it, by its
+                // AppUserModelID, and the app puts up its own window.
+                if !on_screen(found) {
+                    if let Some(command) = shell_activation(found) {
+                        return command
+                            .creation_flags(DETACHED_PROCESS)
+                            .spawn()
+                            .map(|_| ())
+                            .map_err(|e| format!("Could not open it: {e}"));
+                    }
+                }
                 bring_forward(found);
                 return Ok(());
             }
+        }
+        if showable_window(hwnd) {
+            if !on_screen(hwnd) {
+                if let Some(command) = shell_activation(hwnd) {
+                    return command
+                        .creation_flags(DETACHED_PROCESS)
+                        .spawn()
+                        .map(|_| ())
+                        .map_err(|e| format!("Could not open it: {e}"));
+                }
+            }
+            bring_forward(hwnd);
+            return Ok(());
         }
         let exe = exe
             .filter(|exe| !exe.is_empty())
             .or_else(|| Some(window_exe(app_window(hwnd))).filter(|exe| !exe.is_empty()))
             .ok_or("That app has no window to show.")?;
-        let mut command = std::process::Command::new(&exe);
-        if let Some(dir) = std::path::Path::new(&exe).parent() {
-            command.current_dir(dir);
-        }
+        // An exe under WindowsApps cannot be started by its path: the package
+        // has to be activated, or Windows answers with nothing at all.
+        let mut command = match shell_activation(hwnd) {
+            Some(command) if is_packaged(&exe) => command,
+            _ => {
+                let mut command = std::process::Command::new(&exe);
+                if let Some(dir) = std::path::Path::new(&exe).parent() {
+                    command.current_dir(dir);
+                }
+                command
+            }
+        };
         command
             .creation_flags(DETACHED_PROCESS)
             .spawn()

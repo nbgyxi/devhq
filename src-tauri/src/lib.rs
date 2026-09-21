@@ -27,6 +27,7 @@ pub mod network;
 mod path_ping;
 mod recent;
 mod suggest;
+mod apps;
 #[cfg(windows)]
 mod picker;
 pub mod procs;
@@ -68,7 +69,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
-fn show_main_window(app: &AppHandle) {
+pub(crate) fn show_main_window(app: &AppHandle) {
     if let Some(tray) = app.tray_by_id("wint-tray") {
         let _ = tray.set_visible(false);
     }
@@ -77,6 +78,9 @@ fn show_main_window(app: &AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
     }
+    // The sidebar draws WinT among the tray's apps while it is away, so it is
+    // told the moment that changes rather than waiting for its next sweep.
+    let _ = app.emit("sidebar:tray", ());
 }
 
 #[tauri::command]
@@ -87,6 +91,7 @@ fn minimize_to_tray(app: AppHandle) {
     if let Some(window) = app.get_window("main") {
         let _ = window.hide();
     }
+    let _ = app.emit("sidebar:tray", ());
 }
 
 #[derive(Default)]
@@ -785,6 +790,32 @@ async fn startup_set_enabled(id: String, enabled: bool) -> Result<(), String> {
     off_thread(move || startup::set_enabled(&id, enabled))
         .await
         .unwrap_or_else(|| Err("Could not write that switch.".into()))
+}
+
+/// Every application installed on this machine, for the global search.
+/// Read whole and off-thread; the front end caches it and searches its cache,
+/// so typing never waits for this.
+#[tauri::command]
+async fn installed_apps() -> Vec<apps::InstalledApp> {
+    off_thread(apps::installed).await.unwrap_or_default()
+}
+
+/// The icons for a batch of installed applications, asked for after the names
+/// so the list is readable before it is pretty.
+#[tauri::command]
+async fn installed_app_icons(targets: Vec<String>) -> Vec<Option<String>> {
+    let count = targets.len();
+    off_thread(move || apps::icons(&targets))
+        .await
+        .unwrap_or_else(|| vec![None; count])
+}
+
+/// Start an installed application the way Explorer would.
+#[tauri::command]
+async fn installed_app_launch(target: String) -> Result<(), String> {
+    off_thread(move || suggest::launch(&target))
+        .await
+        .unwrap_or_else(|| Err("Could not start it.".into()))
 }
 
 /// Every icon the notification area has a record of, and what starts it.
@@ -2965,6 +2996,9 @@ pub fn run() {
             startup_set_enabled,
             startup_tray_icons,
             startup_icon,
+            installed_apps,
+            installed_app_icons,
+            installed_app_launch,
             startup_reveal,
             startup_close,
             startup_uninstall,
@@ -2978,6 +3012,9 @@ pub fn run() {
             tool_window::changelog_hide,
             tool_window::maturity_show,
             tool_window::maturity_hide,
+            tool_window::calendar_show,
+            tool_window::calendar_hide,
+            tool_window::calendar_visible,
             search_global_binding_set,
             clipboard_global_binding_set,
             tool_window::clipboard_picker_prepare,
@@ -3185,6 +3222,9 @@ pub fn run() {
         ,tool_window::changelog_hide
         ,tool_window::maturity_show
         ,tool_window::maturity_hide
+        ,tool_window::calendar_show
+        ,tool_window::calendar_hide
+        ,tool_window::calendar_visible
         ,search_global_binding_set
         ,term::term_serving
         ,workspace::workspace_open

@@ -242,12 +242,14 @@ Copy-Item $exeSource (Join-Path $stage "WinT.exe") -Force
 # compatibility proxy and "Register the wint command" look for it.
 Copy-Item $cliSource (Join-Path $stage "wint-cli.exe") -Force
 
-# The taskbar jump list reads its tool icons from a tool-icons folder beside the exe.
+# The jump list (.ico) and every popped-out tool window (.png) read their icons
+# from a tool-icons folder beside the exe.
 $toolIconSource = Join-Path $tauriRoot "icons/tools/dark"
 if (Test-Path $toolIconSource) {
     $toolIconStage = Join-Path $stage "tool-icons"
     New-Item -ItemType Directory -Force -Path $toolIconStage | Out-Null
     Copy-Item (Join-Path $toolIconSource "*.ico") $toolIconStage -Force
+    Copy-Item (Join-Path $toolIconSource "*.png") $toolIconStage -Force
 }
 
 # --- 4. Generate logo assets from icon.png --------------------------------

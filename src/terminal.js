@@ -513,6 +513,10 @@ class TermView {
     this.exited = false;
     this.onExit = null;
     this.onTitle = null;
+    /** Fired with a Windows path whenever the shell says which folder it is in
+     *  - see the cwd reporting in term.rs. */
+    this.onCwd = null;
+    this.cwd = '';
     /** Fired once, the first time the session paints anything - the moment the
      *  shell is known to be up and reading. */
     this.onFirstOutput = null;
@@ -1307,6 +1311,7 @@ class TermView {
     views.set(this.id, this);
     const snap = await term_invoke("term_attach", { id: this.id });
     this.shellCommand = snap.info.command || "";
+    this.cwd = snap.info.cwd || "";
     loadNativeCommandHistory();
     this.cols = snap.cols;
     this.rows = snap.rows;
@@ -1368,6 +1373,10 @@ class TermView {
       fire();
     }
     if (payload.title && this.onTitle) this.onTitle(payload.title);
+    if (payload.cwd && payload.cwd !== this.cwd) {
+      this.cwd = payload.cwd;
+      this.onCwd?.(payload.cwd);
+    }
     if (this.stickToBottom && contentAdvanced) this.settle();
   }
 

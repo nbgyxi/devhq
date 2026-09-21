@@ -111,7 +111,7 @@ pub async fn workspace_open(
                 builder = builder.position(x, y);
             }
         }
-        if let Some(icon) = crate::tool_window::taskbar_icon_for_tool("workspace") {
+        if let Some(icon) = crate::tool_window::taskbar_icon_for_tool(&app, "workspace") {
             builder = builder
                 .icon(icon)
                 .map_err(|e| format!("Could not set the window icon: {e}"))?;

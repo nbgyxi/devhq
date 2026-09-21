@@ -16,6 +16,85 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.127.1",
+      date: "2026-09-21",
+      title: "A clock on the rail",
+      changes: [
+        ["new", "The sidebar now carries the time and the date at its foot, where the taskbar's clock is. Both are on out of the box and each can be turned off on its own from the Docked Sidebar page."],
+        ["new", "The time and the date share one line whenever the rail is wide enough for both, and stack when it is not - measured against your own width, text size and icon size rather than a fixed number."],
+        ["new", "Clicking the date opens a calendar beside the rail: the month, today marked, any month you page to, and the full time and date above it."],
+        ["new", "Clicking the time gives the seconds, the ISO week number and this machine's time zone, copies the time, the date or an ISO 8601 stamp, and opens Windows' own Date and time or Region pages."],
+        ["better", "The clock is written the way Windows writes it here - 24 hours, zero padded. Seconds are off by default and can be switched on from the clock's own menu or the Docked Sidebar page."],
+      ],
+    },
+    {
+      version: "0.126.0",
+      date: "2026-09-21",
+      title: "A terminal window says where it is",
+      changes: [
+        ["new", "A terminal window is now titled after the folder its shell is actually in and which shell that is - \"suprnova - PowerShell 7\" - and it follows along as you cd. Several shells open at once are finally tellable apart in the sidebar, the taskbar and Alt-Tab, instead of all reading as the folder they happened to start in."],
+        ["better", "The folder above the terminal, and each tab in a split, name the current folder too, with the full path on hover."],
+      ],
+    },
+    {
+      version: "0.125.1",
+      date: "2026-09-21",
+      title: "Tool windows keep their own icon",
+      changes: [
+        ["fix", "Popped-out tool windows show their own icon in the taskbar and Alt-Tab on every machine, not just the one WinT was built on - installed copies used to fall back to the plain WinT icon for everything."],
+      ],
+    },
+    {
+      version: "0.125.0",
+      date: "2026-09-21",
+      title: "Start anything from search",
+      changes: [
+        ["new", "Global search can now start any application installed on this machine - desktop programs and Store apps alike. Switch it on under Settings > General > Find installed applications in search; it is off until you do."],
+        ["better", "The application list is read in the background and kept across restarts, so the first keystroke after launch already matches. WinT re-reads it at startup and when you open search, so something you installed a minute ago is there."],
+        ["better", "Each application shows its own Windows icon. The icons arrive behind the names, a batch at a time, and are kept once read - so the list is readable immediately and never waits on a picture."],
+      ],
+    },
+    {
+      version: "0.124.0",
+      date: "2026-09-21",
+      title: "A terminal anywhere",
+      changes: [
+        ["new", "New terminal window is now a command of its own: it opens a fresh shell in your home folder, in its own window, with no docked panel and without pulling the WinT window forward. Bind it system-wide under Settings > Hotkeys and you have a terminal from anywhere in Windows, whatever you happen to be doing. It is also in the command palette."],
+      ],
+    },
+    {
+      version: "0.123.4",
+      date: "2026-09-21",
+      title: "WinT in its own tray",
+      changes: [
+        ["fix", "Send WinT to the notification area and it now shows up among the tray apps on the sidebar, like every other program that hides there - and clicking it brings the window back. The rail left its own program out entirely, so the one app that could not be reached from it was WinT itself."],
+      ],
+    },
+    {
+      version: "0.123.3",
+      date: "2026-09-21",
+      title: "The right window when a tray icon is clicked",
+      changes: [
+        ["fix", "Clicking a tray icon on the sidebar now opens the window you meant. Steam, and any program that puts its window in a helper process it starts, kept a hidden window of its own called Untitled that looked real enough to be brought forward - so a click showed an empty frame instead of Steam. The rail now weighs every window the program and the processes it started have, and picks the one named after the app and carrying a taskbar button, rather than the first that looked plausible."],
+      ],
+    },
+    {
+      version: "0.123.2",
+      date: "2026-09-21",
+      title: "Ask PC Detective your own question",
+      changes: [
+        ["new", "PC Detective has a Custom scan. Instead of picking one of the fixed areas, write what you want looked into in your own words — a program you do not recognise, what is filling the C: drive, why the fan spins up when nothing is running — and the agent works out which commands answer it. It runs them read-only, shows you every one, and asks you back if the question needs narrowing. Everything else is unchanged: findings come with their evidence and a reversible fix, and nothing on the PC changes until you approve it."],
+      ],
+    },
+    {
+      version: "0.123.1",
+      date: "2026-09-21",
+      title: "Security Sweep is now PC Detective",
+      changes: [
+        ["better", "Security Sweep is now called PC Detective. The old name was too narrow for what the tool does: it does not just scan for threats, it works out where anything on this PC came from and explains it, from what starts with Windows to what is behind a freeze or a noisy event log. Searching for the old name still finds it, and so do inspector, investigate, detective and diagnose."],
+      ],
+    },
+    {
       version: "0.123.0",
       date: "2026-09-20",
       title: "Right-clicking a tray icon no longer kills the rail",

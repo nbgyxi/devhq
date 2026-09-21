@@ -47,7 +47,10 @@
     results.innerHTML = rows.length ? rows.map((row, index) => `
       <div class="global-search-item">
         <button class="global-search-row kind-${esc(row.kind.toLowerCase())}${index === selected ? " on" : ""}" data-index="${index}" role="option" aria-selected="${index === selected}">
-          <span class="ms">${esc(row.icon || "chevron_right")}</span><strong>${esc(row.label)}</strong><small>${esc(row.detail)}</small><span></span>
+          ${row.image
+            ? `<img class="global-search-image" src="${esc(row.image)}" alt="" />`
+            : `<span class="ms">${esc(row.icon || "chevron_right")}</span>`
+          }<strong>${esc(row.label)}</strong><small>${esc(row.detail)}</small><span></span>
         </button>
         ${row.pinnable ? `<button class="global-search-pin${row.pinned ? " on" : ""}" data-pin="${esc(row.toolId)}" title="${row.pinned ? "Unpin" : "Pin"}"><span class="ms">${row.pinned ? "push_pin" : "add"}</span></button>` : ""}
       </div>`).join("") : `<div class="global-search-empty">No matching tools, projects or commands</div>`;

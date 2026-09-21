@@ -323,6 +323,8 @@ body.popout #pop-shell:hover{background:rgba(255,255,255,.08)}
 .command-kind.kind-repo{color:var(--purple)}
 .command-kind.kind-view{color:var(--amber)}
 .command-kind.kind-cmd{color:var(--teal)}
+.command-kind.kind-app{color:var(--green)}
+.command-kind .command-image{width:18px;height:18px;object-fit:contain}
 .command-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
 .command-detail{
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;color:var(--dim2);
@@ -4261,6 +4263,17 @@ body.workspace>#ws-bottom-dock{grid-row:3}
 .sa-area small{grid-column:2;color:var(--dim);font-size:11.5px;line-height:1.5}
 .sa-area small.sa-stall-line{display:flex;align-items:center;gap:6px;color:var(--text)}
 .sa-stall-line .ms{font-size:15px;color:var(--accent)}
+/* The Custom tile and, under it, the question box - both across the grid. */
+.sa-area-wide{grid-column:1/-1}
+.sa-area.on.sa-area-wide{box-shadow:none;border-bottom:0;padding-bottom:13px;border-bottom-left-radius:0;border-bottom-right-radius:0}
+.sa-custom{grid-column:1/-1;display:flex;flex-direction:column;gap:8px;padding:12px 13px;border:1px solid var(--accent);border-top:0;border-radius:0 0 10px 10px;background:var(--bg1);margin-top:-9px}
+.sa-custom label{color:var(--dim);font-size:11.5px;line-height:1.5}
+.sa-custom textarea{width:100%;min-height:64px;resize:vertical;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:inherit;font-size:13px;line-height:1.5}
+.sa-custom textarea:focus{outline:0;border-color:var(--accent)}
+.sa-custom-eg{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.sa-custom-eg span{color:var(--dim2);font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.sa-custom-eg button{padding:3px 9px;border:1px solid var(--line);border-radius:999px;background:var(--bg2);color:var(--dim);font-size:11px;cursor:pointer}
+.sa-custom-eg button:hover{border-color:var(--accent);color:var(--text)}
 .sa-pill{--tone:var(--accent);padding:1px 6px;border-radius:4px;border:1px solid color-mix(in srgb,var(--tone) 42%,transparent);background:color-mix(in srgb,var(--tone) 12%,transparent);color:var(--tone);font-size:9px;font-weight:700;font-style:normal;letter-spacing:.06em;text-transform:uppercase}
 .sa-pill.warn{--tone:var(--amber)}
 .sa-pill.ok{--tone:var(--green)}

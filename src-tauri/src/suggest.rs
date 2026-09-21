@@ -134,7 +134,7 @@ fn read_counts() -> Vec<(String, u32, u64)> {
 
 /// The shell's display name for a path or an AppUserModelID, and its icon.
 /// `None` when the shell no longer knows it: uninstalled, or moved.
-unsafe fn shell_item(target: &str) -> Option<(String, Option<String>)> {
+pub(crate) unsafe fn shell_item(target: &str) -> Option<(String, Option<String>)> {
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::Win32::UI::Shell::Common::ITEMIDLIST;

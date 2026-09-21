@@ -11,6 +11,10 @@ body.global-search-window{box-sizing:border-box;color:var(--text)}
 .global-search-row:hover,.global-search-row.on{background:var(--bg3)}
 .global-search-row>.ms{font-size:19px;color:var(--dim2)}
 .global-search-row.kind-tool>.ms{color:var(--accent)}
+.global-search-row.kind-app>.ms{color:var(--green)}
+/* An application draws its own Windows icon where the glyph would be, in the
+   same 26px column, so a list of mixed rows stays on one grid. */
+.global-search-image{width:19px;height:19px;object-fit:contain;justify-self:center}
 .global-search-row strong,.global-search-row small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .global-search-row strong{font-size:13px;font-weight:600}.global-search-row small{text-align:right;color:var(--dim2);font:10.5px 'Cascadia Mono','Cascadia Code',Consolas,monospace}
 .global-search-pin{width:28px;height:28px;display:grid;place-items:center;border-radius:7px;color:var(--dim2);opacity:0}

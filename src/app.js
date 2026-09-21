@@ -52,6 +52,12 @@ function armToolRecovery(view, tool = "") {
 /** Last finished scan, kept so a restart has something to show immediately
  *  while a fresh scan runs behind it. */
 const SCAN_CACHE_KEY = "wint.scanCache.v1";
+/** The installed-application list the global search matches against. Kept
+ *  here rather than re-read on demand: search has to answer instantly. */
+const APPS_CACHE_KEY = "wint.apps.v1";
+/** Their icons, kept apart from the list: the names are small and change when
+ *  something is installed, the pictures are large and never change at all. */
+const APP_ICONS_KEY = "wint.appIcons.v1";
 const SCAN_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Set once a reset is under way, so nothing writes remembered state back
@@ -89,6 +95,9 @@ const state = {
   compactTechOverview: true,
   /** Whether the optional title-bar control that hides WinT to the tray is visible. */
   minimizeToTrayButton: false,
+  /** Off by default: the global search is about this app until you say
+   *  otherwise. On, it also finds every application on the machine. */
+  searchApps: false,
   /** What closing the main window does: "ask" shows the close dialog first,
    *  "quit" closes WinT and everything it opened, "tray" hides it to the tray. */
   closeAction: "ask",
@@ -478,6 +487,7 @@ function loadPrefs() {
       // new compact presentation, so it is visible without adding card height.
       state.compactTechOverview = true;
     }
+    if (typeof p.searchApps === "boolean") state.searchApps = p.searchApps;
     if (typeof p.minimizeToTrayButton === "boolean") state.minimizeToTrayButton = p.minimizeToTrayButton;
     if (["ask", "quit", "tray"].includes(p.closeAction)) state.closeAction = p.closeAction;
     if (typeof p.nativeDecorations === "boolean") state.nativeDecorations = p.nativeDecorations;
@@ -564,6 +574,7 @@ function savePrefs() {
         theme: state.theme,
         workspaceTheme: state.workspaceTheme,
         compactTechOverview: state.compactTechOverview,
+        searchApps: state.searchApps,
         minimizeToTrayButton: state.minimizeToTrayButton,
         closeAction: state.closeAction,
         nativeDecorations: state.nativeDecorations,
@@ -3890,6 +3901,177 @@ function closeToolPins() {
 
 /** The icon that stands for each kind of palette row. Every row carries one -
  *  a row without one reads as a hole in the list. */
+/* ------------------------------------------- installed applications */
+// Searching every application on the machine has to be as fast as searching
+// a tool, so nothing about it happens while you type. The list is read from
+// the shell once, off-thread, turned into finished search rows, and kept in
+// memory; localStorage carries it across restarts so the very first keystroke
+// after launch already matches. The refresh only exists to notice what was
+// installed or removed since.
+
+/** Finished search rows for the installed applications, rebuilt only when the
+ *  list itself changes - never per keystroke. */
+let appCommands = [];
+/** When the shell was last asked, so an open-close-open does not re-read it. */
+let appIndexAt = 0;
+let appIndexPending = false;
+/** How stale the list may be before opening search asks the shell again. */
+const APP_INDEX_MAX_AGE = 10 * 60 * 1000;
+/** Each application's real Windows icon, by AppUserModelID, as a data URL.
+ *  Asked for once ever and then kept: an icon does not change, and reading one
+ *  costs a trip into the shell that must never happen while you type. */
+const appIcons = new Map();
+/** How many icons to ask for in one call. Big enough that entering the shell's
+ *  apartment is paid for once per batch, small enough that no single call runs
+ *  long and the icons already in hand keep drawing meanwhile. */
+const APP_ICON_BATCH = 48;
+let appIconsPending = false;
+
+/** The rows the search matches against. The icon is baked in as a finished
+ *  data URL, so drawing a result is a string read and never a shell call. An
+ *  application whose icon has not arrived yet draws the generic glyph, and is
+ *  rebuilt in place once it has. */
+function buildAppCommands(apps) {
+  appIndexApps = apps;
+  appCommands = apps.map((app) => ({
+    kind: "APP", label: app.name, icon: "apps", image: appIcons.get(app.target) || "",
+    detail: "installed application",
+    keywords: `app apps application program launch open start ${app.target}`,
+    action: "launch-app", target: app.target,
+  }));
+}
+
+/** The list behind the rows, kept so icons can rebuild them without asking the
+ *  shell for the names again. */
+let appIndexApps = [];
+
+/** Push the current rows to whichever palette is open. Cheap, and the only
+ *  thing an arriving batch of icons has to do. */
+function republishSearch() {
+  publishNativeSearch();
+  if (el["search-menu"] && !el["search-menu"].hidden) renderSearchCommands();
+}
+
+function saveAppIcons() {
+  try {
+    localStorage.setItem(APP_ICONS_KEY, JSON.stringify(Object.fromEntries(appIcons)));
+  } catch {
+    // Out of storage, or storage disabled. The icons stay in memory for this
+    // run; next run asks the shell again rather than showing nothing.
+  }
+}
+
+/** The icons for every application that has none yet, a batch at a time. Each
+ *  batch is awaited on its own and redraws the list, so icons fill in visibly
+ *  from the top instead of arriving all at once at the end. */
+async function fetchAppIcons() {
+  if (appIconsPending) return;
+  const missing = appIndexApps
+    .map((app) => app.target)
+    .filter((target) => !appIcons.has(target));
+  if (!missing.length) return;
+  appIconsPending = true;
+  beginWork("app-icons", "Reading application icons", `0 / ${missing.length}`);
+  try {
+    for (let from = 0; from < missing.length; from += APP_ICON_BATCH) {
+      if (!state.searchApps) break;
+      const batch = missing.slice(from, from + APP_ICON_BATCH);
+      const icons = (await invoke("installed_app_icons", { targets: batch })) || [];
+      // A null answer is remembered as "no icon" too: an app the shell has no
+      // picture for must not be asked about again on every refresh.
+      batch.forEach((target, index) => appIcons.set(target, icons[index] || ""));
+      updateWork("app-icons", `${Math.min(from + batch.length, missing.length)} / ${missing.length}`);
+      buildAppCommands(appIndexApps);
+      republishSearch();
+    }
+    saveAppIcons();
+  } catch {
+    /* the shell would not answer - the rows keep their generic glyph */
+  } finally {
+    appIconsPending = false;
+    endWork("app-icons");
+  }
+}
+
+/** The list as it was left last time, so search is useful before the refresh
+ *  has finished - or at all, if the shell is slow today. */
+function loadAppIndexCache() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(APPS_CACHE_KEY) || "null");
+    const icons = JSON.parse(localStorage.getItem(APP_ICONS_KEY) || "{}");
+    for (const [target, url] of Object.entries(icons)) {
+      if (typeof url === "string") appIcons.set(target, url);
+    }
+    if (!cached || !Array.isArray(cached.apps)) return;
+    buildAppCommands(cached.apps.filter((app) => app && app.name && app.target));
+    appIndexAt = Number(cached.at) || 0;
+  } catch {
+    /* storage disabled, or a cache this build no longer understands */
+  }
+}
+
+/** Re-read the Apps folder. Runs in the background and never blocks typing:
+ *  the rows in hand keep answering until the new ones replace them. */
+async function refreshAppIndex({ force = false } = {}) {
+  if (!state.searchApps || appIndexPending) return;
+  if (!force && Date.now() - appIndexAt < APP_INDEX_MAX_AGE) return;
+  appIndexPending = true;
+  beginWork("app-index", "Indexing installed applications");
+  try {
+    const apps = (await invoke("installed_apps")) || [];
+    buildAppCommands(apps);
+    appIndexAt = Date.now();
+    try {
+      localStorage.setItem(APPS_CACHE_KEY, JSON.stringify({ at: appIndexAt, apps }));
+    } catch {
+      /* storage disabled - the list simply does not survive a restart */
+    }
+    // The palette may be open on the old list; hand it the new one.
+    republishSearch();
+    // An uninstalled app must not keep its picture in storage for ever.
+    const live = new Set(apps.map((app) => app.target));
+    for (const target of appIcons.keys()) if (!live.has(target)) appIcons.delete(target);
+    void fetchAppIcons();
+  } catch {
+    /* the shell would not answer - the cached list stays in use */
+  } finally {
+    appIndexPending = false;
+    endWork("app-index");
+  }
+}
+
+/** Start an application the search found. Leaving the app for something else
+ *  shows its own line until Windows has it, and says so if it never does. */
+function launchInstalledApp(command) {
+  const key = `launch-app:${command.target}`;
+  beginWork(key, `Starting ${command.label}`);
+  invoke("installed_app_launch", { target: command.target })
+    .then(() => setTimeout(() => endWork(key), 1200))
+    .catch((error) => {
+      updateWork(key, String(error), `Could not start ${command.label}`);
+      setTimeout(() => endWork(key), 6000);
+    });
+}
+
+/** Turning the setting off drops the rows immediately; turning it on reads
+ *  the list now rather than at the next search. */
+function applySearchApps() {
+  if (state.searchApps) {
+    loadAppIndexCache();
+    refreshAppIndex({ force: true });
+  } else {
+    appCommands = [];
+    appIndexApps = [];
+    appIndexAt = 0;
+    appIcons.clear();
+    try {
+      localStorage.removeItem(APPS_CACHE_KEY);
+      localStorage.removeItem(APP_ICONS_KEY);
+    } catch { /* storage disabled */ }
+  }
+  publishNativeSearch();
+}
+
 const COMMAND_KIND_ICONS = {
   TOOL: "handyman",
   GOTO: "arrow_forward",
@@ -3901,6 +4083,7 @@ const COMMAND_KIND_ICONS = {
   RUN: "play_arrow",
   PULL: "download",
   BOX: "dashboard",
+  APP: "apps",
 };
 
 function availableSearchCommands(query = "") {
@@ -3920,6 +4103,7 @@ function availableSearchCommands(query = "") {
     })),
     { kind: "CMD", label: "Rescan projects", detail: "F5", keywords: "rescan re-scan scan refresh reload reread update projects folders f5", action: "rescan" },
     { kind: "TERM", label: "Toggle terminal panel", detail: "Ctrl+`", keywords: "terminal panel console shell prompt powershell cmd bash toggle show hide open command line", action: "terminal-panel" },
+    { kind: "TERM", label: "New terminal window", detail: "a shell in a window of its own", keywords: "terminal window new popped out popout separate floating shell console prompt powershell cmd bash home", action: "terminal-window" },
     ...Object.entries(FILTERS).map(([key, filter]) => ({
       kind: "VIEW",
       label: `${state.filters.has(key) ? "Remove" : "Show"} ${filter.label.toLowerCase()}`,
@@ -3953,6 +4137,9 @@ function availableSearchCommands(query = "") {
       });
     }
   }
+  // Prebuilt and only ever spread: the machine can have hundreds of these,
+  // and none of them may cost anything on a keystroke.
+  if (state.searchApps && appCommands.length) commands.push(...appCommands);
   if (/\bkill\b/i.test(query)) {
     for (const row of state.ports) {
       const ports = (row.ports || []).map((binding) => binding.port);
@@ -4060,6 +4247,7 @@ function publishNativeSearch(query = nativeSearchQuery) {
       label: command.label,
       detail: command.detail || "",
       icon: command.icon || COMMAND_KIND_ICONS[command.kind] || "chevron_right",
+      image: command.image || "",
       toolId: command.toolId || "",
       pinnable: command.action === "tool" && Boolean(toolById(command.toolId)),
       pinned: Boolean(command.toolId && isToolPinned(command.toolId)),
@@ -4068,6 +4256,9 @@ function publishNativeSearch(query = nativeSearchQuery) {
 }
 
 function activateNativeSearch() {
+  // Show the list already in hand, then quietly check whether anything was
+  // installed since. Opening search never waits for the shell.
+  refreshAppIndex();
   publishNativeSearch(nativeSearchQuery);
   emit("search:activate", { query: nativeSearchQuery, theme: state.theme }).catch(() => {});
 }
@@ -4114,7 +4305,9 @@ function renderSearchCommands() {
         index === searchCommandIndex ? " on" : ""
       }" data-command="${index}"><span class="command-kind kind-${command.kind.toLowerCase()}" title="${esc(
         command.kind
-      )}">${icon(command.icon || COMMAND_KIND_ICONS[command.kind] || "chevron_right")}</span><span
+      )}">${command.image
+        ? `<img class="command-image" src="${esc(command.image)}" alt="" />`
+        : icon(command.icon || COMMAND_KIND_ICONS[command.kind] || "chevron_right")}</span><span
         class="command-label">${esc(command.label)}</span><span class="command-detail">${esc(
         command.detail
       )}</span></button>${pinnable ? `<button class="search-pin${pinned ? " on" : ""}" data-pin-tool="${esc(
@@ -4149,6 +4342,7 @@ function runSearchCommand(index) {
   if (command.action === "tool") openTool(command.toolId);
   else if (command.action === "rescan") rescan();
   else if (command.action === "terminal-panel") openTerminalPanel();
+  else if (command.action === "terminal-window") invoke("sidebar_open_terminal").catch((error) => { state.error = String(error); markDirty("banner"); });
   else if (command.action === "filter") {
     if (state.activeView !== "projects") openTool("projects");
     toggleFilter(command.key);
@@ -4159,6 +4353,7 @@ function runSearchCommand(index) {
   else if (command.action === "workspace") projectAction("workspace", command.project);
   else if (command.action === "terminal") projectAction("terminal", command.project);
   else if (command.action === "pull") projectAction("pull", command.project);
+  else if (command.action === "launch-app") launchInstalledApp(command);
   else if (command.action === "kill-process") {
     if (state.activeView !== "ports") switchMainView("ports");
     // The palette names a process; the explorer talks in ports, so the row it
@@ -4213,6 +4408,10 @@ function hotkeyCatalog() {
     { id: "command:focus-mode", kind: "global", name: "Focus mode: hide or bring back windows", icon: "shield_lock", hint: "Hide the windows your Focus mode rules pick, or bring them back. Always system-wide.", action: () => invoke("focus_mode_toggle").catch(() => {}) },
     { id: "command:rescan", kind: "global", name: "Rescan projects", icon: "refresh", hint: "Scan every configured project folder again", action: () => rescan() },
     { id: "command:terminal-panel", kind: "global", name: "Toggle terminal panel", icon: "terminal", hint: "Show or hide docked terminals", action: () => setDockOpen(!window.termsState.open) },
+    // The popped-out variant: a shell in a window of its own, with no dock and
+    // no main window in the way. Bound system-wide it is a terminal anywhere,
+    // which is the only way it is worth having.
+    { id: "command:terminal-window", kind: "global", name: "New terminal window", icon: "terminal", hint: "Open a fresh shell in your home folder, popped out in a window of its own", action: () => invoke("sidebar_open_terminal").catch((error) => { state.error = String(error); markDirty("banner"); }) },
     ...Object.entries(FILTERS).map(([key, filter]) => ({
       id: `filter:${key}`, kind: "action", name: `Toggle ${filter.label.toLowerCase()}`,
       icon: key === "favorite" ? "star" : "filter_alt", hint: "Show or hide this project filter", action: () => toggleFilter(key),
@@ -4295,7 +4494,7 @@ async function syncGlobalHotkeys() {
         // The native palette is intentionally usable without surfacing the
         // main window. Other global commands still bring their working context
         // forward before executing.
-        if (command.id !== "command:palette" && command.id !== "command:focus-mode") {
+        if (command.id !== "command:palette" && command.id !== "command:focus-mode" && command.id !== "command:terminal-window") {
           await appWindow.show().catch(() => {});
           await appWindow.unminimize().catch(() => {});
           await appWindow.setFocus().catch(() => {});
@@ -5892,6 +6091,10 @@ function renderSettings() {
             <span><strong>Pinned tools on their own shelf</strong><small>Give the pins a panel above the status bar instead of a few chips inside it. The row wraps, so every pin stays on screen however many you keep.</small></span>
             <input class="setting-check" id="setting-pins-panel" type="checkbox" />
           </label>
+          <label class="settings-row" for="setting-search-apps">
+            <span><strong>Find installed applications in search</strong><small>Let the global search start any application on this machine, not just WinT's own tools and your projects. The list is read in the background and kept, so typing stays instant; WinT checks for newly installed apps when it starts and when you open search.</small></span>
+            <input class="setting-check" id="setting-search-apps" type="checkbox" />
+          </label>
           <label class="settings-row" for="setting-analytics">
             <span><strong>Send anonymous usage data</strong><small>Let us know you're using WinT, via PageRain. It's a random number and the screen you opened - never your projects.</small>
               <button class="linklike" type="button" id="setting-analytics-source">Read the code that sends it</button>
@@ -6039,6 +6242,7 @@ function renderSettings() {
   host.querySelector("#setting-compact-tech").checked = state.compactTechOverview;
   host.querySelector("#setting-pins-panel").checked = state.pinsPanel;
   host.querySelector("#setting-git-wording").checked = state.gitWording;
+  host.querySelector("#setting-search-apps").checked = state.searchApps;
   host.querySelector("#setting-minimize-to-tray").checked = state.minimizeToTrayButton;
   syncCloseActionSetting(host);
   host.querySelector("#setting-native-decorations").checked = state.nativeDecorations;
@@ -7139,6 +7343,10 @@ function wireShell() {
         .then((saved) => invoke("sidebar_settings_set", { settings: { ...(saved || {}), dockOnStart: enabled } }))
         .catch(() => { check.checked = !enabled; })
         .finally(() => endWork("dock-on-start"));
+    } else if (e.target.id === "setting-search-apps") {
+      state.searchApps = e.target.checked;
+      savePrefs();
+      applySearchApps();
     } else if (e.target.id === "setting-minimize-to-tray") {
       state.minimizeToTrayButton = e.target.checked;
       document.querySelector('.titlebar [data-win="tray"]').hidden = !state.minimizeToTrayButton;
@@ -7527,6 +7735,12 @@ async function startProjectsWindow() {
     localStorage.removeItem(STARTUP_RESTORE_KEY);
   } catch { /* storage disabled - the in-process guards still apply */ }
   loadPrefs();
+  // The applications the search can start: the cached list is in hand before
+  // anything is drawn, and the refresh that follows never holds anything up.
+  if (state.searchApps) {
+    loadAppIndexCache();
+    refreshAppIndex({ force: true });
+  }
   // Migrate remembered modular destinations from their old in-process hosts.
   const restoredIsolatedId = state.activeView === "ports" ? "ports"
     : state.activeView === "tools" ? state.utilToolId

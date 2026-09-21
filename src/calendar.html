@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<title>Calendar</title>
+<link rel="stylesheet" href="styles.css" />
+<style>
+  /* Its own window, the way the tray's calendar is: the page *is* the flyout. */
+  html, body { height: 100%; }
+  body { margin: 0; overflow: hidden; background: var(--bg1); user-select: none; -webkit-user-select: none; }
+  .cal { height: 100%; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  /* The clock at the top, the way Windows shows it above the month: the time
+     large, the full date under it, both ticking while the flyout is open. */
+  .cal-now { flex: 0 0 auto; padding: 12px 14px 10px; border-bottom: 1px solid var(--line); background: var(--bg2); }
+  .cal-time { font-size: 26px; font-weight: 600; line-height: 1.1; letter-spacing: .01em; }
+  .cal-date { margin-top: 2px; font-size: 12px; color: var(--dim); }
+  .cal-head { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; padding: 8px 8px 4px; }
+  .cal-head strong { flex: 1; padding-left: 6px; font-size: 12.5px; font-weight: 600; }
+  .cal-head button { width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 7px; background: none; color: var(--dim); cursor: pointer; }
+  .cal-head button:hover { background: var(--bg3); color: var(--text); }
+  .cal-head button .ms { font-size: 18px; }
+  .cal-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; padding: 0 8px 8px; align-content: start; }
+  .cal-grid span, .cal-grid b { display: grid; place-items: center; height: 30px; border-radius: 7px; font-size: 12px; font-weight: 400; }
+  .cal-grid .dow { height: 22px; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim2); }
+  .cal-grid .out { color: var(--dim2); }
+  .cal-grid .today { background: var(--accent); color: #0c0d11; font-weight: 700; }
+  .cal-foot { flex: 0 0 auto; display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); background: var(--bg2); }
+  .cal-foot button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg1); color: var(--dim); font: inherit; font-size: 11.5px; cursor: pointer; }
+  .cal-foot button:hover { background: var(--bg3); color: var(--text); }
+  .cal-foot button .ms { font-size: 15px; }
+</style>
+</head>
+<body>
+<div class="cal">
+  <div class="cal-now">
+    <div class="cal-time" data-time></div>
+    <div class="cal-date" data-full></div>
+  </div>
+  <div class="cal-head">
+    <strong data-month></strong>
+    <button type="button" data-step="-1" title="Previous month"><span class="ms" aria-hidden="true">chevron_left</span></button>
+    <button type="button" data-today title="Today"><span class="ms" aria-hidden="true">today</span></button>
+    <button type="button" data-step="1" title="Next month"><span class="ms" aria-hidden="true">chevron_right</span></button>
+  </div>
+  <div class="cal-grid" data-grid></div>
+  <div class="cal-foot">
+    <button type="button" data-settings="datetime"><span class="ms" aria-hidden="true">settings</span>Date and time</button>
+    <button type="button" data-settings="region"><span class="ms" aria-hidden="true">public</span>Region</button>
+  </div>
+</div>
+<script>
+  (() => {
+    "use strict";
+    const invoke = window.__TAURI__.core.invoke;
+    const query = new URLSearchParams(location.search);
+    if (query.get("theme") === "light") document.documentElement.dataset.theme = "light";
+
+    const timeEl = document.querySelector("[data-time]");
+    const fullEl = document.querySelector("[data-full]");
+    const monthEl = document.querySelector("[data-month]");
+    const gridEl = document.querySelector("[data-grid]");
+    const hide = () => invoke("calendar_hide").catch(() => {});
+
+    // Which month is being looked at. Reset to the current one every time the
+    // flyout is shown again, so it never opens on a month browsed to last week.
+    let shown = new Date();
+
+    const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+
+    /** The clock above the month: 24 hours with the seconds, the way this
+     *  machine writes the time, ticking while the flyout is open. */
+    function paintNow() {
+      const now = new Date();
+      timeEl.textContent = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+      fullEl.textContent = now.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    }
+
+    /** Six weeks, always: a month that starts on a Sunday and one that runs to
+     *  31 days would otherwise change the flyout's height under the pointer. */
+    function paintMonth() {
+      const today = new Date();
+      const first = new Date(shown.getFullYear(), shown.getMonth(), 1);
+      monthEl.textContent = first.toLocaleDateString([], { month: "long", year: "numeric" });
+      // The week's first day comes from the locale where the browser knows it,
+      // and falls back to Monday, which is what this machine's region uses.
+      const firstDay = (() => {
+        try {
+          const locale = new Intl.Locale(navigator.language);
+          const week = locale.getWeekInfo?.() || locale.weekInfo;
+          return (week?.firstDay ?? 1) % 7;
+        } catch { return 1; }
+      })();
+      const cells = [];
+      for (let i = 0; i < 7; i += 1) {
+        // A real date in a known week, only so the day names come out localized.
+        const day = new Date(2024, 0, 7 + ((firstDay + i) % 7));
+        cells.push(`<span class="dow">${day.toLocaleDateString([], { weekday: "short" }).slice(0, 2)}</span>`);
+      }
+      const lead = (first.getDay() - firstDay + 7) % 7;
+      const start = new Date(first);
+      start.setDate(first.getDate() - lead);
+      for (let i = 0; i < 42; i += 1) {
+        const day = new Date(start);
+        day.setDate(start.getDate() + i);
+        const classes = [
+          day.getMonth() === shown.getMonth() ? "" : "out",
+          sameDay(day, today) ? "today" : "",
+        ].filter(Boolean).join(" ");
+        cells.push(`<b class="${classes}" title="${day.toLocaleDateString([], { dateStyle: "full" })}">${day.getDate()}</b>`);
+      }
+      gridEl.innerHTML = cells.join("");
+    }
+
+    function show() {
+      shown = new Date();
+      paintNow();
+      paintMonth();
+    }
+
+    // Clicking the rail's date again focuses the rail, which blurs this window
+    // a moment before the click asks for it. Hiding therefore waits just long
+    // enough for a re-show to arrive and cancel it — the same dance the badge
+    // note does — so a second click puts it away rather than flashing it.
+    let going = 0;
+    const hideSoon = () => { clearTimeout(going); going = setTimeout(hide, 220); };
+    const stay = () => clearTimeout(going);
+    window.wintCalendar = { show: () => { stay(); show(); } };
+
+    document.addEventListener("click", (event) => {
+      const step = event.target.closest("[data-step]");
+      if (step) {
+        shown = new Date(shown.getFullYear(), shown.getMonth() + Number(step.dataset.step), 1);
+        return paintMonth();
+      }
+      if (event.target.closest("[data-today]")) return show();
+      const settings = event.target.closest("[data-settings]");
+      if (settings) {
+        // Windows' own pages, opened rather than rebuilt: setting the clock or
+        // the region is its business, not WinT's.
+        invoke("sidebar_open_settings", { page: settings.dataset.settings }).catch(() => {});
+        return hide();
+      }
+    });
+
+    document.addEventListener("keydown", (event) => { if (event.key === "Escape") hide(); });
+    window.addEventListener("focus", stay);
+    window.addEventListener("blur", hideSoon);
+
+    show();
+    // A second is enough for a clock that shows seconds, and this window is
+    // only ever on screen while someone is looking at it.
+    setInterval(() => { if (!document.hidden) paintNow(); }, 1000);
+  })();
+</script>
+</body>
+</html>

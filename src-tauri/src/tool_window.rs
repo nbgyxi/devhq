@@ -374,6 +374,7 @@ pub async fn changelog_show(app: AppHandle, theme: Option<String>) -> Result<(),
 }
 
 const MATURITY_LABEL: &str = "maturity-note";
+const CALENDAR_LABEL: &str = "calendar-flyout";
 
 /// What Alpha and Beta mean, in a native sibling window.
 ///
@@ -445,6 +446,79 @@ pub fn maturity_hide(app: AppHandle) -> Result<(), String> {
         window.hide().map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// The calendar behind the rail's date, in a window of its own.
+///
+/// The docked rail is as narrow as the user dragged it, and a month grid is
+/// not: drawn inside the rail it would be cut off. Windows opens its own
+/// calendar as a flyout beside the clock for the same reason, so this one is a
+/// small always-on-top window the rail positions next to itself and which
+/// closes the moment it loses the focus.
+#[tauri::command]
+pub async fn calendar_show(
+    app: AppHandle,
+    theme: Option<String>,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let light = theme.as_deref() == Some("light");
+    let position = LogicalPosition::new(x.max(0.0), y.max(0.0));
+    if let Some(window) = app.get_webview_window(CALENDAR_LABEL) {
+        window
+            .eval(&format!(
+                r#"document.documentElement.dataset.theme="{}";window.wintCalendar?.show();"#,
+                if light { "light" } else { "dark" }
+            ))
+            .map_err(|e| e.to_string())?;
+        window.set_position(position).map_err(|e| e.to_string())?;
+        return focus_search_window(&window);
+    }
+    let background = if light {
+        tauri::webview::Color(244, 245, 248, 255)
+    } else {
+        tauri::webview::Color(12, 13, 17, 255)
+    };
+    let page = format!("calendar.html?theme={}", if light { "light" } else { "dark" });
+    let build_app = app.clone();
+    off_thread(move || {
+        WebviewWindowBuilder::new(&app, CALENDAR_LABEL, WebviewUrl::App(page.into()))
+            .title("Calendar")
+            .inner_size(300.0, 356.0)
+            .decorations(false)
+            .resizable(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .visible(false)
+            .position(position.x, position.y)
+            .background_color(background)
+            .build()
+            .map(|_| ())
+            .map_err(|e| format!("Could not open the calendar: {e}"))
+    })
+    .await
+    .unwrap_or_else(|| Err("Could not open the calendar.".to_string()))?;
+    let window = build_app
+        .get_webview_window(CALENDAR_LABEL)
+        .ok_or_else(|| "The calendar was created without a window.".to_string())?;
+    focus_search_window(&window)
+}
+
+#[tauri::command]
+pub fn calendar_hide(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(CALENDAR_LABEL) {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Whether the flyout is on screen, so the rail's date can put it away rather
+/// than reopen a window that is already up.
+#[tauri::command]
+pub fn calendar_visible(app: AppHandle) -> bool {
+    app.get_webview_window(CALENDAR_LABEL)
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -653,8 +727,23 @@ pub fn tool_embedded_destroy(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
-fn icons_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icons")
+/// Where the tool glyphs live. An installed build carries them as bundled
+/// resources under `tool-icons/`; `CARGO_MANIFEST_DIR` is the path of the
+/// machine that compiled the binary, so it only ever resolves on this PC and
+/// is the development fallback, never the first choice — otherwise every tool
+/// window on any other PC falls back to the plain WinT icon.
+fn tool_icons_dirs(app: &AppHandle) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(resources) = app.path().resource_dir() {
+        dirs.push(resources.join("tool-icons"));
+    }
+    dirs.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("icons")
+            .join("tools")
+            .join("dark"),
+    );
+    dirs
 }
 
 fn load_png_icon(path: &Path) -> Option<Image<'static>> {
@@ -666,10 +755,14 @@ fn load_png_icon(path: &Path) -> Option<Image<'static>> {
 
 /// Taskbar icon — always the dark-scheme glyph (teal on transparent).
 /// Windows taskbars are usually dark even when the app window is in light mode.
-pub(crate) fn taskbar_icon_for_tool(id: &str) -> Option<Image<'static>> {
-    let tools = icons_dir().join("tools").join("dark");
-    load_png_icon(&tools.join(format!("{id}.png")))
-        .or_else(|| load_png_icon(&tools.join("_default.png")))
+pub(crate) fn taskbar_icon_for_tool(app: &AppHandle, id: &str) -> Option<Image<'static>> {
+    let dirs = tool_icons_dirs(app);
+    dirs.iter()
+        .find_map(|dir| load_png_icon(&dir.join(format!("{id}.png"))))
+        .or_else(|| {
+            dirs.iter()
+                .find_map(|dir| load_png_icon(&dir.join("_default.png")))
+        })
 }
 
 /// Opens a tool in its own undecorated window. Re-focuses an existing one
@@ -749,7 +842,7 @@ pub async fn tool_popout(
         if let (Some(x), Some(y)) = (x, y) {
             builder = builder.position(x, y);
         }
-        if let Some(icon) = taskbar_icon_for_tool(&id) {
+        if let Some(icon) = taskbar_icon_for_tool(&app, &id) {
             builder = builder
                 .icon(icon)
                 .map_err(|e| format!("Could not set the window icon: {e}"))?;

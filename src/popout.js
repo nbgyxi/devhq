@@ -170,6 +170,26 @@
     renderPanes();
   };
 
+  /** The last part of a path: what a folder is called. */
+  const leaf = (path) => String(path || "").replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop() || "";
+
+  /** Which folder a pane is in: where its shell says it is now, falling back to
+   *  where the terminal was opened until the shell has said anything. */
+  const paneFolder = (pane) => leaf(pane?.cwd) || leaf(pane?.info?.projectPath) || pane?.info?.projectName || "Terminal";
+
+  /** The window's own title, and so the sidebar's and the taskbar's label for
+   *  it: the folder it is in and which shell that is. One shell among several
+   *  is only tellable apart by those two things. */
+  let shownTitle = "";
+  function applyWindowTitle(pane) {
+    const shell = SHELL_LABELS[pane?.profile] || "Terminal";
+    const title = `${paneFolder(pane)} — ${shell}${admin ? " (Administrator)" : ""}`;
+    if (title === shownTitle) return;
+    shownTitle = title;
+    document.title = title;
+    win.setTitle(title).catch(() => {});
+  }
+
   /** Paints one shell mark - the coloured dot or short code the panel uses -
    *  so a pane says what it is without being clicked. */
   const paintMark = (mark, profile) => {
@@ -223,8 +243,8 @@
       pane.el.dataset.pane = String(index);
       pane.el.classList.toggle("active", index === activePane && split);
       paintMark(pane.mark, pane.profile);
-      pane.name.textContent = pane.title || pane.info.projectName || "Terminal";
-      pane.name.title = pane.info.projectPath || "";
+      pane.name.textContent = paneFolder(pane);
+      pane.name.title = pane.cwd || pane.info.projectPath || "";
       pane.close.hidden = !split;
       pane.el.classList.toggle("exited", pane.exited);
     });
@@ -238,8 +258,11 @@
     const active = current();
     if (active) {
       subtitle.textContent = active.exited ? "exited" : active.title || "";
-      document.getElementById("pop-project").textContent = active.info.projectName || "Terminal";
+      const project = document.getElementById("pop-project");
+      project.textContent = paneFolder(active);
+      project.title = active.cwd || active.info.projectPath || "";
       paintMark(document.getElementById("pop-shell"), active.profile);
+      applyWindowTitle(active);
     }
   }
 
@@ -255,9 +278,13 @@
   async function addPane(sessionId, el) {
     const parts = paneElements(el);
     const view = new TermView(parts.host, sessionId);
-    const pane = { id: sessionId, view, ...parts, title: "", exited: false, profile: "auto", info: {} };
+    const pane = { id: sessionId, view, ...parts, title: "", cwd: "", exited: false, profile: "auto", info: {} };
     view.onTitle = (text) => {
       pane.title = text;
+      renderPanes();
+    };
+    view.onCwd = (path) => {
+      pane.cwd = path;
       renderPanes();
     };
     view.onExit = () => {
@@ -354,12 +381,6 @@
   }
   listen("term:markers", (event) => applyMarkers(event.payload));
 
-  const folderTitle = String(info.projectPath || "")
-    .replace(/[\\/]+$/, "")
-    .split(/[\\/]/)
-    .filter(Boolean)
-    .pop();
-  document.title = `${folderTitle || info.projectName || "Terminal"}${admin ? " — Administrator" : ""}`;
   renderPanes();
   panes[0].view.fit();
   panes[0].view.focus();

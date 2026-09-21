@@ -105,6 +105,16 @@
     font-size: calc(var(--bar-icon, 22px) * 0.42); font-weight: 700; letter-spacing: .02em;
     color: var(--text, #e6e8ef);
   }
+  /* The clock sits where the tray's does: after the notification area, at the
+     end of the rail. The reading is the point, so it is not dimmed the way the
+     other slots' labels are. */
+  .bar-clock small { color: var(--text, #e6e8ef); font-variant-numeric: tabular-nums; }
+  /* Stacked while the rail is narrow, side by side the moment both readings
+     fit on one line - which is the rail's width, its text size and its icon
+     size together, so it is measured rather than guessed. */
+  .bar-clock-row { display: flex; flex-direction: column; gap: 2px; flex: none; }
+  .bar-clock-row.wide { flex-direction: row; gap: 0; }
+  .bar-clock-row.wide .bar-clock { flex: 1 1 0; min-width: 0; padding-left: 8px; padding-right: 4px; gap: 5px; }
   .bar-geometry { display: grid; gap: 1px; padding: 6px 4px; color: var(--muted, #8b93a7); font-size: 10px; text-align: center; }
   .bar-geometry code { font-size: 10px; }
 </style>
@@ -122,6 +132,10 @@
   <div class="bar-geometry" data-geometry data-slot="geometry"></div>
   <div class="bar-tools" data-tools aria-label="Tool shortcuts" hidden></div>
   <div class="bar-tray" data-tray-apps aria-label="Notification area" hidden></div>
+  <div class="bar-clock-row" data-clock-row>
+    <button class="bar-slot bar-clock" type="button" data-action="time" data-slot="time"><span class="ms" aria-hidden="true">schedule</span><small data-time>--:--</small></button>
+    <button class="bar-slot bar-clock" type="button" data-action="date" data-slot="date"><span class="ms" aria-hidden="true">calendar_month</span><small data-date>--</small></button>
+  </div>
   <button class="bar-slot" type="button" data-action="tray" data-slot="tray"><span class="ms" aria-hidden="true">expand_less</span><small>Show native tray</small></button>
   <button class="bar-slot" type="button" data-action="taskbar" data-slot="taskbar"><span class="ms" aria-hidden="true">visibility_off</span><small>Hide taskbar</small></button>
   <button class="bar-slot" type="button" data-action="edge" data-slot="edge"><span class="ms" aria-hidden="true">swap_horiz</span><small>Flip side</small></button>

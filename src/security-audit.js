@@ -1,4 +1,4 @@
-// Security Sweep: an installed coding agent audits this PC.
+// PC Detective: an installed coding agent audits this PC.
 //
 // WinT does no auditing of its own. Every check, trace and fix is work the
 // agent does in its own shell; this file only chooses what to ask for, sends
@@ -47,6 +47,8 @@
       what: "Warnings, errors and critical events in the System and Application logs from the last 7 days — grouped, the ones every Windows PC logs set apart as normal, and the real problems explained with a fix." },
     { id: "Stalls", chip: "Stalls", glyph: "mouse", admin: false, name: "Diagnose stalls",
       what: "The freezes Input Stall Watch caught — driver time, busy cores, paging and the processes around each — traced to the driver, device, power setting or program behind them. Stalls caught while the audit is open are passed on as they arrive." },
+    { id: "Custom", chip: "Custom", glyph: "edit_note", admin: false, name: "Ask your own question",
+      what: "Write what you want looked into, in your own words, and the agent investigates that instead of a fixed list — a program you do not recognise, a folder that keeps growing, why something is slow. Everything else holds: it runs read-only commands, shows you each one, and changes nothing you have not approved." },
   ];
   const SEV = {
     high: { word: "High", glyph: "gpp_bad", order: 0 },
@@ -63,6 +65,9 @@
     elevated: saved.elevated === true,
     scope: Array.isArray(saved.scope) && saved.scope.length ? saved.scope.slice(0, 1) : [AREAS[0].id],
     expected: new Set(Array.isArray(saved.expected) ? saved.expected : []),
+
+    /** The question typed into the "Ask your own question" area. */
+    custom: typeof saved.custom === "string" ? saved.custom : "",
 
     /** setup | audit */
     view: "setup",
@@ -117,7 +122,7 @@
 
   const savePrefs = () => {
     try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify({ agent: st.agent, elevated: st.elevated, scope: st.scope, expected: [...st.expected] }));
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ agent: st.agent, elevated: st.elevated, scope: st.scope, custom: st.custom, expected: [...st.expected] }));
     } catch {}
   };
   /* ------------------------------------------------------------ history */
@@ -130,7 +135,7 @@
   function snapshot() {
     return {
       startedAt: st.startedAt, updatedAt: Date.now(), agent: st.agent, ranAsAdmin: st.ranAsAdmin,
-      scope: st.scope, computer: st.computer, scannedAt: st.scannedAt, scanSeconds: st.scanSeconds, continuedFrom: st.continuedFrom || 0,
+      scope: st.scope, custom: st.custom, computer: st.computer, scannedAt: st.scannedAt, scanSeconds: st.scanSeconds, continuedFrom: st.continuedFrom || 0,
       findings: st.findings, passed: st.passed, traces: Object.fromEntries(Object.entries(st.traces).filter(([, t]) => !t.busy)),
       threads: st.threads, log: st.log, reply: st.reply ? { ...st.reply, retry: undefined, raw: undefined } : null,
       stallMark: st.stallMark,
@@ -177,7 +182,7 @@
   // The live run, parked while a past one is on screen, so going back to it
   // keeps its agent session and everything it has learned.
   let parked = null;
-  const LIVE_FIELDS = ["runId", "dir", "live", "fresh", "startedAt", "updatedAt", "continuedFrom", "agent", "ranAsAdmin", "scope", "computer",
+  const LIVE_FIELDS = ["runId", "dir", "live", "fresh", "startedAt", "updatedAt", "continuedFrom", "agent", "ranAsAdmin", "scope", "custom", "computer",
     "scannedAt", "scanSeconds", "findings", "passed", "traces", "threads", "log", "reply", "session", "sel", "area", "logFilter", "open", "hidden", "stallMark"];
 
   async function openRun(id) {
@@ -199,7 +204,7 @@
     Object.assign(st, {
       runId: id, dir: id, live: false, fresh: false, startedAt: run.startedAt, updatedAt: run.updatedAt, continuedFrom: run.continuedFrom || 0,
       agent: st.agents?.some((x) => x.id === run.agent && x.installed) ? run.agent : st.agent,
-      ranAsAdmin: run.ranAsAdmin === true, scope: run.scope || st.scope, computer: run.computer || "",
+      ranAsAdmin: run.ranAsAdmin === true, scope: run.scope || st.scope, custom: typeof run.custom === "string" ? run.custom : st.custom, computer: run.computer || "",
       scannedAt: run.scannedAt || 0, scanSeconds: run.scanSeconds || 0, findings: run.findings || [], passed: run.passed || [],
       traces: run.traces || {}, threads: run.threads || {}, log: run.log || [], reply: run.reply || null, stallMark: run.stallMark || 0,
       session: null, view: "audit", sel: "", area: "all", logFilter: "all", open: new Set(), hidden: new Set(), notice: "",
@@ -240,7 +245,7 @@
   /** Makes a history run live: a fresh audit folder and a fresh agent session
    *  with the same rights, as a new entry so the old run stays as it was. */
   async function continueRun() {
-    work(st.ranAsAdmin ? "Security Sweep · waiting for the administrator prompt" : "Security Sweep · starting a new agent");
+    work(st.ranAsAdmin ? "PC Detective · waiting for the administrator prompt" : "PC Detective · starting a new agent");
     try {
       const begun = await invoke("audit_begin", { elevated: st.ranAsAdmin, stamp: stampNow() });
       const from = st.startedAt;
@@ -267,7 +272,7 @@
       traces: Object.fromEntries(Object.entries(st.traces).map(([id, t]) => [id, { headline: t.headline, conclusion: t.conclusion }])),
       lastSummary: st.reply?.summary || "",
     };
-    return `You are continuing a security sweep of this Windows PC for WinT's Security Sweep tool. A previous agent session ran it ${age(st.continuedFrom || st.startedAt)} ago; you do not have its context, only what it reported, below. Things may have changed since: re-check anything before relying on it, and always before changing something. ${st.ranAsAdmin ? "Your shell runs as Administrator." : "Your shell runs WITHOUT administrator rights."}
+    return `You are continuing an investigation of this Windows PC for WinT's PC Detective tool. A previous agent session ran it ${age(st.continuedFrom || st.startedAt)} ago; you do not have its context, only what it reported, below. Things may have changed since: re-check anything before relying on it, and always before changing something. ${st.ranAsAdmin ? "Your shell runs as Administrator." : "Your shell runs WITHOUT administrator rights."}
 
 Previous findings (JSON):
 ${JSON.stringify(brief)}
@@ -451,20 +456,47 @@ ${unexplained
   const EVENT_TASK = `How to sweep the event logs: read Critical, Error and Warning events (levels 1-3) from the last 7 days at least, e.g. Get-WinEvent -FilterHashtable @{LogName='System','Application'; Level=1,2,3; StartTime=(Get-Date).AddDays(-7)}, plus Microsoft-Windows-Windows Defender/Operational and, with administrator, the Security log's failed sign-ins (4625) and audit-log clears (1102). Group by log, provider and event id with count, first and last seen, and one sample message. Do not print every event.
 Judge each group. Many are normal on every Windows PC and need nothing: DistributedCOM 10016, a Service Control Manager 7000/7009/7031 for a service that started later, Kernel-Power 41 after a known power cut, ESENT, Perflib, VSS, Time-Service sync warnings, an app that crashed once. Put each normal group in "passed" with its count and one line saying why it is harmless. Report as findings what points at a real problem: disk, NTFS or storport errors, WHEA hardware errors, repeated bugchecks (BugCheck 1001) or unexpected shutdowns, the same app or service crashing again and again, failed Windows Update or driver installs, Defender detections or disabled protection, many failed sign-ins, a cleared audit log. Each finding carries the event ids and counts in its evidence, the likely cause, and a fix with backup and undo where it changes anything.`;
 
+  /* ------------------------------------------------------------ custom */
+
+  const customInScope = () => st.scope.includes("Custom");
+  const customText = () => st.custom.trim();
+
+  /** The whole job, when the user wrote it themselves. Built fresh for each
+   *  scan, because the question is typed right up to the moment Start is
+   *  pressed. Everything else - the rules, the format, the approval before
+   *  anything changes - is the same as any other scan. */
+  const CUSTOM_TASK = () => `The user did not pick one of the standard areas. They wrote their own question, below, and that question is the whole job: work on it and nothing else. Answer it properly rather than quickly.
+
+Read the question for what it actually asks. If it names something concrete - a program, a file, a folder, a process, a port, a setting - find that thing on this PC first and say what it is, where it lives, who signed it and how it got there, before judging it. If it describes a symptom rather than a thing ("my PC is slow", "the fan never stops", "something keeps opening"), work out which measurements would tell the likeliest two or three causes apart, take them, and follow whichever one the numbers support. Do not answer from general Windows knowledge: every claim you make about this PC has to come from a command you ran, and the user is watching those commands.
+
+If the question is too vague to act on, do not guess. Run whatever cheap read-only commands narrow it down, then use "question" and "options" to ask the user the one thing you still need.
+
+Report what you find the way any other scan would: real concerns as findings in area "Custom", each with the evidence behind it and a reversible fix where one exists, and everything you checked that turned out fine in "passed". If the honest answer is that nothing is wrong, say so in the summary and put what you checked in "passed" - an empty findings list is a perfectly good result.
+
+The user asked:
+"""
+${customText()}
+"""`;
+
+  /* -------------------------------------------------------------- scan */
+
   function scanPrompt() {
     const events = st.scope.includes("Event logs") ? `\n${EVENT_TASK}\n` : "";
     const stalls =stallsInScope() ? `\n${STALL_TASK}\n\n${stallsBlock(st.stallWatch?.stalls || [], false)}\n` : "";
     const startup = startupInScope() ? `\n${STARTUP_TASK}\n\n${startupBlock()}\n` : "";
+    const custom = customInScope() ? `\n${CUSTOM_TASK()}\n` : "";
     const rights = st.ranAsAdmin
       ? "Your shell runs as Administrator."
       : "Your shell runs WITHOUT administrator rights. When a check needs admin, list it under passed with detail \"skipped — needs administrator\" and move on; do not try to elevate.";
-    const areas = st.scope.map((id) => `- ${areaOf(id).name}: ${areaOf(id).what}`).join("\n");
+    const areas = customInScope()
+      ? "- The user's own question, below. Nothing else."
+      : st.scope.map((id) => `- ${areaOf(id).name}: ${areaOf(id).what}`).join("\n");
     const expected = [...st.expected];
-    return `You are the engine of WinT's Security Sweep tool, auditing this Windows PC (${st.computer || "this computer"}) for its owner. WinT does no checking of its own: it shows the user the commands you run and the JSON block you end each turn with, and sends you what the user asks for next. ${rights}
+    return `You are the engine of WinT's PC Detective tool, auditing this Windows PC (${st.computer || "this computer"}) for its owner. WinT does no checking of its own: it shows the user the commands you run and the JSON block you end each turn with, and sends you what the user asks for next. ${rights}
 
 Scan these areas now, and only these:
 ${areas}
-${events}${stalls}${startup}${expected.length ? `\nThe user has marked these as expected; do not report them again:\n${expected.map((k) => `- ${k}`).join("\n")}\n` : ""}
+${events}${stalls}${startup}${custom}${expected.length ? `\nThe user has marked these as expected; do not report them again:\n${expected.map((k) => `- ${k}`).join("\n")}\n` : ""}
 ${RULES}
 
 ${FORMAT}`;
@@ -524,13 +556,15 @@ Then verify it worked. Put the finding in "resolved" if it did, or update it wit
   const note = (text) => { invoke("health_note", { text }).catch(() => {}); };
 
   /** Starts a scan: a fresh audit folder and a fresh agent session. */
+  const canStart = () => !!st.agent && !!st.scope.length && !(customInScope() && !customText()) && !st.starting;
+
   async function startScan() {
-    if (!st.agent || !st.scope.length || st.starting || st.turn) return;
+    if (!canStart() || st.turn) return;
     savePrefs();
     st.starting = true;
     st.error = "";
-    note(`Security Sweep: starting a scan of ${st.scope.join(", ")} with ${st.agent}${st.elevated ? " as administrator" : ""}`);
-    work(st.elevated ? "Security Sweep · waiting for the administrator prompt" : "Security Sweep · starting");
+    note(`PC Detective: starting a scan of ${st.scope.join(", ")} with ${st.agent}${st.elevated ? " as administrator" : ""}`);
+    work(st.elevated ? "PC Detective · waiting for the administrator prompt" : "PC Detective · starting");
     dirty();
     const stamp = stampNow();
     try {
@@ -554,7 +588,14 @@ Then verify it worked. Put the finding in "resolved" if it did, or update it wit
       st.stallMark = Math.max(0, ...(st.stallWatch.stalls || []).map((s) => s.id));
     }
     saveRun();
-    send({ kind: "Scan", label: stallsInScope() ? "Diagnosing caught stalls" : `Scanning ${areaOf(st.scope[0]).name}`, prompt: scanPrompt(), first: true });
+    send({ kind: "Scan", label: scanLabel(), prompt: scanPrompt(), first: true });
+  }
+
+  /** What the first turn is called, in the band, the status bar and the log. */
+  function scanLabel() {
+    if (stallsInScope()) return "Diagnosing caught stalls";
+    if (customInScope()) return "Looking into your question";
+    return `Scanning ${areaOf(st.scope[0]).name}`;
   }
 
   /** Every agent action goes through here. Returns whether it was sent, so a
@@ -580,7 +621,7 @@ Then verify it worked. Put the finding in "resolved" if it did, or update it wit
     st.turn = { run, kind, label, finding, ask, started: Date.now(), rows: [], text: "", pending: "", note: "", notes: [], activity: "", calls: new Map(), cancelled: false };
     if (finding && kind === "Agent") (st.threads[finding] ||= []).push({ ask, reply: null });
     if (kind === "Trace") st.traces[finding] = { busy: true };
-    work(`Security Sweep · ${agentName()}: ${label}`);
+    work(`PC Detective · ${agentName()}: ${label}`);
     dirty();
     tick();
     try {
@@ -864,8 +905,9 @@ Then verify it worked. Put the finding in "resolved" if it did, or update it wit
   }
 
   function markdown() {
-    const lines = [`# Security sweep of ${st.computer || "this PC"}`, "",
+    const lines = [`# PC Detective report on ${st.computer || "this PC"}`, "",
       `${new Date(st.scannedAt || Date.now()).toLocaleString()} · ${agentName()} · ${st.ranAsAdmin ? "administrator" : "standard rights"} · ${st.scope.join(", ")}`, ""];
+    if (customInScope() && customText()) lines.push(`> ${customText()}`, "");
     for (const f of sortedFindings(st.findings)) {
       lines.push(`## ${f.fixed ? "[fixed] " : ""}${SEV[f.severity].word}: ${f.title}`, "", `${f.area} · ${f.where}`, "", f.verdict || f.why, "");
       for (const e of f.evidence) lines.push(`- **${e.label}:** ${e.value}`);
@@ -920,7 +962,7 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
     const rest = open.length - high;
     const commands = st.log.filter((r) => r.kind !== "note").length;
     if (st.turn?.kind === "Scan") {
-      return { tone: "accent", glyph: "progress_activity", spin: true, title: stallsInScope() ? `${agentName()} is diagnosing caught stalls` : `${agentName()} is scanning ${areaOf(st.scope[0]).name}`,
+      return { tone: "accent", glyph: "progress_activity", spin: true, title: `${agentName()} is ${scanLabel().charAt(0).toLowerCase()}${scanLabel().slice(1)}`,
         detail: `${commands} command${commands === 1 ? "" : "s"} so far · ${open.length} finding${open.length === 1 ? "" : "s"} arrive when it reports back` };
     }
     if (!st.live && st.runId) {
@@ -1000,6 +1042,26 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
     return `<small class="sa-stall-line">${icon("rocket_launch")}${esc(counts)}</small>`;
   }
 
+  /** The question box, shown under the Custom tile once it is picked. The
+   *  textarea is redrawn like everything else, so `region` carries its value,
+   *  its caret and its focus across a redraw the way it does for an ask form. */
+  function customHtml() {
+    if (!customInScope()) return "";
+    const examples = [
+      "What is svchost.exe doing with so much network traffic?",
+      "Something makes my fan spin up when the PC is idle. What is it?",
+      "I never installed this program. Where did it come from?",
+      "What is filling up my C: drive?",
+    ];
+    return `<div class="sa-custom">
+      <label for="sa-custom-box">Ask in your own words. The agent works out which commands answer it, and you see every one.</label>
+      <textarea id="sa-custom-box" data-sa-custom rows="3" spellcheck="false"
+        placeholder="What do you want looked into?">${esc(st.custom)}</textarea>
+      <div class="sa-custom-eg"><span>For example</span>${examples.map((e) =>
+        `<button type="button" data-sa-eg="${esc(e)}">${esc(e)}</button>`).join("")}</div>
+    </div>`;
+  }
+
   function setupHtml() {
     const installed = (st.agents || []).filter((a) => a.installed);
     const needsAdmin = st.scope.some((id) => areaOf(id)?.admin);
@@ -1018,10 +1080,11 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
     ], "rights");
     const areas = AREAS.map((a) => {
       const on = st.scope.includes(a.id);
-      return `<button type="button" class="sa-area${on ? " on" : ""}" data-sa-area="${esc(a.id)}">
+      return `<button type="button" class="sa-area${on ? " on" : ""}${a.id === "Custom" ? " sa-area-wide" : ""}" data-sa-area="${esc(a.id)}">
         <span class="sa-tick">${icon(on ? "radio_button_checked" : "radio_button_unchecked")}</span>
         <span class="sa-area-name"><strong>${esc(a.name)}</strong>${a.admin ? `<em class="sa-pill warn">Administrator</em>` : ""}</span>
-        <small>${esc(a.what)}</small>${a.id === "Stalls" ? stallLine() : ""}${a.id === "Startup" ? startupLine() : ""}</button>`;
+        <small>${esc(a.what)}</small>${a.id === "Stalls" ? stallLine() : ""}${a.id === "Startup" ? startupLine() : ""}</button>${
+        a.id === "Custom" ? customHtml() : ""}`;
     }).join("");
     const kept = st.findings.length || st.log.length;
     return `<div class="sa-setup"><div class="sa-setup-scroll" data-sa-scroll="setup"><div class="sa-setup-body">
@@ -1035,12 +1098,18 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
       </div></div>
       <footer class="sa-setup-foot">
         <span><strong>${st.scope.length ? esc(areaOf(st.scope[0]).name) : "No scan chosen"}</strong>
-          <small>${needsAdmin && !st.elevated ? "This scan needs administrator — the agent will report it as skipped." : stallsInScope() ? "Every stall caught while the audit is open goes to the agent with your next step." : "The Activity list will show every command the agent runs."}</small></span>
+          <small>${needsAdmin && !st.elevated ? "This scan needs administrator — the agent will report it as skipped."
+            : customInScope() && !customText() ? "Write what you want looked into, above."
+            : stallsInScope() ? "Every stall caught while the audit is open goes to the agent with your next step."
+            : "The Activity list will show every command the agent runs."}</small></span>
         <i></i>
         ${st.error ? `<span class="sa-error">${esc(st.error)}</span>` : ""}
         ${kept ? `<button type="button" class="btn" data-sa="keep">${icon("arrow_back")}Keep the last results</button>` : ""}
-        <button type="button" class="btn primary" data-sa="start"${!st.agent || !st.scope.length || st.starting ? " disabled" : ""}>${icon(st.starting ? "progress_activity" : "play_arrow")}${
-          st.starting ? (st.elevated ? "Waiting for the administrator prompt…" : "Starting…") : !st.scope.length ? "Choose a scan first" : kept ? "Start a new scan" : "Start scan"}</button>
+        <button type="button" class="btn primary" data-sa="start"${canStart() ? "" : " disabled"}>${icon(st.starting ? "progress_activity" : "play_arrow")}${
+          st.starting ? (st.elevated ? "Waiting for the administrator prompt…" : "Starting…")
+            : !st.scope.length ? "Choose a scan first"
+            : customInScope() && !customText() ? "Write your question first"
+            : kept ? "Start a new scan" : "Start scan"}</button>
       </footer></div>`;
   }
 
@@ -1190,6 +1259,8 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
     const was = scroller ? { top: scroller.scrollTop, bottom: scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40, first: false } : { first: true };
     const asking = node.querySelector("[data-sa-askform] input");
     const draft = asking ? { id: asking.form.dataset.saAskform, value: asking.value, focused: document.activeElement === asking } : null;
+    const box = node.querySelector("[data-sa-custom]");
+    const typed = box ? { value: box.value, at: box.selectionStart, to: box.selectionEnd, focused: document.activeElement === box } : null;
     node.innerHTML = html;
     node.__html = html;
     const again = node.querySelector("[data-sa-scroll]");
@@ -1201,6 +1272,13 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
       const input = node.querySelector(`[data-sa-askform="${CSS.escape(draft.id)}"] input`);
       if (input) { input.value = draft.value; if (draft.focused && !input.disabled) input.focus(); }
     }
+    if (typed) {
+      const again = node.querySelector("[data-sa-custom]");
+      if (again) {
+        again.value = typed.value;
+        if (typed.focused) { again.focus(); try { again.setSelectionRange(typed.at, typed.to); } catch {} }
+      }
+    }
   }
 
   /** Draws one region. If building it throws, the region shows the error rather
@@ -1209,8 +1287,8 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
     try {
       region(node, build());
     } catch (err) {
-      console.error("Security Sweep could not draw", err);
-      region(node, `<div class="sa-empty sa-draw-error">${icon("error")}Security Sweep could not draw this part: ${esc(err?.message || err)}</div>`);
+      console.error("PC Detective could not draw", err);
+      region(node, `<div class="sa-empty sa-draw-error">${icon("error")}PC Detective could not draw this part: ${esc(err?.message || err)}</div>`);
     }
   }
 
@@ -1267,7 +1345,22 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
     const rights = get("rights");
     if (rights) { st.elevated = rights === "admin"; savePrefs(); return dirty(); }
     const area = get("area");
-    if (area) { st.scope = [area]; savePrefs(); if (area === "Stalls") loadStalls(); if (area === "Startup") loadStartup(); return dirty(); }
+    if (area) {
+      st.scope = [area];
+      savePrefs();
+      if (area === "Stalls") loadStalls();
+      if (area === "Startup") loadStartup();
+      if (area === "Custom") setTimeout(() => root?.querySelector("[data-sa-custom]")?.focus(), 0);
+      return dirty();
+    }
+    const example = get("eg");
+    if (example) {
+      st.custom = example;
+      savePrefs();
+      dirty();
+      setTimeout(() => { const box = root?.querySelector("[data-sa-custom]"); if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); } }, 0);
+      return;
+    }
 
     const runId = get("run");
     if (runId) return openRun(runId);
@@ -1387,6 +1480,22 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
     input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendDraft(); } });
     composer.addEventListener("submit", (e) => { e.preventDefault(); sendDraft(); });
     root.addEventListener("click", click);
+    // The question box types straight into state. Nothing is redrawn while it
+    // is typed in - only when going from empty to written, or back, because
+    // that is what the Start button and the footer line read.
+    root.addEventListener("input", (e) => {
+      const box = e.target.closest?.("[data-sa-custom]");
+      if (!box) return;
+      const was = !!customText();
+      st.custom = box.value;
+      savePrefs();
+      if (was !== !!customText()) dirty();
+    });
+    root.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.shiftKey || !e.target.closest?.("[data-sa-custom]")) return;
+      e.preventDefault();
+      if (canStart()) startScan();
+    });
     // A button replaced between mouse-down and mouse-up never receives the
     // click, so nothing is redrawn while a button is held.
     root.addEventListener("pointerdown", () => {
@@ -1420,7 +1529,7 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
   function exportState() {
     return {
       runId: st.runId, dir: st.dir, live: st.live, fresh: st.fresh, session: st.session, agent: st.agent,
-      elevated: st.elevated, ranAsAdmin: st.ranAsAdmin, scope: st.scope, computer: st.computer,
+      elevated: st.elevated, ranAsAdmin: st.ranAsAdmin, scope: st.scope, custom: st.custom, computer: st.computer,
       startedAt: st.startedAt, updatedAt: st.updatedAt, continuedFrom: st.continuedFrom || 0,
       scannedAt: st.scannedAt, scanSeconds: st.scanSeconds, findings: st.findings, passed: st.passed,
       traces: st.traces, threads: st.threads, log: st.log, reply: st.reply ? { ...st.reply, retry: undefined } : null,
@@ -1438,7 +1547,7 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
     st.hidden = new Set(Array.isArray(hidden) ? hidden : []);
     st.expected = new Set(Array.isArray(expected) ? expected : []);
     st.turn = turn ? { ...turn, rows: st.log.filter((r) => r.kind !== "note" && String(r.id).startsWith(`${turn.run}-`)), calls: new Map() } : null;
-    if (st.turn) { work(`Security Sweep · ${agentName()}: ${st.turn.label}`); tick(); }
+    if (st.turn) { work(`PC Detective · ${agentName()}: ${st.turn.label}`); tick(); }
   }
 
   window.wintSecurityAudit = { mount, exportState, importState };

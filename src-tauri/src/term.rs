@@ -25,17 +25,60 @@ const ATTACH_HISTORY: usize = 1000;
 
 /// Shells tried in order. The first that starts wins, so a machine with
 /// PowerShell 7 gets it and everything else falls back to what ships with Windows.
-const SHELLS: &[&str] = &["pwsh.exe -NoLogo", "powershell.exe -NoLogo"];
+const SHELLS: &[&str] = &["pwsh.exe", "powershell.exe"];
+
+// ---- saying which folder the shell is in ---------------------------------
+//
+// A terminal's title should say where it is, and after a `cd` only the shell
+// knows that. Nothing outside the process can read it: PowerShell deliberately
+// never moves the process's own working directory, so the PEB still names the
+// folder the shell started in for the rest of the session.
+//
+// So the shell is asked to say so, the way Windows Terminal asks: `OSC 9;9`
+// with the path, written on every prompt. `vt.rs` picks it up and it becomes
+// the session's `cwd`.
+
+/// Wraps whatever prompt the user's profile left behind — the hook runs after
+/// the profile, and `-NoExit` keeps the shell interactive afterwards. Deliberately
+/// free of double quotes: it travels as one quoted command-line argument.
+const PWSH_CWD_HOOK: &str = concat!(
+    "$global:__wintPrompt = $function:prompt; ",
+    "function global:prompt { ",
+    "$__wintPath = $ExecutionContext.SessionState.Path.CurrentLocation; ",
+    "if ($__wintPath.Provider.Name -eq 'FileSystem') { ",
+    "[Console]::Write([char]27 + ']9;9;' + $__wintPath.ProviderPath + [char]7) }; ",
+    "& $global:__wintPrompt }",
+);
+
+/// A PowerShell command line that reports its folder. `exe` is already quoted
+/// when it needs to be.
+fn pwsh_interactive(exe: &str) -> String {
+    format!(r#"{exe} -NoLogo -NoExit -Command "{PWSH_CWD_HOOK}""#)
+}
+
+/// The same thing for the shells that take it from the environment instead:
+/// `cmd.exe` builds its prompt out of `PROMPT` (`$e` is an escape, `$P` the
+/// path), and bash runs `PROMPT_COMMAND` before every prompt. Both are the
+/// defaults with the report put in front, so nothing about the prompt changes.
+fn cwd_reporting_env() -> [(&'static str, String); 2] {
+    [
+        ("PROMPT", "$e]9;9;$P$e\\$P$G".into()),
+        (
+            "PROMPT_COMMAND",
+            r#"printf '\033]9;9;%s\007' "$(cygpath -w "$PWD" 2>/dev/null || pwd)""#.into(),
+        ),
+    ]
+}
 
 fn shell_command(profile: &str) -> Result<String, String> {
     match profile {
         "pwsh" => pwsh_path(false)
-            .map(|path| format!(r#""{}" -NoLogo"#, path.display()))
+            .map(|path| pwsh_interactive(&format!(r#""{}""#, path.display())))
             .ok_or_else(|| "PowerShell 7 was not found.".into()),
         "pwsh-preview" => pwsh_path(true)
-            .map(|path| format!(r#""{}" -NoLogo"#, path.display()))
+            .map(|path| pwsh_interactive(&format!(r#""{}""#, path.display())))
             .ok_or_else(|| "PowerShell Preview was not found.".into()),
-        "powershell" => Ok("powershell.exe -NoLogo".into()),
+        "powershell" => Ok(pwsh_interactive("powershell.exe")),
         "cmd" => Ok("cmd.exe".into()),
         "nu" => Ok(nu_path()
             .map(|path| format!(r#""{}""#, path.display()))
@@ -526,6 +569,9 @@ pub struct TermInfo {
     pub project_path: String,
     pub project_name: String,
     pub title: String,
+    /// Where the shell says it is now, when it says so at all — the folder a
+    /// `cd` moved to, not the one the terminal opened in. Empty otherwise.
+    pub cwd: String,
     pub pid: u32,
     pub alive: bool,
     pub command: String,
@@ -562,6 +608,8 @@ struct Update {
     cursor_char: char,
     alt: bool,
     title: String,
+    /// The shell's folder, so a window title can follow a `cd`.
+    cwd: String,
 }
 
 #[derive(Deserialize)]
@@ -890,12 +938,16 @@ mod tests {
 
 impl Session {
     fn info(&self) -> TermInfo {
-        let title = self.grid.lock().unwrap().title.clone();
+        let (title, cwd) = {
+            let grid = self.grid.lock().unwrap();
+            (grid.title.clone(), grid.cwd.clone())
+        };
         TermInfo {
             id: self.id.clone(),
             project_path: self.project_path.clone(),
             project_name: self.project_name.clone(),
             title,
+            cwd,
             pid: self.pid,
             // A child that has exited without the reader noticing yet still
             // reads as dead, so a stale tab cannot look live.
@@ -1007,11 +1059,14 @@ fn term_open_sync(app: AppHandle, args: OpenArgs) -> Result<TermInfo, String> {
     let compat = wt_compat_dir(&app)?;
     let inherited_path = std::env::var("PATH").unwrap_or_default();
     let app_exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let environment = [
+    let mut environment = vec![
         ("WINT_TERM_ID", id.clone()),
         ("WINT_APP", app_exe.to_string_lossy().into_owned()),
         ("PATH", format!("{};{inherited_path}", compat.display())),
     ];
+    // Harmless to a shell that does not read them, so every session gets both
+    // rather than the launch guessing which shell it is about to become.
+    environment.extend(cwd_reporting_env());
     let spawn =
         |cmd: &str| ConPty::spawn_with_env(cmd, &dir, cols as u16, rows as u16, &environment);
     let mut notice = None;
@@ -1077,6 +1132,7 @@ where
 {
     let mut last = String::from("No shell available.");
     for shell in SHELLS {
+        let shell = &pwsh_interactive(shell);
         match spawn(shell) {
             Ok(pty) => return Ok((pty, (*shell).to_string())),
             Err(e) => last = e,
@@ -1635,6 +1691,7 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
                         cursor_char: cursor_char(&grid),
                         alt: grid.alt,
                         title: grid.title.clone(),
+                        cwd: grid.cwd.clone(),
                     },
                     settled,
                     reply,
@@ -1957,8 +2014,10 @@ pub async fn term_popout(
     .unwrap_or_else(|| Err("Could not open the window.".to_string()))
 }
 
-/// The sidebar's terminal button: a fresh shell in the user's home folder,
-/// straight into a window of its own. The sidebar has no dock to mount it in.
+/// A terminal with nowhere to dock: a fresh shell in the user's home folder,
+/// straight into a window of its own. The sidebar's terminal button asks for
+/// this, and so does the "New terminal window" command — bound system-wide it
+/// is a shell anywhere, without the main window coming forward first.
 #[tauri::command]
 pub async fn sidebar_open_terminal(app: AppHandle) -> Result<(), String> {
     let home = std::env::var("USERPROFILE").map_err(|_| "No home folder to open a shell in.".to_string())?;

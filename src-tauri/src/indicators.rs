@@ -267,6 +267,8 @@ pub fn open_settings(page: &str) -> Result<(), String> {
         "power" => "ms-settings:powersleep",
         "battery" => "ms-settings:batterysaver",
         "language" => "ms-settings:keyboard",
+        "datetime" => "ms-settings:dateandtime",
+        "region" => "ms-settings:regionformatting",
         _ => return Err("There is no such settings page.".into()),
     };
     std::process::Command::new("explorer.exe")

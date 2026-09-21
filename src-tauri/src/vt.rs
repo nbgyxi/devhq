@@ -171,6 +171,28 @@ mod tests {
     use super::{char_width, Grid, CONT};
 
     #[test]
+    fn osc_9_9_reports_the_shells_folder() {
+        let mut grid = Grid::new(20, 3);
+        grid.feed(b"\x1b]9;9;C:/gi/suprnova\x07");
+        assert_eq!(grid.cwd, "C:\\gi\\suprnova");
+    }
+
+    #[test]
+    fn osc_7_reports_a_file_url_with_a_host_and_an_escape() {
+        let mut grid = Grid::new(20, 3);
+        grid.feed(b"\x1b]7;file://nb/C:/gi/my%20work\x1b\\");
+        assert_eq!(grid.cwd, "C:\\gi\\my work");
+    }
+
+    #[test]
+    fn a_title_is_still_only_a_title() {
+        let mut grid = Grid::new(20, 3);
+        grid.feed(b"\x1b]2;nbr\x07");
+        assert_eq!(grid.title, "nbr");
+        assert!(grid.cwd.is_empty());
+    }
+
+    #[test]
     fn a_wide_glyph_takes_two_columns() {
         let mut grid = Grid::new(10, 3);
         grid.feed("a你b".as_bytes());
@@ -352,6 +374,11 @@ pub struct Grid {
     pub insert_mode: bool,
     pub alt: bool,
     pub title: String,
+    /// The folder the shell says it is in, as reported by `OSC 7` or `OSC 9;9`.
+    /// Empty until something reports one: a shell's working directory is not
+    /// readable from outside it — PowerShell never moves the process's — so
+    /// what the shell announces is the only honest source there is.
+    pub cwd: String,
     pub bracketed_paste: bool,
     /// Rows changed since the last drain.
     dirty: Vec<bool>,
@@ -400,6 +427,7 @@ impl Grid {
             insert_mode: false,
             alt: false,
             title: String::new(),
+            cwd: String::new(),
             bracketed_paste: false,
             dirty: vec![true; rows],
             pending_scroll: Vec::new(),
@@ -638,8 +666,24 @@ impl Grid {
     fn finish_osc(&mut self) {
         let s = std::mem::take(&mut self.osc);
         if let Some((code, text)) = s.split_once(';') {
-            if code == "0" || code == "2" {
-                self.title = text.to_string();
+            match code {
+                "0" | "2" => self.title = text.to_string(),
+                // The two ways a shell says where it is: `OSC 7` carries a
+                // file URL, `OSC 9;9` (ConEmu's, which Windows Terminal takes
+                // as well) a plain Windows path.
+                "7" => {
+                    if let Some(path) = file_url_path(text) {
+                        self.cwd = path;
+                    }
+                }
+                "9" => {
+                    if let Some(path) = text.strip_prefix("9;").map(str::trim) {
+                        if !path.is_empty() {
+                            self.cwd = path.replace('/', "\\");
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -1198,4 +1242,40 @@ impl Grid {
         self.scroll_bot = rows - 1;
         self.wrap_pending = false;
     }
+}
+
+/// The Windows path inside an `OSC 7` payload — `file://host/C:/dir`, whose
+/// host part is a machine name as often as it is empty, and whose path is
+/// percent-encoded.
+fn file_url_path(text: &str) -> Option<String> {
+    let rest = text.trim().strip_prefix("file://")?;
+    let decoded = percent_decoded(&rest[rest.find('/')?..]);
+    // `/C:/dir` is a URL path, not a Windows one.
+    let path = decoded
+        .strip_prefix('/')
+        .filter(|rest| {
+            let bytes = rest.as_bytes();
+            bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+        })
+        .unwrap_or(&decoded)
+        .replace('/', "\\");
+    (!path.is_empty()).then_some(path)
+}
+
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&text[i + 1..i + 3], 16) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }

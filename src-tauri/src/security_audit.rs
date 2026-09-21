@@ -1,4 +1,4 @@
-//! Security Sweep: a coding agent the person already installed, pointed at
+//! PC Detective: a coding agent the person already installed, pointed at
 //! their own machine instead of a project.
 //!
 //! The agent does the looking and the fixing - it has a shell of its own, runs

@@ -9,7 +9,7 @@
 //
 // Nothing here scans in the background. A "look" reads a handful of cheap
 // things the backend already answers (drive free space, the hosts file, Keep
-// Awake, the last Security Sweep, Input Stall Watch, the CLI) when Home is
+// Awake, the last PC Detective run, Input Stall Watch, the CLI) when Home is
 // opened and when Refresh is pressed - never on a timer. Git and dev-server
 // cards come from the last project scan, which the Projects tool owns.
 window.wintHome = (() => {
@@ -47,7 +47,7 @@ window.wintHome = (() => {
       { key: "hosts", label: "Hosts overrides", tool: "Hosts file", source: "hosts", read: readHosts },
     ] },
     { cat: "Security & startup", icon: "shield", tone: "blue", items: [
-      { key: "sweep", label: "Security findings", tool: "Security Sweep", source: "sweep", read: readSweep },
+      { key: "sweep", label: "Security findings", tool: "PC Detective", source: "sweep", read: readSweep },
     ] },
     { cat: "Processes & windows", icon: "lan", tone: "green", items: [
       { key: "orphans", label: "Orphan processes", tool: "Terminals", source: "live", read: readOrphans },
@@ -69,7 +69,7 @@ window.wintHome = (() => {
   const LOOK_SOURCES = [
     ["drives", "Reading drive free space", () => invoke("disk_space_drives")],
     ["hosts", "Reading the hosts file", () => invoke("dns_hosts_read")],
-    ["sweep", "Reading the last Security Sweep", () => invoke("audit_history")],
+    ["sweep", "Reading the last PC Detective run", () => invoke("audit_history")],
     ["stall", "Reading Input Stall Watch", () => invoke("stall_watch_status")],
     ["cli", "Checking the wint command", () => invoke("cli_status")],
     ["awake", "Reading Keep Awake", () => invoke("keep_awake_status")],
@@ -174,10 +174,10 @@ window.wintHome = (() => {
     if (!open) return null;
     const at = last.updatedAt || last.startedAt;
     return card(last.high ? "red" : "blue", {
-      icon: "shield", title: "Security Sweep has open findings",
-      source: at ? `swept ${when(at)}` : "from the last sweep",
+      icon: "shield", title: "PC Detective has open findings",
+      source: at ? `investigated ${when(at)}` : "from the last investigation",
       fact: String(open), factTail: `open · ${last.high || 0} high, ${last.medium || 0} medium, ${last.low || 0} low`,
-      detail: "Nothing changes on this PC until you approve a fix in Security Sweep.",
+      detail: "Nothing changes on this PC until you approve a fix in PC Detective.",
       actions: [["Review findings", "fact_check", "tool:security-audit", true]],
     });
   }
@@ -611,7 +611,7 @@ window.wintHome = (() => {
         <button type="button" class="home-x" data-home-act="setup-done" title="Hide these">${icon("close")}</button></div>
       <div class="home-setup-grid">${[
         ["var(--amber)", "hard_drive", "Scan a drive once", "Disk Space Usage shows what fills a drive. Home keeps the free-space figure on every look.", "Open Disk Space Usage", "tool:disk-space"],
-        ["var(--accent)", "shield", "Run a security sweep", "Looks at what starts, runs and listens, and works out where anything odd came from. Nothing changes without your approval.", "Open Security Sweep", "tool:security-audit"],
+        ["var(--accent)", "shield", "Investigate this PC", "Looks at what starts, runs and listens, and works out where anything odd came from. Nothing changes without your approval.", "Open PC Detective", "tool:security-audit"],
         ["var(--purple)", "folder_copy", "Point at a code folder", "Optional. Adds git status, running dev servers and detected tech for every project under it.", "Choose a folder", "choose-folder"],
         ["var(--teal)", "push_pin", "Pin what you use", "Any tool can sit in Favorites and the status bar: use the pin in its header, or the one beside it in search.", "Browse tools", "search"],
       ].map(([tone, iconName, title, body, action, go]) => `<div class="home-setup-card">
