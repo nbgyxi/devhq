@@ -2198,6 +2198,7 @@ function syncMainView() {
   const ports = state.activeView === "ports";
   const overview = state.activeView === "overview";
   const projects = state.activeView === "projects";
+  syncWindowTitle();
   document.documentElement.classList.toggle("github-active", state.activeView === "github");
   document.documentElement.classList.toggle("git-active", state.activeView === "git");
   el["home-host"].hidden = !overview;
@@ -3451,6 +3452,7 @@ const TOOLS = [
     icon: tool.icon,
     hint: tool.hint,
     keywords: tool.keywords,
+    sidebarGroup: "converters",
     open: () => openUtilTool(tool.id),
     active: () => state.activeView === "tools" && state.utilToolId === tool.id,
   }))),
@@ -3517,6 +3519,20 @@ function toolById(id) {
 function activeTool() {
   if (state.activeView === "isolated-tool") return toolById(state.isolatedToolId);
   return TOOLS.find((tool) => tool.active()) || null;
+}
+
+/** Keep Windows' taskbar/Alt+Tab label useful without making Home look like a
+ * tool. Setting document.title as well keeps the webview and native window in
+ * agreement if either side recreates its title bar. */
+let renderedWindowTitle = "";
+function syncWindowTitle() {
+  if (PROJECTS_WINDOW) return;
+  const tool = activeTool();
+  const title = tool ? `WinT ${tool.name}` : "WinT";
+  if (title === renderedWindowTitle) return;
+  renderedWindowTitle = title;
+  document.title = title;
+  appWindow.setTitle(title).catch(() => {});
 }
 
 function isToolPinned(id) {
@@ -7891,7 +7907,7 @@ async function wireToolPopoutEvents() {
   await listen("sidebar:tool-catalog-request", () => {
     emit("sidebar:tool-catalog", TOOLS
       .filter((tool) => !SHELL_TOOLS.has(tool.id))
-      .map(({ id, name, icon }) => ({ id, name, icon }))).catch(() => {});
+      .map(({ id, name, icon, sidebarGroup }) => ({ id, name, icon, group: sidebarGroup || "common" }))).catch(() => {});
   });
   await listen("tool:bridge-request", async (event) => {
     const request = event.payload || {};

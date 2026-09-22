@@ -195,6 +195,7 @@
 
   async function openRun(id) {
     if (st.turn) return;
+    st.repoStatic = false;
     if (id === st.runId) { st.view = "audit"; return dirty(); }
     if (st.live) parked = Object.fromEntries(LIVE_FIELDS.map((k) => [k, st[k]]));
     if (parked?.runId === id) {
@@ -1088,6 +1089,8 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
 
   function band() {
     if (st.view === "setup") {
+      if (repoInScope()) return { tone: "accent", glyph: "policy", title: "Check before auto mode",
+        detail: st.repoPath.trim() ? `${st.repoPath} · read-only · no checkout code runs` : "Choose a repository · the scan is local and read-only" };
       return { tone: "accent", glyph: "tune", title: "Before it starts",
         detail: `${st.agent ? agentName() : "No agent"} · ${st.elevated ? "administrator" : "standard rights"} · ${st.scope.length} of ${AREAS.length} areas — nothing runs until you start it` };
     }
@@ -1095,6 +1098,11 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
     const high = open.filter((f) => f.severity === "high").length;
     const rest = open.length - high;
     const commands = st.log.filter((r) => r.kind !== "note").length;
+    if (st.repoStatic) {
+      if (high) return { tone: "bad", glyph: "dangerous", title: "Stop before auto mode", detail: `${high} high-risk signal${high === 1 ? "" : "s"} · review the file evidence before an agent runs` };
+      if (rest) return { tone: "warn", glyph: "warning", title: "Use approvals first", detail: `${rest} item${rest === 1 ? "" : "s"} to review · restrict the agent's network and credentials` };
+      return { tone: "ok", glyph: "verified_user", title: "No obvious auto-mode blockers", detail: "A clear static scan is evidence, not a guarantee · keep the first run sandboxed" };
+    }
     if (st.turn?.kind === "Scan") {
       return { tone: "accent", glyph: "progress_activity", spin: true, title: `${agentName()} is ${scanLabel().charAt(0).toLowerCase()}${scanLabel().slice(1)}`,
         detail: `${commands} command${commands === 1 ? "" : "s"} so far · ${open.length} finding${open.length === 1 ? "" : "s"} arrive when it reports back` };

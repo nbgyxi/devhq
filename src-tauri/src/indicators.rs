@@ -46,8 +46,9 @@ pub struct Volume {
 /// The default playback endpoint's own volume control, and its name.
 fn endpoint() -> Result<(IAudioEndpointVolume, String), String> {
     unsafe {
-        let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-            .map_err(|e| format!("Could not reach the audio service: {e}"))?;
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                .map_err(|e| format!("Could not reach the audio service: {e}"))?;
         let device = enumerator
             .GetDefaultAudioEndpoint(eRender, eConsole)
             .map_err(|_| "There is no playback device.".to_string())?;
@@ -74,7 +75,10 @@ pub fn volume() -> Volume {
         let level = control.GetMasterVolumeLevelScalar().unwrap_or(0.0);
         Volume {
             level: (level * 100.0).round().clamp(0.0, 100.0) as u32,
-            muted: control.GetMute().map(|muted| muted.as_bool()).unwrap_or(false),
+            muted: control
+                .GetMute()
+                .map(|muted| muted.as_bool())
+                .unwrap_or(false),
             present: true,
             device,
         }
@@ -140,7 +144,13 @@ pub fn battery() -> Battery {
         } else {
             status.BatteryLifePercent as u32
         },
-        charging: status.BatteryFlag & CHARGING != 0,
+        // Some firmware reports AC online and a rising/not-full percentage but
+        // never sets BATTERY_FLAG_CHARGING. Windows still presents that as a
+        // charging battery, so use mains + below-full as the compatible fallback.
+        charging: status.BatteryFlag & CHARGING != 0
+            || (status.ACLineStatus == 1
+                && status.BatteryLifePercent != UNKNOWN
+                && status.BatteryLifePercent < 100),
         plugged: status.ACLineStatus == 1,
         // SYSTEM_STATUS_FLAG_POWER_SAVING_ON
         saver: status.SystemStatusFlag == 1,
@@ -174,7 +184,8 @@ pub struct Layout {
 #[allow(deprecated)]
 fn locale_info(lcid: u32, what: u32) -> String {
     let mut buffer = [0u16; 128];
-    let len = unsafe { windows::Win32::Globalization::GetLocaleInfoW(lcid, what, Some(&mut buffer)) };
+    let len =
+        unsafe { windows::Win32::Globalization::GetLocaleInfoW(lcid, what, Some(&mut buffer)) };
     if len <= 1 {
         return String::new();
     }

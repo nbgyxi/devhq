@@ -83,6 +83,8 @@ windows = { version = "0.61", features = [
 webview2-com = "0.38.2"
 # `#[implement]` for the drag source handed to Windows when files are dragged out.
 windows-core = "0.61"
+# Enables Rust Future support for WinRT media-session operations.
+windows-future = "0.2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-global-shortcut = "2"

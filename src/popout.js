@@ -597,7 +597,12 @@
       try {
         const source = current();
         const cwd = action.cwd || source?.info.projectPath || info.projectPath;
-        const shell = action.duplicate ? (source?.profile || "auto") : profileShell(action.profile);
+        // A bare split is an extension of the pane that requested it, so it
+        // inherits that pane's shell. Only an explicit --profile should send
+        // it through the default-profile selection path.
+        const shell = action.duplicate || (action.kind === "split-pane" && !action.profile)
+          ? (source?.profile || "auto")
+          : profileShell(action.profile);
         const name = action.title || cwd.split(/[\\/]/).filter(Boolean).pop() || "Terminal";
         if (action.kind === "split-pane" && !companion()) {
           await openCompanion({

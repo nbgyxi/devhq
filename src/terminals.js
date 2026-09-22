@@ -1715,8 +1715,14 @@ async function executeWtRequest(request) {
     const cwd = action.cwd || source?.projectPath || newTerminalTarget(pane).path;
     const name = action.title || cwd.split(/[\\/]/).filter(Boolean).pop() || "Terminal";
     terms.lastOpenError = "";
+    // A bare split belongs to the terminal that asked for it. Keep that
+    // terminal's shell instead of quietly dropping into the configured
+    // default (often Command Prompt). An explicit profile still wins, and
+    // -D continues to duplicate the source exactly as before.
+    const sourceShell = shellProfileFromCommand(source?.command);
+    const shell = action.duplicate || (split && !action.profile) ? sourceShell : wtShell(action.profile);
     const info = await openTerminal({ path: cwd, name }, {
-      pane, title: name, shell: action.duplicate ? shellProfileFromCommand(source?.command) : wtShell(action.profile),
+      pane, title: name, shell,
       command: action.duplicate ? "" : action.command,
     });
     if (!info) {

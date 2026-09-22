@@ -88,9 +88,9 @@ const PREVIEW_MAX = 1200;
 const MAIN_MIN = 96;
 const SPLIT_W = 5;
 const visibleColumns = () => COLUMNS.filter((column) => column.id !== "created" || fx.createdColumn);
-const columnTemplate = () => visibleColumns().map((column) => column.id === "name"
-  ? `minmax(${fx.columnWidths.name}px,1fr)`
-  : `${fx.columnWidths[column.id]}px`).join(" ");
+const columnTemplate = () => visibleColumns().map((column) => `${fx.columnWidths[column.id]}px`).join(" ");
+const columnTableWidth = () => visibleColumns().reduce((width, column) => width + fx.columnWidths[column.id], 0)
+  + Math.max(0, visibleColumns().length - 1) * 10 + 48;
 
 /** Which kinds get a picture. Windows will thumbnail far more than this, but a
  *  preview row is for seeing which photo is which - a generic first-page
@@ -1111,7 +1111,9 @@ function paintVirtualRows(rows) {
   if (!rows || fx.path === THIS_PC || fx.loading || fx.rename || visible().shown.length <= VIRTUAL_AFTER) return;
   cancelAnimationFrame(virtualFrame);
   virtualFrame = requestAnimationFrame(() => {
-    rows.innerHTML = renderRows(visible().shown, rows.scrollTop, rows.clientHeight);
+    const body = rows.querySelector(".fx-row-body");
+    if (!body) return;
+    body.innerHTML = renderRows(visible().shown, rows.scrollTop, rows.clientHeight);
     paintSelection();
     loadThumbs();
   });
@@ -1159,9 +1161,11 @@ function render() {
         ${filtering ? `<button class="fx-chip clear" type="button" data-fx-clear>${icon("close")}Clear</button>` : ""}
       </div>`}
       ${fx.typesOpen && fx.path !== THIS_PC ? renderTypes(counts) : ""}
-      <div class="fx-list${fx.thumbsOn ? " preview" : ""}" style="--fx-columns:${columnTemplate()}">
-        <div class="fx-row head${fx.path === THIS_PC ? " static" : ""}">${visibleColumns().map((column) => `<button class="fx-cell ${column.id} sort${fx.sort === column.id ? " on" : ""}" type="button" data-fx-sort="${column.id}">${column.label}${fx.sort === column.id ? icon(fx.desc ? "arrow_downward" : "arrow_upward") : ""}<i class="fx-col-grip" data-fx-column-resize="${column.id}" aria-hidden="true"></i></button>`).join("")}</div>
-        <div class="fx-rows" role="grid" aria-multiselectable="true">${renderRows(shown, rowsScroll, rowsViewport)}</div>
+      <div class="fx-list${fx.thumbsOn ? " preview" : ""}" style="--fx-columns:${columnTemplate()};--fx-table-width:${columnTableWidth()}px">
+        <div class="fx-rows" role="grid" aria-multiselectable="true">
+          <div class="fx-row head${fx.path === THIS_PC ? " static" : ""}" role="row">${visibleColumns().map((column) => `<button class="fx-cell ${column.id} sort${fx.sort === column.id ? " on" : ""}" type="button" data-fx-sort="${column.id}">${column.label}${fx.sort === column.id ? icon(fx.desc ? "arrow_downward" : "arrow_upward") : ""}<i class="fx-col-grip" data-fx-column-resize="${column.id}" aria-hidden="true"></i></button>`).join("")}</div>
+          <div class="fx-row-body" role="rowgroup">${renderRows(shown, rowsScroll, rowsViewport)}</div>
+        </div>
       </div>
       <footer class="fx-foot">
         <span>${fx.path === THIS_PC
@@ -1500,7 +1504,9 @@ function mount(host) {
       const startWidth = fx.host.querySelector(`.fx-row.head .fx-cell.${column}`)?.getBoundingClientRect().width || fx.columnWidths[column];
       const onMove = (move) => {
         fx.columnWidths[column] = Math.max(64, Math.min(800, Math.round(startWidth + move.clientX - startX)));
-        fx.host.querySelector(".fx-list")?.style.setProperty("--fx-columns", columnTemplate());
+        const list = fx.host.querySelector(".fx-list");
+        list?.style.setProperty("--fx-columns", columnTemplate());
+        list?.style.setProperty("--fx-table-width", `${columnTableWidth()}px`);
       };
       const onUp = () => {
         window.removeEventListener("pointermove", onMove);

@@ -900,8 +900,34 @@ pub struct OpenWindow {
     /// groups taskbar buttons by (one per Edge or Chrome profile, one per
     /// installed web app), or the exe when the window sets none.
     pub app: String,
+    /// The workspace/folder shown by editors whose windows otherwise share
+    /// one app identity. Empty for apps where the app identity is sufficient.
+    pub workspace: String,
     pub active: bool,
     pub minimized: bool,
+}
+
+/// VS Code gives every window the same AppUserModelID. Its default title ends
+/// in `<folder or workspace> - Visual Studio Code`, while the part before that
+/// may change whenever the active file changes. Keep only the workspace part
+/// so sidebar order follows the project rather than EnumWindows order.
+fn editor_workspace(exe: &str, title: &str) -> String {
+    let stem = std::path::Path::new(exe)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !matches!(stem.as_str(), "code" | "code-insiders" | "code - insiders" | "codium" | "vscodium") {
+        return String::new();
+    }
+    let parts: Vec<&str> = title.split(" - ").collect();
+    if parts.len() < 2 {
+        return String::new();
+    }
+    parts[parts.len() - 2]
+        .trim_start_matches(['●', '○', '*', ' '])
+        .trim()
+        .to_string()
 }
 
 /// Is this a window the taskbar would show a button for? These are the shell's
@@ -1060,9 +1086,11 @@ pub(crate) fn list_windows(sidebar: isize) -> Vec<OpenWindow> {
             let mut title = [0u16; 512];
             let len = GetWindowTextW(hwnd, &mut title).max(0) as usize;
             let exe = window_exe(app_window(hwnd));
+            let title = String::from_utf16_lossy(&title[..len]);
             OpenWindow {
                 id: raw.to_string(),
-                title: String::from_utf16_lossy(&title[..len]),
+                workspace: editor_workspace(&exe, &title),
+                title,
                 exe: exe.clone(),
                 app: window_app_id(hwnd).unwrap_or(exe),
                 active: raw == active,
@@ -1070,6 +1098,29 @@ pub(crate) fn list_windows(sidebar: isize) -> Vec<OpenWindow> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod sidebar_order_tests {
+    use super::editor_workspace;
+
+    #[test]
+    fn vscode_workspace_ignores_the_active_file() {
+        let exe = r"C:\Users\me\AppData\Local\Programs\Microsoft VS Code\Code.exe";
+        assert_eq!(editor_workspace(exe, "app.rs - devhq - Visual Studio Code"), "devhq");
+        assert_eq!(editor_workspace(exe, "README.md - another - Visual Studio Code"), "another");
+    }
+
+    #[test]
+    fn vscode_folder_only_title_is_supported() {
+        assert_eq!(editor_workspace(r"C:\Code.exe", "devhq - Visual Studio Code"), "devhq");
+        assert_eq!(editor_workspace(r"C:\Code - Insiders.exe", "devhq - Visual Studio Code - Insiders"), "devhq");
+    }
+
+    #[test]
+    fn other_apps_do_not_get_title_based_identity() {
+        assert_eq!(editor_workspace(r"C:\notepad.exe", "notes - work - Notepad"), "");
+    }
 }
 
 pub(crate) fn sidebar_window_handle(app: &AppHandle) -> isize {

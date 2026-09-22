@@ -114,11 +114,14 @@ fn scan_repo(root: &Path) -> Result<RepoPreflight, String> {
         let Ok(entries) = std::fs::read_dir(&dir) else { files_skipped += 1; continue; };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            let Ok(kind) = entry.file_type() else { files_skipped += 1; continue; };
+            if kind.is_symlink() { files_skipped += 1; continue; }
+            if kind.is_dir() {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if !ignored.iter().any(|x| name.eq_ignore_ascii_case(x)) { stack.push(path); }
                 continue;
             }
+            if files_scanned >= 100_000 { files_skipped += 1; continue; }
             if !repo_text_file(&path) { files_skipped += 1; continue; }
             let Ok(meta) = entry.metadata() else { files_skipped += 1; continue; };
             if meta.len() > 2 * 1024 * 1024 { files_skipped += 1; continue; }

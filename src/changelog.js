@@ -16,6 +16,34 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.136.2",
+      date: "2026-09-22",
+      title: "Sidebar shortcuts put everyday tools first",
+      buildChecksum: "7a8b38b223b65eb55274f6ed1b0b248e786cb76176356f149ac1e37bf57434eb",
+      changes: [
+        ["better", "The Docked Sidebar settings give tool shortcuts the full page width, show everyday tools first, and keep the smaller converters and utilities in their own filter."],
+        ["better", "Music player settings now sit below tool shortcuts, matching where the player appears on the sidebar."],
+      ],
+    },
+    {
+      version: "0.136.1",
+      date: "2026-09-22",
+      title: "Terminal splits keep their shell",
+      changes: [
+        ["fix", "A bare `wt split-pane` opened from a WinT terminal now inherits that terminal's shell instead of falling back to the default profile, which could unexpectedly open Command Prompt."],
+      ],
+    },
+    {
+      version: "0.136.0",
+      date: "2026-09-22",
+      title: "PC Detective checks a repo before auto mode",
+      changes: [
+        ["new", "PC Detective has a read-only repository preflight for production credentials and endpoints, destructive automation, install hooks, agent instruction traps, broad tool approvals and deployment paths."],
+        ["better", "Repository checks never execute checkout code, skip generated dependencies and oversized or binary files, avoid symlinks, and redact possible secret values from evidence."],
+        ["new", "Each scan gives a Stop, Review or Clear verdict with file-and-line evidence and practical boundaries for a safer first agent run."],
+      ],
+    },
+    {
       version: "0.135.0",
       date: "2026-09-22",
       title: "Files is ready for everyday file work",

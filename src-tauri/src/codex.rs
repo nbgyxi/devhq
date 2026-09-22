@@ -176,6 +176,11 @@ pub async fn codex_send(
         cmd.current_dir(&cwd)
             .arg("exec")
             .arg("--json")
+            // The AI sidebar is also available when no project is open, so
+            // its deliberate working directory may be a normal Windows
+            // folder rather than a Git checkout. The workspace sandbox still
+            // limits writes; this only disables Codex's repository preflight.
+            .arg("--skip-git-repo-check")
             // `--sandbox` belongs to `codex exec`, so it must precede the
             // `resume` subcommand. Putting it after the session id makes
             // resumed turns fail before Codex reads their prompt.

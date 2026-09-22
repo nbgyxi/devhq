@@ -106,12 +106,15 @@
   // reaches this rail as a `sidebar:settings` event, the moment it is made.
   const DEFAULT_SETTINGS = {
     slots: { brand: true, start: true, clipboard: true, focus: true, network: true, volume: true, battery: true, language: true, time: true, date: true, windows: true, geometry: true, trayapps: true, tray: true, taskbar: true, edge: true, close: true },
-    textSize: 10,
-    iconSize: 22,
+    textSize: 14,
+    iconSize: 14,
+    trayIconSize: 14,
     hideTaskbar: true,
     // The clock is written the way Windows writes it here - 24 hours, zero
     // padded - and the seconds are off until someone asks for them.
     clockSeconds: false,
+    mediaMode: "playing",
+    mediaLast: null,
     // [{ id, name, icon }], in the order they were added. Name and icon are
     // kept with the id so the rail can draw them without the tool catalog.
     tools: [],
@@ -131,6 +134,7 @@
     // at the bottom.
     document.querySelector("[data-spacer]").hidden = settings.slots.windows !== false;
     paintTools();
+    refreshMedia();
     paintTray();
     // The format may have changed under it, so the last text drawn is no
     // longer a reason to skip the paint.
@@ -141,6 +145,7 @@
     refreshIndicators();
     document.documentElement.style.setProperty("--bar-text", `${settings.textSize}px`);
     document.documentElement.style.setProperty("--bar-icon", `${settings.iconSize}px`);
+    document.documentElement.style.setProperty("--bar-tray-icon", `${settings.trayIconSize || 14}px`);
   }
 
   const toolsBox = document.querySelector("[data-tools]");
@@ -177,32 +182,130 @@
   // this works with Spotify as well as media playing in a browser.
   const mediaPlayer = document.querySelector("[data-media-player]");
   const mediaTitle = document.querySelector("[data-media-title]");
+  const mediaSource = document.querySelector("[data-media-source]");
+  const audioStreamsBox = document.querySelector("[data-audio-streams]");
+  const audioStreamList = document.querySelector("[data-audio-stream-list]");
   let mediaBusy = false;
+  let lastMediaSaved = "";
   async function refreshMedia() {
     if (mediaBusy) return;
+    if (settings.mediaMode === "never") { mediaPlayer.hidden = true; return; }
     try {
-      const media = await invoke("media_state");
-      mediaPlayer.hidden = !media.available;
-      if (!media.available) return;
-      mediaTitle.replaceChildren(document.createTextNode(media.title || "Now playing"));
-      if (media.artist) mediaTitle.append(document.createTextNode(" · "), Object.assign(document.createElement("span"), { textContent: media.artist }));
+      const [media, streams] = await Promise.all([
+        invoke("media_state"),
+        invoke("media_audio_streams").catch(() => []),
+      ]);
+      const sourceNeedle = (media.launchTarget || media.sourceId || "").toLowerCase().split(/[\\/]/).pop();
+      let selectedStream = media.available && sourceNeedle ? streams.find((stream) => stream.executable.toLowerCase().endsWith(sourceNeedle)) : null;
+      if (!media.available && streams.length) {
+        const remembered = (settings.mediaLast?.launchTarget || "").toLowerCase();
+        selectedStream = streams.find((stream) => remembered && stream.executable.toLowerCase() === remembered) || streams[0];
+      }
+      const others = streams.filter((stream) => !selectedStream || stream.pid !== selectedStream.pid);
+      paintAudioStreams(others);
+      if (media.available) {
+        const remembered = { title: media.title, artist: media.artist, source: media.source, sourceId: media.sourceId, launchTarget: media.launchTarget };
+        const key = JSON.stringify(remembered);
+        if (key !== lastMediaSaved) {
+          lastMediaSaved = key;
+          settings = { ...settings, mediaLast: remembered };
+          invoke("sidebar_settings_set", { settings }).catch(() => {});
+        }
+      }
+      const fallback = selectedStream ? { title: selectedStream.name, artist: "Active audio", source: selectedStream.name, sourceId: selectedStream.executable, launchTarget: selectedStream.executable } : null;
+      if (fallback && !media.available) {
+        const key = JSON.stringify(fallback);
+        if (key !== lastMediaSaved) { lastMediaSaved = key; settings = { ...settings, mediaLast: fallback }; invoke("sidebar_settings_set", { settings }).catch(() => {}); }
+      }
+      const shown = media.available ? media : (fallback || settings.mediaLast || {});
+      const visible = settings.mediaMode === "always" || !!(media.available && media.playing) || !!selectedStream;
+      mediaPlayer.hidden = !visible;
+      if (!visible) return;
+      mediaTitle.replaceChildren(document.createTextNode(shown.title || (media.available ? "Now playing" : "No recent media")));
+      if (shown.artist) mediaTitle.append(document.createTextNode(" · "), Object.assign(document.createElement("span"), { textContent: shown.artist }));
+      mediaSource.textContent = shown.source || "Media app";
+      mediaSource.dataset.sourceId = shown.sourceId || "";
+      mediaSource.dataset.launchTarget = shown.launchTarget || "";
+      mediaSource.hidden = !shown.sourceId;
       const toggle = mediaPlayer.querySelector('[data-media-command="toggle"]');
-      toggle.querySelector(".ms").textContent = media.playing ? "pause" : "play_arrow";
-      toggle.title = toggle.ariaLabel = media.playing ? "Pause" : "Play";
+      if (!media.available && selectedStream) {
+        toggle.querySelector(".ms").textContent = selectedStream.muted ? "volume_off" : "volume_up";
+        toggle.title = toggle.ariaLabel = selectedStream.muted ? "Unmute" : "Mute";
+        toggle.dataset.audioPid = selectedStream.pid;
+        toggle.dataset.audioMuted = String(selectedStream.muted);
+      } else {
+        toggle.querySelector(".ms").textContent = media.playing ? "pause" : "play_arrow";
+        toggle.title = toggle.ariaLabel = media.playing ? "Pause" : "Play";
+        delete toggle.dataset.audioPid;
+        delete toggle.dataset.audioMuted;
+      }
       for (const button of mediaPlayer.querySelectorAll("[data-media-command]")) {
         const command = button.dataset.mediaCommand;
-        button.disabled = command === "previous" ? !media.canPrevious : command === "next" ? !media.canNext : (command === "back10" || command === "ahead10") ? !media.canSeek : false;
+        button.disabled = (!media.available && !(command === "toggle" && selectedStream)) || (command === "previous" ? !media.canPrevious : command === "next" ? !media.canNext : (command === "back10" || command === "ahead10") ? !media.canSeek : false);
       }
-    } catch (_) { mediaPlayer.hidden = true; }
+    } catch (_) {
+      if (settings.mediaMode !== "always") { mediaPlayer.hidden = true; return; }
+      mediaPlayer.hidden = false;
+      mediaTitle.textContent = settings.mediaLast?.title || "No recent media";
+      mediaSource.textContent = settings.mediaLast?.source || "";
+      mediaSource.hidden = !settings.mediaLast?.sourceId;
+      mediaSource.dataset.sourceId = settings.mediaLast?.sourceId || "";
+      mediaSource.dataset.launchTarget = settings.mediaLast?.launchTarget || "";
+      for (const button of mediaPlayer.querySelectorAll("[data-media-command]")) button.disabled = true;
+    }
   }
   mediaPlayer.addEventListener("click", async (event) => {
+    const streamToggle = event.target.closest("[data-audio-stream-toggle]");
+    if (streamToggle) {
+      audioStreamList.hidden = !audioStreamList.hidden;
+      if (!audioStreamList.hidden) {
+        const box = streamToggle.getBoundingClientRect();
+        audioStreamList.style.left = `${Math.max(7, Math.min(box.left, innerWidth - audioStreamList.offsetWidth - 7))}px`;
+        audioStreamList.style.top = `${Math.max(7, box.top - audioStreamList.offsetHeight - 5)}px`;
+      }
+      return;
+    }
+    const mute = event.target.closest("[data-audio-mute]");
+    if (mute) {
+      mute.disabled = true;
+      await invoke("media_audio_mute", { pid: Number(mute.dataset.audioMute), muted: mute.dataset.muted !== "true" }).catch((error) => flash(mute, error));
+      mediaBusy = false; return refreshMedia();
+    }
+    const openStream = event.target.closest("[data-audio-open]");
+    if (openStream) {
+      audioStreamList.hidden = true;
+      const target = openStream.dataset.audioOpen;
+      return invoke("media_focus", { sourceId: target, launchTarget: target }).catch((error) => flash(openStream, error));
+    }
+    const source = event.target.closest("[data-media-source]");
+    if (source) return invoke("media_focus", { sourceId: source.dataset.sourceId, launchTarget: source.dataset.launchTarget || null }).catch((error) => flash(source, error));
     const button = event.target.closest("[data-media-command]");
     if (!button || button.disabled || mediaBusy) return;
     mediaBusy = true;
-    try { await invoke("media_command", { command: button.dataset.mediaCommand }); }
+    try {
+      if (button.dataset.audioPid) await invoke("media_audio_mute", { pid: Number(button.dataset.audioPid), muted: button.dataset.audioMuted !== "true" });
+      else await invoke("media_command", { command: button.dataset.mediaCommand });
+    }
     catch (error) { flash(button, error); }
     finally { mediaBusy = false; setTimeout(refreshMedia, 150); }
   });
+  function paintAudioStreams(streams) {
+    audioStreamsBox.hidden = !streams.length;
+    audioStreamsBox.querySelector("button").textContent = streams.length;
+    if (!streams.length) { audioStreamList.hidden = true; audioStreamList.replaceChildren(); return; }
+    audioStreamList.replaceChildren(...streams.map((stream) => {
+      const row = document.createElement("div"); row.className = "bar-stream-row";
+      const text = document.createElement("button"); text.type = "button"; text.className = "bar-stream-open"; text.dataset.audioOpen = stream.executable;
+      const name = document.createElement("strong"); name.textContent = stream.name;
+      const detail = document.createElement("small"); detail.textContent = `${stream.volume}% · active audio`;
+      text.append(name, detail);
+      const button = document.createElement("button"); button.type = "button"; button.className = "bar-stream-mute";
+      button.dataset.audioMute = stream.pid; button.dataset.muted = String(stream.muted);
+      button.title = stream.muted ? "Unmute" : "Mute";
+      button.innerHTML = `<span class="ms" aria-hidden="true">${stream.muted ? "volume_off" : "volume_up"}</span>`;
+      row.append(text, button); return row;
+    }));
+  }
   refreshMedia();
   setInterval(refreshMedia, 2000);
 
@@ -263,9 +366,24 @@
   }
 
   function keyFor(win) {
+    const app = win.app.toLowerCase();
+    const workspace = String(win.workspace || "").trim().toLowerCase();
+    if (workspace) return `${app}#workspace:${workspace}`;
     let n = 0;
     for (const entry of rows.values()) if (entry.app === win.app) n += 1;
-    return `${win.app.toLowerCase()}#${n}`;
+    return `${app}#${n}`;
+  }
+
+  /** Many chat and mail apps put their unread count at the start of the native
+   * window title (for example "(3) WhatsApp" or "[2] Teams"). Windows does
+   * not expose another app's taskbar overlay icon, so the title is the one
+   * generic signal a replacement taskbar can read without app-specific APIs. */
+  function badgeFromTitle(title) {
+    const text = String(title || "").trim();
+    const count = text.match(/^[([]\s*(\d{1,4}|\d{1,3}\+)\s*[)\]]/);
+    if (count) return count[1];
+    if (/^[•●]\s*/u.test(text)) return "";
+    return null;
   }
 
   /** Where a new row goes: before the first row that comes after it in the
@@ -531,8 +649,12 @@
     glyph.setAttribute("aria-hidden", "true");
     glyph.textContent = "window";
     const label = document.createElement("small");
-    button.append(img, glyph, label);
-    return { button, img, glyph, label, app: win.app };
+    const badge = document.createElement("span");
+    badge.className = "bar-app-badge";
+    badge.hidden = true;
+    badge.setAttribute("aria-hidden", "true");
+    button.append(img, glyph, label, badge);
+    return { button, img, glyph, label, badge, app: win.app, workspace: win.workspace || "" };
   }
 
   function paintWindows(windows) {
@@ -557,12 +679,27 @@
         placeNew(entry.button);
         changed = true;
       }
-      const { button, label } = entry;
+      const { button, label, badge } = entry;
+      // VS Code can reuse a window for another folder. Follow that change so
+      // its remembered position belongs to the project now open in it.
+      if ((entry.workspace || "") !== (win.workspace || "")) {
+        const oldKey = button.dataset.key;
+        entry.workspace = win.workspace || "";
+        button.dataset.key = keyFor(win);
+        order = order.filter((key) => key !== oldKey);
+        placeNew(button);
+        changed = true;
+      }
       if (label.textContent !== win.title) {
         label.textContent = win.title;
         button.title = win.title;
         loadIcon(win.id, entry);
       }
+      const unread = badgeFromTitle(win.title);
+      badge.hidden = unread === null;
+      badge.classList.toggle("dot", unread === "");
+      badge.textContent = unread || "";
+      button.setAttribute("aria-label", unread === null ? win.title : `${win.title}, ${unread || "new"} unread`);
       button.classList.toggle("active", win.active);
       button.classList.toggle("minimized", win.minimized);
     }
@@ -1113,7 +1250,7 @@
   /** The battery, drawn at the level Windows reports rather than as one full
    *  or empty glyph — the whole point of the icon is the reading. */
   function batteryGlyph() {
-    if (battery?.charging) return "battery_charging_full";
+    if (battery?.charging) return "bolt";
     const bars = ["battery_0_bar", "battery_1_bar", "battery_2_bar", "battery_3_bar", "battery_4_bar", "battery_5_bar", "battery_6_bar"];
     const percent = battery?.percent ?? 0;
     if (percent >= 95) return "battery_full";
