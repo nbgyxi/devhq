@@ -16,6 +16,22 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.135.0",
+      date: "2026-09-22",
+      title: "Files is ready for everyday file work",
+      changes: [
+        ["new", "Files now selects many files and folders with Ctrl, Shift or Ctrl+A. Copy, cut, drag, delete and the right-click menu act on the whole selection."],
+        ["new", "F2 renames a whole selection from one base name, numbers the results and preserves every file extension. The full batch is checked for collisions before anything moves."],
+        ["new", "The path is an address bar: type or paste a local, drive or network path, or press Ctrl+L to jump into it."],
+        ["new", "Arrow, Home, End, Page Up and Page Down keys move through the file list, with Shift extending the selection."],
+        ["better", "Folders above 1,000 items render only the rows around the screen. Visible thumbnails are made first and the rest continue in the background, while opening a folder no longer peeks inside every child folder first."],
+        ["better", "Files watches the open folder and refreshes after changes made by editors, terminals, downloads and other programs."],
+        ["new", "File-list columns can be resized by dragging their dividers, remember their widths across windows, and reset with a double-click."],
+        ["new", "Right-click the file-list header to show an optional Date created column. Creation times are only read while that column is visible, keeping the default listing path lean."],
+        ["fix", "Background folder watching no longer flashes the list through its loading state. No-op notifications are ignored, and real changes appear only after the burst of disk activity settles."],
+      ],
+    },
+    {
       version: "0.134.2",
       date: "2026-09-21",
       title: "Fix it here, do not go and do it",

@@ -112,6 +112,16 @@
   /* Shortcuts to WinT tools sit on their own under a divider, apart from the
      bar's own controls below them. */
   .bar-tools { display: flex; flex-direction: column; gap: 2px; flex: none; padding-top: 6px; border-top: 1px solid var(--line, #262a36); }
+  .bar-player { flex: none; display: grid; gap: 5px; min-width: 0; padding: 7px 6px 6px; border-top: 1px solid var(--line, #262a36); }
+  .bar-player-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; font-size: var(--bar-text); }
+  .bar-player-title span { color: var(--muted, #8b93a7); }
+  .bar-player-controls { display: flex; justify-content: center; align-items: center; gap: 1px; }
+  .bar-player-controls button { display: grid; place-items: center; width: 28px; height: 26px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+  .bar-player-controls button:hover { background: var(--hover, #1c2030); }
+  .bar-player-controls button:disabled { opacity: .3; cursor: default; }
+  .bar-player-controls .ms { font-size: 18px; }
+  .bar-player-controls .media-toggle { width: 32px; background: var(--hover, #1c2030); }
+  @media (max-width: 164px) { .bar-player-controls .media-seek { display: none; } }
   /* The rail's own notification area: a few icons, then the chevron that
      shows the rest, the way the real tray opens. */
   /* Closed, the tray is a row of icons with no names, wrapping as often as the
@@ -161,6 +171,16 @@
   <div class="bar-spacer" data-spacer hidden></div>
   <div class="bar-geometry" data-geometry data-slot="geometry"></div>
   <div class="bar-tools" data-tools aria-label="Tool shortcuts" hidden></div>
+  <section class="bar-player" data-media-player aria-label="Media controls" hidden>
+    <div class="bar-player-title" data-media-title></div>
+    <div class="bar-player-controls">
+      <button class="media-seek" type="button" data-media-command="back10" title="Back 10 seconds" aria-label="Back 10 seconds"><span class="ms" aria-hidden="true">replay_10</span></button>
+      <button type="button" data-media-command="previous" title="Previous" aria-label="Previous"><span class="ms" aria-hidden="true">skip_previous</span></button>
+      <button class="media-toggle" type="button" data-media-command="toggle" title="Play" aria-label="Play"><span class="ms" aria-hidden="true">play_arrow</span></button>
+      <button type="button" data-media-command="next" title="Next" aria-label="Next"><span class="ms" aria-hidden="true">skip_next</span></button>
+      <button class="media-seek" type="button" data-media-command="ahead10" title="Ahead 10 seconds" aria-label="Ahead 10 seconds"><span class="ms" aria-hidden="true">forward_10</span></button>
+    </div>
+  </section>
   <div class="bar-tray" data-tray-apps aria-label="Notification area" hidden></div>
   <div class="bar-clock-row" data-clock-row>
     <button class="bar-slot bar-clock" type="button" data-action="time" data-slot="time"><span class="ms" aria-hidden="true">schedule</span><small data-time>--:--</small></button>

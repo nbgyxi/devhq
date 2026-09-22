@@ -1,4 +1,4 @@
-//! Google Gemini CLI as a chat panel rather than a terminal.
+//! Google Antigravity CLI as a chat panel rather than a terminal.
 //!
 //! The same bargain as [`crate::claude`] and [`crate::cursor`]: the workspace
 //! drives the CLI the person already installed, through its machine-readable
@@ -7,8 +7,8 @@
 //!
 //! Two things are deliberate and must stay that way:
 //!
-//! - **No `GEMINI_API_KEY` / `GOOGLE_API_KEY` is set.** The panel is their
-//!   Gemini CLI, authenticated as them.
+//! - WinT sets no API key. The panel is their Antigravity CLI, authenticated
+//!   through the CLI's system-keyring-backed Google sign-in.
 //! - **The prompt goes in on stdin, never as an argument.** Every argument
 //!   here is fixed text or a session id, so nothing anyone types has to
 //!   survive a round trip through `cmd.exe`'s parser.
@@ -33,10 +33,10 @@ fn running() -> &'static Mutex<std::collections::HashMap<String, Child>> {
 }
 
 pub(crate) fn gemini_path() -> Option<PathBuf> {
-    crate::term::find_program_on_path(&["gemini.exe", "gemini.cmd", "gemini.bat"]).or_else(|| {
-        std::env::var_os("APPDATA")
+    crate::term::find_program_on_path(&["agy.exe", "agy"]).or_else(|| {
+        std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
-            .map(|roaming| roaming.join("npm").join("gemini.cmd"))
+            .map(|local| local.join("agy").join("bin").join("agy.exe"))
             .filter(|path| path.is_file())
     })
 }
@@ -136,16 +136,18 @@ pub async fn gemini_send(
     tauri::async_runtime::spawn_blocking(move || {
         let mut cmd = command(&path);
         cmd.current_dir(&cwd)
+            .arg("--input-format")
+            .arg("stream-json")
             .arg("--output-format")
             .arg("stream-json")
-            // Edits and commands land without a prompt, because in this mode
-            // there is nobody to ask. The way to be asked is the CLI itself.
-            .arg("--yolo")
+            // The sidebar/workspace is the UI, so the CLI cannot stop to ask
+            // in its TUI. The person deliberately chose a direct-shell agent.
+            .arg("--dangerously-skip-permissions")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if let Some(id) = session.as_deref().filter(|id| is_session_id(id)) {
-            cmd.arg("--resume").arg(id);
+            cmd.arg("--conversation").arg(id);
         }
         if let Some(model) = model.as_deref().filter(|model| is_model_id(model)) {
             cmd.arg("--model").arg(model);
@@ -156,7 +158,8 @@ pub async fn gemini_send(
             .map_err(|e| format!("Could not start Gemini CLI: {e}"))?;
 
         if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(prompt.as_bytes());
+            let event = serde_json::json!({ "event": "user", "message": { "content": prompt } });
+            let _ = writeln!(stdin, "{event}");
         }
 
         let stdout = child.stdout.take();
@@ -300,18 +303,18 @@ struct InstallProgress {
 
 #[tauri::command]
 pub async fn gemini_install(app: AppHandle, window: String) -> Result<(), String> {
-    let npm = crate::term::find_program_on_path(&["npm.cmd", "npm.exe", "npm"])
-        .ok_or("Node.js is not installed, so npm cannot run. Install Node.js from nodejs.org.")?;
     tauri::async_runtime::spawn_blocking(move || {
-        let mut child = command(&npm)
-            .arg("install")
-            .arg("-g")
-            .arg("@google/gemini-cli")
+        let mut child = Command::new("powershell.exe")
+            .arg("-NoProfile")
+            .arg("-ExecutionPolicy")
+            .arg("Bypass")
+            .arg("-Command")
+            .arg("irm https://antigravity.google/cli/install.ps1 | iex")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("Could not run npm: {e}"))?;
+            .map_err(|e| format!("Could not start the Antigravity installer: {e}"))?;
 
         let say = |line: String, done: bool, ok: bool| {
             let _ = app.emit(

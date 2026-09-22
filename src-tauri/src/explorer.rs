@@ -41,6 +41,9 @@ pub struct Entry {
     pub bytes: u64,
     /// Milliseconds since the epoch, or 0 when the timestamp is unreadable.
     pub modified: u64,
+    /// Creation time is optional work: it is only read when the user has made
+    /// the Date created column visible.
+    pub created: u64,
     pub hidden: bool,
     pub readonly: bool,
     /// Only meaningful for folders: whether the tree should offer an expander.
@@ -178,6 +181,15 @@ pub fn last_path_set(app_data: &Path, path: String) -> Result<(), String> {
 pub struct Layout {
     pub side_width: u32,
     pub preview_width: u32,
+    #[serde(default = "default_column_widths")]
+    pub column_widths: BTreeMap<String, u32>,
+    #[serde(default)]
+    pub created_column: bool,
+}
+
+fn default_column_widths() -> BTreeMap<String, u32> {
+    [("name", 320), ("type", 130), ("size", 92), ("modified", 148), ("created", 148)]
+        .into_iter().map(|(name, width)| (name.to_string(), width)).collect()
 }
 
 const SIDE_DEFAULT: u32 = 268;
@@ -193,9 +205,16 @@ fn layout_file(app_data: &Path) -> Option<PathBuf> {
 }
 
 fn clamp_layout(layout: Layout) -> Layout {
+    let defaults = default_column_widths();
+    let column_widths = defaults.into_iter().map(|(name, fallback)| {
+        let width = layout.column_widths.get(&name).copied().unwrap_or(fallback).clamp(64, 800);
+        (name, width)
+    }).collect();
     Layout {
         side_width: layout.side_width.clamp(SIDE_MIN, SIDE_MAX),
         preview_width: layout.preview_width.clamp(PREVIEW_MIN, PREVIEW_MAX),
+        column_widths,
+        created_column: layout.created_column,
     }
 }
 
@@ -206,6 +225,8 @@ pub fn layout(app_data: &Path) -> Layout {
     let defaults = Layout {
         side_width: SIDE_DEFAULT,
         preview_width: PREVIEW_DEFAULT,
+        column_widths: default_column_widths(),
+        created_column: false,
     };
     let Some(file) = layout_file(app_data) else {
         return defaults;
@@ -266,32 +287,6 @@ fn extension(name: &str, is_dir: bool) -> String {
         .extension()
         .map(|ext| ext.to_string_lossy().to_lowercase())
         .unwrap_or_default()
-}
-
-/// Whether a folder holds at least one subfolder, without walking it. The peek
-/// stops after 512 entries: past that the arrow is a guess, and guessing "yes"
-/// costs one wasted click while guessing "no" hides a real subtree.
-fn has_subfolder(path: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(path) else {
-        return true;
-    };
-    for (seen, entry) in entries.flatten().enumerate() {
-        if seen >= 512 {
-            return true;
-        }
-        if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
-            return true;
-        }
-        // A zip is openable like a folder, so it counts as a child for the tree.
-        if entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| is_zip_name(name))
-        {
-            return true;
-        }
-    }
-    false
 }
 
 fn is_zip_name(name: &str) -> bool {
@@ -402,10 +397,6 @@ fn open_zip(archive: &Path) -> Result<ZipArchive<File>, String> {
     })
 }
 
-fn zip_has_entries(archive: &Path) -> bool {
-    open_zip(archive).map(|zip| zip.len() > 0).unwrap_or(true)
-}
-
 fn zip_has_prefix(archive: &Path, inner: &str) -> bool {
     let Ok(mut zip) = open_zip(archive) else {
         return false;
@@ -504,6 +495,7 @@ fn list_zip(archive: &Path, inner: &str, dirs_only: bool) -> Result<Listing, Str
             is_archive: false,
             bytes: if child.is_dir { 0 } else { child.bytes },
             modified: 0,
+            created: 0,
             hidden: false,
             readonly: true,
         });
@@ -604,10 +596,10 @@ fn hex_digest(bytes: &[u8]) -> String {
 ///
 /// A `.zip` file is listed and opened the same way as a folder: the path
 /// `archive.zip\inner` is virtual, built from the zip's central directory.
-pub fn list(raw_path: String, dirs_only: bool) -> Result<Listing, String> {
+pub fn list(raw_path: String, dirs_only: bool, include_created: bool) -> Result<Listing, String> {
     let path = PathBuf::from(raw_path.replace('/', "\\"));
     if path.is_dir() {
-        return list_dir(path, dirs_only);
+        return list_dir(path, dirs_only, include_created);
     }
     if is_zip_file(&path) {
         return list_zip(&path, "", dirs_only);
@@ -618,7 +610,7 @@ pub fn list(raw_path: String, dirs_only: bool) -> Result<Listing, String> {
     Err("That folder is no longer available.".into())
 }
 
-fn list_dir(path: PathBuf, dirs_only: bool) -> Result<Listing, String> {
+fn list_dir(path: PathBuf, dirs_only: bool, include_created: bool) -> Result<Listing, String> {
     let raw = path.to_string_lossy().into_owned();
     let entries = std::fs::read_dir(&path).map_err(|error| readable(&raw, error))?;
     let mut out = Vec::new();
@@ -642,17 +634,20 @@ fn list_dir(path: PathBuf, dirs_only: bool) -> Result<Listing, String> {
             } else {
                 extension(&name, is_dir)
             },
-            has_children: if is_archive {
-                zip_has_entries(&child)
-            } else {
-                is_dir && has_subfolder(&child)
-            },
+            // Never open every child directory while listing its parent. On a
+            // network share that turns one click into hundreds of round trips.
+            // A folder is expanded lazily; an empty branch simply opens empty.
+            has_children: is_dir || is_archive,
             path: child.to_string_lossy().into_owned(),
             name,
             is_dir: is_dir || is_archive,
             is_archive,
             bytes: if is_dir && !is_archive { 0 } else { meta.len() },
             modified: modified_ms(&meta),
+            created: if include_created {
+                meta.created().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_millis() as u64).unwrap_or(0)
+            } else { 0 },
             hidden,
             readonly: readonly || is_archive,
         });
@@ -1029,6 +1024,72 @@ pub fn rename(path: String, new_name: String) -> Result<String, String> {
     Ok(to.to_string_lossy().into_owned())
 }
 
+/// Explorer-style batch rename. The first selected item takes `base`; later
+/// items take `base (2)`, `base (3)` and so on. File extensions are preserved.
+/// Every destination is checked before the first rename so a clash cannot
+/// leave half of the selection renamed.
+pub fn rename_many(paths: Vec<String>, base: String) -> Result<Vec<String>, String> {
+    refuse_zip(&paths, "renamed")?;
+    if paths.len() < 2 {
+        return Err("Select at least two items for a batch rename.".into());
+    }
+    let stem = base.trim().trim_end_matches(['.', ' ']);
+    if stem.is_empty() || stem == "." || stem == ".." {
+        return Err("A name cannot be empty.".into());
+    }
+    if let Some(bad) = stem.chars().find(|c| "\\/:*?\"<>|".contains(*c) || c.is_control()) {
+        return Err(format!("A name cannot contain {bad}"));
+    }
+    let mut moves = Vec::with_capacity(paths.len());
+    for (index, raw) in paths.iter().enumerate() {
+        let from = PathBuf::from(raw);
+        let parent = from.parent().ok_or("The top of a drive cannot be renamed.")?;
+        let suffix = if index == 0 { String::new() } else { format!(" ({})", index + 1) };
+        let extension = if from.is_file() {
+            from.extension().map(|value| format!(".{}", value.to_string_lossy())).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let to = parent.join(format!("{stem}{suffix}{extension}"));
+        let belongs_to_batch = paths.iter().any(|candidate| {
+            Path::new(candidate).to_string_lossy().eq_ignore_ascii_case(&to.to_string_lossy())
+        });
+        if to.exists() && !belongs_to_batch {
+            return Err(format!("{} already exists here.", name_of(&to)));
+        }
+        moves.push((from, to));
+    }
+    // First move to unique temporary names so swaps and case-only changes are
+    // safe. If a final move fails, make a best effort to restore every source.
+    let nonce = format!(
+        "wint-rename-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
+    );
+    let staged: Vec<(PathBuf, PathBuf, PathBuf)> = moves.into_iter().enumerate().map(|(index, (from, to))| {
+        let temp = from.parent().unwrap_or_else(|| Path::new(".")).join(format!(".{nonce}-{index}.tmp"));
+        (from, temp, to)
+    }).collect();
+    for (index, (from, temp, _)) in staged.iter().enumerate() {
+        if let Err(error) = std::fs::rename(from, temp) {
+            for (restore, staged_path, _) in staged[..index].iter().rev() {
+                let _ = std::fs::rename(staged_path, restore);
+            }
+            return Err(format!("{} could not be renamed. {error}", name_of(from)));
+        }
+    }
+    for (_, temp, to) in &staged {
+        if let Err(error) = std::fs::rename(temp, to) {
+            for (from, staged_path, final_path) in staged.iter() {
+                if staged_path.exists() { let _ = std::fs::rename(staged_path, from); }
+                else if final_path.exists() { let _ = std::fs::rename(final_path, from); }
+            }
+            return Err(format!("{} could not be renamed. {error}", name_of(to)));
+        }
+    }
+    Ok(staged.into_iter().map(|(_, _, to)| to.to_string_lossy().into_owned()).collect())
+}
+
 /// Makes "New folder" - or "New folder (2)" and so on when that is taken -
 /// and returns its path so the list can put it straight into rename.
 pub fn new_folder(dir: String) -> Result<String, String> {
@@ -1351,5 +1412,37 @@ mod tests {
     fn deleting_something_already_gone_is_not_an_error() {
         let missing = std::env::temp_dir().join("wint-explorer-does-not-exist-xyz");
         delete(vec![missing.to_string_lossy().into_owned()], true).unwrap();
+    }
+
+    #[test]
+    fn batch_rename_numbers_items_and_preserves_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("one.txt");
+        let second = dir.path().join("two.png");
+        std::fs::write(&first, b"one").unwrap();
+        std::fs::write(&second, b"two").unwrap();
+        let renamed = rename_many(
+            vec![first.to_string_lossy().into_owned(), second.to_string_lossy().into_owned()],
+            "report".into(),
+        ).unwrap();
+        assert_eq!(Path::new(&renamed[0]).file_name().unwrap(), "report.txt");
+        assert_eq!(Path::new(&renamed[1]).file_name().unwrap(), "report (2).png");
+        assert!(Path::new(&renamed[0]).is_file());
+        assert!(Path::new(&renamed[1]).is_file());
+    }
+
+    #[test]
+    fn batch_rename_checks_every_destination_before_moving() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("one.txt");
+        let second = dir.path().join("two.txt");
+        let collision = dir.path().join("report (2).txt");
+        for path in [&first, &second, &collision] { std::fs::write(path, b"x").unwrap(); }
+        assert!(rename_many(
+            vec![first.to_string_lossy().into_owned(), second.to_string_lossy().into_owned()],
+            "report".into(),
+        ).is_err());
+        assert!(first.is_file());
+        assert!(second.is_file());
     }
 }

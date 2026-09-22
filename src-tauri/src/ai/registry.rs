@@ -4,7 +4,7 @@
 //! choosing one they are all just "what answers me":
 //!
 //! - `agent` - a coding-agent CLI they already installed and signed into
-//!   (Claude Code, Codex, Gemini, Copilot, Cursor). WinT does not pick a model
+//!   (Claude Code, Codex, Antigravity, Copilot, Cursor). WinT does not pick a model
 //!   for these and does not pass one: the agent uses whatever it is configured
 //!   to use, which is the point of installing it. One entry per agent.
 //! - `api`   - a model reached directly with the person's own API key.
@@ -94,7 +94,7 @@ fn agents() -> Vec<ModelEntry> {
     [
         ("claude", "Claude Code", crate::term::claude_program().is_some()),
         ("codex", "Codex", crate::codex::codex_path().is_some()),
-        ("gemini", "Gemini", crate::gemini::gemini_path().is_some()),
+        ("gemini", "Antigravity", crate::gemini::gemini_path().is_some()),
         ("copilot", "GitHub Copilot", crate::copilot::copilot_path().is_some()),
         ("cursor", "Cursor Agent", crate::cursor::find_agent().is_some()),
     ]
@@ -280,7 +280,7 @@ pub fn verify_agent(id: &str) -> AgentCheck {
     let (label, path) = match id {
         "claude" => ("Claude Code", crate::term::claude_program()),
         "codex" => ("Codex", crate::codex::codex_path()),
-        "gemini" => ("Gemini", crate::gemini::gemini_path()),
+        "gemini" => ("Antigravity", crate::gemini::gemini_path()),
         "copilot" => ("GitHub Copilot", crate::copilot::copilot_path()),
         "cursor" => (
             "Cursor Agent",

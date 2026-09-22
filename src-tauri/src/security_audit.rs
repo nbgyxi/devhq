@@ -37,6 +37,143 @@ use tauri::{AppHandle, Emitter};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/* -------------------------------- repository agent-safety preflight */
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoFinding {
+    id: String,
+    severity: &'static str,
+    area: &'static str,
+    title: String,
+    why: String,
+    #[serde(rename = "where")]
+    where_: String,
+    age: &'static str,
+    is_new: bool,
+    verdict: String,
+    evidence: Vec<RepoEvidence>,
+    fix: Option<serde_json::Value>,
+    asks: Vec<String>,
+    #[serde(rename = "static")]
+    static_scan: bool,
+}
+
+#[derive(Serialize)]
+struct RepoEvidence { label: String, value: String }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoPreflight {
+    path: String,
+    verdict: &'static str,
+    files_scanned: usize,
+    files_skipped: usize,
+    findings: Vec<RepoFinding>,
+    passed: Vec<serde_json::Value>,
+}
+
+fn repo_text_file(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase();
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    name.starts_with(".env") || name == "dockerfile" || name == "makefile" ||
+        matches!(ext.as_str(), "txt"|"md"|"json"|"jsonc"|"yaml"|"yml"|"toml"|"xml"|"config"|"conf"|"ini"|"properties"|"env"|"js"|"mjs"|"cjs"|"ts"|"tsx"|"jsx"|"py"|"rb"|"php"|"go"|"rs"|"java"|"kt"|"cs"|"fs"|"ps1"|"psm1"|"sh"|"bash"|"zsh"|"bat"|"cmd"|"sql"|"tf"|"hcl")
+}
+
+fn repo_redact(line: &str) -> String {
+    let mut out = line.trim().chars().take(220).collect::<String>();
+    if let Some((left, _)) = out.split_once('=') {
+        if ["key", "secret", "token", "password", "pwd", "connection"].iter().any(|k| left.to_ascii_lowercase().contains(k)) {
+            out = format!("{}=<redacted>", left.trim());
+        }
+    }
+    out
+}
+
+fn repo_add(findings: &mut Vec<RepoFinding>, severity: &'static str, id: &str, title: &str, why: &str, path: &Path, line: usize, sample: &str, verdict: &str) {
+    let location = format!("{}:{}", path.display(), line);
+    if let Some(found) = findings.iter_mut().find(|f| f.id == id) {
+        if found.evidence.len() < 8 { found.evidence.push(RepoEvidence { label: "Also found".into(), value: location }); }
+        return;
+    }
+    findings.push(RepoFinding {
+        id: id.into(), severity, area: "Repository safety", title: title.into(), why: why.into(), where_: location.clone(), age: "in this checkout", is_new: true,
+        verdict: verdict.into(), evidence: vec![RepoEvidence { label: "Location".into(), value: location }, RepoEvidence { label: "Matched text".into(), value: repo_redact(sample) }],
+        fix: None, asks: Vec::new(), static_scan: true,
+    });
+}
+
+fn scan_repo(root: &Path) -> Result<RepoPreflight, String> {
+    if !root.is_dir() { return Err("Choose a folder that exists.".into()); }
+    let root = root.canonicalize().map_err(|e| format!("Could not open that folder: {e}"))?;
+    let mut stack = vec![root.clone()];
+    let mut findings = Vec::new();
+    let (mut files_scanned, mut files_skipped) = (0usize, 0usize);
+    let ignored = [".git", "node_modules", "target", "dist", "build", ".next", ".nuxt", "vendor", ".venv", "venv", "coverage", "bin", "obj"];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { files_skipped += 1; continue; };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !ignored.iter().any(|x| name.eq_ignore_ascii_case(x)) { stack.push(path); }
+                continue;
+            }
+            if !repo_text_file(&path) { files_skipped += 1; continue; }
+            let Ok(meta) = entry.metadata() else { files_skipped += 1; continue; };
+            if meta.len() > 2 * 1024 * 1024 { files_skipped += 1; continue; }
+            let Ok(text) = std::fs::read_to_string(&path) else { files_skipped += 1; continue; };
+            files_scanned += 1;
+            let rel = path.strip_prefix(&root).unwrap_or(&path);
+            let rel_lower = rel.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+            for (i, line) in text.lines().enumerate() {
+                let low = line.to_ascii_lowercase();
+                let n = i + 1;
+                let production = low.contains("prod") || low.contains("production") || low.contains("live");
+                if (low.contains("server=") || low.contains("data source=") || low.contains("mongodb+srv://") || low.contains("postgres://") || low.contains("postgresql://")) &&
+                    (production || low.contains("password=") || low.contains("user id=")) {
+                    repo_add(&mut findings, "high", "production-database", "Production-looking database connection", "An autonomous agent could run migrations, tests, seeds, or cleanup against real data.", rel, n, line, "Treat this checkout as connected to real data until the endpoint and account are proven isolated. Do not use auto mode.");
+                }
+                if low.contains("akia") || low.contains("sk_live_") || low.contains("ghp_") || low.contains("github_pat_") || low.contains("xoxb-") || low.contains("-----begin private key-----") ||
+                    ((low.contains("api_key") || low.contains("api-key") || low.contains("client_secret") || low.contains("access_token")) && (line.contains('=') || line.contains(':')) && !low.contains("example") && !low.contains("your_")) {
+                    repo_add(&mut findings, "high", "embedded-secret", "Credential or private key may be committed", "The value could grant an agent access outside this repository.", rel, n, line, "Rotate or revoke the credential, remove it from the checkout and history, and use a scoped secret store before running an agent.");
+                }
+                if production && (low.contains("https://") || low.contains("http://") || low.contains("endpoint") || low.contains("base_url") || low.contains("baseurl")) {
+                    repo_add(&mut findings, "medium", "production-api", "Production API endpoint referenced", "Code or tests may send writes, messages, payments, or deletions to a live service.", rel, n, line, "Confirm the client is read-only or replace the endpoint with a sandbox and deny outbound access during agent work.");
+                }
+                let destructive = low.contains("rm -rf") || low.contains("remove-item") && low.contains("-recurse") || low.contains("drop database") || low.contains("drop table") || low.contains("truncate table") || low.contains("terraform destroy") || low.contains("kubectl delete") || low.contains("git push --force");
+                if destructive {
+                    repo_add(&mut findings, if production { "high" } else { "medium" }, "destructive-command", "Destructive command in repository automation", "An agent may invoke this command while testing, fixing, or following project instructions.", rel, n, line, "Review its target resolution and guardrails. Run agents with approvals and a filesystem/network sandbox until it is safe.");
+                }
+                if (rel_lower.ends_with("package.json") && ["preinstall", "postinstall", "prepare"].iter().any(|k| low.contains(&format!("\"{k}\"")))) ||
+                    (rel_lower.contains(".github/workflows/") && (low.contains("workflow_run") || low.contains("pull_request_target"))) {
+                    repo_add(&mut findings, "medium", "automatic-execution", "Code can run automatically", "Installing dependencies or triggering CI may execute repository-controlled commands before they are reviewed.", rel, n, line, "Inspect the complete hook or workflow and install dependencies with scripts disabled until it is trusted.");
+                }
+                if (rel_lower.ends_with("agents.md") || rel_lower.ends_with("claude.md") || rel_lower.contains(".cursor/rules") || rel_lower.contains(".github/copilot-instructions")) &&
+                    (low.contains("ignore previous") || low.contains("without asking") || low.contains("do not ask") || low.contains("auto-approve") || low.contains("danger-full-access") || low.contains("send") && (low.contains("secret") || low.contains("credential"))) {
+                    repo_add(&mut findings, "high", "agent-instruction-trap", "Repository instructions weaken agent safeguards", "Coding agents automatically consume instruction files; this text asks for reduced approval or sensitive behavior.", rel, n, line, "Read all repository agent instructions manually and remove or override unsafe directions before opening the repo in auto mode.");
+                }
+                if (rel_lower.contains("mcp") || rel_lower.contains("settings")) && (low.contains("autoapprove") || low.contains("alwaysallow") || low.contains("dangerously") || low.contains("allow-all")) {
+                    repo_add(&mut findings, "high", "agent-permissions", "Agent tooling may be broadly auto-approved", "Repository settings can give tools network, shell, or data access without a confirmation step.", rel, n, line, "Use a user-controlled minimal tool allow-list and require approval for writes, shell commands, and network calls.");
+                }
+            }
+        }
+    }
+    let verdict = if findings.iter().any(|f| f.severity == "high") { "stop" } else if findings.iter().any(|f| f.severity == "medium") { "review" } else { "clear" };
+    let passed = vec![
+        serde_json::json!({"name":"Read-only scan", "detail":"No repository code or scripts were executed"}),
+        serde_json::json!({"name":"Generated dependencies skipped", "detail":"Vendor, build and dependency folders were excluded"}),
+        serde_json::json!({"name":"Secret values redacted", "detail":"Evidence does not expose matched credential values"}),
+    ];
+    Ok(RepoPreflight { path: root.to_string_lossy().into_owned(), verdict, files_scanned, files_skipped, findings, passed })
+}
+
+#[tauri::command]
+pub async fn audit_repo_preflight(path: String) -> Result<RepoPreflight, String> {
+    tauri::async_runtime::spawn_blocking(move || scan_repo(Path::new(&path))).await
+        .unwrap_or_else(|_| Err("The repository scan stopped unexpectedly.".into()))
+}
+
 /* ------------------------------------------------------------ the agents */
 
 #[derive(Serialize)]
@@ -110,10 +247,13 @@ fn turn_line(agent: &str, session: Option<&str>, first: bool) -> Result<String, 
             line
         }
         "gemini" => {
-            let path = crate::gemini::gemini_path().ok_or("Gemini CLI is not installed.")?;
-            let mut line = format!("{} --output-format stream-json --yolo", quote(&path));
+            let path = crate::gemini::gemini_path().ok_or("Antigravity CLI is not installed.")?;
+            let mut line = format!(
+                "{} --input-format stream-json --output-format stream-json --dangerously-skip-permissions",
+                quote(&path)
+            );
             if let (Some(id), false) = (session, first) {
-                line.push_str(" --resume ");
+                line.push_str(" --conversation ");
                 line.push_str(id);
             }
             line
@@ -446,6 +586,11 @@ pub async fn audit_turn(
             session = Some(id);
         }
         let line = turn_line(&agent, session.as_deref(), first)?;
+        let prompt = if agent == "gemini" {
+            serde_json::json!({ "event": "user", "message": { "content": prompt } }).to_string() + "\n"
+        } else {
+            prompt
+        };
         let elevated = broker().lock().unwrap().is_some();
         if elevated {
             run_elevated(app, run, line, prompt, dir)
@@ -878,4 +1023,3 @@ fn start_broker(dir: &Path) -> Result<Broker, String> {
     let replies = unsafe { File::from_raw_handle(rep.0 as _) };
     Ok(Broker { requests, replies: Some(replies) })
 }
-

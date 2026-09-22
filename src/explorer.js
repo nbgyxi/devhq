@@ -39,6 +39,7 @@ const COLUMNS = [
   { id: "type", label: "Type" },
   { id: "size", label: "Size" },
   { id: "modified", label: "Modified" },
+  { id: "created", label: "Date created" },
 ];
 
 /** "This PC" is a place, not a path: it is the drive list, and there is no
@@ -62,9 +63,11 @@ const fx = {
   /** Fixed widths for the tree and the preview. The browse list fills what is
    *  left. Remembered across windows the same way bookmarks are. */
   sideWidth: 268, previewWidth: 320,
-  /** The row the preview pane is showing. Only files are ever selected: a
-   *  folder click opens it, which is the whole point of the list. */
-  selected: "", previewUrl: "", previewLoading: false,
+  columnWidths: { name: 320, type: 130, size: 92, modified: 148, created: 148 },
+  createdColumn: false,
+  /** Focused row plus the complete multi-selection. The focused file, when
+   *  there is one, is what the preview pane shows. */
+  selected: "", selectedPaths: new Set(), selectionAnchor: "", previewUrl: "", previewLoading: false,
   /** After Back/Up, the child folder you came from - selected and scrolled into
    *  view once the list has painted, so a resized window still lands correctly. */
   pendingFocus: "",
@@ -84,6 +87,10 @@ const PREVIEW_MIN = 64;
 const PREVIEW_MAX = 1200;
 const MAIN_MIN = 96;
 const SPLIT_W = 5;
+const visibleColumns = () => COLUMNS.filter((column) => column.id !== "created" || fx.createdColumn);
+const columnTemplate = () => visibleColumns().map((column) => column.id === "name"
+  ? `minmax(${fx.columnWidths.name}px,1fr)`
+  : `${fx.columnWidths[column.id]}px`).join(" ");
 
 /** Which kinds get a picture. Windows will thumbnail far more than this, but a
  *  preview row is for seeing which photo is which - a generic first-page
@@ -97,6 +104,10 @@ const THUMB_DRAWN = 64;
  *  thumbnail rather than the file itself: a 40 megapixel photograph does not
  *  need to cross the bridge to be looked at in a 500 pixel panel. */
 const PREVIEW_PX = 1024;
+const ROW_PX = 31;
+const THUMB_ROW_PX = 84;
+const VIRTUAL_AFTER = 1000;
+const VIRTUAL_OVERSCAN = 12;
 
 const TRANSFER_KEY = "wint.explorer.popout.v1";
 let popoutHandoff = false;
@@ -203,8 +214,23 @@ async function loadRoots() {
  *  user has already clicked elsewhere cannot paint its contents over the
  *  folder now on screen. */
 let listToken = 0;
+let externalChangeTimer = 0;
 
-async function openFolder(path, { push = true, keepFilter = false, focusPath = null } = {}) {
+function watchFolder(path) {
+  invoke("explorer_watch", { path: path || "" }).catch(() => {});
+}
+
+function sameListing(a, b) {
+  if (!a || !b || a.entries.length !== b.entries.length) return false;
+  return a.entries.every((entry, index) => {
+    const other = b.entries[index];
+    return other && same(entry.path, other.path) && entry.bytes === other.bytes
+      && entry.modified === other.modified && entry.created === other.created
+      && entry.hidden === other.hidden && entry.readonly === other.readonly;
+  });
+}
+
+async function openFolder(path, { push = true, keepFilter = false, focusPath = null, quiet = false } = {}) {
   if (path == null) return;
   if (push && fx.path !== path && !same(fx.path, path)) { fx.history.push(fx.path); fx.forward = []; }
   const token = ++listToken;
@@ -213,7 +239,10 @@ async function openFolder(path, { push = true, keepFilter = false, focusPath = n
   // A filter belongs to the folder it was typed in. Carrying "png" into the
   // next folder would show an empty folder that is not empty.
   if (!keepFilter) { fx.filter = ""; fx.kinds.clear(); fx.exts.clear(); fx.typesOpen = false; }
-  if (!same(leaving, path)) { fx.selected = ""; fx.previewUrl = ""; previewToken += 1; }
+  if (!same(leaving, path)) {
+    fx.selected = ""; fx.selectedPaths.clear(); fx.selectionAnchor = "";
+    fx.previewUrl = ""; previewToken += 1;
+  }
   // Back / Up hand a focusPath: the child you came from. After the list paints,
   // that row is selected and scrolled into view - a pixel scroll would be wrong
   // if the window was resized while you were away.
@@ -227,26 +256,38 @@ async function openFolder(path, { push = true, keepFilter = false, focusPath = n
     dirty();
     saveTransfer();
     rememberLastPath(THIS_PC);
+    watchFolder(THIS_PC);
     return;
   }
-  fx.loading = true;
-  dirty();
-  window.wintWork?.beginWork("explorer-list", `Reading ${path}`);
+  if (!quiet) {
+    fx.loading = true;
+    watchFolder(THIS_PC);
+    dirty();
+    window.wintWork?.beginWork("explorer-list", `Reading ${path}`);
+  }
+  let unchanged = false;
   try {
-    const listing = await invoke("explorer_list", { path, dirsOnly: false });
+    const listing = await invoke("explorer_list", { path, dirsOnly: false, includeCreated: fx.createdColumn });
     if (token !== listToken) return;
+    if (quiet && sameListing(fx.listing, listing)) { unchanged = true; return; }
     fx.listing = listing;
+    const present = new Set(listing.entries.map((entry) => entry.path.toLowerCase()));
+    fx.selectedPaths = new Set(selection().filter((selected) => present.has(selected.toLowerCase())));
+    if (fx.selected && !present.has(fx.selected.toLowerCase())) fx.selected = selection()[0] || "";
     fx.tree.set(listing.path, { entries: listing.entries.filter((entry) => entry.isDir), error: "", loading: false });
     fx.path = listing.path;
+    watchFolder(listing.path);
     rememberLastPath(listing.path);
   } catch (error) {
     if (token !== listToken) return;
+    if (quiet) { unchanged = true; return; }
     fx.listing = null;
     fx.error = String(error);
   } finally {
     if (token === listToken) {
+      if (unchanged) return;
       fx.loading = false;
-      window.wintWork?.endWork("explorer-list");
+      if (!quiet) window.wintWork?.endWork("explorer-list");
       revealInTree(fx.path);
       dirty();
       saveTransfer();
@@ -275,7 +316,7 @@ async function loadBranch(path) {
   fx.tree.set(path, { entries: known?.entries || [], error: "", loading: true });
   dirty();
   try {
-    const listing = await invoke("explorer_list", { path, dirsOnly: true });
+    const listing = await invoke("explorer_list", { path, dirsOnly: true, includeCreated: false });
     fx.tree.set(path, { entries: listing.entries, error: "", loading: false });
   } catch (error) {
     fx.tree.set(path, { entries: [], error: String(error), loading: false });
@@ -308,14 +349,14 @@ function goUp() {
   openFolder(fx.listing?.parent ?? THIS_PC, { focusPath: child });
 }
 
-function refresh() {
+function refresh({ quiet = false } = {}) {
   if (fx.path === THIS_PC) {
     fx.roots = [];
     loadRoots();
     return;
   }
   fx.tree.delete(fx.path);
-  openFolder(fx.path, { push: false, keepFilter: true });
+  openFolder(fx.path, { push: false, keepFilter: true, quiet });
 }
 
 // -------------------------------------------------------------- filtering
@@ -355,6 +396,7 @@ function visible() {
     if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
     if (fx.sort === "size") return direction * (a.bytes - b.bytes) || byName(a, b);
     if (fx.sort === "modified") return direction * (a.modified - b.modified) || byName(a, b);
+    if (fx.sort === "created") return direction * (a.created - b.created) || byName(a, b);
     if (fx.sort === "type") return direction * (a.ext || "").localeCompare(b.ext || "") || byName(a, b);
     return direction * byName(a, b);
   });
@@ -403,7 +445,7 @@ function applyLayout() {
 
 function rememberLayout() {
   invoke("explorer_layout_set", {
-    layout: { sideWidth: fx.sideWidth, previewWidth: fx.previewWidth },
+    layout: { sideWidth: fx.sideWidth, previewWidth: fx.previewWidth, columnWidths: fx.columnWidths, createdColumn: fx.createdColumn },
   }).catch(() => {});
 }
 
@@ -412,6 +454,8 @@ async function loadLayout() {
     const layout = await invoke("explorer_layout");
     if (layout?.sideWidth) fx.sideWidth = clampSide(layout.sideWidth);
     if (layout?.previewWidth) fx.previewWidth = clampPreview(layout.previewWidth);
+    if (layout?.columnWidths) fx.columnWidths = { ...fx.columnWidths, ...layout.columnWidths };
+    fx.createdColumn = !!layout?.createdColumn;
   } catch (_) { /* Defaults already sit on fx. */ }
   applyLayout();
 }
@@ -448,8 +492,12 @@ async function loadThumbs() {
   if (!fx.thumbsOn || fx.path === THIS_PC) return;
   const token = ++thumbToken;
   if (fx.thumbs.size > 600) fx.thumbs.clear();
+  const painted = new Set([...fx.host?.querySelectorAll(".fx-row[data-fx-item]") || []].map((row) => row.dataset.fxItem));
   const wanted = (fx.listing?.entries || [])
-    .filter((entry) => !entry.isDir && PREVIEW_KINDS.has(kindOf(entry)) && !fx.thumbs.has(entry.path));
+    .filter((entry) => !entry.isDir && PREVIEW_KINDS.has(kindOf(entry)) && !fx.thumbs.has(entry.path))
+    // What is on screen is useful now. Everything else continues behind it so
+    // a later scroll normally finds its pictures waiting in the cache.
+    .sort((a, b) => Number(painted.has(b.path)) - Number(painted.has(a.path)));
   if (!wanted.length) return;
   window.wintWork?.beginWork("explorer-thumbs", "Reading previews", `0 / ${wanted.length}`);
   let done = 0;
@@ -562,7 +610,14 @@ function changed(dirs) {
 
 function startRename(path) {
   if (!writable(path) || !(fx.listing?.entries || []).some((entry) => same(entry.path, path))) return;
-  fx.rename = { path, draft: nameOf(path), fresh: true };
+  const targets = selection().filter(writable);
+  const batch = targets.length > 1 && targets.some((item) => same(item, path))
+    ? [path, ...targets.filter((item) => !same(item, path))]
+    : [path];
+  const entry = (fx.listing?.entries || []).find((item) => same(item.path, path));
+  const original = nameOf(path);
+  const dot = entry && !entry.isDir ? original.lastIndexOf(".") : -1;
+  fx.rename = { path, paths: batch, draft: batch.length > 1 && dot > 0 ? original.slice(0, dot) : original, fresh: true };
   dirty();
 }
 
@@ -571,16 +626,21 @@ async function commitRename() {
   if (!rename) return;
   fx.rename = null;
   const draft = rename.draft.trim();
-  if (!draft || draft === nameOf(rename.path)) return void dirty();
-  window.wintWork?.beginWork("explorer-rename", `Renaming ${nameOf(rename.path)}`);
+  if (!draft || (rename.paths.length === 1 && draft === nameOf(rename.path))) return void dirty();
+  const batch = rename.paths.length > 1;
+  window.wintWork?.beginWork("explorer-rename", batch ? `Renaming ${rename.paths.length} items` : `Renaming ${nameOf(rename.path)}`);
   try {
-    const renamed = await invoke("explorer_rename", { path: rename.path, newName: draft });
+    const renamedPaths = batch
+      ? await invoke("explorer_rename_many", { paths: rename.paths, base: draft })
+      : [await invoke("explorer_rename", { path: rename.path, newName: draft })];
+    const renamed = renamedPaths[0];
     const marked = fx.bookmarks.findIndex((mark) => same(mark, rename.path));
     if (marked >= 0) setBookmarks(fx.bookmarks.map((mark, index) => (index === marked ? renamed : mark)));
-    if (same(fx.selected, rename.path)) fx.selected = renamed;
-    fx.thumbs.delete(rename.path);
+    fx.selectedPaths = new Set(renamedPaths);
+    fx.selected = renamed;
+    for (const path of rename.paths) fx.thumbs.delete(path);
     fx.pendingFocus = renamed;
-    announce([parentOf(rename.path)]);
+    announce([...new Set(rename.paths.map(parentOf))]);
   } catch (error) {
     note(String(error));
     dirty();
@@ -697,11 +757,12 @@ async function maybeDrag(event) {
   if (!(event.buttons & 1)) { dragFrom = null; return; }
   if (Math.hypot(event.clientX - dragFrom.x, event.clientY - dragFrom.y) < 6) return;
   const { path } = dragFrom;
+  const paths = selection().some((item) => same(item, path)) ? selection() : [path];
   dragFrom = null;
   try {
     // Explorer often moves without saying so, so the folder is always re-read.
-    await invoke("explorer_drag_out", { paths: [path] });
-    announce([parentOf(path)]);
+    await invoke("explorer_drag_out", { paths });
+    announce(paths.map(parentOf));
   } catch (error) {
     note(String(error));
   } finally {
@@ -712,9 +773,27 @@ async function maybeDrag(event) {
 /** Selecting a file is what fills the preview pane. Folders are never
  *  selected: clicking one opens it, and a pane showing the folder you just
  *  left would be describing somewhere you are no longer standing. */
-function select(path) {
-  if (fx.selected === path) return;
-  fx.selected = path;
+function selection() { return [...fx.selectedPaths]; }
+
+function select(path, { add = false, range = false } = {}) {
+  const shown = visible().shown;
+  if (range && fx.selectionAnchor) {
+    const from = shown.findIndex((entry) => same(entry.path, fx.selectionAnchor));
+    const to = shown.findIndex((entry) => same(entry.path, path));
+    if (from >= 0 && to >= 0) {
+      if (!add) fx.selectedPaths.clear();
+      for (const entry of shown.slice(Math.min(from, to), Math.max(from, to) + 1)) fx.selectedPaths.add(entry.path);
+    }
+  } else if (add) {
+    const existing = selection().find((item) => same(item, path));
+    if (existing) fx.selectedPaths.delete(existing);
+    else fx.selectedPaths.add(path);
+    fx.selectionAnchor = path;
+  } else {
+    fx.selectedPaths = new Set([path]);
+    fx.selectionAnchor = path;
+  }
+  fx.selected = selection().find((item) => same(item, path)) || selection().slice(-1)[0] || "";
   fx.previewUrl = "";
   // Selection and preview update in place. A full render would rebuild the
   // list and jump the scroll back to the top - painful in a long zip.
@@ -725,6 +804,20 @@ function select(path) {
     paintPreview();
     loadPreview();
   }
+}
+
+function focusRowAt(index, { range = false, keep = false } = {}) {
+  const shown = visible().shown;
+  if (!shown.length) return;
+  const target = shown[Math.max(0, Math.min(shown.length - 1, index))];
+  select(target.path, { add: keep, range });
+  const rows = fx.host?.querySelector(".fx-rows");
+  if (!rows) return;
+  const rowHeight = fx.thumbsOn ? THUMB_ROW_PX : ROW_PX;
+  const top = shown.indexOf(target) * rowHeight;
+  if (top < rows.scrollTop) rows.scrollTop = top;
+  else if (top + rowHeight > rows.scrollTop + rows.clientHeight) rows.scrollTop = top + rowHeight - rows.clientHeight;
+  requestAnimationFrame(() => fx.host?.querySelector(`[data-fx-item="${CSS.escape(target.path)}"]`)?.focus());
 }
 
 let previewToken = 0;
@@ -749,7 +842,8 @@ async function loadPreview() {
 function paintSelection() {
   if (!fx.host) return;
   for (const row of fx.host.querySelectorAll(".fx-row[data-fx-item]")) {
-    row.classList.toggle("picked", same(row.dataset.fxItem, fx.selected));
+    row.classList.toggle("picked", selection().some((path) => same(row.dataset.fxItem, path)));
+    row.setAttribute("aria-selected", String(selection().some((path) => same(row.dataset.fxItem, path))));
   }
 }
 
@@ -763,6 +857,8 @@ function applyPendingFocus() {
   fx.pendingFocus = "";
   if (!row) return;
   fx.selected = path;
+  fx.selectedPaths = new Set([path]);
+  fx.selectionAnchor = path;
   paintSelection();
   row.scrollIntoView({ block: "nearest" });
 }
@@ -940,7 +1036,7 @@ function renderTypes(counts) {
 
 function driveRows() {
   if (fx.loadingRoots && !fx.roots.length) {
-    return Array.from({ length: 3 }, (_, index) => `<div class="fx-row skeleton" style="--i:${index}"><span class="fx-cell name"><i></i></span><span class="fx-cell type"><i></i></span><span class="fx-cell size"><i></i></span><span class="fx-cell modified"><i></i></span></div>`).join("");
+    return Array.from({ length: 3 }, (_, index) => `<div class="fx-row skeleton" style="--i:${index}"><span class="fx-cell name"><i></i></span><span class="fx-cell type"><i></i></span><span class="fx-cell size"><i></i></span><span class="fx-cell modified"><i></i></span>${fx.createdColumn ? '<span class="fx-cell created"><i></i></span>' : ""}</div>`).join("");
   }
   if (!fx.roots.length) {
     return `<div class="fx-empty">${icon("hard_drive")}<strong>${esc(fx.rootsError || "No drives were found.")}</strong><button class="btn" type="button" data-fx-refresh>${icon("refresh")}Look again</button></div>`;
@@ -954,14 +1050,15 @@ function driveRows() {
       <span class="fx-cell type">Local disk</span>
       <span class="fx-cell size">${bytes(root.totalBytes)}</span>
       <span class="fx-cell modified">${bytes(root.freeBytes)} free</span>
+      ${fx.createdColumn ? '<span class="fx-cell created"></span>' : ""}
     </div>`;
   }).join("");
 }
 
-function renderRows(shown) {
+function renderRows(shown, scrollTop = 0, viewport = 700) {
   if (fx.path === THIS_PC) return driveRows();
   if (fx.loading) {
-    return Array.from({ length: 10 }, (_, index) => `<div class="fx-row skeleton" style="--i:${index}"><span class="fx-cell name"><i></i></span><span class="fx-cell type"><i></i></span><span class="fx-cell size"><i></i></span><span class="fx-cell modified"><i></i></span></div>`).join("");
+    return Array.from({ length: 10 }, (_, index) => `<div class="fx-row skeleton" style="--i:${index}"><span class="fx-cell name"><i></i></span><span class="fx-cell type"><i></i></span><span class="fx-cell size"><i></i></span><span class="fx-cell modified"><i></i></span>${fx.createdColumn ? '<span class="fx-cell created"><i></i></span>' : ""}</div>`).join("");
   }
   if (fx.error) {
     return `<div class="fx-empty">${icon("lock")}<strong>${esc(fx.error)}</strong><p>Pick another folder on the left, or hand this one to Windows Explorer.</p><button class="btn" type="button" data-fx-reveal="${esc(revealPath(fx.path))}">${icon("folder_open")}Open in Windows Explorer</button></div>`;
@@ -973,7 +1070,14 @@ function renderRows(shown) {
     const filtered = fx.filter || fx.kinds.size || fx.exts.size;
     return `<div class="fx-empty">${icon(filtered ? "filter_alt_off" : "folder_open")}<strong>${filtered ? "Nothing here matches the filter" : "This folder is empty"}</strong>${filtered ? `<button class="btn" type="button" data-fx-clear>${icon("close")}Clear the filter</button>` : ""}</div>`;
   }
-  return shown.map((entry) => {
+  const rowHeight = fx.thumbsOn ? THUMB_ROW_PX : ROW_PX;
+  const virtual = shown.length > VIRTUAL_AFTER;
+  const count = virtual ? Math.ceil(viewport / rowHeight) + VIRTUAL_OVERSCAN * 2 : shown.length;
+  const start = virtual
+    ? Math.min(Math.max(0, Math.floor(scrollTop / rowHeight) - VIRTUAL_OVERSCAN), Math.max(0, shown.length - count))
+    : 0;
+  const end = Math.min(shown.length, start + count);
+  const rows = shown.slice(start, end).map((entry, offset) => {
     const kind = kindOf(entry);
     const thumb = fx.thumbs.get(entry.path);
     const slot = fx.thumbsOn && !entry.isDir && PREVIEW_KINDS.has(kind)
@@ -984,19 +1088,34 @@ function renderRows(shown) {
     const name = renaming
       ? `<input class="fx-rename" type="text" spellcheck="false" aria-label="New name for ${esc(entry.name)}">`
       : `<strong>${esc(entry.name)}</strong>`;
-    return `<div class="fx-row${entry.isDir ? " dir" : ""}${entry.hidden || fx.cut.some((path) => same(path, entry.path)) ? " dim" : ""}${same(fx.selected, entry.path) ? " picked" : ""}${canDelete ? " has-del" : ""}" tabindex="0" role="row" data-fx-item="${esc(entry.path)}" data-fx-dir="${entry.isDir}" title="${esc(entry.path)}">
+    const picked = selection().some((path) => same(path, entry.path));
+    return `<div class="fx-row${entry.isDir ? " dir" : ""}${entry.hidden || fx.cut.some((path) => same(path, entry.path)) ? " dim" : ""}${picked ? " picked" : ""}${canDelete ? " has-del" : ""}" tabindex="${same(fx.selected, entry.path) ? "0" : "-1"}" role="row" aria-selected="${picked}" data-fx-index="${start + offset}" data-fx-item="${esc(entry.path)}" data-fx-dir="${entry.isDir}" title="${esc(entry.path)}">
     <span class="fx-cell name">${slot}${name}</span>
     <span class="fx-cell type">${esc(typeLabel(entry))}</span>
     <span class="fx-cell size">${entry.isDir && !entry.isArchive ? "" : bytes(entry.bytes)}</span>
     <span class="fx-cell modified">${esc(when(entry.modified))}</span>
+    ${fx.createdColumn ? `<span class="fx-cell created">${esc(when(entry.created))}</span>` : ""}
     ${canDelete ? `<button class="fx-row-del" type="button" data-fx-delete="${esc(entry.path)}" title="Delete ${esc(entry.name)}" aria-label="Delete ${esc(entry.name)}">${icon("delete")}</button>` : ""}
   </div>`;
   }).join("");
+  if (!virtual) return rows;
+  return `<div class="fx-virtual-space" style="height:${start * rowHeight}px"></div>${rows}<div class="fx-virtual-space" style="height:${(shown.length - end) * rowHeight}px"></div>`;
 }
 
 /** True while a paint replaces the DOM, so the rename box being swapped out
  *  is not mistaken for the user clicking away from it. */
 let painting = false;
+let virtualFrame = 0;
+
+function paintVirtualRows(rows) {
+  if (!rows || fx.path === THIS_PC || fx.loading || fx.rename || visible().shown.length <= VIRTUAL_AFTER) return;
+  cancelAnimationFrame(virtualFrame);
+  virtualFrame = requestAnimationFrame(() => {
+    rows.innerHTML = renderRows(visible().shown, rows.scrollTop, rows.clientHeight);
+    paintSelection();
+    loadThumbs();
+  });
+}
 
 function render() {
   if (!fx.host) return;
@@ -1007,14 +1126,13 @@ function render() {
   const renameSel = liveRename === document.activeElement ? [liveRename.selectionStart, liveRename.selectionEnd] : null;
   painting = true;
   // Keep the list and tree where the user left them across a rebuild.
-  const rowsScroll = fx.host.querySelector(".fx-rows")?.scrollTop ?? 0;
+  const oldRows = fx.host.querySelector(".fx-rows");
+  const rowsScroll = oldRows?.scrollTop ?? 0;
+  const rowsViewport = oldRows?.clientHeight || 700;
   const treeScroll = fx.host.querySelector(".fx-tree")?.scrollTop ?? 0;
   const marksScroll = fx.host.querySelector(".fx-marks")?.scrollTop ?? 0;
   const { named, shown, total } = visible();
   const counts = facets(named);
-  const crumbs = [{ name: "This PC", path: THIS_PC_KEY }, ...segments(fx.path)]
-    .map((crumb) => `<button class="fx-crumb${crumb.path === THIS_PC_KEY && fx.path === THIS_PC ? " on" : ""}" type="button" data-fx-open="${esc(crumb.path)}">${esc(crumb.name)}</button>`)
-    .join(`<span class="fx-crumb-sep">${icon("chevron_right")}</span>`);
   const filtering = fx.filter || fx.kinds.size || fx.exts.size;
   fx.host.innerHTML = `<header class="tool-head"><button class="btn back tool-back" type="button" data-open-tool="overview">${icon("arrow_back")}Back</button><span class="tool-plate">${icon("folder_open")}</span><span class="tool-title"><strong>Files</strong><small>browse a folder and filter it by type in one click</small></span><button class="tool-popout" type="button" data-popout-tool="explorer"></button><button class="tool-pin" type="button" data-pin-tool="explorer"></button><button class="tool-close" type="button" data-open-tool="overview">${icon("close")}</button></header>
   <div class="fx-body${fx.previewPane ? " with-preview" : ""}">
@@ -1030,7 +1148,7 @@ function render() {
         <button class="fx-nav" type="button" data-fx-up title="Up one folder" aria-label="Up one folder" ${fx.path === THIS_PC ? "disabled" : ""}>${icon("arrow_upward")}</button>
         <button class="fx-nav" type="button" data-fx-refresh title="${fx.path === THIS_PC ? "Read the drives again" : "Read this folder again"}" aria-label="Refresh">${icon("refresh")}</button>
         <button class="fx-nav" type="button" data-fx-new-window title="Open this folder in a new window" aria-label="New window">${icon("tab_duplicate")}</button>
-        <nav class="fx-crumbs" aria-label="Path">${crumbs || `<span class="fx-crumb-none">No folder open</span>`}</nav>
+        <label class="fx-address" title="Type or paste a folder path">${icon("folder")}<input type="text" value="${esc(fx.path)}" placeholder="This PC" aria-label="Folder path" spellcheck="false"></label>
         <label class="fx-search">${icon("search")}<input type="text" placeholder="Filter by name" aria-label="Filter by name"></label>
         <button class="fx-nav${fx.thumbsOn ? " on" : ""}" type="button" data-fx-thumbs aria-pressed="${fx.thumbsOn}" title="${fx.thumbsOn ? "Back to plain rows" : "Show a picture on every image row"}" aria-label="Thumbnails">${icon("photo_library")}</button>
         <button class="fx-nav${fx.previewPane ? " on" : ""}" type="button" data-fx-preview aria-pressed="${fx.previewPane}" title="${fx.previewPane ? "Close the preview panel" : "Open a preview panel beside the list"}" aria-label="Preview panel">${icon("preview")}</button>
@@ -1041,15 +1159,15 @@ function render() {
         ${filtering ? `<button class="fx-chip clear" type="button" data-fx-clear>${icon("close")}Clear</button>` : ""}
       </div>`}
       ${fx.typesOpen && fx.path !== THIS_PC ? renderTypes(counts) : ""}
-      <div class="fx-list${fx.thumbsOn ? " preview" : ""}">
-        <div class="fx-row head${fx.path === THIS_PC ? " static" : ""}">${COLUMNS.map((column) => `<button class="fx-cell ${column.id} sort${fx.sort === column.id ? " on" : ""}" type="button" data-fx-sort="${column.id}">${column.label}${fx.sort === column.id ? icon(fx.desc ? "arrow_downward" : "arrow_upward") : ""}</button>`).join("")}</div>
-        <div class="fx-rows">${renderRows(shown)}</div>
+      <div class="fx-list${fx.thumbsOn ? " preview" : ""}" style="--fx-columns:${columnTemplate()}">
+        <div class="fx-row head${fx.path === THIS_PC ? " static" : ""}">${visibleColumns().map((column) => `<button class="fx-cell ${column.id} sort${fx.sort === column.id ? " on" : ""}" type="button" data-fx-sort="${column.id}">${column.label}${fx.sort === column.id ? icon(fx.desc ? "arrow_downward" : "arrow_upward") : ""}<i class="fx-col-grip" data-fx-column-resize="${column.id}" aria-hidden="true"></i></button>`).join("")}</div>
+        <div class="fx-rows" role="grid" aria-multiselectable="true">${renderRows(shown, rowsScroll, rowsViewport)}</div>
       </div>
       <footer class="fx-foot">
         <span>${fx.path === THIS_PC
           ? `${fx.roots.length} drive${fx.roots.length === 1 ? "" : "s"}`
           : fx.loading ? `${icon("progress_activity")}Reading this folder…`
-          : `${shown.length}${shown.length === total ? "" : ` of ${total}`} item${shown.length === 1 ? "" : "s"}`}</span>
+          : `${shown.length}${shown.length === total ? "" : ` of ${total}`} item${shown.length === 1 ? "" : "s"}${selection().length > 1 ? ` · ${selection().length} selected` : ""}`}</span>
         ${fx.listing?.skipped ? `<span title="Windows would not report these">${icon("warning")}${fx.listing.skipped} could not be read</span>` : ""}
         <span class="fx-foot-hint">${icon("mouse")}${isInsideZip(fx.path) ? "Inside a zip · read-only" : "Double-click to open · right-click for more"}</span>
       </footer>
@@ -1179,9 +1297,33 @@ async function openInNewWindow(folderPath) {
 
 function closeContext() { document.querySelector(".fx-context")?.remove(); }
 
+function openColumnMenu(event) {
+  event.preventDefault();
+  closeContext();
+  const menu = document.createElement("div");
+  menu.className = "fx-context fx-column-menu";
+  menu.style.left = `${event.clientX}px`;
+  menu.style.top = `${event.clientY}px`;
+  menu.innerHTML = `<button type="button" data-fx-created>${icon(fx.createdColumn ? "check_box" : "check_box_outline_blank")}Date created</button>`;
+  menu.addEventListener("click", () => {
+    fx.createdColumn = !fx.createdColumn;
+    if (!fx.createdColumn && fx.sort === "created") { fx.sort = "name"; fx.desc = false; }
+    rememberLayout();
+    menu.remove();
+    if (fx.path === THIS_PC) dirty();
+    else openFolder(fx.path, { push: false, keepFilter: true });
+  });
+  document.body.appendChild(menu);
+  const box = menu.getBoundingClientRect();
+  if (box.bottom > innerHeight) menu.style.top = `${Math.max(4, innerHeight - box.height - 4)}px`;
+  if (box.right > innerWidth) menu.style.left = `${Math.max(4, innerWidth - box.width - 4)}px`;
+  setTimeout(() => document.addEventListener("click", closeContext, { once: true }), 0);
+}
+
 function mount(host) {
   fx.host = host;
   host.addEventListener("click", (event) => {
+    if (event.target.closest("[data-fx-column-resize]")) return;
     if (event.target.closest(".fx-rename")) return;
     const pop = event.target.closest("[data-popout-tool]");
     const pin = event.target.closest("[data-pin-tool]");
@@ -1226,11 +1368,19 @@ function mount(host) {
     const row = event.target.closest("[data-fx-item]");
     // The release that ends a drag is not a click on the row it started on.
     if (row && Date.now() - dragJustEnded > 400) {
-      if (row.dataset.fxDir === "true") openFolder(row.dataset.fxItem);
+      if (event.ctrlKey || event.shiftKey) select(row.dataset.fxItem, { add: event.ctrlKey, range: event.shiftKey });
+      else if (row.dataset.fxDir === "true") openFolder(row.dataset.fxItem);
       else select(row.dataset.fxItem);
     }
   });
   host.addEventListener("dblclick", (event) => {
+    const column = event.target.closest("[data-fx-column-resize]")?.dataset.fxColumnResize;
+    if (column) {
+      event.preventDefault(); event.stopPropagation();
+      fx.columnWidths[column] = { name: 320, type: 130, size: 92, modified: 148, created: 148 }[column];
+      rememberLayout(); dirty();
+      return;
+    }
     if (event.target.closest("[data-fx-delete], .fx-rename")) return;
     const row = event.target.closest("[data-fx-item]");
     if (row) activate(row.dataset.fxItem, row.dataset.fxDir === "true");
@@ -1241,36 +1391,82 @@ function mount(host) {
       else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); fx.rename = null; dirty(); }
       return;
     }
+    if (event.target.closest(".fx-address")) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        const path = event.target.value.trim();
+        openFolder(path || THIS_PC);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        event.target.value = fx.path;
+        event.target.blur();
+      }
+      return;
+    }
     const row = event.target.closest("[data-fx-item]");
     const typingText = !!event.target.closest("input, textarea");
     const key = event.key.toLowerCase();
     const current = row?.dataset.fxItem || fx.selected;
+    const targets = selection().length && selection().some((path) => same(path, current)) ? selection() : (current ? [current] : []);
     if (event.key === "F2" && current) {
       event.preventDefault();
       return startRename(current);
     }
+    if (event.ctrlKey && !event.altKey && key === "l") {
+      event.preventDefault();
+      const address = fx.host.querySelector(".fx-address input");
+      address?.focus(); address?.select();
+      return;
+    }
     if (event.ctrlKey && !event.altKey && !typingText) {
       if ((key === "c" || key === "x") && current && !event.shiftKey) {
         event.preventDefault();
-        return void toClipboard([current], key === "x");
+        return void toClipboard(targets, key === "x");
       }
       if (key === "v" && !event.shiftKey) {
         event.preventDefault();
         return void paste();
+      }
+      if (key === "a" && !event.shiftKey) {
+        event.preventDefault();
+        const shown = visible().shown;
+        fx.selectedPaths = new Set(shown.map((entry) => entry.path));
+        fx.selected = shown[0]?.path || "";
+        fx.selectionAnchor = fx.selected;
+        paintSelection();
+        return;
       }
       if (key === "n" && event.shiftKey) {
         event.preventDefault();
         return void newFolder();
       }
     }
-    if (row && (event.key === "Enter" || event.key === " ")) {
+    if (row && event.key === "Enter") {
       event.preventDefault();
       activate(row.dataset.fxItem, row.dataset.fxDir === "true");
       return;
     }
+    if (row && event.key === " ") {
+      event.preventDefault();
+      select(row.dataset.fxItem, { add: event.ctrlKey, range: event.shiftKey });
+      return;
+    }
+    if (row && ["ArrowDown", "ArrowUp", "Home", "End", "PageDown", "PageUp"].includes(event.key)) {
+      event.preventDefault();
+      const shown = visible().shown;
+      const at = shown.findIndex((entry) => same(entry.path, current));
+      const page = Math.max(1, Math.floor((fx.host.querySelector(".fx-rows")?.clientHeight || 300) / (fx.thumbsOn ? THUMB_ROW_PX : ROW_PX)));
+      const next = event.key === "Home" ? 0
+        : event.key === "End" ? shown.length - 1
+        : event.key === "PageDown" ? at + page
+        : event.key === "PageUp" ? at - page
+        : event.key === "ArrowDown" ? at + 1 : at - 1;
+      focusRowAt(next, { range: event.shiftKey, keep: event.ctrlKey });
+      return;
+    }
     if (row && event.key === "Delete") {
       event.preventDefault();
-      askDelete([row.dataset.fxItem]);
+      askDelete(targets);
       return;
     }
     if (event.key === "Escape" && event.target.closest(".fx-search") && fx.filter) {
@@ -1284,6 +1480,9 @@ function mount(host) {
     fx.filter = event.target.value;
     dirty();
   });
+  host.addEventListener("scroll", (event) => {
+    if (event.target.classList?.contains("fx-rows")) paintVirtualRows(event.target);
+  }, true);
   // Clicking away from the rename box keeps the new name, as in Explorer.
   host.addEventListener("focusout", (event) => {
     if (!painting && event.target.closest(".fx-rename")) commitRename();
@@ -1294,6 +1493,26 @@ function mount(host) {
   // Drag the splitters. Widths are applied as CSS variables so the list can
   // reflow without a full re-render fighting the pointer.
   host.addEventListener("pointerdown", (event) => {
+    const column = event.target.closest("[data-fx-column-resize]")?.dataset.fxColumnResize;
+    if (column && event.button === 0) {
+      event.preventDefault(); event.stopPropagation();
+      const startX = event.clientX;
+      const startWidth = fx.host.querySelector(`.fx-row.head .fx-cell.${column}`)?.getBoundingClientRect().width || fx.columnWidths[column];
+      const onMove = (move) => {
+        fx.columnWidths[column] = Math.max(64, Math.min(800, Math.round(startWidth + move.clientX - startX)));
+        fx.host.querySelector(".fx-list")?.style.setProperty("--fx-columns", columnTemplate());
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        rememberLayout();
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+      return;
+    }
     const grip = event.target.closest("[data-fx-split]");
     if (!grip || event.button !== 0) return;
     const body = host.querySelector(".fx-body");
@@ -1353,6 +1572,7 @@ function mount(host) {
     });
   }
   host.addEventListener("contextmenu", (event) => {
+    if (event.target.closest(".fx-row.head")) return openColumnMenu(event);
     const target = event.target.closest("[data-fx-item], [data-fx-open]");
     const blank = !target && !!event.target.closest(".fx-rows") && writable(fx.path) && !isZipRoot(fx.path);
     if (!target && !blank) return;
@@ -1362,6 +1582,8 @@ function mount(host) {
     const isDir = !target || target.dataset.fxDir !== "false";
     const nested = isInsideZip(path);
     const inList = !!target?.dataset.fxItem && writable(path);
+    if (inList && !selection().some((item) => same(item, path))) select(path);
+    const contextPaths = inList ? selection() : [path];
     const marked = fx.bookmarks.some((mark) => same(mark, path));
     closeContext();
     const menu = document.createElement("div");
@@ -1408,13 +1630,13 @@ function mount(host) {
         invoke("open_in", { path: isInsideZip(shellAt) ? revealPath(shellAt) : shellAt, target: "terminal" }).catch(() => {});
       }
       else if (action === "copy") navigator.clipboard?.writeText(path).catch(() => {});
-      else if (action === "cut" || action === "copy-item") void toClipboard([path], action === "cut");
+      else if (action === "cut" || action === "copy-item") void toClipboard(contextPaths, action === "cut");
       else if (action === "paste") void paste(path);
       else if (action === "rename") startRename(path);
       else if (action === "new-folder") void newFolder();
       else if (action === "refresh") refresh();
       else if (action === "bookmark") toggleBookmark(path);
-      else if (action === "delete") askDelete([path]);
+      else if (action === "delete") askDelete(contextPaths);
     });
     document.body.appendChild(menu);
     // Keep the menu on screen near the bottom and right edges.
@@ -1425,6 +1647,12 @@ function mount(host) {
   });
   listenForDrops();
   window.__TAURI__.event?.listen?.("explorer-changed", ({ payload }) => changed(payload?.dirs || []))?.catch?.(() => {});
+  window.__TAURI__.event?.listen?.("explorer-external-change", ({ payload }) => {
+    if (!same(payload, fx.path)) return;
+    clearTimeout(externalChangeTimer);
+    externalChangeTimer = setTimeout(() => refresh({ quiet: true }), 750);
+  })?.catch?.(() => {});
+  window.addEventListener("beforeunload", () => watchFolder(THIS_PC), { once: true });
   render();
 }
 
@@ -1434,8 +1662,8 @@ async function opened() {
   // the bookmarks fill in beside it rather than holding it up.
   const drives = loadRoots();
   loadBookmarks();
-  loadLayout();
-  await drives;
+  const layout = loadLayout();
+  await Promise.all([drives, layout]);
   // A folder listed before the tool was handed to another window is stale by
   // definition - files move while a window is closed - so re-read it.
   if (fx.path !== THIS_PC && !fx.loading) openFolder(fx.path, { push: false, keepFilter: true });

@@ -4,6 +4,8 @@ mod appbar;
 #[cfg(windows)]
 mod focus_mode;
 #[cfg(windows)]
+mod media_control;
+#[cfg(windows)]
 pub mod indicators;
 mod autostart;
 pub mod analytics;
@@ -1844,10 +1846,41 @@ async fn explorer_roots() -> Vec<explorer::Root> {
 }
 
 #[tauri::command]
-async fn explorer_list(path: String, dirs_only: bool) -> Result<explorer::Listing, String> {
-    off_thread(move || explorer::list(path, dirs_only))
+async fn explorer_list(path: String, dirs_only: bool, include_created: Option<bool>) -> Result<explorer::Listing, String> {
+    off_thread(move || explorer::list(path, dirs_only, include_created.unwrap_or(false)))
         .await
         .unwrap_or_else(|| Err("The folder listing did not finish.".into()))
+}
+
+#[tauri::command]
+async fn explorer_watch(window: tauri::Window, path: String) -> Result<(), String> {
+    use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static WATCHERS: OnceLock<Mutex<HashMap<String, RecommendedWatcher>>> = OnceLock::new();
+    let label = window.label().to_string();
+    let watchers = WATCHERS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut held = watchers.lock().map_err(|_| "The folder watcher is unavailable.".to_string())?;
+    held.remove(&label);
+    if path.is_empty() || !std::path::Path::new(&path).is_dir() {
+        return Ok(());
+    }
+    let watched_path = path.clone();
+    let event_window = window.clone();
+    let last_notice = std::sync::Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
+    let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+        if result.is_ok() {
+            let Ok(mut last) = last_notice.lock() else { return; };
+            let now = std::time::Instant::now();
+            if last.is_some_and(|previous| now.duration_since(previous).as_millis() < 100) { return; }
+            *last = Some(now);
+            let _ = event_window.emit("explorer-external-change", &watched_path);
+        }
+    }).map_err(|error| error.to_string())?;
+    watcher.watch(std::path::Path::new(&path), RecursiveMode::NonRecursive)
+        .map_err(|error| format!("That folder cannot be watched. {error}"))?;
+    held.insert(label, watcher);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1892,6 +1925,8 @@ async fn explorer_layout(app: AppHandle) -> explorer::Layout {
         return explorer::Layout {
             side_width: 268,
             preview_width: 320,
+            column_widths: Default::default(),
+            created_column: false,
         };
     };
     off_thread(move || explorer::layout(&dir))
@@ -1899,6 +1934,8 @@ async fn explorer_layout(app: AppHandle) -> explorer::Layout {
         .unwrap_or(explorer::Layout {
             side_width: 268,
             preview_width: 320,
+            column_widths: Default::default(),
+            created_column: false,
         })
 }
 
@@ -1936,6 +1973,13 @@ async fn explorer_rename(path: String, new_name: String) -> Result<String, Strin
     off_thread(move || explorer::rename(path, new_name))
         .await
         .unwrap_or_else(|| Err("The rename did not finish.".into()))
+}
+
+#[tauri::command]
+async fn explorer_rename_many(paths: Vec<String>, base: String) -> Result<Vec<String>, String> {
+    off_thread(move || explorer::rename_many(paths, base))
+        .await
+        .unwrap_or_else(|| Err("The batch rename did not finish.".into()))
 }
 
 #[tauri::command]
@@ -2911,6 +2955,7 @@ pub fn run() {
             app_build_checksum,
             explorer_roots,
             explorer_list,
+            explorer_watch,
             explorer_bookmarks,
             explorer_bookmarks_set,
             explorer_last_path,
@@ -2921,6 +2966,7 @@ pub fn run() {
             explorer_delete,
             explorer_materialize,
             explorer_rename,
+            explorer_rename_many,
             explorer_new_folder,
             explorer_transfer,
             explorer_drag_out,
@@ -3012,6 +3058,7 @@ pub fn run() {
             security_audit::audit_cancel,
             security_audit::audit_end,
             security_audit::audit_repair,
+            security_audit::audit_repo_preflight,
             workspace::workspace_browser_show,
             workspace::workspace_browser_hide,
             workspace::workspace_browser_navigate,
@@ -3055,6 +3102,7 @@ pub fn run() {
             focus_mode::focus_mode_show,
             appbar::sidebar_open,
             appbar::sidebar_configure,
+            appbar::sidebar_resize_preview,
             appbar::sidebar_close,
             appbar::sidebar_windows,
             appbar::sidebar_activate,
@@ -3082,6 +3130,8 @@ pub fn run() {
             appbar::sidebar_layouts,
             appbar::sidebar_set_layout,
             appbar::sidebar_open_settings,
+            media_control::media_state,
+            media_control::media_command,
             health_report,
             health_reveal,
             health_note,
@@ -3244,6 +3294,7 @@ pub fn run() {
         app_build_checksum,
         explorer_roots,
         explorer_list,
+        explorer_watch,
         explorer_bookmarks,
         explorer_bookmarks_set,
         explorer_last_path,
@@ -3254,6 +3305,7 @@ pub fn run() {
         explorer_delete,
         explorer_materialize,
         explorer_rename,
+        explorer_rename_many,
         explorer_new_folder,
         explorer_transfer,
         explorer_drag_out,
@@ -3385,6 +3437,7 @@ pub fn run() {
         ,security_audit::audit_cancel
         ,security_audit::audit_end
         ,security_audit::audit_repair
+        ,security_audit::audit_repo_preflight
         ,workspace::workspace_browser_show
         ,workspace::workspace_browser_hide
         ,workspace::workspace_browser_navigate

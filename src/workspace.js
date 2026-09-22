@@ -2127,10 +2127,10 @@
     },
     gemini: {
       id: "gemini",
-      label: "Gemini",
-      product: "Gemini",
+      label: "Antigravity",
+      product: "Antigravity CLI",
       icon: "auto_awesome",
-      placeholder: "Ask Gemini about this project…",
+      placeholder: "Ask Antigravity about this project…",
       statusCmd: "gemini_status",
       sendCmd: "gemini_send",
       cancelCmd: "gemini_cancel",
@@ -2139,14 +2139,7 @@
       sessionsCmd: "gemini_sessions",
       transcriptCmd: "gemini_transcript",
       mintSession: false,
-      models: [
-        { id: "auto", label: "Auto", note: "Recommended; route by task" },
-        { id: "pro", label: "Pro", note: "Complex reasoning" },
-        { id: "flash", label: "Flash", note: "Fast, balanced work" },
-        { id: "flash-lite", label: "Flash Lite", note: "Fastest for simple tasks" },
-      ],
-      defaultModel: "auto",
-      installHint: `WinT doesn't ship it and holds no key for it. You install Gemini CLI and sign in as
+      installHint: `WinT doesn't ship it and holds no key for it. You install Antigravity CLI and sign in as
            yourself; this panel gives it somewhere to talk.`,
     },
     qwen: {
@@ -4203,6 +4196,45 @@
     recordRaw(tab, "out", payload.line);
     let obj;
     try { obj = JSON.parse(payload.line); } catch { return; }
+
+    if (obj.event === "init" && obj.conversation_id) {
+      tab.session = obj.conversation_id;
+      return tagRaw(tab, "Antigravity session", true);
+    }
+    if (obj.event === "step_update") {
+      const step = obj.step_update || {};
+      if (step.conversation_id) tab.session = step.conversation_id;
+      if (step.step_type === "agent_response" && step.text_delta) {
+        if (!tab.streaming) { tab.streaming = { role: "gemini", text: "" }; tab.turns.push(tab.streaming); }
+        tab.streaming.text += step.text_delta;
+        return markAgentTabDirty(panel, tab);
+      }
+      if (step.step_type === "tool") {
+        const info = step.tool_info || {};
+        const name = info.parameters?.CommandLine || step.tool_name || info.name || "Antigravity tool";
+        const turn = beginToolTurn(tab, { id: `agy:${step.step_index}`, name, input: info.parameters || {} });
+        turn.text = name;
+        if (step.state === "DONE") {
+          turn.state = info.error ? "err" : "ok";
+          turn.detail = resultSummary(info.output || info.error?.message || "");
+        }
+        return markAgentTabDirty(panel, tab);
+      }
+      return;
+    }
+    if (obj.event === "result") {
+      const result = obj.result || {};
+      if (result.conversation_id) tab.session = result.conversation_id;
+      if (result.response) {
+        if (!tab.streaming) { tab.streaming = { role: "gemini", text: "" }; tab.turns.push(tab.streaming); }
+        tab.streaming.text = result.response;
+      }
+      tab.streaming = null;
+      if (result.status && result.status !== "SUCCESS") tab.turns.push({ role: "error", text: result.error || `Antigravity stopped with status ${result.status}.` });
+      renderAgentTab(panel, tab);
+      renderAgentTabs(panel);
+      return;
+    }
 
     if (obj.type === "init" && obj.session_id) tab.session = obj.session_id;
 

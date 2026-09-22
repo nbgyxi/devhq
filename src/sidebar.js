@@ -172,6 +172,40 @@
   window.__TAURI__.event.listen("sidebar:settings", (event) => applySettings(event.payload));
   invoke("sidebar_settings").then(applySettings, () => {});
 
+  // ---- media player ----------------------------------------------------------
+  // Windows exposes the same active session shown beside the volume flyout, so
+  // this works with Spotify as well as media playing in a browser.
+  const mediaPlayer = document.querySelector("[data-media-player]");
+  const mediaTitle = document.querySelector("[data-media-title]");
+  let mediaBusy = false;
+  async function refreshMedia() {
+    if (mediaBusy) return;
+    try {
+      const media = await invoke("media_state");
+      mediaPlayer.hidden = !media.available;
+      if (!media.available) return;
+      mediaTitle.replaceChildren(document.createTextNode(media.title || "Now playing"));
+      if (media.artist) mediaTitle.append(document.createTextNode(" · "), Object.assign(document.createElement("span"), { textContent: media.artist }));
+      const toggle = mediaPlayer.querySelector('[data-media-command="toggle"]');
+      toggle.querySelector(".ms").textContent = media.playing ? "pause" : "play_arrow";
+      toggle.title = toggle.ariaLabel = media.playing ? "Pause" : "Play";
+      for (const button of mediaPlayer.querySelectorAll("[data-media-command]")) {
+        const command = button.dataset.mediaCommand;
+        button.disabled = command === "previous" ? !media.canPrevious : command === "next" ? !media.canNext : (command === "back10" || command === "ahead10") ? !media.canSeek : false;
+      }
+    } catch (_) { mediaPlayer.hidden = true; }
+  }
+  mediaPlayer.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-media-command]");
+    if (!button || button.disabled || mediaBusy) return;
+    mediaBusy = true;
+    try { await invoke("media_command", { command: button.dataset.mediaCommand }); }
+    catch (error) { flash(button, error); }
+    finally { mediaBusy = false; setTimeout(refreshMedia, 150); }
+  });
+  refreshMedia();
+  setInterval(refreshMedia, 2000);
+
   // The taskbar button flips the same setting the tool page's checkbox does,
   // and saves it, so the next dock remembers the choice.
   async function toggleTaskbar() {
@@ -1586,11 +1620,28 @@
   // ---- dragging the width ------------------------------------------------------
   // The grip sits on the inner edge. Re-docking moves the work area and every
   // maximized window with it, so it happens once, when the pointer is let go.
-  // While dragging, the grip's badge shows the width that will be applied.
+  // While dragging, a click-through shadow window shows the space the new
+  // width will occupy and the grip's badge keeps the exact value readable.
   // The pointer is captured, so moves still arrive once it leaves the window.
   const grip = document.querySelector("[data-grip]");
   const badge = document.querySelector("[data-grip-badge]");
   let drag = null;
+  let previewNext;
+  let previewSending = false;
+
+  // Window creation can take longer than a pointermove. Keep at most one
+  // native update in flight and always follow it with the newest width.
+  async function preview(width) {
+    previewNext = width;
+    if (previewSending) return;
+    previewSending = true;
+    do {
+      const next = previewNext;
+      previewNext = undefined;
+      try { await invoke("sidebar_resize_preview", { width: next }); } catch (_) {}
+    } while (previewNext !== undefined);
+    previewSending = false;
+  }
 
   grip.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
@@ -1607,6 +1658,7 @@
     const delta = event.screenX - drag.x;
     drag.want = Math.round(Math.min(480, Math.max(48, drag.width + (state.edge === "right" ? -delta : delta))));
     badge.textContent = `${drag.want} dip`;
+    preview(drag.want);
   });
 
   function endDrag() {
@@ -1614,6 +1666,7 @@
     const want = drag.want;
     drag = null;
     document.body.classList.remove("resizing");
+    preview(null);
     if (want !== state.width) ask("sidebar_configure", { width: want });
   }
   grip.addEventListener("pointerup", endDrag);

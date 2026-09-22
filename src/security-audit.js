@@ -27,6 +27,8 @@
   /* ------------------------------------------------------------ the menu */
 
   const AREAS = [
+    { id: "Repository safety", chip: "Repo", glyph: "folder_managed", admin: false, name: "Is this repo safe for auto mode?",
+      what: "A read-only preflight for production credentials and endpoints, destructive automation, install hooks, agent instruction traps, broad tool approvals and deployment paths. No repository code is run." },
     { id: "Autostart", chip: "Autostart", glyph: "restart_alt", admin: false, name: "Autostart and persistence",
       what: "Run keys, startup folders, scheduled tasks outside \\Microsoft\\, auto-start services, Winlogon and IFEO debuggers — each target resolved and its signature checked." },
     { id: "Startup", chip: "Startup", glyph: "rocket_launch", admin: false, name: "Why these start",
@@ -64,6 +66,8 @@
     agent: saved.agent || "",
     elevated: saved.elevated === true,
     scope: Array.isArray(saved.scope) && saved.scope.length ? saved.scope.slice(0, 1) : [AREAS[0].id],
+    repoPath: typeof saved.repoPath === "string" ? saved.repoPath : "",
+    repoStatic: false,
     expected: new Set(Array.isArray(saved.expected) ? saved.expected : []),
 
     /** The question typed into the "Ask your own question" area. */
@@ -126,7 +130,7 @@
 
   const savePrefs = () => {
     try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify({ agent: st.agent, elevated: st.elevated, scope: st.scope, custom: st.custom, expected: [...st.expected] }));
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ agent: st.agent, elevated: st.elevated, scope: st.scope, custom: st.custom, repoPath: st.repoPath, expected: [...st.expected] }));
     } catch {}
   };
   /* ------------------------------------------------------------ history */
@@ -463,6 +467,7 @@ Judge each group. Many are normal on every Windows PC and need nothing: Distribu
   /* ------------------------------------------------------------ custom */
 
   const customInScope = () => st.scope.includes("Custom");
+  const repoInScope = () => st.scope.includes("Repository safety");
   const customText = () => st.custom.trim();
 
   /** The whole job, when the user wrote it themselves. Built fresh for each
@@ -547,8 +552,8 @@ Then verify it worked. Put the finding in "resolved" if it did, or update it wit
    *  An audit needs an agent with a real shell: it runs PowerShell of its own
    *  choosing - signature checks, CIM queries, registry edits - and WinT's own
    *  tool set is a fixed allow-list with no way to run an arbitrary command.
-   *  So API and local models are listed, as asked, but marked for what they
-   *  are rather than quietly presented as equals. */
+   *  API and local models stay out of the picker because they cannot perform
+   *  the audit without that shell access. */
   const AGENT_KIND = "agent";
   async function loadAgents() {
     agentsLoading = true;
@@ -586,9 +591,31 @@ Then verify it worked. Put the finding in "resolved" if it did, or update it wit
   const note = (text) => { invoke("health_note", { text }).catch(() => {}); };
 
   /** Starts a scan: a fresh audit folder and a fresh agent session. */
-  const canStart = () => !!st.agent && !!st.scope.length && !(customInScope() && !customText()) && !st.starting;
+  const canStart = () => !!st.scope.length && (repoInScope() ? !!st.repoPath.trim() : !!st.agent) && !(customInScope() && !customText()) && !st.starting;
+
+  async function startRepoScan() {
+    if (!canStart()) return;
+    st.starting = true; st.error = ""; dirty();
+    work("Checking repository safety");
+    try {
+      const out = await invoke("audit_repo_preflight", { path: st.repoPath.trim() });
+      st.repoPath = out.path; st.repoStatic = true; st.live = false; st.view = "audit";
+      st.findings = out.findings || []; st.passed = out.passed || []; st.log = [];
+      st.scannedAt = Date.now(); st.sel = ""; st.area = "all"; st.showPassed = false;
+      const counts = st.findings.reduce((n, f) => (n[f.severity] = (n[f.severity] || 0) + 1, n), {});
+      st.reply = { done: true, summary: out.verdict === "stop"
+        ? `Stop before auto mode: ${counts.high || 0} high-risk signal${counts.high === 1 ? "" : "s"} need review.`
+        : out.verdict === "review" ? `Use approval mode first: ${counts.medium || 0} item${counts.medium === 1 ? "" : "s"} need review.`
+        : `No obvious auto-mode blockers found in ${out.filesScanned} text files.`, options: [] };
+      st.notice = `${out.filesScanned} files checked · ${out.filesSkipped} binary, generated or oversized files skipped · no code executed`;
+      savePrefs();
+    } catch (err) { st.error = String(err); }
+    finally { st.starting = false; work(""); dirty(); }
+  }
 
   async function startScan() {
+    if (repoInScope()) return startRepoScan();
+    st.repoStatic = false;
     if (!canStart() || st.turn) return;
     savePrefs();
     st.starting = true;
@@ -793,6 +820,29 @@ Then verify it worked. Put the finding in "resolved" if it did, or update it wit
     if (obj.type === "tool_use") commandStarted(obj.tool_id, obj.parameters?.command || obj.tool_name);
     if (obj.type === "tool_result") commandEnded(obj.tool_id, obj.output ?? obj.error?.message ?? "", obj.status === "error");
     if (obj.type === "message" && obj.role === "assistant" && obj.content) { turn.pending += obj.content; turn.note += obj.content; }
+    // Antigravity (the successor to Gemini CLI; the saved internal id remains
+    // `gemini` so existing audits and workspace tabs keep opening).
+    if (obj.event === "init" && obj.conversation_id) st.session = obj.conversation_id;
+    if (obj.event === "step_update") {
+      const step = obj.step_update || {};
+      if (step.conversation_id) st.session = step.conversation_id;
+      if (step.step_type === "agent_response" && step.text_delta) { turn.pending += step.text_delta; turn.note += step.text_delta; }
+      if (step.step_type === "tool") {
+        const info = step.tool_info || {};
+        const key = `agy:${step.step_index}`;
+        const name = info.parameters?.CommandLine || step.tool_name || info.name || "Antigravity tool";
+        if (step.state !== "DONE") commandStarted(key, name);
+        else {
+          if (!turn.calls.has(key)) commandStarted(key, name);
+          commandEnded(key, info.output ?? info.error?.message ?? "", !!info.error);
+        }
+      }
+    }
+    if (obj.event === "result") {
+      const result = obj.result || {};
+      if (result.conversation_id) st.session = result.conversation_id;
+      if (result.response) turn.text = result.response;
+    }
     // GitHub Copilot.
     if (obj.type === "tool.execution_start") commandStarted(obj.data?.toolCallId, obj.data?.arguments?.command || obj.data?.toolName);
     if (obj.type === "tool.execution_complete") commandEnded(obj.data?.toolCallId, obj.data?.result?.content ?? obj.data?.error ?? "", obj.data?.success === false);
@@ -1153,9 +1203,9 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
       ? `<div class="sa-card skeleton"><strong>Looking for coding agents on this PC…</strong><i class="sk"></i></div>
          <div class="sa-card skeleton"><i class="sk"></i><i class="sk"></i></div>`
       : installed.length
-        ? cards(st.agents.map((a) => ({ id: a.id, name: a.label, glyph: a.kind === "local" ? "memory" : a.kind === "api" ? "key" : "smart_toy",
-            on: a.id === st.agent, disabled: !a.audits, detail: a.detail })), "agent")
-        : `<div class="sa-empty">No coding agent is installed. The audit is done entirely by one you already have — Claude Code, Codex, Gemini, GitHub Copilot or Cursor Agent. Install one from a workspace's Agent panel.
+        ? cards(installed.map((a) => ({ id: a.id, name: a.label, glyph: "smart_toy",
+            on: a.id === st.agent, disabled: false, detail: a.detail })), "agent")
+        : `<div class="sa-empty">No coding agent is installed. The audit is done entirely by one you already have — Claude Code, Codex, Antigravity, GitHub Copilot or Cursor Agent. Install one from a workspace's Agent panel.
             <button type="button" class="btn" data-sa="agents">${icon("refresh")}Look again</button></div>`;
     const rights = cards([
       { id: "standard", name: "Standard", glyph: "person", on: !st.elevated, detail: "No Windows prompt. Checks that need administrator are reported as skipped." },
@@ -1171,10 +1221,19 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
         a.id === "Custom" ? customHtml() : ""}`;
     }).join("");
     const kept = st.findings.length || st.log.length;
+    if (repoInScope()) return `<div class="sa-setup"><div class="sa-setup-scroll" data-sa-scroll="setup"><div class="sa-setup-body">
+      ${historyHtml()}
+      <section><h3>Repository preflight</h3><p>Choose the checkout before giving a coding agent auto-mode access. PC Detective reads text files only; it does not install dependencies, import code, follow symlinks, or run repository commands.</p>
+        <div class="sa-repo-pick"><span>${icon("folder_managed")}<input data-sa-repo type="text" spellcheck="false" placeholder="C:\\code\\your-repository" value="${esc(st.repoPath)}"><button type="button" class="btn" data-sa="repo-browse">${icon("folder_open")}Browse</button></span>
+          <small>Checks committed-looking secrets, production databases and APIs, destructive scripts, lifecycle hooks, CI/CD, infrastructure, MCP settings, and agent instruction files.</small></div></section>
+      <section><h3>What this verdict means</h3><div class="sa-repo-guide"><span>${icon("dangerous")}<b>Stop</b><small>High-risk access or instructions: do not use auto mode until reviewed.</small></span><span>${icon("warning")}<b>Review</b><small>Start with approvals, a sandbox and restricted network access.</small></span><span>${icon("verified_user")}<b>Clear</b><small>No obvious blocker found—not a guarantee that the code is safe.</small></span></div></section>
+      <section><h3>Other PC Detective scans</h3><p>To investigate the whole PC with an installed agent, choose another scan below.</p><div class="sa-areas">${AREAS.slice(1).map((a) => `<button type="button" class="sa-area" data-sa-area="${esc(a.id)}"><span class="sa-tick">${icon("radio_button_unchecked")}</span><span class="sa-area-name"><strong>${esc(a.name)}</strong></span><small>${esc(a.what)}</small></button>`).join("")}</div></section>
+      </div></div><footer class="sa-setup-foot"><span><strong>Read-only repository preflight</strong><small>Nothing in the checkout will be executed.</small></span><i></i>${st.error ? `<span class="sa-error">${esc(st.error)}</span>` : ""}${kept ? `<button type="button" class="btn" data-sa="keep">${icon("arrow_back")}Keep the last results</button>` : ""}<button type="button" class="btn primary" data-sa="start"${canStart() ? "" : " disabled"}>${icon(st.starting ? "progress_activity" : "shield")}${st.starting ? "Scanning…" : st.repoPath.trim() ? "Check before auto mode" : "Choose a repository"}</button></footer></div>`;
     return `<div class="sa-setup"><div class="sa-setup-scroll" data-sa-scroll="setup"><div class="sa-setup-body">
         ${historyHtml()}
         <section><h3>1 · Who does the audit</h3>
           <p>WinT does no checking of its own. The agent runs every command in its own shell, and WinT shows each one with its reason and result, then what it found.</p>
+          <small class="sa-note">Local and API-based models cannot be used here because PC Detective needs shell access.</small>
           <div class="sa-cards">${agents}</div></section>
         <section><h3>2 · Rights for the whole audit</h3><div class="sa-cards wide">${rights}</div>
           <small class="sa-note">Rights cannot change once the audit is running: switching would restart the agent and lose everything it has learned.</small></section>
@@ -1202,6 +1261,7 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
   }
 
   function logHtml() {
+    if (st.repoStatic) return `<div class="sa-pane-head">${icon("policy")}<strong>Auto-mode verdict</strong><small>local, read-only inspection</small></div><div class="sa-scroll"><div class="sa-repo-verdict ${st.findings.some((f) => f.severity === "high") ? "stop" : st.findings.length ? "review" : "clear"}">${icon(st.findings.some((f) => f.severity === "high") ? "dangerous" : st.findings.length ? "warning" : "verified_user")}<h2>${st.findings.some((f) => f.severity === "high") ? "Stop before auto mode" : st.findings.length ? "Review with approvals on" : "No obvious blockers"}</h2><p>${esc(st.reply?.summary || "")}</p><code>${esc(st.repoPath)}</code><div><strong>Safe first run</strong><small>Keep command approvals on, restrict network access, expose only this folder, and use sandbox credentials. A clear scan is evidence—not proof.</small></div></div></div>`;
     const sel = findingById(st.sel);
     const rows = st.log.filter((r) => st.logFilter === "all" ? true : st.logFilter === "finding" ? (r.finding === st.sel || r.link === st.sel) : r.source === st.logFilter);
     const count = (source) => st.log.filter((r) => r.source === source).length;
@@ -1284,6 +1344,10 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
     if (!on) return `<div class="sa-finding" data-sev="${f.severity}"${f.fixed ? " data-fixed" : ""}>${head}</div>`;
 
     const busy = !!st.turn;
+    if (f.static) {
+      const evidence = f.evidence.length ? `<section><h3>Evidence</h3><div class="sa-facts">${f.evidence.map((e) => `<span><small>${esc(e.label)}</small><span class="mono">${esc(e.value)}</span></span>`).join("")}</div></section>` : "";
+      return `<div class="sa-finding on" data-sev="${f.severity}">${head}<div class="sa-finding-body"><p class="sa-verdict">${esc(f.verdict || f.why)}</p>${evidence}<div class="sa-box warn"><strong>${icon("lock")}Before an agent touches this repo</strong><small>Review the complete file around the match. Use approvals, a workspace-only filesystem sandbox, blocked or allow-listed outbound network access, and non-production credentials.</small></div></div></div>`;
+    }
     const trace = st.traces[f.id];
     const traceHtml = trace?.busy
       ? `<div class="sa-box accent"><strong>${icon("progress_activity")}Tracing</strong><small>Each command the agent runs appears in the Activity list on the left as it runs, with its output.</small></div>`
@@ -1395,7 +1459,7 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
       safely(main.querySelector("[data-sa-right]"), findingsHtml);
     }
     const composer = root.querySelector("[data-sa-composer]");
-    composer.hidden = st.view !== "audit";
+    composer.hidden = st.view !== "audit" || st.repoStatic;
     const input = composer.querySelector("textarea");
     input.disabled = !!st.turn;
     composer.querySelector("button").disabled = !!st.turn;
@@ -1403,7 +1467,7 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
       ? "Ask the agent to continue in any direction…"
       : "Tell the agent what to do next, or answer its question…";
     const status = root.querySelector("[data-sa-notice]");
-    status.textContent = st.notice || (st.view === "audit" ? `Audit of ${st.computer || "this PC"} · ${agentName()} · ${st.ranAsAdmin ? "administrator" : "standard rights"} · log and report in ${st.dir}` : "");
+    status.textContent = st.notice || (st.view === "audit" ? (st.repoStatic ? `Repository preflight · ${st.repoPath}` : `Audit of ${st.computer || "this PC"} · ${agentName()} · ${st.ranAsAdmin ? "administrator" : "standard rights"} · log and report in ${st.dir}`) : "");
   }
 
   /* ---------------------------------------------------------------- events */
@@ -1506,6 +1570,7 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
       case "history": st.view = "setup"; st.error = ""; return dirty();
       case "cancel": return cancel();
       case "agents": st.agents = null; dirty(); return loadAgents();
+      case "repo-browse": return (async () => { const path = await invoke("pick_folder", { start: st.repoPath || "" }); if (path) { st.repoPath = path; savePrefs(); dirty(); } })().catch((e) => { st.error = String(e); dirty(); });
       case "passed": st.showPassed = !st.showPassed; return dirty();
       case "report": return exportFile("report.md", markdown());
       case "log": return exportFile("log.md", logText());
@@ -1573,6 +1638,14 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
     // is typed in - only when going from empty to written, or back, because
     // that is what the Start button and the footer line read.
     root.addEventListener("input", (e) => {
+      const repo = e.target.closest?.("[data-sa-repo]");
+      if (repo) {
+        const was = !!st.repoPath.trim();
+        st.repoPath = repo.value;
+        savePrefs();
+        if (was !== !!st.repoPath.trim()) dirty();
+        return;
+      }
       const box = e.target.closest?.("[data-sa-custom]");
       if (!box) return;
       const was = !!customText();
@@ -1581,7 +1654,7 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
       if (was !== !!customText()) dirty();
     });
     root.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter" || e.shiftKey || !e.target.closest?.("[data-sa-custom]")) return;
+      if (e.key !== "Enter" || e.shiftKey || !e.target.closest?.("[data-sa-custom], [data-sa-repo]")) return;
       e.preventDefault();
       if (canStart()) startScan();
     });

@@ -20,11 +20,14 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use std::sync::OnceLock;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+};
+use windows::Win32::System::RemoteDesktop::{
+    WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
 };
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Shell::{
@@ -34,10 +37,11 @@ use windows::Win32::UI::Shell::{
     ABS_ALWAYSONTOP, ABS_AUTOHIDE, APPBARDATA,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    ChangeWindowMessageFilterEx, GetWindowLongW, RegisterWindowMessageW, SetWindowPos, GWL_EXSTYLE,
-    HWND_BOTTOM, HWND_TOPMOST, MSGFLT_ALLOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    WM_APP, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENTERMENULOOP, WM_EXITMENULOOP,
-    WM_WINDOWPOSCHANGED, WS_EX_TOPMOST,
+    ChangeWindowMessageFilterEx, GetWindowLongW, PostMessageW, RegisterWindowMessageW,
+    SetWindowPos, GWL_EXSTYLE, HWND_BOTTOM, HWND_TOPMOST, MSGFLT_ALLOW, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_NOZORDER, WM_APP, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_ENTERMENULOOP, WM_EXITMENULOOP, WM_WINDOWPOSCHANGED, WM_WTSSESSION_CHANGE, WS_EX_TOPMOST,
+    WTS_SESSION_UNLOCK,
 };
 
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -49,6 +53,7 @@ pub(crate) const SIDEBAR_LABEL: &str = "sidebar";
 /// The private message the shell posts our appbar notifications to. It only
 /// has to be unique within this window, and the window is ours alone.
 const APPBAR_CALLBACK: u32 = WM_APP + 0x40;
+const RECHECK_TASKBAR: u32 = WM_APP + 0x41;
 const SUBCLASS_ID: usize = 0x5744;
 
 /// Width in device-independent pixels, before the monitor's scaling.
@@ -301,6 +306,32 @@ unsafe fn auto_hide_taskbar() {
     set_taskbar_state(now | ABS_AUTOHIDE | ABS_ALWAYSONTOP);
 }
 
+/// Windows can clear auto-hide while restoring Explorer after lock or sleep.
+/// Reassert only the state WinT owns; otherwise the user's taskbar preference
+/// remains untouched.
+unsafe fn ensure_taskbar_hidden() {
+    if HIDE_TASKBAR.load(Ordering::SeqCst) && taskbar_state() & ABS_AUTOHIDE == 0 {
+        auto_hide_taskbar();
+    }
+}
+
+/// Explorer may apply its saved taskbar state just after the unlock message,
+/// so check after that restore has had a moment to settle.
+fn recheck_taskbar_after_unlock(hwnd: HWND) {
+    let raw = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(750));
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(raw as *mut c_void)),
+                RECHECK_TASKBAR,
+                WPARAM(0),
+                LPARAM(0),
+            );
+        }
+    });
+}
+
 /// Bring the real taskbar back now, even if it was auto-hidden before we came
 /// along. What it was is remembered, so undocking still puts it back.
 unsafe fn show_taskbar() {
@@ -495,6 +526,9 @@ unsafe extern "system" fn sidebar_proc(
                 // waiting: moving the bar out from under an open menu is not
                 // something to do anyway.
                 ABN_POSCHANGED | ABN_WINDOWARRANGE | ABN_STATECHANGE => {
+                    if wparam.0 as u32 == ABN_STATECHANGE {
+                        ensure_taskbar_hidden();
+                    }
                     if IN_MENU.load(Ordering::SeqCst) {
                         PLACE_DEFERRED.store(true, Ordering::SeqCst);
                     } else {
@@ -528,6 +562,10 @@ unsafe extern "system" fn sidebar_proc(
                 place(hwnd);
             }
         }
+        WM_WTSSESSION_CHANGE if wparam.0 as u32 == WTS_SESSION_UNLOCK => {
+            recheck_taskbar_after_unlock(hwnd);
+        }
+        RECHECK_TASKBAR => ensure_taskbar_hidden(),
         WM_WINDOWPOSCHANGED => notify_pos_changed(hwnd),
         // A menu is opening. Every menu on the rail goes through here,
         // including the one a right-click on a tray icon opens, which is
@@ -552,6 +590,7 @@ unsafe fn undock(hwnd: HWND) {
         return;
     }
     let mut data = appbar_data(hwnd);
+    let _ = WTSUnRegisterSessionNotification(hwnd);
     shell(ABM_REMOVE, "SHAppBarMessage ABM_REMOVE", &mut data);
     let _ = RemoveWindowSubclass(hwnd, Some(sidebar_proc), SUBCLASS_ID);
     restore_taskbar();
@@ -567,6 +606,7 @@ unsafe fn dock(hwnd: HWND, hide_taskbar: bool) {
         let mut data = appbar_data(hwnd);
         shell(ABM_NEW, "SHAppBarMessage ABM_NEW", &mut data);
         let _ = SetWindowSubclass(hwnd, Some(sidebar_proc), SUBCLASS_ID, 0);
+        let _ = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
         allow_taskbar_created(hwnd);
     }
     if hide_taskbar {
@@ -627,6 +667,72 @@ fn apply(edge: Option<String>, width: Option<u32>) {
 #[tauri::command]
 pub async fn sidebar_state() -> SidebarState {
     state()
+}
+
+/// Draw a cheap, click-through outline at the width a sidebar drag would use.
+/// This is a separate window because the useful part of a wider preview lies
+/// outside the appbar's current bounds. It never registers with Explorer and
+/// therefore never moves the work area or any maximized windows.
+#[tauri::command]
+pub async fn sidebar_resize_preview(app: AppHandle, width: Option<u32>) -> Result<(), String> {
+    const LABEL: &str = "sidebar-resize-preview";
+    let Some(width) = width else {
+        if let Some(preview) = app.get_webview_window(LABEL) {
+            let _ = preview.hide();
+        }
+        return Ok(());
+    };
+
+    let sidebar = app
+        .get_webview_window(SIDEBAR_LABEL)
+        .ok_or_else(|| "The sidebar is not open.".to_string())?;
+    let scale = sidebar.scale_factor().map_err(|e| e.to_string())?;
+    let position = sidebar
+        .outer_position()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(scale);
+    let size = sidebar
+        .outer_size()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(scale);
+    let width = f64::from(width.clamp(MIN_WIDTH, MAX_WIDTH));
+    let x = if EDGE.load(Ordering::SeqCst) == ABE_RIGHT {
+        position.x + size.width - width
+    } else {
+        position.x
+    };
+
+    let preview = match app.get_webview_window(LABEL) {
+        Some(preview) => preview,
+        None => WebviewWindowBuilder::new(
+            &app,
+            LABEL,
+            WebviewUrl::App("sidebar-resize-preview.html".into()),
+        )
+        .title("Sidebar size preview")
+        .inner_size(width, size.height)
+        .position(x, position.y)
+        .decorations(false)
+        .resizable(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .focused(false)
+        .visible(false)
+        .shadow(true)
+        .build()
+        .map_err(|e| format!("Could not show the sidebar preview: {e}"))?,
+    };
+    preview
+        .set_ignore_cursor_events(true)
+        .map_err(|e| e.to_string())?;
+    preview
+        .set_size(LogicalSize::new(width, size.height))
+        .map_err(|e| e.to_string())?;
+    preview
+        .set_position(LogicalPosition::new(x, position.y))
+        .map_err(|e| e.to_string())?;
+    preview.show().map_err(|e| e.to_string())
 }
 
 /// Dock the sidebar to a screen edge, building its window the first time.
@@ -718,6 +824,9 @@ pub async fn sidebar_configure(
 /// holding an edge the shell still believes in.
 #[tauri::command]
 pub async fn sidebar_close(app: AppHandle) -> Result<SidebarState, String> {
+    if let Some(preview) = app.get_webview_window("sidebar-resize-preview") {
+        let _ = preview.destroy();
+    }
     if let Some(window) = app.get_webview_window(SIDEBAR_LABEL) {
         let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
         on_window_thread(&app, hwnd, |hwnd| unsafe { undock(hwnd) }).await?;
@@ -1441,13 +1550,27 @@ fn profile_id(dir: &str) -> String {
 
 /// The browser profile a window belongs to: the folder to start the browser
 /// with, and the name the user gave that profile ("Gyxi"). `None` for anything
-/// that is not a Chromium window, and for the profile a plain start opens.
+/// that is not a Chromium window.
 fn browser_profile(exe: &str, aumid: &str) -> Option<(String, Option<String>)> {
     // `MSEdge.UserData.Profile1`: the browser, the user data folder, the
     // profile folder — each with everything but letters and digits taken out.
     let parts: Vec<String> = aumid.split('.').map(profile_id).collect();
     let tail = parts.last().filter(|tail| !tail.is_empty())?;
+    let browser = std::path::Path::new(exe)
+        .file_stem()
+        .map(|stem| profile_id(&stem.to_string_lossy()));
     for data in user_data_dirs(exe) {
+        // Chromium omits the user-data and profile suffixes for its original
+        // profile: Edge calls it simply `MSEdge`, while its other profiles are
+        // `MSEdge.UserData.Profile1`, etc. It still needs an explicit
+        // `--profile-directory=Default` when launched from a pin; a plain
+        // start may reuse whichever profile was active last.
+        if parts.len() == 1
+            && browser.as_deref() == Some(tail)
+            && data.join("Default").is_dir()
+        {
+            return Some(("Default".into(), profile_name(&data, "Default")));
+        }
         // The folder the AppUserModelID was built from has to be the folder
         // being read, or this is a different install of the same browser —
         // stable's profiles answering for Canary's, or a browser started
@@ -2379,13 +2502,22 @@ pub(crate) unsafe fn app_window_for(exe: &str, name: &str, want_app: Option<&str
         let Some(rank) = reveal_rank(candidate, &want, name) else {
             continue;
         };
-        // Ahead of everything else the ranking weighs: an app that says which
-        // of itself this window is has answered the question outright.
-        let same = u8::from(
-            wanted.as_deref().is_some_and(|app| {
-                window_app_id(candidate).is_some_and(|id| id.to_ascii_lowercase() == app)
-            }),
-        );
+        // An AppUserModelID is a constraint, not merely a ranking hint. Edge
+        // profiles share an exe (and commonly a process family), so falling
+        // back to another ID here makes a Niels pin reveal Stayify. With no
+        // window for the requested profile the caller must launch that
+        // profile instead.
+        let same = match wanted.as_deref() {
+            Some(app) => {
+                if !window_app_id(candidate)
+                    .is_some_and(|id| id.eq_ignore_ascii_case(app))
+                {
+                    continue;
+                }
+                1
+            }
+            None => 0,
+        };
         if best.is_none_or(|(had, _)| (same, rank) > had) {
             best = Some(((same, rank), candidate));
         }
@@ -2529,4 +2661,3 @@ pub async fn sidebar_open_settings(page: String) -> Result<(), String> {
         .await
         .unwrap_or_else(|| Err("Could not open that settings page.".into()))
 }
-

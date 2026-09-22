@@ -8205,6 +8205,10 @@ window.wintAssistantContext = () => {
   return JSON.stringify({ roots: state.roots, selectedProject: selected?.name || "", projects });
 };
 window.wintAssistantRoots = () => [...state.roots];
+/** Agents use their own shell, so give them the project the person currently
+ *  has selected. With no selected project, the primary scanned root is the
+ *  least surprising place for a general sidebar conversation to start. */
+window.wintAssistantWorkingDirectory = () => state.selectedPath || state.roots[0] || "C:\\";
 /** The palette shortcut as the user has it bound, for panels that tell people
  * where to go next. Empty when the binding has been cleared. */
 window.wintPaletteHotkey = () => hotkeyBinding("command:palette");
