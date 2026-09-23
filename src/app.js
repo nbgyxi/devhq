@@ -3576,10 +3576,20 @@ function activeTool() {
  * tool. Setting document.title as well keeps the webview and native window in
  * agreement if either side recreates its title bar. */
 let renderedWindowTitle = "";
+let windowProductName = "WinT";
+invoke("app_name").then((name) => {
+  windowProductName = String(name || "WinT");
+  const brandName = document.getElementById("brand-name");
+  const brandIcon = document.getElementById("brand-icon");
+  if (brandName) brandName.textContent = windowProductName;
+  if (brandIcon && windowProductName === "WinT Dev") brandIcon.src = "wint-dev-icon.png";
+  renderedWindowTitle = "";
+  syncWindowTitle();
+}).catch(() => {});
 function syncWindowTitle() {
   if (PROJECTS_WINDOW) return;
   const tool = activeTool();
-  const title = tool ? `WinT ${tool.name}` : "WinT";
+  const title = tool ? `${windowProductName} ${tool.name}` : windowProductName;
   if (title === renderedWindowTitle) return;
   renderedWindowTitle = title;
   document.title = title;
@@ -5377,7 +5387,7 @@ function mountShell() {
     <div class="titlebar">
       <div class="loading" id="loadbar" hidden><i></i></div>
       <div class="drag">
-        <div class="brand"><img src="wint-icon.png" alt="" /><span>WinT</span>
+        <div class="brand"><img id="brand-icon" src="wint-icon.png" alt="" /><span id="brand-name">WinT</span>
           <span class="sub" id="brand-sub"></span></div>
       </div>
       <button class="title-home" id="title-home" type="button"

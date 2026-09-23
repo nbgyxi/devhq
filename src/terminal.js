@@ -698,6 +698,16 @@ class TermView {
         e.stopPropagation();
         return;
       }
+      // Match ordinary Windows editors: Ctrl+X copies and removes a selection
+      // when it belongs to the command currently being edited. Scrollback is
+      // immutable terminal output, so a selection there cannot be cut.
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === "x" || e.key === "X")) {
+        if (this.cutSelection()) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+      }
       // Ctrl+` belongs to WinT, for toggling the panel from inside a terminal.
       if (e.ctrlKey && e.key === "`") return;
       // Selecting with the keyboard, the way any text editor does it: Shift
@@ -1347,6 +1357,23 @@ class TermView {
     } else {
       if (document.execCommand("copy")) sel.removeAllRanges();
     }
+    return true;
+  }
+
+  /** Cuts a selection from the editable command line, like Ctrl+X in Notepad.
+   *  The terminal screen itself is only a view, so eraseSelectionSeq confines
+   *  this to text the shell can genuinely remove. */
+  cutSelection() {
+    const erase = this.eraseSelectionSeq(false);
+    if (!erase) return false;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
+    const text = sel.toString();
+    if (!text) return false;
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).catch(() => {});
+    else if (!document.execCommand("copy")) return false;
+    sel.removeAllRanges();
+    this.send(erase);
     return true;
   }
 

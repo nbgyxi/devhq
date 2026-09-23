@@ -1063,11 +1063,13 @@ fn term_open_sync(app: AppHandle, args: OpenArgs) -> Result<TermInfo, String> {
 
     let id = next_id();
     let compat = wt_compat_dir(&app)?;
+    let wt_queue = compat.join(format!("requests-{}", std::process::id()));
     let inherited_path = std::env::var("PATH").unwrap_or_default();
     let app_exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut environment = vec![
         ("WINT_TERM_ID", id.clone()),
         ("WINT_APP", app_exe.to_string_lossy().into_owned()),
+        ("WINT_WT_QUEUE", wt_queue.to_string_lossy().into_owned()),
         ("PATH", format!("{};{inherited_path}", compat.display())),
     ];
     // Harmless to a shell that does not read them, so every session gets both

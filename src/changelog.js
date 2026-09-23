@@ -16,9 +16,50 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.140.25",
+      date: "2026-09-23",
+      title: "The live Dev process carries its badge",
+      changes: [
+        ["fix", "WinT Dev now explicitly applies its embedded amber-badged icon to the running native window and notification-area icon, allowing the Docked Sidebar to read the Dev icon too."],
+      ],
+    },
+    {
+      version: "0.140.24",
+      date: "2026-09-23",
+      title: "Dev branding reaches the visible frame",
+      changes: [
+        ["fix", "WinT Dev now shows its name and amber-badged icon in WinT's custom title bar and explicitly assigns the icon to its native window, instead of changing only hidden package metadata."],
+      ],
+    },
+    {
+      version: "0.140.23",
+      date: "2026-09-23",
+      title: "Development looks like development",
+      changes: [
+        ["better", "Development builds are labelled WinT Dev and use a separate amber-badged icon, so they are easy to distinguish from the Store app in windows, the taskbar, and the notification area."],
+      ],
+    },
+    {
+      version: "0.140.22",
+      date: "2026-09-23",
+      title: "Development runs beside the Store app",
+      changes: [
+        ["better", "Development builds now use their own WinT Dev identity, keeping their windows, WebView storage, settings, browser profiles, and app data separate from the installed Store version."],
+      ],
+    },
+    {
+      version: "0.140.21",
+      date: "2026-09-23",
+      title: "Files selects before it opens",
+      changes: [
+        ["better", "A single click in Files now selects any file, folder, or zip; double-click or Enter opens it, Ctrl+A selects the visible folder contents, and clicking empty list space clears the selection."],
+      ],
+    },
+    {
       version: "0.140.20",
       date: "2026-09-23",
       title: "Files remembers how you left it",
+      buildChecksum: "e56ccb045d1639636f7273b98439f9ea2b7879a207263d51cea33b6f18c21087",
       changes: [
         ["better", "Files windows reopen at their latest size and restore thumbnails, the image preview panel, hidden files, sorting, columns, and pane widths."],
       ],

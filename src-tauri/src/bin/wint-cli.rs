@@ -2,24 +2,24 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::Path;
 
-fn run_as_wt_proxy() -> bool {
-    let invoked_as_wt = std::env::current_exe().ok()
-        .and_then(|path| path.file_stem().map(|name| name.to_string_lossy().into_owned()))
-        .is_some_and(|name| name.eq_ignore_ascii_case("wt"));
-    if !invoked_as_wt { return false; }
-    let term_id = std::env::var_os("WINT_TERM_ID");
-    let Some(term_id) = term_id else {
-        eprintln!("wt: WinT terminal context is unavailable.");
-        std::process::exit(2);
+fn forward_to_wint(arguments: impl IntoIterator<Item = String>) -> Result<String, String> {
+    let term_id = std::env::var_os("WINT_TERM_ID")
+        .ok_or("WinT terminal context is unavailable.")?;
+    // Each running WinT owns its own queue. This matters when the installed
+    // app and WinT Dev are open together: their terminal ids both begin at the
+    // same value, so a shared queue can make the wrong process claim a split.
+    // Older hosted terminals did not receive WINT_WT_QUEUE, so retain the old
+    // location as a compatibility fallback until those sessions are closed.
+    let queue = if let Some(queue) = std::env::var_os("WINT_WT_QUEUE") {
+        std::path::PathBuf::from(queue)
+    } else {
+        let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+            return Err("the local application-data folder is unavailable.".into());
+        };
+        std::path::PathBuf::from(local).join("WinT").join("runtime").join("requests")
     };
-    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
-        eprintln!("wt: the local application-data folder is unavailable.");
-        std::process::exit(2);
-    };
-    let queue = std::path::PathBuf::from(local).join("WinT").join("runtime").join("requests");
     if let Err(error) = std::fs::create_dir_all(&queue) {
-        eprintln!("wt: could not open WinT's request queue: {error}");
-        std::process::exit(2);
+        return Err(format!("could not open WinT's request queue: {error}"));
     }
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default().as_nanos();
@@ -27,15 +27,14 @@ fn run_as_wt_proxy() -> bool {
     let pending = queue.join(format!(".{name}.tmp"));
     let ready = queue.join(&name);
     let mut forwarded = vec!["wt.exe".to_string(), format!("--wint-wt={}", term_id.to_string_lossy())];
-    forwarded.extend(std::env::args().skip(1));
+    forwarded.extend(arguments);
     let result = serde_json::to_vec(&forwarded)
         .map_err(|error| error.to_string())
         .and_then(|bytes| std::fs::write(&pending, bytes).map_err(|error| error.to_string()))
         .and_then(|_| std::fs::rename(&pending, &ready).map_err(|error| error.to_string()));
     if let Err(error) = result {
         let _ = std::fs::remove_file(&pending);
-        eprintln!("wt: could not send the command to WinT: {error}");
-        std::process::exit(2);
+        return Err(format!("could not send the command to WinT: {error}"));
     }
     // `wt` holds the prompt until WinT says what happened. The pane opens in
     // another process, so without this the shell gets its prompt straight back
@@ -51,26 +50,39 @@ fn run_as_wt_proxy() -> bool {
             let answer: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
             let message = answer.get("message").and_then(Value::as_str).unwrap_or("");
             if answer.get("ok").and_then(Value::as_bool) == Some(true) {
-                if !message.is_empty() { println!("{message}"); }
-                std::process::exit(0);
+                return Ok(message.to_string());
             }
-            eprintln!("wt: {}", if message.is_empty() { "WinT could not run this command." } else { message });
-            std::process::exit(1);
+            return Err(if message.is_empty() { "WinT could not run this command.".into() } else { message.into() });
         }
         if !taken {
             taken = !ready.exists();
             if !taken && std::time::Instant::now() >= taken_by {
                 let _ = std::fs::remove_file(&ready);
-                eprintln!("wt: WinT did not take this command. Its terminal panel is not listening.");
-                std::process::exit(1);
+                return Err("WinT did not take this command. Its terminal panel is not listening.".into());
             }
         } else if std::time::Instant::now() >= answer_by {
             // Taken, but no window owned up to it: the terminal this was typed
             // in is no longer one WinT is showing.
-            eprintln!("wt: WinT took this command but never reported what happened to it.");
-            std::process::exit(1);
+            return Err("WinT took this command but never reported what happened to it.".into());
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn run_as_wt_proxy() -> bool {
+    let invoked_as_wt = std::env::current_exe().ok()
+        .and_then(|path| path.file_stem().map(|name| name.to_string_lossy().into_owned()))
+        .is_some_and(|name| name.eq_ignore_ascii_case("wt"));
+    if !invoked_as_wt { return false; }
+    match forward_to_wint(std::env::args().skip(1)) {
+        Ok(message) => {
+            if !message.is_empty() { println!("{message}"); }
+            std::process::exit(0);
+        }
+        Err(error) => {
+            eprintln!("wt: {error}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -219,7 +231,20 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
             other => Err(format!("Unknown todo action: {other}")),
         },
         "open" => {
-            wint_lib::open_in_sync(need(&args, 1, "path")?, need(&args, 2, "target")?, None)?;
+            let path = need(&args, 1, "path")?;
+            let target = need(&args, 2, "target")?;
+            if target == "terminal" && std::env::var_os("WINT_TERM_ID").is_some() {
+                // When this CLI is run from a WinT terminal, keep the new
+                // terminal in WinT as another tab beside the caller. Outside
+                // WinT, open_in_sync retains the native cmd-window behavior.
+                forward_to_wint([
+                    "new-tab".to_string(),
+                    "--startingDirectory".to_string(),
+                    path,
+                ])?;
+            } else {
+                wint_lib::open_in_sync(path, target, None)?;
+            }
             emit(json!({"ok": true}), pretty)
         }
         "ports" => match need(&args, 1, "ports action")?.as_str() {

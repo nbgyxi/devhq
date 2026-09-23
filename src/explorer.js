@@ -786,9 +786,8 @@ async function maybeDrag(event) {
   }
 }
 
-/** Selecting a file is what fills the preview pane. Folders are never
- *  selected: clicking one opens it, and a pane showing the folder you just
- *  left would be describing somewhere you are no longer standing. */
+/** Rows use the same selection model as Windows Explorer: one click selects,
+ *  while double-click or Enter activates the selected item. */
 function selection() { return [...fx.selectedPaths]; }
 
 function select(path, { add = false, range = false } = {}) {
@@ -858,8 +857,15 @@ async function loadPreview() {
 function paintSelection() {
   if (!fx.host) return;
   for (const row of fx.host.querySelectorAll(".fx-row[data-fx-item]")) {
-    row.classList.toggle("picked", selection().some((path) => same(row.dataset.fxItem, path)));
-    row.setAttribute("aria-selected", String(selection().some((path) => same(row.dataset.fxItem, path))));
+    const picked = selection().some((path) => same(row.dataset.fxItem, path));
+    row.classList.toggle("picked", picked);
+    row.setAttribute("aria-selected", String(picked));
+    row.tabIndex = same(row.dataset.fxItem, fx.selected) ? 0 : -1;
+  }
+  const summary = fx.host.querySelector("[data-fx-summary]");
+  if (summary && fx.path !== THIS_PC && !fx.loading) {
+    const { shown, total } = visible();
+    summary.textContent = `${shown.length}${shown.length === total ? "" : ` of ${total}`} item${shown.length === 1 ? "" : "s"}${selection().length ? ` · ${selection().length} selected` : ""}`;
   }
 }
 
@@ -1181,16 +1187,16 @@ function render() {
       </div>`}
       ${fx.typesOpen && fx.path !== THIS_PC ? renderTypes(counts) : ""}
       <div class="fx-list${fx.thumbsOn ? " preview" : ""}" style="--fx-columns:${columnTemplate()};--fx-table-width:${columnTableWidth()}px">
-        <div class="fx-rows" role="grid" aria-multiselectable="true">
+        <div class="fx-rows" role="grid" aria-multiselectable="true" tabindex="0">
           <div class="fx-row head${fx.path === THIS_PC ? " static" : ""}" role="row">${visibleColumns().map((column) => `<button class="fx-cell ${column.id} sort${fx.sort === column.id ? " on" : ""}" type="button" data-fx-sort="${column.id}">${column.label}${fx.sort === column.id ? icon(fx.desc ? "arrow_downward" : "arrow_upward") : ""}<i class="fx-col-grip" data-fx-column-resize="${column.id}" aria-hidden="true"></i></button>`).join("")}</div>
           <div class="fx-row-body" role="rowgroup">${renderRows(shown, rowsScroll, rowsViewport)}</div>
         </div>
       </div>
       <footer class="fx-foot">
-        <span>${fx.path === THIS_PC
+        <span data-fx-summary>${fx.path === THIS_PC
           ? `${fx.roots.length} drive${fx.roots.length === 1 ? "" : "s"}`
           : fx.loading ? `${icon("progress_activity")}Reading this folder…`
-          : `${shown.length}${shown.length === total ? "" : ` of ${total}`} item${shown.length === 1 ? "" : "s"}${selection().length > 1 ? ` · ${selection().length} selected` : ""}`}</span>
+          : `${shown.length}${shown.length === total ? "" : ` of ${total}`} item${shown.length === 1 ? "" : "s"}${selection().length ? ` · ${selection().length} selected` : ""}`}</span>
         ${fx.listing?.skipped ? `<span title="Windows would not report these">${icon("warning")}${fx.listing.skipped} could not be read</span>` : ""}
         <span class="fx-foot-hint">${icon("mouse")}${isInsideZip(fx.path) ? "Inside a zip · read-only" : "Double-click to open · right-click for more"}</span>
       </footer>
@@ -1246,7 +1252,8 @@ function render() {
 // ----------------------------------------------------------------- wiring
 
 function activate(path, isDir) {
-  if (isDir) {
+  const entry = (fx.listing?.entries || []).find((item) => same(item.path, path));
+  if (isDir || entry?.isArchive) {
     openFolder(path);
     return;
   }
@@ -1389,15 +1396,22 @@ function mount(host) {
       event.preventDefault();
       return askDelete([del.dataset.fxDelete]);
     }
-    // One click opens a folder - that is the whole job of this tool. Files
-    // wait for the second click, because opening a program by accident is a
-    // worse mistake than an extra click.
+    // A click only changes selection. Opening is the deliberate double-click
+    // or Enter action for folders, zip archives, and files alike.
     const row = event.target.closest("[data-fx-item]");
     // The release that ends a drag is not a click on the row it started on.
     if (row && Date.now() - dragJustEnded > 400) {
       if (event.ctrlKey || event.shiftKey) select(row.dataset.fxItem, { add: event.ctrlKey, range: event.shiftKey });
-      else if (row.dataset.fxDir === "true") openFolder(row.dataset.fxItem);
       else select(row.dataset.fxItem);
+      row.focus();
+    } else if (!row && event.target.closest(".fx-row-body") && !event.target.closest("button, input")) {
+      fx.selected = "";
+      fx.selectedPaths.clear();
+      fx.selectionAnchor = "";
+      fx.previewUrl = "";
+      paintSelection();
+      paintPreview();
+      event.target.closest(".fx-rows")?.focus();
     }
   });
   host.addEventListener("dblclick", (event) => {
@@ -1458,9 +1472,10 @@ function mount(host) {
         event.preventDefault();
         const shown = visible().shown;
         fx.selectedPaths = new Set(shown.map((entry) => entry.path));
-        fx.selected = shown[0]?.path || "";
+        if (!shown.some((entry) => same(entry.path, fx.selected))) fx.selected = shown[0]?.path || "";
         fx.selectionAnchor = fx.selected;
         paintSelection();
+        paintPreview();
         return;
       }
       if (key === "n" && event.shiftKey) {
