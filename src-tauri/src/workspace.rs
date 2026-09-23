@@ -163,10 +163,12 @@ impl WindowGeometry {
     /// do the rest — it already pulls a placed window back onto a screen.
     fn is_usable(geometry: &Self) -> bool {
         let sane_size = |value: Option<f64>| {
-            value.is_none_or(|value| value.is_finite() && (200.0..=20_000.0).contains(&value))
+            value.map_or(true, |value| {
+                value.is_finite() && (200.0..=20_000.0).contains(&value)
+            })
         };
         let sane_pos = |value: Option<f64>| {
-            value.is_none_or(|value| value.is_finite() && value.abs() <= 40_000.0)
+            value.map_or(true, |value| value.is_finite() && value.abs() <= 40_000.0)
         };
         sane_size(geometry.width)
             && sane_size(geometry.height)

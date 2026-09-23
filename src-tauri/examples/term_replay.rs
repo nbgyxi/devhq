@@ -169,8 +169,8 @@ fn main() {
     }
 
     let mut drift = 0;
-    for y in 0..rows {
-        if shadow[y] != text(grid.row(y)) {
+    for (y, shadow_row) in shadow.iter().enumerate().take(rows) {
+        if *shadow_row != text(grid.row(y)) {
             if drift == 0 {
                 println!("--- rows the delta stream never repainted ---");
             }

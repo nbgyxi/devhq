@@ -816,6 +816,7 @@ fn area_instruction(area: &RouteOption) -> String {
     };
     format!("{} ({}): {}", area.name, area.description, guidance)
 }
+#[allow(clippy::too_many_arguments)]
 pub fn chat(
     app: AppHandle,
     root: PathBuf,

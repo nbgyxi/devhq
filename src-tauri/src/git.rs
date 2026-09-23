@@ -540,7 +540,7 @@ pub async fn git_action(request: ActionRequest) -> Result<ActionResult, String> 
             }
             _ => return Err("Unsupported Git action.".into()),
         };
-        git_command(&dir, &args.drain(..).collect::<Vec<_>>())
+        git_command(&dir, &std::mem::take(&mut args))
     })
     .await
     .map_err(|_| "Git action stopped unexpectedly.".to_string())?
@@ -549,7 +549,7 @@ pub async fn git_action(request: ActionRequest) -> Result<ActionResult, String> 
 fn git_command(dir: &Path, args: &[&str]) -> Result<ActionResult, String> {
     let mut cmd = std::process::Command::new("git");
     cmd.args(args)
-        .current_dir(&dir)
+        .current_dir(dir)
         .env("GIT_EDITOR", "true")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never");

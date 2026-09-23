@@ -1085,6 +1085,7 @@ async fn assistant_model_delete(app: AppHandle, model: String) -> Result<(), Str
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn assistant_chat(
     app: AppHandle,
     request_id: String,
@@ -1588,7 +1589,7 @@ pub fn scan_root(root: String) -> ScanResult {
         ports.dedup();
         project.ports = ports;
     }
-    projects.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    projects.sort_by_key(|a| a.name.to_lowercase());
 
     ScanResult {
         root,
@@ -3145,6 +3146,7 @@ pub fn run() {
             torrent::torrent_start,
             torrent::torrent_stop,
             torrent::torrent_restart,
+            torrent::torrent_recheck,
             torrent::torrent_add,
             torrent::torrent_action,
             torrent::torrent_only_files,
@@ -3159,7 +3161,7 @@ pub fn run() {
             torrent_assoc::torrent_assoc_unregister,
             torrent_assoc::torrent_assoc_choose_default,
             torrent_assoc::torrent_assoc_should_ask,
-            torrent_assoc::torrent_assoc_stop_asking,
+            torrent_assoc::torrent_assoc_mark_asked,
             time_tracker::time_tracker_status,
             time_tracker::time_tracker_sessions,
             time_tracker::time_tracker_set,
@@ -3354,7 +3356,7 @@ pub fn run() {
                         let _ = child.destroy();
                     }
                 }
-                tool_window::destroy_all(&window.app_handle());
+                tool_window::destroy_all(window.app_handle());
                 // The sidebar is a shell appbar: leaving it registered would keep
                 // the work area shrunk, and the taskbar auto-hidden, after the
                 // process is gone.

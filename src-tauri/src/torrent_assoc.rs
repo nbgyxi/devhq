@@ -41,6 +41,8 @@ pub struct Assoc {
     /// What opens them instead, when it is not WinT.
     pub file_owner: Option<String>,
     pub magnet_owner: Option<String>,
+    /// Whether this user has already answered the one-time default question.
+    pub asked: bool,
     /// False off Windows, where none of this exists.
     pub supported: bool,
 }
@@ -90,6 +92,7 @@ pub async fn torrent_assoc_unregister() -> Result<Assoc, String> {
 #[tauri::command]
 pub async fn torrent_assoc_choose_default() -> Result<Assoc, String> {
     crate::off_thread(|| {
+        set_asked();
         register()?;
         take_default()?;
         // Nothing left to ask: the legacy write was enough.
@@ -116,18 +119,18 @@ pub async fn torrent_assoc_should_ask() -> bool {
         assoc.supported
             && assoc.registered
             && !(assoc.default_file && assoc.default_magnet)
-            && !asked_never()
+            && !asked()
     })
     .await
     .unwrap_or(false)
 }
 
-/// Remember the answer to that question. `never` is the difference between
-/// "not now" — asked again next start, which is the point of asking at start
-/// — and "stop asking me".
+/// Remember that the question was answered. The answer itself does not
+/// matter: changing associations later belongs in the Torrents settings, not
+/// in another startup prompt.
 #[tauri::command]
-pub async fn torrent_assoc_stop_asking(never: bool) {
-    crate::off_thread(move || set_asked_never(never)).await;
+pub async fn torrent_assoc_mark_asked() {
+    crate::off_thread(set_asked).await;
 }
 
 #[cfg(not(windows))]
@@ -156,17 +159,15 @@ fn ask_windows(_assoc: &Assoc) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn asked_never() -> bool {
+fn asked() -> bool {
     true
 }
 
 #[cfg(not(windows))]
-fn set_asked_never(_never: bool) {}
+fn set_asked() {}
 
 #[cfg(windows)]
-use imp::{
-    ask_windows, asked_never, register, set_asked_never, status, take_default, unregister,
-};
+use imp::{ask_windows, asked, register, set_asked, status, take_default, unregister};
 
 #[cfg(windows)]
 mod imp {
@@ -375,6 +376,7 @@ mod imp {
             default_magnet,
             file_owner: if default_file { None } else { owner_name(&file_choice) },
             magnet_owner: if default_magnet { None } else { owner_name(&magnet_choice) },
+            asked: asked(),
             supported: true,
         }
     }
@@ -516,17 +518,13 @@ mod imp {
             .map_err(|e| format!("Could not open Windows' Default apps page: {e}"))
     }
 
-    /// "Stop asking me." Kept in WinT's own key rather than a file, because
-    /// it is read on the way up and the registry is already open here.
-    pub fn asked_never() -> bool {
-        get_sz(r"Software\WinT", Some("TorrentDefaultAsk")).as_deref() == Some("never")
+    /// Kept in WinT's own key because it is read on the way up and must be
+    /// shared by every window. The old `never` value also means answered.
+    pub fn asked() -> bool {
+        get_sz(r"Software\WinT", Some("TorrentDefaultAsk")).is_some()
     }
 
-    pub fn set_asked_never(never: bool) {
-        if never {
-            let _ = set_sz(r"Software\WinT", Some("TorrentDefaultAsk"), "never");
-        } else {
-            delete_value(r"Software\WinT", "TorrentDefaultAsk");
-        }
+    pub fn set_asked() {
+        let _ = set_sz(r"Software\WinT", Some("TorrentDefaultAsk"), "answered");
     }
 }

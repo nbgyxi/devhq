@@ -557,7 +557,7 @@ class TermView {
       '<div class="term-screen"></div><div class="term-cursor"></div>' +
       '<div class="term-link"></div></div>' +
       '<textarea class="term-input" tabindex="-1" aria-label="Terminal input" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>' +
-      '<div class="term-history-search" hidden><div class="term-history-query"><kbd>^R</kbd><span class="ms">search</span><input type="text" spellcheck="false" aria-label="Search command history"><small></small><button type="button" data-history-close aria-label="Close">&#215;</button></div><div class="term-history-filters"><button class="on" data-history-sort="recent">Recent</button><button data-history-sort="used">Most used</button><button data-history-sort="match">Best match</button></div><div class="term-history-results" role="listbox"></div><div class="term-history-foot"><span></span><div><button data-history-run>Run <kbd>Enter</kbd></button><button data-history-edit>Edit <kbd>Tab</kbd></button><small><kbd>^R</kbd> older &middot; <kbd>^S</kbd> newer &middot; <kbd>^G</kbd> cancel</small></div></div></div>';
+      '<div class="term-history-search" hidden><div class="term-history-query"><kbd>^R</kbd><span class="ms">search</span><input type="text" spellcheck="false" aria-label="Search command history"><small></small><button type="button" data-history-close aria-label="Close">&#215;</button></div><div class="term-history-filters"><button class="on" data-history-sort="recent">Recent</button><button data-history-sort="used">Most used</button><button data-history-sort="match">Best match</button></div><div class="term-history-results" role="listbox"></div><div class="term-history-foot"><span></span><div><button data-history-edit>Use <kbd>Enter</kbd></button><small><kbd>^R</kbd> older &middot; <kbd>^S</kbd> newer &middot; <kbd>^G</kbd> cancel</small></div></div></div>';
     this.scroll = host.querySelector(".term-scroll");
     this.history = host.querySelector(".term-history");
     this.screen = host.querySelector(".term-screen");
@@ -574,6 +574,7 @@ class TermView {
     this.historySearchResults = host.querySelector(".term-history-results");
     this.historySearchSort = "recent";
     this.historySearchIndex = 0;
+    this.historySearchOriginalDraft = "";
     /** The last place the pointer was, so pressing Ctrl without moving still
      *  lights up what is under it. */
     this.pointer = null;
@@ -733,20 +734,28 @@ class TermView {
       this.clearSelection();
       this.send(erase + seq);
     });
-    this.historySearchInput.addEventListener("input", () => { this.historySearchIndex = 0; this.renderHistorySearch(); });
+    this.historySearchInput.addEventListener("input", () => {
+      this.historySearchIndex = 0;
+      this.renderHistorySearch();
+      this.prefillHistoryResult();
+    });
     this.historySearch.addEventListener("keydown", (e) => this.historySearchKey(e));
     this.historySearch.addEventListener("click", (e) => {
       const sort = e.target.closest("[data-history-sort]");
       const row = e.target.closest("[data-history-index]");
-      if (sort) { this.historySearchSort = sort.dataset.historySort; this.historySearchIndex = 0; this.renderHistorySearch(); }
+      if (sort) {
+        this.historySearchSort = sort.dataset.historySort;
+        this.historySearchIndex = 0;
+        this.renderHistorySearch();
+        this.prefillHistoryResult();
+      }
       else if (row) {
         this.historySearchIndex = Number(row.dataset.historyIndex);
-        if (e.detail > 1) this.useHistoryResult(true);
-        else this.renderHistorySearch();
+        this.renderHistorySearch();
+        this.prefillHistoryResult(e.detail > 1);
       }
-      else if (e.target.closest("[data-history-run]")) this.useHistoryResult(true);
-      else if (e.target.closest("[data-history-edit]")) this.useHistoryResult(false);
-      else if (e.target.closest("[data-history-close]")) this.closeHistorySearch();
+      else if (e.target.closest("[data-history-edit]")) this.useHistoryResult();
+      else if (e.target.closest("[data-history-close]")) this.cancelHistorySearch();
     });
     this.host.addEventListener("paste", (e) => {
       e.preventDefault();
@@ -1266,20 +1275,31 @@ class TermView {
 
   openHistorySearch() {
     if (!this.historySearch.hidden) return;
+    this.historySearchOriginalDraft = this.commandDraft;
     this.historySearch.hidden = false;
     this.historySearchInput.value = this.commandDraft;
     this.historySearchIndex = 0;
     this.renderHistorySearch();
+    this.prefillHistoryResult();
+    const awaitingFirstMatch = !this.historySearchRows?.length;
     this.historySearchInput.focus();
     this.historySearchInput.select();
     loadNativeCommandHistory(true).then(() => {
-      if (!this.historySearch.hidden) this.renderHistorySearch();
+      if (!this.historySearch.hidden) {
+        this.renderHistorySearch();
+        if (awaitingFirstMatch) this.prefillHistoryResult();
+      }
     });
   }
 
   closeHistorySearch() {
     this.historySearch.hidden = true;
     this.host.focus();
+  }
+
+  cancelHistorySearch() {
+    this.replaceCommandDraft(this.historySearchOriginalDraft);
+    this.closeHistorySearch();
   }
 
   historyMatches() {
@@ -1322,49 +1342,47 @@ class TermView {
   historySearchKey(e) {
     e.stopPropagation();
     if (e.key === "Escape" || (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === "g" || e.key === "G"))) {
-      e.preventDefault(); this.closeHistorySearch();
+      e.preventDefault(); this.cancelHistorySearch();
     }
     else if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === "r" || e.key === "R")) {
       e.preventDefault();
       const count = this.historySearchRows?.length || 0;
-      if (count) this.historySearchIndex = (this.historySearchIndex + 1) % count;
+      if (count) this.historySearchIndex = Math.min(count - 1, this.historySearchIndex + 1);
       this.renderHistorySearch();
+      this.prefillHistoryResult();
     }
     else if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === "s" || e.key === "S")) {
       e.preventDefault();
       const count = this.historySearchRows?.length || 0;
-      if (count) this.historySearchIndex = (this.historySearchIndex - 1 + count) % count;
+      if (count) this.historySearchIndex = Math.max(0, this.historySearchIndex - 1);
       this.renderHistorySearch();
+      this.prefillHistoryResult();
     }
     else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       const delta = e.key === "ArrowDown" ? 1 : -1;
       this.historySearchIndex = Math.max(0, Math.min((this.historySearchRows?.length || 1) - 1, this.historySearchIndex + delta));
       this.renderHistorySearch();
-    } else if (e.key === "Enter") { e.preventDefault(); this.useHistoryResult(true); }
-    else if (e.key === "Tab") { e.preventDefault(); this.useHistoryResult(false); }
+      this.prefillHistoryResult();
+    } else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); this.useHistoryResult(); }
   }
 
-  useHistoryResult(run) {
+  prefillHistoryResult(close = false) {
     const command = this.historySearchRows?.[this.historySearchIndex]?.command;
     if (!command) return;
-    const row = this.rowEls[this.cy];
-    const rowText = row?.textContent || "";
-    const cursor = Math.min(this.cx, rowText.length);
-    const start = this.commandStart(rowText, cursor);
-    const visibleInput = start === null ? this.commandDraft : rowText.slice(start).trimEnd();
-    this.closeHistorySearch();
-    // Home and Delete are terminal editing keys rather than control characters,
-    // so shells without a Ctrl+K binding cannot print a literal ^K. Send the
-    // whole replacement as one write so a half-edited command never flashes.
-    const erase = "\x1b[H" + "\x1b[3~".repeat(visibleInput.length);
-    this.commandDraft = run ? "" : command;
-    if (run) {
-      const name = this.commandName(command);
-      if (name) this.lastCommandName = name;
-    }
-    term_invoke("term_write", { id: this.id, data: `${erase}${command}${run ? "\r" : ""}` })
-      .catch(() => {});
+    this.replaceCommandDraft(command);
+    if (close) this.closeHistorySearch();
+  }
+
+  replaceCommandDraft(command) {
+    const current = this.commandDraft;
+    const erase = "\x1b[H" + "\x1b[3~".repeat(current.length);
+    this.commandDraft = command;
+    term_invoke("term_write", { id: this.id, data: `${erase}${command}` }).catch(() => {});
+  }
+
+  useHistoryResult() {
+    this.prefillHistoryResult(true);
   }
 
   send(text) {

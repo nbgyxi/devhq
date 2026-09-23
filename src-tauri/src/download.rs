@@ -93,41 +93,6 @@ impl Rate {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rate_averages_several_seconds_of_progress() {
-        let start = Instant::now();
-        let mut rate = Rate {
-            samples: VecDeque::from([(start, 0)]),
-            speed: 0.0,
-        };
-
-        assert_eq!(
-            rate.update_at(start + Duration::from_secs(1), 1_000),
-            1_000.0
-        );
-        // A slow second affects the multi-second average instead of replacing
-        // the displayed rate with the latest interval's 100 B/s.
-        assert_eq!(rate.update_at(start + Duration::from_secs(2), 1_100), 550.0);
-    }
-
-    #[test]
-    fn rate_discards_samples_older_than_the_window() {
-        let start = Instant::now();
-        let mut rate = Rate {
-            samples: VecDeque::from([(start, 0)]),
-            speed: 0.0,
-        };
-
-        rate.update_at(start + Duration::from_secs(1), 1_000);
-        rate.update_at(start + Duration::from_secs(2), 2_000);
-        assert_eq!(rate.update_at(start + Duration::from_secs(7), 2_500), 100.0);
-    }
-}
-
 /// Re-reads a `.part` file into the hasher so a resumed transfer still ends up
 /// with the SHA-256 of the whole file. Reading a few GB back off the disk costs
 /// seconds; downloading them again costs minutes.
@@ -299,4 +264,39 @@ pub fn unzip(archive: &Path, dest: &Path, cancel: &AtomicBool) -> Result<(), Str
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_averages_several_seconds_of_progress() {
+        let start = Instant::now();
+        let mut rate = Rate {
+            samples: VecDeque::from([(start, 0)]),
+            speed: 0.0,
+        };
+
+        assert_eq!(
+            rate.update_at(start + Duration::from_secs(1), 1_000),
+            1_000.0
+        );
+        // A slow second affects the multi-second average instead of replacing
+        // the displayed rate with the latest interval's 100 B/s.
+        assert_eq!(rate.update_at(start + Duration::from_secs(2), 1_100), 550.0);
+    }
+
+    #[test]
+    fn rate_discards_samples_older_than_the_window() {
+        let start = Instant::now();
+        let mut rate = Rate {
+            samples: VecDeque::from([(start, 0)]),
+            speed: 0.0,
+        };
+
+        rate.update_at(start + Duration::from_secs(1), 1_000);
+        rate.update_at(start + Duration::from_secs(2), 2_000);
+        assert_eq!(rate.update_at(start + Duration::from_secs(7), 2_500), 100.0);
+    }
 }

@@ -28,7 +28,7 @@ fn remember_clipboard_return_window(window: &tauri::WebviewWindow) {
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
     let foreground = unsafe { GetForegroundWindow() };
     let picker = window.hwnd().ok();
-    if !foreground.0.is_null() && picker.is_none_or(|hwnd| hwnd != foreground) {
+    if !foreground.0.is_null() && (picker != Some(foreground)) {
         CLIPBOARD_RETURN_HWND.store(foreground.0 as isize, Ordering::Relaxed);
     }
 }
@@ -198,7 +198,7 @@ pub async fn search_show(
     if let Some(window) = app.get_webview_window(SEARCH_LABEL) {
         let light = theme.as_deref() == Some("light");
         window
-            .eval(&format!(
+            .eval(format!(
                 r#"document.documentElement.dataset.theme="{}";"#,
                 if light { "light" } else { "dark" }
             ))
@@ -290,8 +290,8 @@ pub async fn clipboard_picker_show(app: AppHandle, theme: Option<String>, bindin
     if !already_open { remember_clipboard_return_window(&window); }
     let light = theme.as_deref() == Some("light");
     let binding = serde_json::to_string(&binding.unwrap_or_else(|| "Ctrl+Shift+V".into())).map_err(|e| e.to_string())?;
-    window.eval(&format!(r#"document.documentElement.dataset.theme="{}";"#, if light { "light" } else { "dark" })).map_err(|e| e.to_string())?;
-    window.eval(&format!("window.wintClipboardBinding={binding};")).map_err(|e| e.to_string())?;
+    window.eval(format!(r#"document.documentElement.dataset.theme="{}";"#, if light { "light" } else { "dark" })).map_err(|e| e.to_string())?;
+    window.eval(format!("window.wintClipboardBinding={binding};")).map_err(|e| e.to_string())?;
     if !already_open { window.center().map_err(|e| e.to_string())?; }
     focus_search_window(&window)?;
     if activate.unwrap_or(true) {
@@ -343,7 +343,7 @@ pub async fn clipboard_picker_paste(app: AppHandle) -> Result<(), String> {
 pub async fn changelog_show(app: AppHandle, theme: Option<String>) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(CHANGELOG_LABEL) {
         let light = theme.as_deref() == Some("light");
-        window.eval(&format!(
+        window.eval(format!(
             r#"document.documentElement.dataset.theme="{}";"#,
             if light { "light" } else { "dark" }
         )).map_err(|e| e.to_string())?;
@@ -397,7 +397,7 @@ pub async fn maturity_show(
     let position = LogicalPosition::new(x.max(0.0), y.max(0.0));
     if let Some(window) = app.get_webview_window(MATURITY_LABEL) {
         window
-            .eval(&format!(
+            .eval(format!(
                 r#"document.documentElement.dataset.theme="{}";window.wintMaturityNote?.show("{}");"#,
                 if light { "light" } else { "dark" },
                 stage
@@ -466,7 +466,7 @@ pub async fn calendar_show(
     let position = LogicalPosition::new(x.max(0.0), y.max(0.0));
     if let Some(window) = app.get_webview_window(CALENDAR_LABEL) {
         window
-            .eval(&format!(
+            .eval(format!(
                 r#"document.documentElement.dataset.theme="{}";window.wintCalendar?.show();"#,
                 if light { "light" } else { "dark" }
             ))
@@ -539,7 +539,7 @@ fn label_for(id: &str, instance: Option<&str>) -> String {
 fn valid_instance(instance: Option<&str>) -> Result<Option<String>, String> {
     match instance {
         None => Ok(None),
-        Some(value) if value.is_empty() => Ok(None),
+        Some("") => Ok(None),
         Some(value)
             if value.len() <= 32
                 && value
@@ -585,6 +585,7 @@ pub fn tool_bridge_state_take(id: String) -> Result<Option<serde_json::Value>, S
 /// separate child webview. A blocked tool renderer therefore cannot block the
 /// shell renderer. The shell remains responsible for the child's rectangle.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn tool_embedded_show(
     app: AppHandle,
     id: String,
@@ -636,7 +637,7 @@ pub async fn tool_embedded_show(
     }
     if let Some(webview) = app.get_webview(&label) {
         webview
-            .eval(&format!(
+            .eval(format!(
                 r#"document.documentElement.dataset.theme="{}";"#,
                 if light { "light" } else { "dark" }
             ))

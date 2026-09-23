@@ -23,23 +23,28 @@
 //! stops reading therefore costs a bounded amount of memory, not an
 //! ever-growing backlog.
 
-use std::collections::{HashMap, HashSet};
+use std::any::TypeId;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::IoSlice;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use librqbit::{
-    AddTorrent, AddTorrentOptions, Api, ListenerOptions, Session,
-    SessionOptions, SessionPersistenceConfig,
     api::{ApiTorrentListOpts, TorrentDetailsResponse, TorrentIdOrHash},
     limits::LimitsConfig,
+    storage::{
+        filesystem::FilesystemStorageFactory, BoxStorageFactory, StorageFactory, TorrentStorage,
+    },
+    AddTorrent, AddTorrentOptions, Api, ListenerOptions, ManagedTorrentShared, Session,
+    SessionOptions, SessionPersistenceConfig, TorrentMetadata,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{mpsc, Mutex};
 
 /// A `.torrent` is a few hundred kilobytes of bencode at most. Anything
 /// dramatically larger is not a torrent file, and is refused before a parser
@@ -62,6 +67,111 @@ const MISSING_CHECK_EVERY: Duration = Duration::from_secs(10);
 /// limit, which exists to keep the disk usable while checking.
 const MAX_CONCURRENT_INITIALIZING: usize = 2;
 const DEFAULT_PEER_LIMIT: usize = 128;
+const RATE_WINDOW: Duration = Duration::from_secs(5);
+const RATE_REFRESH: Duration = Duration::from_secs(1);
+
+fn recovery_mismatches() -> &'static StdMutex<HashSet<String>> {
+    static FOUND: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
+    FOUND.get_or_init(|| StdMutex::new(HashSet::new()))
+}
+
+fn authorized_checks() -> &'static StdMutex<HashSet<String>> {
+    static ALLOWED: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
+    ALLOWED.get_or_init(|| StdMutex::new(HashSet::new()))
+}
+
+/// librqbit's filesystem backend sizes every selected file to its final length
+/// during initialization. Those sparse files consume little physical space on
+/// Windows, but Explorer presents a 20 GB torrent as 20 GB of files before a
+/// byte has arrived. Delegate all real I/O to librqbit and skip only that eager
+/// sizing step; positioned writes grow each file naturally as pieces arrive.
+#[derive(Default, Clone, Copy)]
+struct GrowingFilesFactory;
+
+impl StorageFactory for GrowingFilesFactory {
+    type Storage = Box<dyn TorrentStorage>;
+
+    fn create(
+        &self,
+        shared: &ManagedTorrentShared,
+        metadata: &TorrentMetadata,
+    ) -> Result<Self::Storage> {
+        Ok(Box::new(GrowingFiles {
+            inner: Box::new(FilesystemStorageFactory::default().create(shared, metadata)?),
+            info_hash: shared.info_hash.as_string().to_ascii_lowercase(),
+        }))
+    }
+
+    fn is_type_id(&self, type_id: TypeId) -> bool {
+        // JSON persistence supports the filesystem backend. This wrapper is
+        // exactly that backend with eager set_len() suppressed.
+        type_id == TypeId::of::<FilesystemStorageFactory>()
+    }
+
+    fn clone_box(&self) -> BoxStorageFactory {
+        Box::new(*self)
+    }
+}
+
+struct GrowingFiles {
+    inner: Box<dyn TorrentStorage>,
+    info_hash: String,
+}
+
+impl TorrentStorage for GrowingFiles {
+    fn init(&mut self, shared: &ManagedTorrentShared, metadata: &TorrentMetadata) -> Result<()> {
+        self.inner.init(shared, metadata)
+    }
+
+    fn pread_exact(&self, file_id: usize, offset: u64, buf: &mut [u8]) -> Result<()> {
+        if let Err(error) = self.inner.pread_exact(file_id, offset, buf) {
+            if authorized_checks()
+                .lock()
+                .map(|allowed| allowed.contains(&self.info_hash))
+                .unwrap_or(false)
+            {
+                return Err(error);
+            }
+            buf.fill(0);
+            if let Ok(mut found) = recovery_mismatches().lock() {
+                found.insert(self.info_hash.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn pwrite_all(&self, file_id: usize, offset: u64, buf: &[u8]) -> Result<()> {
+        self.inner.pwrite_all(file_id, offset, buf)
+    }
+
+    fn pwrite_all_vectored(
+        &self,
+        file_id: usize,
+        offset: u64,
+        bufs: [IoSlice<'_>; 2],
+    ) -> Result<usize> {
+        self.inner.pwrite_all_vectored(file_id, offset, bufs)
+    }
+
+    fn remove_file(&self, file_id: usize, filename: &Path) -> Result<()> {
+        self.inner.remove_file(file_id, filename)
+    }
+
+    fn remove_directory_if_empty(&self, path: &Path) -> Result<()> {
+        self.inner.remove_directory_if_empty(path)
+    }
+
+    fn ensure_file_length(&self, _file_id: usize, _length: u64) -> Result<()> {
+        Ok(())
+    }
+
+    fn take(&self) -> Result<Box<dyn TorrentStorage>> {
+        Ok(Box::new(Self {
+            inner: self.inner.take()?,
+            info_hash: self.info_hash.clone(),
+        }))
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Settings — owned by the helper, so a restart comes back the way it went down
@@ -123,6 +233,83 @@ struct State {
     state_dir: PathBuf,
     settings: Settings,
     queue: Queue,
+    rates: HashMap<usize, RateWindow>,
+}
+
+#[derive(Default)]
+struct RateWindow {
+    samples: VecDeque<(std::time::Instant, u64, u64)>,
+    shown_at: Option<std::time::Instant>,
+    download_bps: u64,
+    upload_bps: u64,
+    shown_downloaded: u64,
+}
+
+impl RateWindow {
+    fn update(&mut self, now: std::time::Instant, downloaded: u64, uploaded: u64) -> (u64, u64) {
+        if self
+            .samples
+            .back()
+            .is_some_and(|(_, old_down, old_up)| downloaded < *old_down || uploaded < *old_up)
+        {
+            self.samples.clear();
+            self.shown_at = None;
+            self.download_bps = 0;
+            self.upload_bps = 0;
+            self.shown_downloaded = downloaded;
+        }
+        self.samples.push_back((now, downloaded, uploaded));
+        let cutoff = now.checked_sub(RATE_WINDOW).unwrap_or(now);
+        while self.samples.len() > 2 && self.samples[1].0 <= cutoff {
+            self.samples.pop_front();
+        }
+        if self
+            .shown_at
+            .is_some_and(|shown| now.duration_since(shown) < RATE_REFRESH)
+        {
+            return (self.download_bps, self.upload_bps);
+        }
+        let Some(&(first_at, first_down, first_up)) = self.samples.front() else {
+            return (0, 0);
+        };
+        let elapsed = now.duration_since(first_at).as_secs_f64();
+        if elapsed >= RATE_WINDOW.as_secs_f64() {
+            self.download_bps = (downloaded.saturating_sub(first_down) as f64 / elapsed) as u64;
+            self.upload_bps = (uploaded.saturating_sub(first_up) as f64 / elapsed) as u64;
+            self.shown_downloaded = downloaded;
+            self.shown_at = Some(now);
+        }
+        (self.download_bps, self.upload_bps)
+    }
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use super::*;
+
+    #[test]
+    fn rate_uses_only_the_last_five_seconds() {
+        let start = std::time::Instant::now();
+        let mut rate = RateWindow::default();
+        assert_eq!(rate.update(start, 0, 0), (0, 0));
+        assert_eq!(rate.update(start + Duration::from_secs(1), 5_000, 0).0, 0);
+        assert_eq!(rate.update(start + Duration::from_secs(2), 6_000, 0).0, 0);
+        // The initial burst is outside the window now: the last five seconds
+        // contain 5,000 bytes, so the displayed rate is 1,000 B/s.
+        assert_eq!(rate.update(start + Duration::from_secs(6), 10_000, 0).0, 1_000);
+    }
+
+    #[test]
+    fn rate_is_held_between_one_second_display_updates() {
+        let start = std::time::Instant::now();
+        let mut rate = RateWindow::default();
+        rate.update(start, 0, 0);
+        assert_eq!(rate.update(start + Duration::from_secs(5), 5_000, 0).0, 1_000);
+        assert_eq!(
+            rate.update(start + Duration::from_millis(5_300), 5_900, 0).0,
+            1_000
+        );
+    }
 }
 
 impl State {
@@ -239,22 +426,36 @@ struct Snapshot {
     settings: Settings,
 }
 
-fn build_snapshot(state: &State, queued: &HashSet<usize>, missing: &HashSet<usize>) -> Snapshot {
+fn build_snapshot(state: &mut State, queued: &HashSet<usize>, missing: &HashSet<usize>) -> Snapshot {
     let list = state
         .api
         .api_torrent_list_ext(ApiTorrentListOpts { with_stats: true });
     let mut torrents = Vec::with_capacity(list.torrents.len());
+    let mut live_ids = HashSet::with_capacity(list.torrents.len());
+    let now = std::time::Instant::now();
     for t in list.torrents {
         let id = t.id.unwrap_or(0);
+        live_ids.insert(id);
         let stats = match &t.stats {
             Some(stats) => stats,
             None => continue,
         };
         let live = stats.live.as_ref();
+        let rate = state.rates.entry(id).or_default();
+        let (download_bps, upload_bps) =
+            rate.update(now, stats.progress_bytes, stats.uploaded_bytes);
+        let eta_seconds = (download_bps > 0)
+            .then(|| stats.total_bytes.saturating_sub(rate.shown_downloaded) / download_bps);
         // Files gone from disk outranks everything the engine would say: a
         // torrent happily "seeding" nothing is the misleading case this is
         // here to prevent.
-        let state_word = if missing.contains(&id) {
+        let mismatched = recovery_mismatches()
+            .lock()
+            .map(|found| found.contains(&t.info_hash))
+            .unwrap_or(false);
+        let state_word = if mismatched {
+            "needs-check"
+        } else if missing.contains(&id) {
             "missing"
         } else { match &stats.state {
             librqbit::TorrentStatsState::Initializing { .. } => "initializing",
@@ -276,22 +477,21 @@ fn build_snapshot(state: &State, queued: &HashSet<usize>, missing: &HashSet<usiz
             progress_bytes: stats.progress_bytes,
             uploaded_bytes: stats.uploaded_bytes,
             finished: stats.finished,
-            download_bps: live.map(|l| l.download_speed.as_bytes()).unwrap_or(0),
-            upload_bps: live.map(|l| l.upload_speed.as_bytes()).unwrap_or(0),
+            download_bps,
+            upload_bps,
             peers: live.map(|l| l.snapshot.peer_stats.live).unwrap_or(0),
             peers_queued: live.map(|l| l.snapshot.peer_stats.queued).unwrap_or(0),
             // Worked out here rather than taken from the engine, whose own
             // estimate is a display string with no number behind it.
-            eta_seconds: live.map(|l| l.download_speed.as_bytes()).filter(|bps| *bps > 0).map(
-                |bps| stats.total_bytes.saturating_sub(stats.progress_bytes) / bps,
-            ),
+            eta_seconds,
         });
     }
+    state.rates.retain(|id, _| live_ids.contains(id));
     let session = state.api.api_session_stats();
     Snapshot {
+        download_bps: torrents.iter().map(|torrent| torrent.download_bps).sum(),
+        upload_bps: torrents.iter().map(|torrent| torrent.upload_bps).sum(),
         torrents,
-        download_bps: session.download_speed.as_bytes(),
-        upload_bps: session.upload_speed.as_bytes(),
         peers: session.peers.live,
         uptime_seconds: session.uptime_seconds,
         settings: state.settings.clone(),
@@ -442,7 +642,13 @@ async fn reconcile(state: &State, missing: &HashSet<usize>) -> HashSet<usize> {
             continue;
         }
 
-        let should_run = if missing.contains(&id) {
+        let mismatched = recovery_mismatches()
+            .lock()
+            .map(|found| found.contains(hash))
+            .unwrap_or(false);
+        let should_run = if mismatched {
+            false
+        } else if missing.contains(&id) {
             // Nothing to serve and nothing to resume: seeding a torrent whose
             // files have been deleted only advertises data that is not there.
             false
@@ -985,6 +1191,17 @@ async fn main() -> Result<()> {
         std::env::temp_dir().join("wint-torrent")
     });
     std::fs::create_dir_all(&state_dir).context("cannot create the torrent state folder")?;
+    if let Ok(entries) = std::fs::read_dir(&state_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Some(hash) = name.strip_prefix("recheck-") {
+                if let Ok(mut allowed) = authorized_checks().lock() {
+                    allowed.insert(hash.to_ascii_lowercase());
+                }
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
 
     let mut settings: Settings = std::fs::read(state_dir.join("settings.json"))
         .ok()
@@ -1027,6 +1244,9 @@ async fn main() -> Result<()> {
                 folder: Some(state_dir.clone()),
             }),
             fastresume: true,
+            // Let files grow with downloaded pieces. The stock backend calls
+            // set_len() for the torrent's full logical size up front.
+            default_storage_factory: Some(Box::new(GrowingFilesFactory)),
             // Hash-checking is the disk-heaviest thing the engine does. Two at
             // a time keeps the drive answering other programs.
             concurrent_init_limit: Some(MAX_CONCURRENT_INITIALIZING),
@@ -1049,6 +1269,7 @@ async fn main() -> Result<()> {
         state_dir,
         settings,
         queue,
+        rates: HashMap::new(),
     }));
 
     {
@@ -1080,8 +1301,8 @@ async fn main() -> Result<()> {
             let mut last_missing_check = std::time::Instant::now() - MISSING_CHECK_EVERY;
             loop {
                 tick.tick().await;
-                let guard = state.lock().await;
-                let snapshot = build_snapshot(&guard, &queued, &missing);
+                let mut guard = state.lock().await;
+                let snapshot = build_snapshot(&mut guard, &queued, &missing);
                 drop(guard);
                 if let Ok(data) = serde_json::to_value(&snapshot) {
                     writer.event("snapshot", data);

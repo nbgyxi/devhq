@@ -90,6 +90,7 @@ fn repo_redact(line: &str) -> String {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn repo_add(findings: &mut Vec<RepoFinding>, severity: &'static str, id: &str, title: &str, why: &str, path: &Path, line: usize, sample: &str, verdict: &str) {
     let location = format!("{}:{}", path.display(), line);
     if let Some(found) = findings.iter_mut().find(|f| f.id == id) {

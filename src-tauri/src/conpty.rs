@@ -176,7 +176,7 @@ impl ConPty {
                 environment.retain(|(key, _)| !key.eq_ignore_ascii_case(name));
                 environment.push(((*name).to_string(), value.clone()));
             }
-            environment.sort_by(|a, b| a.0.to_ascii_uppercase().cmp(&b.0.to_ascii_uppercase()));
+            environment.sort_by_key(|a| a.0.to_ascii_uppercase());
             let mut environment_block = Vec::<u16>::new();
             for (name, value) in environment {
                 environment_block.extend(

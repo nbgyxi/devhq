@@ -2606,7 +2606,8 @@ pub(crate) unsafe fn app_window_for(exe: &str, name: &str, want_app: Option<&str
     let mut handles: Vec<isize> = Vec::new();
     let _ = EnumWindows(Some(collect), LPARAM(std::ptr::addr_of_mut!(handles) as isize));
     let wanted = want_app.map(str::to_ascii_lowercase).filter(|app| !app.is_empty());
-    let mut best: Option<((u8, (u8, u8, u8, i64)), HWND)> = None;
+    type WindowRank = (u8, (u8, u8, u8, i64));
+    let mut best: Option<(WindowRank, HWND)> = None;
     for other in handles {
         let candidate = HWND(other as *mut c_void);
         if window_exe(app_window(candidate)).to_ascii_lowercase() != want
@@ -2633,7 +2634,7 @@ pub(crate) unsafe fn app_window_for(exe: &str, name: &str, want_app: Option<&str
             }
             None => 0,
         };
-        if best.is_none_or(|(had, _)| (same, rank) > had) {
+        if best.map_or(true, |(had, _)| (same, rank) > had) {
             best = Some(((same, rank), candidate));
         }
     }

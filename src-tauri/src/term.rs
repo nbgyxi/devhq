@@ -1652,10 +1652,7 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
     let handle = session.pty.lock().unwrap().output();
     std::thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
-        loop {
-            let Some(n) = conpty::read_chunk(handle, &mut buf) else {
-                break;
-            };
+        while let Some(n) = conpty::read_chunk(handle, &mut buf) {
             // Where the parser stands after this chunk is what says whether the
             // stream may later be cut here, so the bytes are kept alongside the
             // feed rather than before it.
@@ -1949,6 +1946,7 @@ fn term_list_now(project_path: Option<String>) -> Vec<TermInfo> {
 /// webview never loads, leaving a black frame — and the front end never gets
 /// its reply either. Hence `async` plus [`off_thread`].
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn term_popout(
     app: AppHandle,
     id: String,

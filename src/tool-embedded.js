@@ -45,6 +45,11 @@
     bridge.request("ready", { error: String(error) }).catch(() => {});
     return;
   }
+  // This pulse is deliberately owned by the child renderer's event loop.
+  // If that loop wedges, the parent stops hearing it and can replace this
+  // native webview; recovery code inside a frozen renderer cannot run.
+  const heartbeat = setInterval(() => bridge.request("heartbeat").catch(() => {}), 1000);
+  window.addEventListener("pagehide", () => clearInterval(heartbeat), { once: true });
   const label = context?.tool?.name || queryName;
   const modules = {
     ports: "ports-tool.js", dns: "dns.js", hosts: "hosts.js", network: "network.js", "path-ping": "path-ping.js",

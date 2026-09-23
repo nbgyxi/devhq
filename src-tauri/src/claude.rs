@@ -138,6 +138,7 @@ struct Ended {
 /// `claude:line` and finishes with `claude:end`, so a turn that takes two
 /// minutes does not sit inside a command that long.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn claude_send(
     app: AppHandle,
     window: String,

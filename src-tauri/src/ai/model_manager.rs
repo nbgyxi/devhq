@@ -16,6 +16,7 @@ pub fn cancel_pull() {
 pub fn delete_model(root: PathBuf, model: String) -> Result<(), String> {
     crate::assistant::delete_model(root, model)
 }
+#[allow(clippy::too_many_arguments)]
 pub fn chat(
     app: AppHandle,
     root: PathBuf,

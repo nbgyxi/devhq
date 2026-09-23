@@ -256,7 +256,7 @@ pub async fn gemini_terminal_command(
         let command = if login || id.is_empty() {
             terminal_command(&path, &model_arg)
         } else {
-            terminal_command(&path, &format!("--resume {id} {model_arg}").trim().to_string())
+            terminal_command(&path, format!("--resume {id} {model_arg}").trim())
         };
         Ok(GeminiLaunch {
             command,

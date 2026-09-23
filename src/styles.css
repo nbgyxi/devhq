@@ -1790,7 +1790,7 @@ html[dir="rtl"] .changelog-pop{right:auto;left:0;direction:rtl;text-align:right}
 .term-history-results>button{width:100%;height:26px;display:grid;grid-template-columns:42px minmax(0,1fr) 52px 92px;align-items:center;gap:7px;padding:0 11px;color:var(--dim);text-align:left;font-size:11px}.term-history-results>button.on{background:color-mix(in srgb,var(--accent) 12%,var(--bg2));color:var(--text)}
 .term-history-results code{color:var(--accent);font-size:9px}.term-history-results strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-weight:600}.term-history-results span,.term-history-results em{text-align:right;font-style:normal;color:var(--dim);white-space:nowrap}
 .term-history-empty{display:grid;place-items:center;height:70px;color:var(--dim)}
-.term-history-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:38px;padding:5px 10px;border-top:1px solid var(--line);color:var(--dim);font-size:10px}.term-history-foot>div{display:flex;align-items:center;gap:7px}.term-history-foot button{height:27px;padding:0 10px;border:1px solid var(--line);border-radius:6px;color:var(--text);background:var(--bg3)}.term-history-foot [data-history-run]{border-color:transparent;background:var(--accent);color:#08111f;font-weight:700}
+.term-history-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:38px;padding:5px 10px;border-top:1px solid var(--line);color:var(--dim);font-size:10px}.term-history-foot>div{display:flex;align-items:center;gap:7px}.term-history-foot button{height:27px;padding:0 10px;border:1px solid var(--line);border-radius:6px;color:var(--text);background:var(--bg3)}.term-history-foot [data-history-edit]{border-color:transparent;background:var(--accent);color:#08111f;font-weight:700}
 .term-history-search kbd{padding:1px 4px;border:1px solid var(--line);border-radius:3px;background:var(--bg3);font:inherit;font-size:9px}
 
 /* ---------- popped-out terminal window ---------- */
@@ -4940,10 +4940,11 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-banner{flex:none;display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg2);font-size:12px}
 /* Without this the bar keeps its display:flex and shows as an empty box. */
 .tr-banner[hidden]{display:none}
-.tr-banner .ms{color:var(--amber)}
+.tr-banner>.ms{flex:0 0 auto;color:var(--amber)}
 .tr-banner.bad{border-color:rgba(242,84,91,.4);background:rgba(242,84,91,.08)}
-.tr-banner.bad .ms{color:var(--red)}
-.tr-banner span{flex:1;min-width:0}
+.tr-banner.bad>.ms{color:var(--red)}
+.tr-banner>span{flex:1;min-width:0}
+.tr-banner>.btn{flex:0 0 auto}
 .tr-ask{flex:none;display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid rgba(90,160,255,.35);border-radius:10px;background:rgba(90,160,255,.08);font-size:12px}
 .tr-ask[hidden]{display:none}
 .tr-ask .ms{color:var(--accent)}

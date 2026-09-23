@@ -259,7 +259,7 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
                 wint_lib::dns::lookup(
                     &need(&args, 2, "name")?,
                     args.get(3).map(String::as_str).unwrap_or(""),
-                    &args.get(4..).unwrap_or(&[]).to_vec(),
+                    args.get(4..).unwrap_or(&[]),
                 ),
                 pretty,
             ),

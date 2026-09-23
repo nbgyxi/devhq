@@ -186,7 +186,7 @@ pub fn scan(raw_path: String) -> Result<SpaceScan, String> {
             is_dir,
         });
     }
-    children.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    children.sort_by_key(|item| std::cmp::Reverse(item.bytes));
     let bytes = children.iter().map(|item| item.bytes).sum();
     Ok(SpaceScan {
         path: canonical.to_string_lossy().into_owned(),
@@ -281,7 +281,7 @@ where
     if !active() {
         return Err("Scan cancelled.".into());
     }
-    children.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    children.sort_by_key(|item| std::cmp::Reverse(item.bytes));
     let bytes = children.iter().map(|item| item.bytes).sum();
     Ok(SpaceScan {
         path: canonical.to_string_lossy().into_owned(),

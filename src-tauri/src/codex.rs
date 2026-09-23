@@ -323,7 +323,7 @@ pub async fn codex_terminal_command(
         let command = if id.is_empty() {
             terminal_command(&path, &model_arg)
         } else {
-            terminal_command(&path, &format!("{model_arg} resume {id}").trim().to_string())
+            terminal_command(&path, format!("{model_arg} resume {id}").trim())
         };
         Ok(CodexLaunch {
             command,

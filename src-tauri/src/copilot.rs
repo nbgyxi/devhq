@@ -288,7 +288,7 @@ pub async fn copilot_terminal_command(
         let command = if id.is_empty() {
             terminal_command(&path, &model_arg)
         } else {
-            terminal_command(&path, &format!("--resume={id} {model_arg}").trim().to_string())
+            terminal_command(&path, format!("--resume={id} {model_arg}").trim())
         };
         Ok(CopilotLaunch {
             command,

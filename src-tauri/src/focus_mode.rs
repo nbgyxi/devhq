@@ -149,7 +149,7 @@ fn rules() -> (Vec<String>, Vec<String>) {
 fn matches(title: &str, exe: &str, apps: &[String], words: &[String]) -> bool {
     let title = title.to_lowercase();
     let exe = exe_stem(exe);
-    (!exe.is_empty() && apps.iter().any(|app| *app == exe))
+    (!exe.is_empty() && apps.contains(&exe))
         || words.iter().any(|word| title.contains(word.as_str()))
 }
 
@@ -331,7 +331,7 @@ pub async fn focus_mode_windows(app: AppHandle) -> Vec<FocusWindow> {
             .and_then(|recent| recent.as_ref().map(|map| map.values().cloned().collect()))
             .unwrap_or_default();
         past.retain(|seen| !showing.contains(&key(&seen.exe, &seen.title)));
-        past.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+        past.sort_by_key(|seen| std::cmp::Reverse(seen.last_seen));
         result.extend(past.into_iter().map(|seen| FocusWindow {
             id: String::new(),
             title: seen.title,

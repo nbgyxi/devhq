@@ -16,13 +16,23 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.140.1",
+      date: "2026-09-23",
+      title: "Compatibility and icon cleanup",
+      changes: [
+        ["fix", "The hearing icon is now included in the app instead of appearing as a missing symbol."],
+        ["fix", "The Rust backend once again builds against the minimum supported Rust version."],
+        ["better", "Rust lint checks now pass cleanly across the app, command-line tool, helper, tests and examples."],
+      ],
+    },
+    {
       version: "0.140.0",
       date: "2026-09-23",
       title: "Torrents: click one anywhere and it opens here",
       changes: [
         ["new", "WinT can now be the app Windows opens torrents with. Opening the Torrents tool puts WinT on Windows' list of apps that handle .torrent files and magnet links, then asks once whether you want it to be the one that gets them. The Settings tab shows what has them today and lets you change it whenever - or take WinT back off the list."],
         ["new", "Double-click a .torrent in Files, or follow a magnet link in a browser, and WinT comes up on Torrents with it already added - whether WinT was running or not."],
-        ["new", "Once you have opened Torrents, WinT asks on the way up whether it should be the app that gets them - and takes them where Windows lets it, or puts Windows' own Always use this app dialog in front of you where it does not. Not now asks again next time; Never ask again does not."],
+        ["new", "Once you have opened Torrents, WinT asks whether it should be the app that gets them. Whichever answer you choose is remembered permanently; association changes remain available in Torrents settings."],
       ],
     },
     {

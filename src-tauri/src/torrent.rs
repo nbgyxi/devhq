@@ -56,10 +56,6 @@ const HEARTBEAT_DEAD: Duration = Duration::from_secs(5);
 const MEMORY_CEILING_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// More requests outstanding than this means nothing is coming back.
 const PENDING_CEILING: usize = 64;
-/// Restarts allowed before the engine is left down for the user to decide.
-const MAX_RESTARTS: u32 = 5;
-const RESTART_WINDOW: Duration = Duration::from_secs(120);
-
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -68,6 +64,11 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// Set while `start` is putting a helper up, so the watchdog and a second
 /// caller do not both try at once.
 static STARTING: AtomicBool = AtomicBool::new(false);
+
+fn last_engine_restart() -> &'static Mutex<Option<Instant>> {
+    static LAST: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+    LAST.get_or_init(|| Mutex::new(None))
+}
 
 // ---------------------------------------------------------------------------
 
@@ -92,6 +93,60 @@ struct Running {
     child: Child,
     pid: u32,
     engine: Option<String>,
+    #[cfg(windows)]
+    _kill_job: KillJob,
+}
+
+/// A Windows job whose last handle belongs to WinT. `KILL_ON_JOB_CLOSE` is
+/// enforced by the kernel, so an abnormal WinT exit kills the helper even if
+/// neither process gets a chance to run shutdown code.
+#[cfg(windows)]
+struct KillJob(windows::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+unsafe impl Send for KillJob {}
+
+#[cfg(windows)]
+impl Drop for KillJob {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn contain_helper(child: &Child) -> Result<KillJob, String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        SetInformationJobObject,
+    };
+    use windows::core::PCWSTR;
+
+    unsafe {
+        let job = CreateJobObjectW(None, PCWSTR::null())
+            .map_err(|error| format!("Windows could not contain the torrent engine: {error}"))?;
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if let Err(error) = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            std::ptr::addr_of!(limits).cast(),
+            std::mem::size_of_val(&limits) as u32,
+        ) {
+            let _ = windows::Win32::Foundation::CloseHandle(job);
+            return Err(format!("Windows could not secure the torrent engine: {error}"));
+        }
+        let process = HANDLE(child.as_raw_handle());
+        if let Err(error) = AssignProcessToJobObject(job, process) {
+            let _ = windows::Win32::Foundation::CloseHandle(job);
+            return Err(format!("Windows could not contain the torrent engine: {error}"));
+        }
+        Ok(KillJob(job))
+    }
 }
 
 /// The pipe into the helper, behind a lock of its own rather than inside
@@ -267,6 +322,14 @@ fn start_inner() -> EngineStatus {
         Ok(child) => child,
         Err(error) => return set_failed(&format!("The torrent engine would not start: {error}")),
     };
+    #[cfg(windows)]
+    let kill_job = match contain_helper(&child) {
+        Ok(job) => job,
+        Err(error) => {
+            let _ = child.kill();
+            return set_failed(&error);
+        }
+    };
     let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         let _ = child.kill();
         return set_failed("The torrent engine started without a pipe to talk over.");
@@ -287,6 +350,8 @@ fn start_inner() -> EngineStatus {
             child,
             pid,
             engine: None,
+            #[cfg(windows)]
+            _kill_job: kill_job,
         });
         engine.state = "starting".into();
         engine.message = None;
@@ -424,14 +489,49 @@ fn read_lines(generation: u64, reader: BufReader<std::process::ChildStdout>) {
 
     // The pipe closed: the helper is gone. Say so, and let the watchdog be the
     // one that decides about restarting.
+    let mut changed = false;
+    let mut auto_restart = false;
     if let Ok(mut engine) = engine().lock() {
         if engine.generation == generation {
             engine.running = None;
-            if engine.state == "running" || engine.state == "starting" {
-                engine.state = "not-responding".into();
-                engine.message = Some("The torrent engine stopped.".into());
+            // `starting` is an intentional restart already in progress.
+            // Only a helper that vanished while running is self-healed here.
+            if engine.state == "running" {
+                let repeated = last_engine_restart()
+                    .lock()
+                    .ok()
+                    .and_then(|last| *last)
+                    .is_some_and(|last| last.elapsed() < Duration::from_secs(60));
+                if repeated {
+                    engine.state = "failed".into();
+                    engine.message = Some(
+                        "The torrent engine stopped again within a minute. Restart it when you are ready."
+                            .into(),
+                    );
+                } else {
+                    if let Ok(mut last) = last_engine_restart().lock() {
+                        *last = Some(Instant::now());
+                    }
+                    engine.restarts = engine.restarts.saturating_add(1);
+                    engine.state = "starting".into();
+                    engine.message = Some("The torrent engine stopped and is restarting.".into());
+                    auto_restart = true;
+                }
+                changed = true;
             }
         }
+    }
+    if changed {
+        broadcast(&status());
+    }
+    if auto_restart {
+        std::thread::Builder::new()
+            .name("torrent-auto-restart".into())
+            .spawn(|| {
+                let restarted = start();
+                broadcast(&restarted);
+            })
+            .ok();
     }
 }
 
@@ -633,20 +733,16 @@ fn watchdog() {
                     }
 
                     if fault.is_some() {
-                        // A window's worth of restarts, then stop trying: a
-                        // helper that dies every two seconds is a bug to be
-                        // reported, not a thing to keep relaunching.
-                        let fresh = engine
-                            .restart_window_started
-                            .map(|at| at.elapsed() > RESTART_WINDOW)
-                            .unwrap_or(true);
-                        if fresh {
-                            engine.restart_window_started = Some(Instant::now());
-                            engine.restarts = 0;
-                        }
-                        allow_restart = engine.restarts < MAX_RESTARTS;
+                        allow_restart = last_engine_restart()
+                            .lock()
+                            .ok()
+                            .and_then(|last| *last)
+                            .map_or(true, |last| last.elapsed() >= Duration::from_secs(60));
                         if allow_restart {
-                            engine.restarts += 1;
+                            if let Ok(mut last) = last_engine_restart().lock() {
+                                *last = Some(Instant::now());
+                            }
+                            engine.restarts = engine.restarts.saturating_add(1);
                         }
                         engine.state = "not-responding".into();
                         engine.message = fault.clone();
@@ -660,13 +756,13 @@ fn watchdog() {
                         start();
                         broadcast(&status());
                     } else {
+                        stop_inner("stopped");
                         if let Ok(mut engine) = engine().lock() {
                             engine.state = "failed".into();
                             engine.message = Some(format!(
-                                "{fault} It has been restarted too many times; start it again when you are ready."
+                                "{fault} It failed again within a minute; restart it when you are ready."
                             ));
                         }
-                        stop_inner("stopped");
                         broadcast(&status());
                     }
                 }
@@ -761,6 +857,9 @@ pub async fn torrent_stop() -> EngineStatus {
 pub async fn torrent_restart() -> Result<EngineStatus, String> {
     off!({
         stop_inner("restarting");
+        if let Ok(mut last) = last_engine_restart().lock() {
+            *last = Some(Instant::now());
+        }
         if let Ok(mut engine) = engine().lock() {
             engine.restarts = 0;
             engine.restart_window_started = None;
@@ -770,6 +869,32 @@ pub async fn torrent_restart() -> Result<EngineStatus, String> {
             return Err(status
                 .message
                 .unwrap_or_else(|| "The torrent engine would not start.".into()));
+        }
+        Ok(status)
+    })
+}
+
+/// Forget one torrent's saved piece map and restart the helper. On the next
+/// load librqbit verifies that torrent from disk; every other torrent keeps
+/// its fast-resume data.
+#[tauri::command]
+pub async fn torrent_recheck(info_hash: String) -> Result<EngineStatus, String> {
+    off!({
+        if info_hash.len() != 40 || !info_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("That torrent has an invalid info hash.".into());
+        }
+        stop_inner("restarting");
+        let dir = state_dir().ok_or("The torrent state folder is unavailable.")?;
+        let bitfield = dir.join(format!("{}.bitv", info_hash.to_ascii_lowercase()));
+        if bitfield.exists() {
+            std::fs::remove_file(&bitfield)
+                .map_err(|e| format!("Could not reset that torrent's saved check: {e}"))?;
+        }
+        std::fs::write(dir.join(format!("recheck-{}", info_hash.to_ascii_lowercase())), [])
+            .map_err(|e| format!("Could not schedule that file check: {e}"))?;
+        let status = start();
+        if status.state == "failed" {
+            return Err(status.message.unwrap_or_else(|| "The torrent engine would not restart.".into()));
         }
         Ok(status)
     })

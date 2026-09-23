@@ -27,6 +27,7 @@
    *  styles.css. */
   const ROW = 34;
   const FILE_ROW = 28;
+  const UI_CRASH_KEY = "wint:torrent-ui-crash";
   /** Rows drawn above and below the viewport, so a fast scroll does not show
    *  blank space before the next frame. */
   const OVERSCAN = 6;
@@ -37,6 +38,9 @@
     engine: { state: "stopped" },
     /** The newest snapshot. Replaced wholesale; never appended to. */
     snap: null,
+    /** Shell-opened files shown before the engine has finished accepting them. */
+    pendingAdds: [],
+    pendingSequence: 0,
     /** Torrent id the detail pane is showing. */
     selected: null,
     /** The file list for `selected`, fetched once per selection. */
@@ -59,6 +63,7 @@
      *  than trusting the backend to report its own trouble: if the supervisor
      *  is the thing that is stuck, no event it would have sent ever arrives. */
     lastSnapshotAt: 0,
+    engineStartedAt: 0,
     quiet: false,
     tick: 0,
     settings: null,
@@ -70,7 +75,39 @@
     assocTried: false,
     listening: false,
     unlisten: [],
+    recoveryTimer: 0,
   };
+
+  function recoverView(error) {
+    console.error("Torrent view failed", error);
+    const now = Date.now();
+    let previous = 0;
+    let canRemember = true;
+    try { previous = Number(sessionStorage.getItem(UI_CRASH_KEY)) || 0; } catch { canRemember = false; }
+    if (canRemember && (!previous || now - previous >= 60000)) {
+      try {
+        sessionStorage.setItem(UI_CRASH_KEY, String(now));
+        window.location.reload();
+        return;
+      } catch { /* fall through to the manual recovery control */ }
+    }
+
+    // A second failure soon after an automatic reload is not healed by
+    // reloading forever. Leave a usable, explicit recovery action instead.
+    const host = st.host;
+    if (!host) return;
+    host.innerHTML = `<div class="tr-page"><div class="tr-banner bad tr-ui-failed">
+      ${icon("error")}<span>The torrent view failed again. The engine and downloads can continue in the background.</span>
+      <button type="button" class="btn" data-tr-refresh>${icon("refresh")}<span>Reload the view</span></button>
+    </div></div>`;
+    host.querySelector("[data-tr-refresh]")?.addEventListener("click", () => window.location.reload());
+  }
+
+  function guarded(action) {
+    return (event) => {
+      try { return action(event); } catch (error) { recoverView(error); }
+    };
+  }
 
   // ------------------------------------------------------------------ format
 
@@ -100,6 +137,8 @@
     // Checked ahead of everything else: a torrent whose files have been
     // deleted must never sit there claiming to seed them.
     if (row.state === "missing") return { text: "Files missing", tone: "bad" };
+    if (row.state === "adding") return { text: "Adding…", tone: "warn" };
+    if (row.state === "needs-check") return { text: "File state changed", tone: "warn" };
     if (row.state === "error") return { text: row.error || "Error", tone: "bad" };
     if (row.state === "initializing") return { text: "Checking files", tone: "warn" };
     if (row.state === "queued") return { text: "Waiting its turn", tone: "muted" };
@@ -118,6 +157,11 @@
 
   function mount(node) {
     st.host = node;
+    clearTimeout(st.recoveryTimer);
+    st.recoveryTimer = setTimeout(() => {
+      if (!st.host?.isConnected) return;
+      try { sessionStorage.removeItem(UI_CRASH_KEY); } catch { /* unavailable */ }
+    }, 60000);
     node.innerHTML = `
       <div class="tr-page">
         <div class="tr-banner" data-tr-banner hidden></div>
@@ -165,8 +209,8 @@
         <section class="tr-view" data-tr-view="settings" hidden></section>
       </div>`;
 
-    node.addEventListener("click", click);
-    node.addEventListener("keydown", keydown);
+    node.addEventListener("click", guarded(click));
+    node.addEventListener("keydown", guarded(keydown));
     node.addEventListener("contextmenu", (event) => {
       const el = event.target.closest("[data-tr-id]");
       if (!el) return;
@@ -198,11 +242,19 @@
     st.tick = setInterval(() => {
       if (!st.host?.isConnected) return clearInterval(st.tick);
       const running = st.engine?.state === "running" || st.engine?.state === "starting";
-      const silent = st.lastSnapshotAt > 0 && Date.now() - st.lastSnapshotAt > 4000;
-      if (running && silent !== st.quiet) { st.quiet = silent; drawBanner(); }
+      const heardAt = st.lastSnapshotAt || st.engineStartedAt;
+      const silent = running && heardAt > 0 && Date.now() - heardAt > 4000;
+      if (running && silent !== st.quiet) {
+        st.quiet = silent;
+        drawBanner();
+        if (silent) invoke("torrent_status")
+          .then((engine) => { st.engine = engine; drawBanner(); })
+          .catch(() => {});
+      }
     }, 1000);
     // Bring the engine up. Until it answers, the list shows skeletons; the
     // page is interactive the whole time.
+    st.engineStartedAt = Date.now();
     invoke("torrent_start")
       .then((engine) => { st.engine = engine; drawBanner(); })
       .catch((error) => { st.engine = { state: "failed", message: String(error) }; drawBanner(); });
@@ -278,14 +330,14 @@
       }
       drawCount();
     } catch (error) {
-      note(`That update could not be drawn: ${error?.message || error}`);
+      recoverView(error);
     }
   }
 
   function drawCount() {
     const el = st.host.querySelector("[data-tr-count]");
     if (!el) return;
-    const rows = st.snap?.torrents || [];
+    const rows = [...st.pendingAdds, ...(st.snap?.torrents || [])];
     if (!rows.length) return void (el.textContent = "");
     const downloading = rows.filter((r) => !r.finished && r.state === "live").length;
     const seeding = rows.filter((r) => r.finished && r.state === "live").length;
@@ -312,8 +364,9 @@
     if (st.quiet && (s.state === "running" || s.state === "starting")) {
       el.hidden = false;
       el.className = "tr-banner";
-      el.innerHTML = `${icon("warning")}<span>The torrent engine has gone quiet — what is below is the last it said.
-        It may just be busy checking files.</span>
+      el.innerHTML = `${icon("warning")}<span>${st.lastSnapshotAt
+        ? "No updates have arrived from the torrent engine. The list below may be stale."
+        : "The torrent engine started, but it has not sent any torrent data."}</span>
         <button type="button" class="btn" data-tr-restart>${icon("restart_alt")}<span>Restart the engine</span></button>`;
       return;
     }
@@ -363,8 +416,8 @@
     const empty = host.querySelector("[data-tr-empty]");
     if (!scroll || !box) return;
 
-    const rows = st.snap?.torrents || [];
-    if (!st.snap) return drawSkeleton();
+    const rows = [...st.pendingAdds, ...(st.snap?.torrents || [])];
+    if (!st.snap && !rows.length) return drawSkeleton();
 
     spacer.style.height = `${rows.length * ROW}px`;
     if (!rows.length) {
@@ -423,6 +476,7 @@
     const status = statusWords(row);
     const pct = percent(row);
     if (el.dataset.trId !== String(row.id)) el.dataset.trId = String(row.id);
+    el.disabled = row.state === "adding";
     el.classList.toggle("on", st.selected === row.id);
     el.querySelector(".tr-dot").className = `tr-dot ${status.tone}`;
     setText(el.querySelector(".tr-name span"), row.name);
@@ -478,7 +532,11 @@
     // markup each time would destroy and recreate the very buttons the pointer
     // is over — a click landing between the mousedown and the mouseup would
     // simply be lost. Everything below is written in place instead.
-    if (!pane.querySelector("[data-tr-dhead]")) {
+    // Development reloads and restored views can leave a pane built by an
+    // older version of this renderer in the DOM. Rebuild when any required
+    // control is absent; otherwise one missing node would throw on every
+    // snapshot and make both refreshing and row selection appear dead.
+    if (!pane.querySelector("[data-tr-dhead]") || !pane.querySelector("[data-tr-recheck]")) {
       // Two columns: what this torrent is and what you can do to it on the
       // left, its contents on the right. The file list is the part that wants
       // room and the part you read down, so it gets the width and its own
@@ -488,6 +546,7 @@
           <div class="tr-dtitle"><strong></strong><small></small></div>
           <div class="tr-dactions">
             <button type="button" class="btn" data-tr-open>${icon("folder")}<span>Open folder</span></button>
+            <button type="button" class="btn" data-tr-recheck hidden>${icon("fact_check")}<span>Check files</span></button>
             <button type="button" class="btn" data-tr-toggle><span class="ms" aria-hidden="true">pause</span><span>Pause</span></button>
             <button type="button" class="btn danger" data-tr-remove>${icon("delete")}<span>Remove</span></button>
           </div>
@@ -521,6 +580,10 @@
       `${bytes(row.totalBytes)} · ${pct.toFixed(pct >= 100 || pct === 0 ? 0 : 1)}% complete · ${row.outputFolder}${cut}`);
     drawFileHead();
     const toggle = pane.querySelector("[data-tr-toggle]");
+    const recheck = pane.querySelector("[data-tr-recheck]");
+    if (recheck) recheck.hidden = row.state !== "needs-check";
+    if (!toggle) return;
+    toggle.hidden = row.state === "needs-check";
     setText(toggle.querySelector(".ms"), paused ? "play_arrow" : "pause");
     setText(toggle.querySelector("span:last-child"), paused ? "Resume" : "Pause");
     drawFiles();
@@ -767,6 +830,8 @@
 
   function markAsked() {
     try { localStorage.setItem(ASK_KEY, "1"); } catch { /* private mode */ }
+    if (st.assoc) st.assoc.asked = true;
+    invoke("torrent_assoc_mark_asked").catch(() => {});
   }
 
   /** Collect whatever Explorer or a browser handed to WinT. Draining, not
@@ -835,7 +900,7 @@
     if (!el) return;
     const a = st.assoc;
     const settled = a && a.defaultFile && a.defaultMagnet;
-    if (!a || !a.supported || settled || asked()) {
+    if (!a || !a.supported || settled || a.asked || asked()) {
       el.hidden = true;
       el.innerHTML = "";
       return;
@@ -848,7 +913,7 @@
           owner ? ` They open in ${esc(owner)} today.` : ""
         }</span>
       <button type="button" class="btn primary" data-tr-assoc-default>${icon("done")}<span>Make WinT the default</span></button>
-      <button type="button" class="btn" data-tr-ask-dismiss>${icon("close")}<span>Not now</span></button>`;
+      <button type="button" class="btn" data-tr-ask-dismiss>${icon("close")}<span>Keep current default</span></button>`;
   }
 
   /** The Settings tab's version, which says what Windows actually thinks
@@ -931,8 +996,20 @@
 
     if (t.closest("[data-tr-restart]")) {
       note("Restarting the torrent engine…");
+      st.lastSnapshotAt = 0;
+      st.engineStartedAt = Date.now();
+      st.quiet = false;
       return void invoke("torrent_restart")
         .then((engine) => { st.engine = engine; note("The torrent engine was restarted."); drawBanner(); })
+        .catch((error) => note(String(error)));
+    }
+
+    if (t.closest("[data-tr-recheck]")) {
+      const row = (st.snap?.torrents || []).find((item) => item.id === st.selected);
+      if (!row) return;
+      note(`Checking ${row.name}…`);
+      return void invoke("torrent_recheck", { infoHash: row.infoHash })
+        .then((engine) => { st.engine = engine; drawBanner(); })
         .catch((error) => note(String(error)));
     }
 
@@ -1022,26 +1099,48 @@
    *  keeps it brisk and keeps the pool free; the rest queue here, where the
    *  page can still say what it is doing. */
   async function addFiles(paths) {
-    const queue = paths.slice();
+    const queue = paths.map((path) => {
+      const filename = String(path).split(/[\\/]/).pop() || "Torrent";
+      const pending = {
+        id: --st.pendingSequence,
+        path,
+        name: filename.replace(/\.torrent$/i, "") || filename,
+        state: "adding",
+        totalBytes: 0,
+        progressBytes: 0,
+        uploadedBytes: 0,
+        finished: false,
+        downloadBps: 0,
+        uploadBps: 0,
+        peers: 0,
+      };
+      st.pendingAdds.push(pending);
+      return pending;
+    });
     const total = queue.length;
     let added = 0;
     let done = 0;
     let failed = "";
+    drawRows();
+    drawCount();
     const progress = () => note(total === 1 ? "Adding…" : `Adding ${done} / ${total} torrents…`);
     progress();
 
     const worker = async () => {
       for (;;) {
-        const path = queue.shift();
-        if (!path) return;
+        const pending = queue.shift();
+        if (!pending) return;
         try {
-          await invoke("torrent_add", { path });
+          await invoke("torrent_add", { path: pending.path });
           added++;
         } catch (error) {
           failed = String(error);
         }
+        st.pendingAdds = st.pendingAdds.filter((item) => item !== pending);
         done++;
         progress();
+        drawRows();
+        drawCount();
       }
     };
     await Promise.all(Array.from({ length: Math.min(3, total) }, worker));

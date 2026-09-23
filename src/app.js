@@ -1903,6 +1903,12 @@ const embeddedToolFailedIds = new Set();
  *  into the webview's URL and its bridge filters on it, so it has to survive
  *  for as long as that webview does - it can no longer be rolled per visit. */
 const embeddedToolSessions = new Map();
+/** Last proof that each isolated renderer's JavaScript loop was pumping. */
+const embeddedToolLastBeat = new Map();
+/** Automatic rebuilds are attempted once; a repeat inside this window waits
+ *  for the user so a broken tool cannot churn WebView2 processes forever. */
+const embeddedToolLastRecovery = new Map();
+let embeddedToolHealthBusy = false;
 
 function sessionForTool(id) {
   let session = embeddedToolSessions.get(id);
@@ -1955,10 +1961,36 @@ async function evictEmbeddedTool(id) {
   embeddedToolAwakeIds.delete(id);
   embeddedToolFailedIds.delete(id);
   embeddedToolSessions.delete(id);
+  embeddedToolLastBeat.delete(id);
   if (embeddedToolMountedId === id) embeddedToolMountedId = "";
   if (embeddedToolReadyId === id) embeddedToolReadyId = "";
   await invoke("tool_embedded_destroy", { id }).catch(() => {});
 }
+
+async function checkEmbeddedToolHealth() {
+  const id = state.activeView === "isolated-tool" ? state.isolatedToolId : "";
+  if (!id || embeddedToolHealthBusy || !embeddedToolReadyId || embeddedToolReadyId !== id) return;
+  const beat = embeddedToolLastBeat.get(id);
+  // Allow startup its own deadline. Once ready, four missed one-second pulses
+  // means the renderer is no longer able to handle clicks or draw updates.
+  if (!beat || Date.now() - beat < 5000) return;
+  embeddedToolHealthBusy = true;
+  const previous = embeddedToolLastRecovery.get(id) || 0;
+  const repeated = Date.now() - previous < 60000;
+  try {
+    if (!repeated) {
+      embeddedToolLastRecovery.set(id, Date.now());
+      await retryEmbeddedTool(id);
+    } else {
+      const tool = toolById(id);
+      await evictEmbeddedTool(id);
+      failEmbeddedToolLoading(tool, `${tool?.name || id} stopped responding again. Reload it when you are ready.`);
+    }
+  } finally {
+    embeddedToolHealthBusy = false;
+  }
+}
+setInterval(checkEmbeddedToolHealth, 1000);
 
 /** Stop showing a tool. A healthy one is only hidden - that is what makes
  *  coming back a show rather than a rebuild - but one that failed to open is
@@ -7933,6 +7965,7 @@ async function wireToolPopoutEvents() {
         // The tool has mounted and drawn. Both the slot's stand-in and the
         // status line have been telling the truth until exactly now.
         embeddedToolReadyId = fromId;
+        embeddedToolLastBeat.set(fromId, Date.now());
         const failure = request.value?.error;
         // A tool that reported a failure is not worth keeping alive: leaving
         // it destroys the webview so the next visit tries again. Its own page
@@ -7947,6 +7980,9 @@ async function wireToolPopoutEvents() {
           if (failure) failEmbeddedToolLoading(toolById(fromId), String(failure));
           else hideEmbeddedToolLoading();
         }
+        await reply(true, { accepted: true });
+      } else if (request.action === "heartbeat") {
+        embeddedToolLastBeat.set(fromId, Date.now());
         await reply(true, { accepted: true });
       } else if (request.action === "context") {
         const tool = toolById(fromId);
@@ -8118,10 +8154,19 @@ async function startProjectsWindow() {
  *  as the proof that torrents are something this install does. An install
  *  that never touches them is never asked.
  *
- *  "Not now" means exactly that and the question comes back next start, which
- *  is the whole point of asking here rather than once and never again.
+ *  Every answer is final. Association changes remain available in Torrents
+ *  settings, but this startup question is never repeated.
  */
 async function askTorrentDefault() {
+  // Older builds remembered an answer in this webview only. Promote that
+  // evidence to the shared backend flag before deciding whether to ask.
+  try {
+    if (localStorage.getItem("wint.torrents.association-asked") === "1") {
+      await invoke("torrent_assoc_mark_asked");
+      return;
+    }
+  } catch { /* the backend flag remains authoritative */ }
+
   let ask = false;
   try {
     ask = await invoke("torrent_assoc_should_ask");
@@ -8134,15 +8179,13 @@ async function askTorrentDefault() {
       + "Make it the default and clicking one anywhere - in Files, or in a browser - "
       + "brings it straight to the Torrents tool.",
     confirmLabel: "Make WinT the default",
-    alternateLabel: "Never ask again",
-    cancelLabel: "Not now",
+    cancelLabel: "Keep current default",
     icon: "link",
   }) ?? Promise.resolve(false));
 
-  if (answer === "alternate") {
-    invoke("torrent_assoc_stop_asking", { never: true }).catch(() => {});
-    return;
-  }
+  // Record the answer before doing anything that can open a Windows dialog or
+  // fail. Choosing either button settles this question permanently.
+  await invoke("torrent_assoc_mark_asked").catch(() => {});
   if (answer !== true) return;
 
   // Windows may put its own dialog up over this one, and it waits for a

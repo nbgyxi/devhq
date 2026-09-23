@@ -354,7 +354,7 @@ window.wintHome = (() => {
         detail: awake.value?.active ? "On · holding sleep off, records nothing" : "Off · Windows sleeps as usual",
       } : pending("awake", "coffee", "Keep Awake", "keep-awake"),
       torrent ? {
-        key: "torrent", icon: "download", label: "Torrent engine", on: ["running", "starting"].includes(torrent.value?.state), records: false, tool: "torrents",
+        key: "torrent", icon: "download", label: "Torrent engine", on: ["running", "starting", "not-responding"].includes(torrent.value?.state), records: false, tool: "torrents",
         detail: torrent.error ? "Could not be read" : torrent.value?.state === "running"
           ? `Running${torrent.value.engine ? ` · ${torrent.value.engine}` : ""}${torrent.value.pid ? ` · PID ${torrent.value.pid}` : ""}`
           : torrent.value?.state === "starting" ? "Starting…"
@@ -426,6 +426,7 @@ window.wintHome = (() => {
         home.readings.set("torrent", { value: await invoke(on ? "torrent_start" : "torrent_stop") });
       }
     } catch (error) {
+      if (key === "torrent") home.readings.set("torrent", { value: { state: "failed", message: String(error) } });
       console.error(`Could not switch ${label}`, error);
     }
     home.switching.delete(key);

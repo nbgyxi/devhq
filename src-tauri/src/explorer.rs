@@ -713,7 +713,7 @@ pub fn thumbnail(raw_path: String, size: u32) -> Result<Option<String>, String> 
     if let Some(url) = shell_thumbnail(&path, size)? {
         return Ok(Some(url));
     }
-    Ok(decode_thumbnail(&path, size)?)
+    decode_thumbnail(&path, size)
 }
 
 #[cfg(windows)]
