@@ -1247,23 +1247,6 @@ fn app_version(app: AppHandle) -> String {
     app.package_info().version.to_string()
 }
 
-#[tauri::command]
-fn app_name(app: AppHandle) -> String {
-    app.package_info().name.clone()
-}
-
-/// Development has a separate identity but `tauri dev` can still inherit the
-/// base config's compiled Windows icon. Set the live window and tray icon from
-/// an embedded asset so the shell, the notification area, and WinT's sidebar
-/// all see the same unmistakable Dev badge.
-fn branded_icon(app: &AppHandle) -> Option<tauri::image::Image<'static>> {
-    if app.package_info().name == "WinT Dev" {
-        tauri::image::Image::from_bytes(include_bytes!("../icons-dev/128x128.png")).ok()
-    } else {
-        app.default_window_icon().map(|icon| icon.clone().to_owned())
-    }
-}
-
 /// True only for binaries built by `package-msix.ps1`, which sets
 /// `WINT_OFFICIAL_BUILD` for that compile. A `npm run dev` or plain release
 /// build leaves it unset, so What's new never treats a local exe as a Store
@@ -3017,17 +3000,11 @@ pub fn run() {
                 }
             }
 
-            let live_icon = branded_icon(app.handle());
-            if let (Some(window), Some(icon)) = (app.get_webview_window("main"), live_icon.as_ref()) {
-                let _ = window.set_icon(icon.clone());
-            }
-
-            let product_name = app.package_info().name.clone();
-            let open = MenuItem::with_id(app, "tray-open", format!("Open {product_name}"), true, None::<&str>)?;
+            let open = MenuItem::with_id(app, "tray-open", "Open WinT", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
             let mut tray = TrayIconBuilder::with_id("wint-tray")
-                .tooltip(product_name)
+                .tooltip("WinT")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| {
@@ -3058,8 +3035,8 @@ pub fn run() {
                         show_main_window(tray.app_handle());
                     }
                 });
-            if let Some(icon) = live_icon {
-                tray = tray.icon(icon);
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
             }
             let tray = tray.build(app)?;
             // Started by Windows at sign-in: WinT shows itself the way the
@@ -3117,7 +3094,6 @@ pub fn run() {
             ai_agent_verify,
             ai_agent_signin,
             app_version,
-            app_name,
             project_run_command,
             app_is_official_build,
             app_build_checksum,
@@ -3481,7 +3457,6 @@ pub fn run() {
         ai_agent_verify,
         ai_agent_signin,
         app_version,
-        app_name,
         project_run_command,
         app_is_official_build,
         app_build_checksum,

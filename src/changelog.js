@@ -16,6 +16,14 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.140.26",
+      date: "2026-09-23",
+      title: "One WinT again",
+      changes: [
+        ["fix", "Development and Store builds once again use the same WinT identity, storage, icon, single-instance handoff, and torrent registration instead of behaving like two competing apps."],
+      ],
+    },
+    {
       version: "0.140.25",
       date: "2026-09-23",
       title: "The live Dev process carries its badge",
