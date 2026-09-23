@@ -107,3 +107,9 @@ strip = true
 # toolchain changes. `cargo sweep --time 30` is what prunes it.
 [profile.dev]
 debug = "line-tables-only"
+
+# The torrent engine is a crate of its own, built into the same `target/`, so
+# that librqbit and its transitive tree are linked into the helper executable
+# and never into `wint.exe`. The app talks to it over a pipe; see `torrent.rs`.
+[workspace]
+members = ["torrent-helper"]

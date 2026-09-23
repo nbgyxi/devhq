@@ -22,9 +22,6 @@ pub struct MediaState {
     source_id: String,
     launch_target: String,
     playing: bool,
-    position_seconds: i64,
-    duration_seconds: i64,
-    can_seek: bool,
     can_previous: bool,
     can_next: bool,
 }
@@ -219,9 +216,6 @@ pub async fn media_state(app: AppHandle) -> Result<MediaState, String> {
         .map_err(|error| error.to_string())?
         .await
         .map_err(|error| error.to_string())?;
-    let timeline = session
-        .GetTimelineProperties()
-        .map_err(|error| error.to_string())?;
     let playback = session
         .GetPlaybackInfo()
         .map_err(|error| error.to_string())?;
@@ -276,15 +270,6 @@ pub async fn media_state(app: AppHandle) -> Result<MediaState, String> {
             .PlaybackStatus()
             .map(|status| status == PlaybackStatus::Playing)
             .unwrap_or(false),
-        position_seconds: timeline
-            .Position()
-            .map(|value| value.Duration / 10_000_000)
-            .unwrap_or(0),
-        duration_seconds: timeline
-            .EndTime()
-            .map(|value| value.Duration / 10_000_000)
-            .unwrap_or(0),
-        can_seek: controls.IsPlaybackPositionEnabled().unwrap_or(false),
         can_previous: controls.IsPreviousEnabled().unwrap_or(false),
         can_next: controls.IsNextEnabled().unwrap_or(false),
     })
@@ -338,26 +323,6 @@ pub async fn media_command(command: String) -> Result<bool, String> {
         "previous" => session.TrySkipPreviousAsync(),
         "toggle" => session.TryTogglePlayPauseAsync(),
         "next" => session.TrySkipNextAsync(),
-        "back10" | "ahead10" => {
-            let timeline = session
-                .GetTimelineProperties()
-                .map_err(|error| error.to_string())?;
-            let delta = if command == "back10" {
-                -100_000_000
-            } else {
-                100_000_000
-            };
-            let start = timeline
-                .StartTime()
-                .map(|value| value.Duration)
-                .unwrap_or(0);
-            let end = timeline
-                .EndTime()
-                .map(|value| value.Duration)
-                .unwrap_or(i64::MAX);
-            let position = timeline.Position().map(|value| value.Duration).unwrap_or(0);
-            session.TryChangePlaybackPositionAsync(position.saturating_add(delta).clamp(start, end))
-        }
         _ => return Err("Unknown media command.".into()),
     }
     .map_err(|error| error.to_string())?;

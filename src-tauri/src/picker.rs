@@ -173,3 +173,71 @@ unsafe fn show_save(
     std::fs::write(&path, text.as_bytes()).map_err(|e| format!("Could not write the file: {e}"))?;
     Ok(Some(path))
 }
+
+/// Shows the open dialog filtered to `.torrent` files, and returns every file
+/// chosen. Like the folder picker, this runs on a worker thread: the dialog
+/// pumps a modal loop of its own, and that loop must never be the one drawing
+/// the WinT window.
+pub fn pick_torrent_files(owner: isize) -> Result<Vec<String>, String> {
+    unsafe {
+        let entered =
+            CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_ok();
+        let picked = show_torrents(owner);
+        if entered {
+            CoUninitialize();
+        }
+        picked
+    }
+}
+
+unsafe fn show_torrents(owner: isize) -> Result<Vec<String>, String> {
+    use windows::Win32::UI::Shell::FOS_ALLOWMULTISELECT;
+
+    let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
+        .map_err(|e| format!("Could not open the file picker: {e}"))?;
+
+    let options = dialog.GetOptions().unwrap_or_default();
+    let _ = dialog.SetOptions(
+        options | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_ALLOWMULTISELECT,
+    );
+    let _ = dialog.SetTitle(PCWSTR(HSTRING::from("Choose torrent files").as_ptr()));
+
+    let torrents = HSTRING::from("Torrent files");
+    let pattern = HSTRING::from("*.torrent");
+    let all = HSTRING::from("All files");
+    let any = HSTRING::from("*.*");
+    let filters = [
+        COMDLG_FILTERSPEC {
+            pszName: PCWSTR(torrents.as_ptr()),
+            pszSpec: PCWSTR(pattern.as_ptr()),
+        },
+        COMDLG_FILTERSPEC {
+            pszName: PCWSTR(all.as_ptr()),
+            pszSpec: PCWSTR(any.as_ptr()),
+        },
+    ];
+    let _ = dialog.SetFileTypes(&filters);
+
+    let hwnd = (owner != 0).then_some(HWND(owner as *mut core::ffi::c_void));
+    if let Err(e) = dialog.Show(hwnd) {
+        if e.code().0 == CANCELLED {
+            return Ok(Vec::new());
+        }
+        return Err(format!("Could not open the file picker: {e}"));
+    }
+
+    let items = dialog
+        .GetResults()
+        .map_err(|e| format!("Could not read the chosen files: {e}"))?;
+    let count = items.GetCount().unwrap_or(0);
+    let mut paths = Vec::with_capacity(count as usize);
+    for index in 0..count {
+        let Ok(item) = items.GetItemAt(index) else { continue };
+        let Ok(wide) = item.GetDisplayName(SIGDN_FILESYSPATH) else { continue };
+        if let Ok(path) = wide.to_string() {
+            paths.push(path);
+        }
+        CoTaskMemFree(Some(wide.0 as *const core::ffi::c_void));
+    }
+    Ok(paths)
+}

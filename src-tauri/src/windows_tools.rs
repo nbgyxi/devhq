@@ -798,9 +798,17 @@ pub fn active_window() -> Result<ActiveWindow, String> {
 
 const WINDOW_BOUNDS_CS: &str = r#"Add-Type -TypeDefinition @'
 using System;using System.Collections.Generic;using System.Runtime.InteropServices;using System.Text;
-public static class WinTWindows { public delegate bool CB(IntPtr h,IntPtr l); [StructLayout(LayoutKind.Sequential)]struct R{public int l,t,r,b;} [DllImport("user32.dll")]static extern bool EnumWindows(CB c,IntPtr l);[DllImport("user32.dll")]static extern bool IsWindowVisible(IntPtr h);[DllImport("user32.dll")]static extern bool IsIconic(IntPtr h);[DllImport("user32.dll")]static extern bool GetWindowRect(IntPtr h,out R r);[DllImport("user32.dll")]static extern int GetWindowText(IntPtr h,StringBuilder s,int n);[DllImport("user32.dll")]static extern IntPtr MonitorFromRect(ref R r,uint f);[DllImport("user32.dll")]static extern bool SetWindowPos(IntPtr h,IntPtr a,int x,int y,int w,int z,uint f);
-public static object[] List(){var o=new List<object>();EnumWindows((h,l)=>{R r;if(!IsWindowVisible(h)||IsIconic(h)||!GetWindowRect(h,out r))return true;var s=new StringBuilder(512);GetWindowText(h,s,512);if(s.Length==0)return true;bool off=MonitorFromRect(ref r,0)==IntPtr.Zero;if(off)o.Add(new{id=h.ToInt64().ToString(),name=s.ToString(),detail="("+r.l+", "+r.t+") "+(r.r-r.l)+"x"+(r.b-r.t),status="off-screen"});return true;},IntPtr.Zero);return o.ToArray();}
-public static void Pull(long id){var h=new IntPtr(id);R r;if(!GetWindowRect(h,out r))throw new Exception("Window no longer exists");int w=Math.Max(640,Math.Min(1280,r.r-r.l)),z=Math.Max(480,Math.Min(900,r.b-r.t));if(!SetWindowPos(h,IntPtr.Zero,120,120,w,z,0x0004|0x0010))throw new Exception("SetWindowPos failed");}}
+public static class WinTWindows { public delegate bool CB(IntPtr h,IntPtr l); [StructLayout(LayoutKind.Sequential)]struct R{public int l,t,r,b;} [StructLayout(LayoutKind.Sequential)]struct MI{public int cb;public R mon,work;public uint flags;} [DllImport("user32.dll")]static extern bool EnumWindows(CB c,IntPtr l);[DllImport("user32.dll")]static extern bool IsWindowVisible(IntPtr h);[DllImport("user32.dll")]static extern bool IsIconic(IntPtr h);[DllImport("user32.dll")]static extern bool GetWindowRect(IntPtr h,out R r);[DllImport("user32.dll")]static extern int GetWindowText(IntPtr h,StringBuilder s,int n);[DllImport("user32.dll")]static extern IntPtr MonitorFromRect(ref R r,uint f);[DllImport("user32.dll")]static extern bool GetMonitorInfo(IntPtr m,ref MI i);[DllImport("user32.dll")]static extern bool SetWindowPos(IntPtr h,IntPtr a,int x,int y,int w,int z,uint f);
+// The work area of the monitor the window sits closest to - where a rescued
+// window is put back, clear of the taskbar and of any docked appbar.
+static R Work(R r){var i=new MI();i.cb=Marshal.SizeOf(typeof(MI));IntPtr m=MonitorFromRect(ref r,2);if(m==IntPtr.Zero||!GetMonitorInfo(m,ref i))throw new Exception("No monitor answered for that window");return i.work;}
+// Lost means unreachable, not merely off the primary screen: either no monitor
+// owns any part of it, or what overlaps one is too small a sliver to grab.
+static bool Lost(R r,out bool gone){gone=MonitorFromRect(ref r,0)==IntPtr.Zero;if(gone)return true;R k;try{k=Work(r);}catch{return false;}int w=Math.Min(r.r,k.r)-Math.Max(r.l,k.l),h=Math.Min(r.b,k.b)-Math.Max(r.t,k.t);return w<120||h<48;}
+static List<IntPtr> Stranded(){var found=new List<IntPtr>();EnumWindows((h,l)=>{R r;if(!IsWindowVisible(h)||IsIconic(h)||!GetWindowRect(h,out r))return true;var s=new StringBuilder(512);GetWindowText(h,s,512);if(s.Length==0)return true;bool gone;if(Lost(r,out gone))found.Add(h);return true;},IntPtr.Zero);return found;}
+public static object[] List(){var o=new List<object>();foreach(var h in Stranded()){R r;if(!GetWindowRect(h,out r))continue;var s=new StringBuilder(512);GetWindowText(h,s,512);bool gone;Lost(r,out gone);o.Add(new{id=h.ToInt64().ToString(),name=s.ToString(),detail="("+r.l+", "+r.t+") "+(r.r-r.l)+"x"+(r.b-r.t),status=gone?"off-screen":"barely visible"});}return o.ToArray();}
+public static void Pull(long id){var h=new IntPtr(id);R r;if(!GetWindowRect(h,out r))throw new Exception("Window no longer exists");R k=Work(r);int aw=k.r-k.l,ah=k.b-k.t;int w=Math.Max(480,Math.Min(aw,r.r-r.l)),z=Math.Max(320,Math.Min(ah,r.b-r.t));int x=k.l+Math.Max(0,(aw-w)/2),y=k.t+Math.Max(0,(ah-z)/2);if(!SetWindowPos(h,IntPtr.Zero,x,y,w,z,0x0004|0x0010))throw new Exception("SetWindowPos failed");}
+public static int PullAll(){int n=0;foreach(var h in Stranded()){try{Pull(h.ToInt64());n++;}catch{}}return n;}}
 '@;"#;
 
 const CORE_AUDIO_CS: &str = r#"Add-Type -TypeDefinition @'
@@ -1529,12 +1537,18 @@ pub fn repair_run(id: &str) -> ToolResult {
         "audio" => "Restart-Service Audiosrv,AudioEndpointBuilder -Force",
         "gpu" => "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class Keys { [DllImport(\"user32.dll\")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e); }'; 0x5B,0x11,0x10,0x42 | ForEach-Object {[Keys]::keybd_event($_,0,0,[UIntPtr]::Zero)}; 0x42,0x10,0x11,0x5B | ForEach-Object {[Keys]::keybd_event($_,0,2,[UIntPtr]::Zero)}",
         "net" => "ipconfig /flushdns; netsh winsock reset; arp -d *; ipconfig /renew",
-        "shell" => "Stop-Process -Name explorer -Force; Remove-Item \"$env:LOCALAPPDATA\\IconCache.db\" -Force -ErrorAction SilentlyContinue; Remove-Item \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -Force -ErrorAction SilentlyContinue; Start-Process explorer.exe",
+        // Restarting the shell is also the moment to sweep the desktop for
+        // windows that cannot be reached: a monitor unplugged while a window
+        // sat on it leaves that window at coordinates no screen covers, and no
+        // amount of restarting Explorer brings it back, because the position
+        // belongs to the window, not to the shell.
+        "shell" => "Stop-Process -Name explorer -Force; Remove-Item \"$env:LOCALAPPDATA\\IconCache.db\" -Force -ErrorAction SilentlyContinue; Remove-Item \"$env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" -Force -ErrorAction SilentlyContinue; Start-Process explorer.exe; Start-Sleep -Milliseconds 1500; $moved=[WinTWindows]::PullAll(); if($moved -gt 0){\"Moved $moved window(s) back onto a screen\"} else {'Every visible window was already on a screen'}",
         "spooler" => "Stop-Service Spooler -Force; Remove-Item \"$env:SystemRoot\\System32\\spool\\PRINTERS\\*\" -Force -ErrorAction SilentlyContinue; Start-Service Spooler",
         _ => return ToolResult { error: "Unknown repair action.".into(), ..Default::default() },
     };
+    let prefix = if id == "shell" { WINDOW_BOUNDS_CS } else { "" };
     output_result(ps(
-        &format!("$ErrorActionPreference='Stop'; {script}; 'Completed'"),
+        &format!("$ErrorActionPreference='Stop'; {prefix}{script}; 'Completed'"),
         &[],
     ))
 }

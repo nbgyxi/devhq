@@ -182,6 +182,16 @@ if (-not (Test-Path $exeSource)) {
 # MSI/NSIS bundlers, which this script skips. Every resource the app looks for
 # next to its exe has to be staged here as well, or the Store build ships
 # without it and the app reports the file as missing at runtime.
+# The torrent engine is a separate executable for the reasons in torrent.rs.
+# WinT looks for it beside its own exe, so that is where it is staged.
+$helperSource = Join-Path $tauriRoot "target/release/wint-torrent-helper.exe"
+if (-not (Test-Path $helperSource)) {
+    Write-Host "==> wint-torrent-helper.exe missing; building it..." -ForegroundColor Cyan
+    & node (Join-Path $PSScriptRoot "build-torrent-helper.js")
+    if ($LASTEXITCODE -ne 0) { throw "The torrent engine build failed." }
+    if (-not (Test-Path $helperSource)) { throw "Torrent engine not found at $helperSource." }
+}
+
 $cliSource = Join-Path $tauriRoot "target/release/wint-cli.exe"
 if (-not (Test-Path $cliSource)) {
     if ($SkipBuild) {
@@ -241,6 +251,11 @@ Copy-Item $exeSource (Join-Path $stage "WinT.exe") -Force
 # The CLI sits beside the exe, which is the first place both the "wt"
 # compatibility proxy and "Register the wint command" look for it.
 Copy-Item $cliSource (Join-Path $stage "wint-cli.exe") -Force
+
+# The torrent engine, likewise beside the exe: that is the first place
+# torrent.rs looks, and without it the Torrents tool reports the engine as
+# missing from the installation.
+Copy-Item $helperSource (Join-Path $stage "wint-torrent-helper.exe") -Force
 
 # The jump list (.ico) and every popped-out tool window (.png) read their icons
 # from a tool-icons folder beside the exe.

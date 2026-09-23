@@ -241,7 +241,7 @@
       }
       for (const button of mediaPlayer.querySelectorAll("[data-media-command]")) {
         const command = button.dataset.mediaCommand;
-        button.disabled = (!media.available && !(command === "toggle" && selectedStream)) || (command === "previous" ? !media.canPrevious : command === "next" ? !media.canNext : (command === "back10" || command === "ahead10") ? !media.canSeek : false);
+        button.disabled = (!media.available && !(command === "toggle" && selectedStream)) || (command === "previous" ? !media.canPrevious : command === "next" ? !media.canNext : false);
       }
     } catch (_) {
       if (settings.mediaMode !== "always") { mediaPlayer.hidden = true; return; }

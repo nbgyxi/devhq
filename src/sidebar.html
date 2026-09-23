@@ -147,7 +147,6 @@
   .bar-stream-mute { display: grid; place-items: center; width: 27px; height: 27px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
   .bar-stream-mute:hover { background: var(--line, #262a36); }
   .bar-stream-mute .ms { width: auto; height: auto; font-size: 17px; line-height: 1; }
-  @media (max-width: 164px) { .bar-player-controls .media-seek { display: none; } }
   /* The rail's own notification area: a few icons, then the chevron that
      shows the rest, the way the real tray opens. */
   /* Closed, the tray is a row of icons with no names, wrapping as often as the
@@ -201,11 +200,9 @@
   <section class="bar-player" data-media-player aria-label="Media controls" hidden>
     <div class="bar-player-heading"><div class="bar-player-title" data-media-title></div><button class="bar-player-source" type="button" data-media-source title="Show player"></button></div>
     <div class="bar-player-controls">
-      <button class="media-seek" type="button" data-media-command="back10" title="Back 10 seconds" aria-label="Back 10 seconds"><span class="ms" aria-hidden="true">replay_10</span></button>
       <button type="button" data-media-command="previous" title="Previous" aria-label="Previous"><span class="ms" aria-hidden="true">skip_previous</span></button>
       <button class="media-toggle" type="button" data-media-command="toggle" title="Play" aria-label="Play"><span class="ms" aria-hidden="true">play_arrow</span></button>
       <button type="button" data-media-command="next" title="Next" aria-label="Next"><span class="ms" aria-hidden="true">skip_next</span></button>
-      <button class="media-seek" type="button" data-media-command="ahead10" title="Ahead 10 seconds" aria-label="Ahead 10 seconds"><span class="ms" aria-hidden="true">forward_10</span></button>
       <span class="bar-player-streams" data-audio-streams hidden><button type="button" data-audio-stream-toggle title="Other active audio streams" aria-label="Other active audio streams">0</button></span>
     </div>
     <div class="bar-stream-list" data-audio-stream-list hidden></div>

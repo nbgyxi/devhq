@@ -312,6 +312,20 @@ mod tests {
     }
 
     #[test]
+    fn paste_and_mouse_private_modes_follow_decset() {
+        let mut grid = Grid::new(20, 4);
+        grid.feed(b"\x1b[?2004h\x1b[?1002h\x1b[?1006h");
+        assert!(grid.bracketed_paste);
+        assert_eq!(grid.mouse_mode, 1002);
+        assert!(grid.mouse_sgr);
+
+        grid.feed(b"\x1b[?2004l\x1b[?1002l\x1b[?1006l");
+        assert!(!grid.bracketed_paste);
+        assert_eq!(grid.mouse_mode, 0);
+        assert!(!grid.mouse_sgr);
+    }
+
+    #[test]
     fn erasing_the_line_cancels_a_pending_wrap() {
         let mut grid = Grid::new(8, 6);
         grid.feed(b"abcdefgh\x1b[K\x1b[1;1Hz");
@@ -380,6 +394,11 @@ pub struct Grid {
     /// what the shell announces is the only honest source there is.
     pub cwd: String,
     pub bracketed_paste: bool,
+    /// DEC mouse tracking mode requested by the foreground application:
+    /// 0 (off), 1000 (buttons), 1002 (button drag), or 1003 (all motion).
+    pub mouse_mode: u16,
+    /// SGR extended mouse coordinates (DECSET 1006).
+    pub mouse_sgr: bool,
     /// Rows changed since the last drain.
     dirty: Vec<bool>,
     /// Lines that scrolled off the top since the last drain, for the front end
@@ -429,6 +448,8 @@ impl Grid {
             title: String::new(),
             cwd: String::new(),
             bracketed_paste: false,
+            mouse_mode: 0,
+            mouse_sgr: false,
             dirty: vec![true; rows],
             pending_scroll: Vec::new(),
             scrollback: VecDeque::new(),
@@ -821,6 +842,14 @@ impl Grid {
             match p {
                 25 => self.cursor_visible = on,
                 2004 => self.bracketed_paste = on,
+                1000 | 1002 | 1003 => {
+                    if on {
+                        self.mouse_mode = p as u16;
+                    } else if self.mouse_mode == p as u16 {
+                        self.mouse_mode = 0;
+                    }
+                }
+                1006 => self.mouse_sgr = on,
                 1049 | 47 | 1047 => self.set_alt(on),
                 _ => {}
             }
@@ -1157,6 +1186,9 @@ impl Grid {
         self.cursor_visible = true;
         self.cursor_style = 0;
         self.insert_mode = false;
+        self.bracketed_paste = false;
+        self.mouse_mode = 0;
+        self.mouse_sgr = false;
         self.wrap_pending = false;
         self.mark_all_dirty();
     }

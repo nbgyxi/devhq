@@ -19,18 +19,19 @@
     { id: "health", name: "App health", icon: "monitor_heart", hint: "what WinT itself was doing when it stopped answering - freezes, slow calls and panics, as they happen", keywords: "health diagnostics diagnose debug log logs logging freeze froze frozen hang hung hangs unresponsive not responding stuck stall stalls lag slow sluggish spinning beachball crash crashed crashing exception panic error stack trace backtrace watchdog heartbeat main thread ui thread blocked deadlock performance profiling timing what happened why did it freeze report bug" },
     { id: "startup", name: "Startup and tray", icon: "rocket_launch", hint: "what starts with Windows and what sits in the tray - where each icon comes from, and the switch that stops it coming back", keywords: "startup start up autostart auto start autorun auto-run autoruns boot login logon sign in run key runonce registry hkcu hklm startup folder shell:startup task manager msconfig startup apps startup programs launch on login slow boot slow startup boot time disable enable turn off stop prevent block remove delete tray system tray notification area notification icons hidden icons overflow chevron icon icons background app apps background programs running silently what is this program where did it come from origin trace who started it discord steam onedrive teams spotify nordvpn greenshot docker updater helper agent daemon bloat bloatware" },
     { id: "sidebar", name: "Docked Sidebar", icon: "dock_to_right", hint: "a rail docked to the edge of the screen that Windows reserves room for, with the real taskbar out of the way", keywords: "sidebar side bar rail dock docked appbar app bar taskbar task bar replacement replace edge left right screen edge reserve work area maximize maximized under behind overlap always on top topmost launcher launch bar shortcuts autohide auto-hide auto hide hidden explorer shell desktop" },
+    { id: "torrents", name: "Torrents", icon: "download", hint: "magnet links and .torrent files, downloaded by an engine that runs in its own process so a stalled tracker can never freeze WinT", keywords: "torrent torrents bittorrent bit torrent magnet magnet link .torrent torrent file download downloads downloading seed seeding seeder leech leecher peer peers swarm tracker trackers dht announce piece pieces hash check rehash ratio upload uploading share sharing p2p peer to peer client qbittorrent utorrent transmission deluge rtorrent rqbit libtorrent iso linux distro ubuntu debian archive queue priority limit throttle speed limit bandwidth cap pause resume stop start remove delete files folder save location eta progress" },
     { id: "time-tracker", name: "Active Window Time Tracker", icon: "schedule", hint: "local time by application and window title", keywords: "time tracker tracking activity active window title productivity apps applications usage screen time hours focus idle away log history what did i do local private" },
   ];
   const repairTools = [
     ["audio", "Audio Subsystem Bouncer", "graphic_eq", "Restarts Windows Audio and its endpoint builder.", "Restart audio"],
     ["swap", "Sound Device Switcher", "swap_calls", "Pick the default playback or recording device for Console, Multimedia, and Communications.", "Set default"],
     ["gpu", "GPU & Display Driver Reset", "monitor", "Signals the display driver reset shortcut. The screen may blank.", "Reset display"],
-    ["bounds", "Window Bounds Recalibrator", "picture_in_picture", "Finds windows outside every monitor and moves the selected one into the primary viewport.", "Inspect windows"],
+    ["bounds", "Window Bounds Recalibrator", "picture_in_picture", "Finds windows stranded off every screen - or with only a sliver left on one - and moves the chosen one back into view.", "Inspect windows"],
     ["net", "Full Network Stack Purge", "cleaning_services", "Flushes DNS, resets Winsock and ARP, then renews DHCP.", "Purge network"],
     ["wifi", "Wi-Fi & Internet Reset", "wifi", "Asks for administrator once, then bounces the chosen connection, flushes DNS and ARP, renews the DHCP lease, and reports which resolver still answers.", "Choose connection"],
     ["radio", "Adapter & Bluetooth Power-Cycler", "wifi_tethering", "Lists network adapters and Bluetooth devices, then restarts only the selected one.", "Choose device"],
     ["usb", "USB Hub Re-enumerator", "usb", "Lists present USB devices and asks Plug and Play to restart the selected device.", "Choose USB device"],
-    ["shell", "Clean Shell & Cache Purger", "desktop_windows", "Restarts Explorer and removes icon and thumbnail caches.", "Restart shell"],
+    ["shell", "Clean Shell & Cache Purger", "desktop_windows", "Restarts Explorer, removes icon and thumbnail caches, and pulls every stranded window back onto a screen.", "Restart shell"],
     ["spooler", "Print Spooler Jam Clearer", "print", "Stops the spooler, removes queued jobs, and starts it again.", "Clear print queue"],
   ];
   /** What each repair answers to besides its name - mostly the symptom that
@@ -39,7 +40,7 @@
     audio: "audio sound no sound silent silence speakers headphones headset mute crackling stutter distorted playback device audiosrv endpoint builder restart bounce",
     swap: "sound device switcher swap change default playback recording output input speakers headphones headset microphone mic monitor hdmi console multimedia communications",
     gpu: "gpu graphics display driver reset restart screen frozen freeze black blank flicker artefacts artifacts glitch stuck monitor nvidia amd intel recover",
-    bounds: "window bounds offscreen off-screen off screen lost missing window disappeared outside monitor second screen move back recover reposition restore",
+    bounds: "window bounds offscreen off-screen off screen lost missing window disappeared invisible cannot see nowhere outside monitor second screen unplugged undocked move back recover reposition restore",
     net: "network stack purge reset flush dns winsock arp dhcp renew release ipconfig internet connection no internet cannot connect broken networking repair",
     wifi: "wifi wi-fi wireless internet connection dropout drops intermittent offline no internet dhcp dns resolver adapter reconnect reset bounce nameserver hotspot",
     radio: "adapter bluetooth radio power cycle restart disable enable nic wireless ethernet device pair pairing not connecting airplane mode",
@@ -276,6 +277,7 @@
     if (active === "health") renderAppHealth(tool);
     if (active === "startup") renderStartupTray(tool);
     if (active === "focus-mode") renderFocusMode(tool);
+    if (active === "torrents") renderTorrents(tool);
     if (active === "sidebar") renderSidebar(tool);
     if (active === "repair-swap") renderAudioChooser(tool);
     else if (["repair-radio","repair-usb","repair-bounds","repair-wifi"].includes(active)) renderTargetRepair(tool);
@@ -472,6 +474,20 @@
     script.src = "focus-mode.js";
     script.onload = mount;
     script.onerror = () => { node.innerHTML = '<div class="win-empty">Focus mode could not load.</div>'; };
+    document.head.appendChild(script);
+  }
+
+  // Its own file, and its engine is a separate process entirely: opening this
+  // page neither starts nor stops a download, it only looks at one.
+  function renderTorrents(tool) {
+    host.innerHTML = header(tool, '<div data-torrent-host></div>');
+    const node = host.querySelector("[data-torrent-host]");
+    const mount = () => { if (node.isConnected) window.wintTorrent.mount(node); };
+    if (window.wintTorrent) return mount();
+    const script = document.createElement("script");
+    script.src = "torrent.js";
+    script.onload = mount;
+    script.onerror = () => { node.innerHTML = '<div class="win-empty">Torrents could not load.</div>'; };
     document.head.appendChild(script);
   }
 
@@ -914,7 +930,7 @@
     if (!row) return;
     const [id, , glyph, detail, action] = row;
     const related = "";
-    host.innerHTML = header(tool, `<div class="repair-intro"><span>${icon(glyph)}</span><div><p>${esc(detail)}</p></div><code>${esc(id==='audio'?'Restart-Service':id==='gpu'?'D3DKMT / keybd_event':id==='net'?'4 ordered steps':id==='shell'?'Explorer + caches':'Spooler + queue')}</code></div><div class="win-status" data-win-status>Inspecting current state…</div><div class="repair-designed" data-repair-state><div class="win-empty">Reading services and devices…</div></div><footer class="repair-action-bar"><span>${id==='gpu'?'The screen may blank for about a second.':id==='net'?'Winsock reset may require a reboot.':id==='shell'?'The taskbar and Explorer windows briefly close.':id==='spooler'?'Every queued print job will be removed.':'Dependent audio services briefly stop.'}</span><button class="btn${armed === id ? " danger" : " primary"}" data-repair="${id}">${icon(armed === id ? "warning" : "play_arrow")}${esc(armed === id ? "Click again to confirm" : action)}</button></footer>`,related);
+    host.innerHTML = header(tool, `<div class="repair-intro"><span>${icon(glyph)}</span><div><p>${esc(detail)}</p></div><code>${esc(id==='audio'?'Restart-Service':id==='gpu'?'D3DKMT / keybd_event':id==='net'?'4 ordered steps':id==='shell'?'Explorer + caches + windows':'Spooler + queue')}</code></div><div class="win-status" data-win-status>Inspecting current state…</div><div class="repair-designed" data-repair-state><div class="win-empty">Reading services and devices…</div></div><footer class="repair-action-bar"><span>${id==='gpu'?'The screen may blank for about a second.':id==='net'?'Winsock reset may require a reboot.':id==='shell'?'The taskbar and Explorer windows briefly close, and windows left off-screen come back.':id==='spooler'?'Every queued print job will be removed.':'Dependent audio services briefly stop.'}</span><button class="btn${armed === id ? " danger" : " primary"}" data-repair="${id}">${icon(armed === id ? "warning" : "play_arrow")}${esc(armed === id ? "Click again to confirm" : action)}</button></footer>`,related);
     loadRepairOverview(id);
   }
   async function loadRepairOverview(id){try{const rows=await invoke('repair_targets',{id});const target=host.querySelector('[data-repair-state]');if(!target)return;target.innerHTML=rows.length?rows.map((row,index)=>`<div class="repair-state-row"><code>${id==='net'?index+1:''}</code>${icon(id==='net'?'check_circle':id==='shell'&&row.id!=='explorer'?'database':id==='spooler'&&row.id!=='service'?'description':id==='gpu'?'monitor':'settings_applications')}<span><strong>${esc(row.name)}</strong><small class="mono">${esc(row.detail)}</small></span><em class="state-pill">${esc(row.status)}</em></div>`).join(''):'<div class="win-empty">No matching services or devices were found.</div>';status(`${rows.length} item${rows.length===1?'':'s'} inspected`,'ok');}catch(error){status(String(error),'bad');}}

@@ -49,6 +49,8 @@ mod gemini;
 #[cfg(windows)]
 mod security_audit;
 mod stall_watch;
+mod torrent;
+mod torrent_assoc;
 mod time_tracker;
 mod workspace;
 mod term;
@@ -79,6 +81,16 @@ pub(crate) fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
+        // Showing is not the same as being seen: a window left where a monitor
+        // used to be is shown perfectly well onto no screen at all. Every path
+        // that brings WinT back - the tray icon, the sidebar, a second start,
+        // the global shortcut - goes through here, so this is the one place
+        // that can guarantee the window the user just asked for is somewhere
+        // they can look at it.
+        #[cfg(windows)]
+        if let Ok(hwnd) = window.hwnd() {
+            unsafe { appbar::ensure_on_screen(hwnd) };
+        }
         let _ = window.set_focus();
     }
     // The sidebar draws WinT among the tray's apps while it is away, so it is
@@ -99,6 +111,17 @@ fn minimize_to_tray(app: AppHandle) {
 
 #[derive(Default)]
 struct PendingTool(Mutex<Option<String>>);
+
+/// Torrents handed to WinT by the shell - a `.torrent` double-clicked in
+/// Explorer, a `magnet:` link followed in a browser - waiting for the
+/// Torrents tool to come and take them.
+///
+/// They are queued rather than added straight away because the window may not
+/// exist yet: an association click on a WinT that is not running arrives
+/// before the webview does. The tool drains this on mount and on every
+/// `torrent:open`, so a cold start and a running instance take the same path.
+#[derive(Default)]
+struct PendingTorrents(Mutex<Vec<String>>);
 
 #[derive(Default)]
 struct SearchGlobalShortcut(Mutex<Option<u32>>);
@@ -139,6 +162,41 @@ fn tool_arg(args: &[String]) -> Option<String> {
         .find_map(|arg| arg.strip_prefix("--open-tool=").map(str::to_owned))
 }
 
+/// The arguments Windows passes when a registered handler is invoked: a
+/// `magnet:` link, or the path of a `.torrent` file. Flags are skipped, and so
+/// is argv[0] - WinT's own path ends in `.exe`, but skipping it costs nothing.
+fn torrent_args(args: &[String]) -> Vec<String> {
+    args.iter()
+        .skip(1)
+        .filter(|arg| !arg.starts_with('-') && !arg.starts_with('/'))
+        .filter(|arg| {
+            let lower = arg.to_ascii_lowercase();
+            lower.starts_with("magnet:") || lower.ends_with(".torrent")
+        })
+        .cloned()
+        .collect()
+}
+
+/// Queue what the shell handed over, for the Torrents tool to collect.
+/// Returns whether there was anything, so the caller knows to open the tool.
+fn queue_torrents(app: &AppHandle, items: Vec<String>) -> bool {
+    if items.is_empty() {
+        return false;
+    }
+    if let Ok(mut pending) = app.state::<PendingTorrents>().0.lock() {
+        pending.extend(items);
+    }
+    true
+}
+
+/// Whatever the shell left behind, taken once. Draining rather than reading
+/// is deliberate: a torrent must never be added twice because the tool was
+/// closed and opened again.
+#[tauri::command]
+fn take_pending_torrents(state: tauri::State<'_, PendingTorrents>) -> Vec<String> {
+    state.0.lock().map(|mut queue| std::mem::take(&mut *queue)).unwrap_or_default()
+}
+
 fn deliver_tool_arg(app: &AppHandle, args: &[String]) {
     deliver_tool_arg_for(app, args, "")
 }
@@ -150,6 +208,18 @@ fn deliver_tool_arg_for(app: &AppHandle, args: &[String], token: &str) {
     if let Some(mut request) = wt_request_arg(args) {
         request.token = token.to_string();
         let _ = app.emit("term:wt-request", request);
+        return;
+    }
+    // A second WinT started by double-clicking a .torrent, or by a browser
+    // following a magnet link. Its arguments are handed to the copy already
+    // running, which is the whole point of the single instance.
+    if queue_torrents(app, torrent_args(args)) {
+        if let Ok(mut pending) = app.state::<PendingTool>().0.lock() {
+            *pending = Some("torrents".into());
+        }
+        show_main_window(app);
+        let _ = app.emit("tray:open-tool", "torrents".to_string());
+        let _ = app.emit("torrent:open", ());
         return;
     }
     let Some(id) = tool_arg(args) else { return };
@@ -1773,6 +1843,22 @@ async fn pick_folder(app: AppHandle, start: Option<String>) -> Result<Option<Str
         .unwrap_or_else(|| Err("Could not open the folder picker.".into()))
 }
 
+/// Choose one or more `.torrent` files to add. Same arrangement as the folder
+/// picker: the dialog's modal loop runs on a worker thread, never on the one
+/// drawing the window.
+#[cfg(windows)]
+#[tauri::command]
+async fn pick_torrent_files(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let owner = app
+        .get_webview_window("main")
+        .and_then(|w| w.hwnd().ok())
+        .map(|hwnd| hwnd.0 as isize)
+        .unwrap_or(0);
+    off_thread(move || picker::pick_torrent_files(owner))
+        .await
+        .unwrap_or_else(|| Err("Could not open the file picker.".into()))
+}
+
 /// Off Windows there is no picker to show, so the typed path is all there is.
 #[cfg(not(windows))]
 #[tauri::command]
@@ -2772,6 +2858,7 @@ pub fn run() {
     }
     let builder = tauri::Builder::default()
         .manage(PendingTool::default())
+        .manage(PendingTorrents::default())
         .manage(SearchGlobalShortcut::default())
         .manage(ClipboardGlobalShortcut::default());
     let builder = if admin.is_some() {
@@ -2850,7 +2937,16 @@ pub fn run() {
             stall_watch::resume(app.handle().clone());
             // So does a tracker: the sampler is the backend’s, not a window’s.
             time_tracker::resume(app.handle().clone());
-            if let Some(id) = tool_arg(&args) {
+            // The torrent engine is a child process, and this only hands the
+            // supervisor a handle to talk to the windows with. Nothing is
+            // spawned until the tool asks, so an install that never touches
+            // torrents never pays for one.
+            torrent::init(app.handle().clone());
+            // Started by the shell to open a torrent: the tool is queued the
+            // same way `--open-tool=` is, so the window comes up on Torrents
+            // with the file already waiting for it.
+            let opened_torrents = queue_torrents(app.handle(), torrent_args(&args));
+            if let Some(id) = tool_arg(&args).or_else(|| opened_torrents.then(|| "torrents".to_string())) {
                 if let Ok(mut pending) = app.state::<PendingTool>().0.lock() {
                     *pending = Some(id);
                 }
@@ -3044,6 +3140,26 @@ pub fn run() {
             stall_watch::stall_watch_mark,
             stall_watch::stall_watch_clear,
             stall_watch::stall_watch_events,
+            pick_torrent_files,
+            torrent::torrent_status,
+            torrent::torrent_start,
+            torrent::torrent_stop,
+            torrent::torrent_restart,
+            torrent::torrent_add,
+            torrent::torrent_action,
+            torrent::torrent_only_files,
+            torrent::torrent_details,
+            torrent::torrent_peers,
+            torrent::torrent_paths,
+            torrent::torrent_file_path,
+            torrent::torrent_settings,
+            take_pending_torrents,
+            torrent_assoc::torrent_assoc_status,
+            torrent_assoc::torrent_assoc_register,
+            torrent_assoc::torrent_assoc_unregister,
+            torrent_assoc::torrent_assoc_choose_default,
+            torrent_assoc::torrent_assoc_should_ask,
+            torrent_assoc::torrent_assoc_stop_asking,
             time_tracker::time_tracker_status,
             time_tracker::time_tracker_sessions,
             time_tracker::time_tracker_set,
@@ -3459,6 +3575,13 @@ pub fn run() {
     ]);
 
     builder
-        .run(tauri::generate_context!())
-        .expect("error while running WinT");
+        .build(tauri::generate_context!())
+        .expect("error while running WinT")
+        .run(|_app, event| {
+            // The torrent engine is a child process, so it has to be told to
+            // go; otherwise it outlives WinT and keeps seeding invisibly.
+            if matches!(event, tauri::RunEvent::Exit) {
+                torrent::shutdown();
+            }
+        });
 }

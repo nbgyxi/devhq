@@ -16,6 +16,54 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.140.0",
+      date: "2026-09-23",
+      title: "Torrents: click one anywhere and it opens here",
+      changes: [
+        ["new", "WinT can now be the app Windows opens torrents with. Opening the Torrents tool puts WinT on Windows' list of apps that handle .torrent files and magnet links, then asks once whether you want it to be the one that gets them. The Settings tab shows what has them today and lets you change it whenever - or take WinT back off the list."],
+        ["new", "Double-click a .torrent in Files, or follow a magnet link in a browser, and WinT comes up on Torrents with it already added - whether WinT was running or not."],
+        ["new", "Once you have opened Torrents, WinT asks on the way up whether it should be the app that gets them - and takes them where Windows lets it, or puts Windows' own Always use this app dialog in front of you where it does not. Not now asks again next time; Never ask again does not."],
+      ],
+    },
+    {
+      version: "0.139.0",
+      date: "2026-09-22",
+      title: "Torrents: its own folder, its own panel, and a right-click",
+      changes: [
+        ["fix", "Every torrent now downloads into a folder of its own under wherever you told it to put things, instead of everything being tipped loose into that drive."],
+        ["fix", "The contents of a torrent drew as a row of empty lines. Selecting a torrent now fills the list properly, however long it is."],
+        ["fix", "The empty bar that sat above Transfers and Settings, saying nothing, is gone."],
+        ["fix", "Resizing the window no longer walks the bottom of the tool off the screen. The lists fill the height they are given and scroll inside themselves."],
+        ["better", "The contents of the selected torrent are now a panel beside the list rather than a strip beneath it, as tall as the list, with its own scroll."],
+        ["better", "Sort the contents by name, size or how far along each file is, by clicking the column."],
+        ["better", "In the contents, the tick box is only the tick box: clicking a name picks the row instead. Pick several with Ctrl or Shift and one tick box covers all of them, and double-click a file to open it."],
+        ["new", "Right-click a torrent to open its folder, show it in Files, pause or resume it, or remove it - keeping the files, sending them to the Recycle Bin, or deleting them for good."],
+        ["new", "A torrent whose files you have deleted now says so and stops seeding, rather than sitting there claiming to share what is no longer there."],
+      ],
+    },
+    {
+      version: "0.138.0",
+      date: "2026-09-22",
+      title: "Torrents, downloaded by something that cannot freeze WinT",
+      changes: [
+        ["new", "A Torrents tool. Paste a magnet link, drop a .torrent file or pick one, and it starts - with start, pause, remove, a per-file picker, a download folder, speed limits and a cap on how many run at once while the rest wait their turn."],
+        ["new", "The torrent engine runs as its own program, not inside WinT. Nothing it does - contacting a tracker, checking hashes over a whole disk, talking to hundreds of peers - happens on the thread that draws the window, so a torrent that goes wrong cannot take the app down with it."],
+        ["new", "If the engine ever stops answering, WinT says so and offers to restart it. Your torrents are remembered by the engine itself, so a restart picks up exactly where it left off and nothing is lost."],
+        ["better", "Both lists are drawn only as far as you can see them, so a torrent with tens of thousands of files opens as fast as one with three. Past a few thousand files the list says how many it is showing rather than making you wait for all of them."],
+      ],
+    },
+    {
+      version: "0.137.0",
+      date: "2026-09-22",
+      title: "Windows that ended up nowhere come back",
+      buildChecksum: "d54a1c8ae84cb24788d972d6280751d426b5e17a4fd3aab40b5f13ff76258aa1",
+      changes: [
+        ["fix", "WinT can no longer be shown onto a screen that is not there. Opening it from the tray icon, the sidebar, the shortcut or a second start now checks that the window really lands where you can see it, and moves it into view when it does not - the case where the sidebar worked, WinT said it was open, and the window was nowhere on any monitor."],
+        ["new", "Restarting Explorer - from the Clean Shell & Cache Purger or with Ctrl+Alt+R - now finishes by pulling every stranded window back onto a screen, and says how many it moved."],
+        ["better", "The Window Bounds Recalibrator also finds windows left with only a sliver on screen, not just the ones outside every monitor, and puts a rescued window in the middle of the nearest screen's work area rather than at a fixed spot on the primary one."],
+      ],
+    },
+    {
       version: "0.136.2",
       date: "2026-09-22",
       title: "Sidebar shortcuts put everyday tools first",

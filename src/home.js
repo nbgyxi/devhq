@@ -73,6 +73,7 @@ window.wintHome = (() => {
     ["stall", "Reading Input Stall Watch", () => invoke("stall_watch_status")],
     ["cli", "Checking the wint command", () => invoke("cli_status")],
     ["awake", "Reading Keep Awake", () => invoke("keep_awake_status")],
+    ["torrent", "Reading Torrent engine", () => invoke("torrent_status")],
     ["clip", "Reading clipboard history", () => invoke("clipboard_recording")],
     ["tracker", "Reading active window tracking", () => invoke("time_tracker_status")],
   ];
@@ -309,8 +310,16 @@ window.wintHome = (() => {
     render();
   });
 
+  try {
+    window.__TAURI__.event.listen("torrent:engine", (event) => {
+      if (!event.payload) return;
+      home.readings.set("torrent", { value: event.payload });
+      render();
+    }).catch(() => {});
+  } catch { /* no event bridge in this window */ }
+
   /** Sources the background strip reads on every look, watched or not. */
-  const BACKGROUND_SOURCES = ["stall", "awake", "clip", "tracker"];
+  const BACKGROUND_SOURCES = ["stall", "awake", "torrent", "clip", "tracker"];
 
   /** What WinT does while nobody is looking: one row per thing that runs on
    *  its own. `records` marks the ones that keep information about this PC. */
@@ -318,6 +327,7 @@ window.wintHome = (() => {
     const clip = reading("clip");
     const stall = reading("stall");
     const awake = reading("awake");
+    const torrent = reading("torrent");
     const tracker = reading("tracker");
     const pending = (key, iconName, label, tool) => ({ key, icon: iconName, label, tool, pending: true });
     return [
@@ -343,6 +353,15 @@ window.wintHome = (() => {
         key: "awake", icon: "coffee", label: "Keep Awake", on: awake.value?.active === true, records: false, tool: "keep-awake",
         detail: awake.value?.active ? "On · holding sleep off, records nothing" : "Off · Windows sleeps as usual",
       } : pending("awake", "coffee", "Keep Awake", "keep-awake"),
+      torrent ? {
+        key: "torrent", icon: "download", label: "Torrent engine", on: ["running", "starting"].includes(torrent.value?.state), records: false, tool: "torrents",
+        detail: torrent.error ? "Could not be read" : torrent.value?.state === "running"
+          ? `Running${torrent.value.engine ? ` · ${torrent.value.engine}` : ""}${torrent.value.pid ? ` · PID ${torrent.value.pid}` : ""}`
+          : torrent.value?.state === "starting" ? "Starting…"
+            : torrent.value?.state === "not-responding" ? "Not responding · waiting for recovery"
+              : torrent.value?.state === "failed" ? `Failed${torrent.value.message ? ` · ${torrent.value.message}` : ""}`
+                : "Off · downloads and seeding are paused",
+      } : pending("torrent", "download", "Torrent engine", "torrents"),
       {
         key: "usage", icon: "favorite", label: "Usage tracking", on: state.analyticsChosen && state.analytics, records: false, go: "settings",
         detail: state.analyticsChosen && state.analytics
@@ -380,7 +399,7 @@ window.wintHome = (() => {
    *  restarts where the activity itself remembers (all but Keep Awake). */
   async function switchBackground(key, on) {
     if (home.switching.has(key)) return;
-    const label = { clip: "clipboard history", tracker: "active window tracking", stall: "input stall tracking", awake: "Keep Awake", usage: "usage tracking" }[key];
+    const label = { clip: "clipboard history", tracker: "active window tracking", stall: "input stall tracking", awake: "Keep Awake", torrent: "Torrent engine", usage: "usage tracking" }[key];
     home.switching.add(key);
     beginWork(`home-bg-${key}`, `${on ? "Turning on" : "Turning off"} ${label}`);
     render();
@@ -403,6 +422,8 @@ window.wintHome = (() => {
           system: on, display: false, awayMode: false, minutes: 0, nudge: false, nudgeSeconds: 120,
           reason: on ? "Turned on from Home" : "",
         }) });
+      } else if (key === "torrent") {
+        home.readings.set("torrent", { value: await invoke(on ? "torrent_start" : "torrent_stop") });
       }
     } catch (error) {
       console.error(`Could not switch ${label}`, error);

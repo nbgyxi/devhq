@@ -591,6 +591,9 @@ pub struct Snapshot {
     cursor_style: u8,
     cursor_char: char,
     alt: bool,
+    bracketed_paste: bool,
+    mouse_mode: u16,
+    mouse_sgr: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -607,6 +610,9 @@ struct Update {
     cursor_style: u8,
     cursor_char: char,
     alt: bool,
+    bracketed_paste: bool,
+    mouse_mode: u16,
+    mouse_sgr: bool,
     title: String,
     /// The shell's folder, so a window title can follow a `cd`.
     cwd: String,
@@ -1690,6 +1696,9 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>) {
                         cursor_style: grid.effective_cursor_style(),
                         cursor_char: cursor_char(&grid),
                         alt: grid.alt,
+                        bracketed_paste: grid.bracketed_paste,
+                        mouse_mode: grid.mouse_mode,
+                        mouse_sgr: grid.mouse_sgr,
                         title: grid.title.clone(),
                         cwd: grid.cwd.clone(),
                     },
@@ -1814,6 +1823,9 @@ fn term_attach_sync(id: String) -> Result<Snapshot, String> {
         cursor_style: grid.effective_cursor_style(),
         cursor_char: cursor_char(&grid),
         alt: grid.alt,
+        bracketed_paste: grid.bracketed_paste,
+        mouse_mode: grid.mouse_mode,
+        mouse_sgr: grid.mouse_sgr,
     })
 }
 

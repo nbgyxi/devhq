@@ -532,10 +532,11 @@ function paintThumb(path, url) {
   slot.replaceChildren();
 }
 
-/** Delete asks first, and the question carries both answers: the Recycle Bin
- *  is the accept button because it is the one that can be undone, and deleting
- *  for good is the deliberate second choice. */
-async function askDelete(paths) {
+/** Delete and Shift+Delete are deliberately separate, matching Explorer:
+ *  ordinary Delete goes to the Recycle Bin; Shift+Delete is irreversible.
+ *  Both ask in WinT's own modal so the consequence is clear before any native
+ *  filesystem work starts. */
+async function askDelete(paths, permanent = false) {
   const targets = paths.filter(Boolean);
   if (!targets.length) return;
   if (targets.some((path) => isInsideZip(path))) {
@@ -549,19 +550,20 @@ async function askDelete(paths) {
   const folders = targets.filter((path) => (fx.listing?.entries || []).some((entry) => same(entry.path, path) && entry.isDir && !entry.isArchive));
   const answer = await (window.wintConfirm
     ? window.wintConfirm({
-        title: `Delete ${what}?`,
-        message: folders.length
-          ? `${what} ${targets.length === 1 ? "is a folder, so everything inside it goes too" : "includes folders, so everything inside them goes too"}. The Recycle Bin can be undone; deleting for good cannot.`
-          : "The Recycle Bin can be undone from Windows. Deleting for good cannot.",
-        confirmLabel: "Move to Recycle Bin",
-        alternateLabel: "Delete for good",
+        title: permanent ? `Permanently delete ${what}?` : `Move ${what} to the Recycle Bin?`,
+        message: permanent
+          ? `${folders.length ? `${what} ${targets.length === 1 ? "is a folder, so everything inside it will be deleted too. " : "includes folders, so everything inside them will be deleted too. "}` : ""}This cannot be undone.`
+          : `${folders.length ? `${what} ${targets.length === 1 ? "is a folder, so everything inside it will move too. " : "includes folders, so everything inside them will move too. "}` : ""}You can restore ${targets.length === 1 ? "it" : "them"} from the Recycle Bin.`,
+        confirmLabel: permanent ? "Delete permanently" : "Move to Recycle Bin",
         cancelLabel: "Cancel",
-        icon: "delete",
+        icon: permanent ? "delete_forever" : "delete",
         tone: "danger",
       })
-    : Promise.resolve(window.confirm(`Move ${what} to the Recycle Bin?`)));
+    : Promise.resolve(window.confirm(permanent
+      ? `Permanently delete ${what}? This cannot be undone.`
+      : `Move ${what} to the Recycle Bin?`)));
   if (!answer) return;
-  const recycle = answer !== "alternate";
+  const recycle = !permanent;
   window.wintWork?.beginWork("explorer-delete", recycle ? `Moving ${what} to the Recycle Bin` : `Deleting ${what}`);
   try {
     await invoke("explorer_delete", { paths: targets, recycle });
@@ -1470,7 +1472,7 @@ function mount(host) {
     }
     if (row && event.key === "Delete") {
       event.preventDefault();
-      askDelete(targets);
+      askDelete(targets, event.shiftKey);
       return;
     }
     if (event.key === "Escape" && event.target.closest(".fx-search") && fx.filter) {

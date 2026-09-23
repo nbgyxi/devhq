@@ -4440,7 +4440,7 @@ function hotkeyCatalog() {
     // rather than opening the tool that holds it: a window to click through
     // is the one thing a broken shell makes hard. Always system-wide, because
     // a shortcut that needs WinT in front is no use at that point.
-    { id: "command:repair-shell", kind: "global", name: "Restart Explorer and purge shell caches", icon: "desktop_windows", hint: "Runs the Clean Shell & Cache Purger straight away, after a three second countdown you can cancel. Always system-wide.", action: () => runShellRepair() },
+    { id: "command:repair-shell", kind: "global", name: "Restart Explorer and purge shell caches", icon: "desktop_windows", hint: "Runs the Clean Shell & Cache Purger straight away, after a three second countdown you can cancel. Also pulls windows stranded off-screen back into view. Always system-wide.", action: () => runShellRepair() },
     { id: "command:rescan", kind: "global", name: "Rescan projects", icon: "refresh", hint: "Scan every configured project folder again", action: () => rescan() },
     { id: "command:terminal-panel", kind: "global", name: "Toggle terminal panel", icon: "terminal", hint: "Show or hide docked terminals", action: () => setDockOpen(!window.termsState.open) },
     // The popped-out variant: a shell in a window of its own, with no dock and
@@ -4501,7 +4501,7 @@ async function runShellRepair() {
   // is already in the title.
   const go = await appConfirm({
     title: "Restart Explorer?",
-    message: "The taskbar blinks. Other applications are not affected.",
+    message: "The taskbar blinks, and any window stranded off-screen comes back. Other applications are not affected.",
     confirmLabel: "Restart Explorer", cancelLabel: "Cancel",
     icon: "desktop_windows", tone: "accent", countdown: 3,
   });
@@ -4510,11 +4510,17 @@ async function runShellRepair() {
     setTimeout(() => endWork("repair-shell-done"), 2500);
     return;
   }
-  beginWork("repair-shell", "Restarting Explorer", "closing the shell and deleting the icon and thumbnail caches");
+  beginWork("repair-shell", "Restarting Explorer", "closing the shell, deleting the icon and thumbnail caches, and bringing stranded windows back on-screen");
   let line = "Explorer restarted and shell caches purged";
   try {
     const result = await invoke("repair_run", { id: "shell" });
     if (result?.ok === false) line = `Explorer restart failed: ${result.error || "no reason given"}`;
+    // The sweep for off-screen windows says what it moved, and that is the
+    // part worth reading: the user pressed this because something was lost.
+    else {
+      const moved = String(result?.output || "").split(/\r?\n/).find((row) => row.startsWith("Moved "));
+      if (moved) line = `Explorer restarted, shell caches purged - ${moved.charAt(0).toLowerCase()}${moved.slice(1)}`;
+    }
   } catch (error) {
     line = `Explorer restart failed: ${String(error)}`;
   }
@@ -8104,6 +8110,53 @@ async function startProjectsWindow() {
   }));
 }
 
+/** The question a torrent client asks on the way up: should it be the one
+ *  Windows hands torrents to?
+ *
+ *  Only asked of somebody who has opened the Torrents tool - that is what
+ *  registers WinT as a handler at all, and `torrent_assoc_should_ask` uses it
+ *  as the proof that torrents are something this install does. An install
+ *  that never touches them is never asked.
+ *
+ *  "Not now" means exactly that and the question comes back next start, which
+ *  is the whole point of asking here rather than once and never again.
+ */
+async function askTorrentDefault() {
+  let ask = false;
+  try {
+    ask = await invoke("torrent_assoc_should_ask");
+  } catch { return; }
+  if (!ask) return;
+
+  const answer = await (window.wintConfirm?.({
+    title: "Open torrents with WinT?",
+    message: "Windows does not hand .torrent files and magnet links to WinT yet. "
+      + "Make it the default and clicking one anywhere - in Files, or in a browser - "
+      + "brings it straight to the Torrents tool.",
+    confirmLabel: "Make WinT the default",
+    alternateLabel: "Never ask again",
+    cancelLabel: "Not now",
+    icon: "link",
+  }) ?? Promise.resolve(false));
+
+  if (answer === "alternate") {
+    invoke("torrent_assoc_stop_asking", { never: true }).catch(() => {});
+    return;
+  }
+  if (answer !== true) return;
+
+  // Windows may put its own dialog up over this one, and it waits for a
+  // person. The status bar says where the app has gone until it comes back.
+  beginWork("torrent-default", "Asking Windows about torrent files");
+  try {
+    await invoke("torrent_assoc_choose_default");
+  } catch (error) {
+    console.error("Could not set WinT as the torrent default", error);
+  } finally {
+    endWork("torrent-default");
+  }
+}
+
 (async function start() {
   if (PROJECTS_WINDOW) return startProjectsWindow();
   let restoreWasInterrupted = false;
@@ -8193,6 +8246,11 @@ async function startProjectsWindow() {
     // answers - the question is not worth a wait.
     if (!newInstall) firstRunUsageData();
   });
+
+  // Last, and never awaited: the shell has been interactive for a while by
+  // now, the scan is already running behind it, and this queues behind any
+  // first-run dialog rather than racing it.
+  askTorrentDefault();
 })();
 
 /** The folder a terminal opened from nowhere in particular should start in. */

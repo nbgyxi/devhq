@@ -11,6 +11,7 @@
 //! 18 GB model that died at 90% then costs the last 10%, not the whole thing.
 
 use sha2::{Digest, Sha256};
+use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -28,6 +29,11 @@ const PROGRESS_STEP: u64 = 2_000_000;
 /// still reports on this beat, with a rate that falls towards zero.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(400);
 
+/// Time span used for the displayed speed and its derived ETA. Five seconds
+/// damps short network bursts without leaving the readout far behind a real
+/// change in throughput.
+const RATE_WINDOW: Duration = Duration::from_secs(5);
+
 /// One progress report: where the transfer is, how fast it is moving right
 /// now, and how much of it was already on disk when it started.
 pub struct Tick {
@@ -44,41 +50,81 @@ pub struct Tick {
     pub resumed: u64,
 }
 
-/// Tracks throughput across reports so the rate shown is the rate now, not the
-/// average since the start - those two disagree by a lot on a transfer whose
-/// speed drops away from the burst a CDN opens with.
+/// Tracks a short rolling throughput average. A single progress interval is
+/// too noisy for both the displayed speed and the ETA, while a whole-download
+/// average takes too long to reflect a genuine slowdown.
 struct Rate {
-    last: Instant,
-    last_bytes: u64,
+    samples: VecDeque<(Instant, u64)>,
     speed: f64,
 }
 
 impl Rate {
     fn new(at: u64) -> Self {
+        let mut samples = VecDeque::new();
+        samples.push_back((Instant::now(), at));
         Rate {
-            last: Instant::now(),
-            last_bytes: at,
+            samples,
             speed: 0.0,
         }
     }
 
-    /// Folds the bytes since the previous report into a smoothed rate. The
-    /// weighting is deliberately gentle: a raw per-interval rate jitters far
-    /// too much to read, and a plain average hides a slowdown entirely.
     fn update(&mut self, done: u64) -> f64 {
-        let elapsed = self.last.elapsed().as_secs_f64();
+        self.update_at(Instant::now(), done)
+    }
+
+    fn update_at(&mut self, now: Instant, done: u64) -> f64 {
+        self.samples.push_back((now, done));
+        let cutoff = now.checked_sub(RATE_WINDOW).unwrap_or(now);
+        // Keep the last sample at or before the boundary. It anchors the byte
+        // delta, giving us a window of roughly five seconds rather than only
+        // the reports which happened to land after the boundary.
+        while self.samples.len() > 2 && self.samples[1].0 <= cutoff {
+            self.samples.pop_front();
+        }
+        let Some(&(first_at, first_bytes)) = self.samples.front() else {
+            return self.speed;
+        };
+        let elapsed = now.duration_since(first_at).as_secs_f64();
         if elapsed <= 0.0 {
             return self.speed;
         }
-        let sample = done.saturating_sub(self.last_bytes) as f64 / elapsed;
-        self.last = Instant::now();
-        self.last_bytes = done;
-        self.speed = if self.speed == 0.0 {
-            sample
-        } else {
-            self.speed * 0.7 + sample * 0.3
-        };
+        self.speed = done.saturating_sub(first_bytes) as f64 / elapsed;
         self.speed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_averages_several_seconds_of_progress() {
+        let start = Instant::now();
+        let mut rate = Rate {
+            samples: VecDeque::from([(start, 0)]),
+            speed: 0.0,
+        };
+
+        assert_eq!(
+            rate.update_at(start + Duration::from_secs(1), 1_000),
+            1_000.0
+        );
+        // A slow second affects the multi-second average instead of replacing
+        // the displayed rate with the latest interval's 100 B/s.
+        assert_eq!(rate.update_at(start + Duration::from_secs(2), 1_100), 550.0);
+    }
+
+    #[test]
+    fn rate_discards_samples_older_than_the_window() {
+        let start = Instant::now();
+        let mut rate = Rate {
+            samples: VecDeque::from([(start, 0)]),
+            speed: 0.0,
+        };
+
+        rate.update_at(start + Duration::from_secs(1), 1_000);
+        rate.update_at(start + Duration::from_secs(2), 2_000);
+        assert_eq!(rate.update_at(start + Duration::from_secs(7), 2_500), 100.0);
     }
 }
 

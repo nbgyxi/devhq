@@ -395,9 +395,13 @@ function keySequence(e) {
   const k = e.key;
   const ctrl = e.ctrlKey;
   const alt = e.altKey;
+  // AltGr is exposed as Ctrl+Alt by Windows. Treat the character produced by
+  // the layout as text, not as a Ctrl control code with an Escape prefix.
+  const altGraph = e.getModifierState?.("AltGraph") === true ||
+    (ctrl && alt && k.length === 1 && !/^[a-z]$/i.test(k));
   const app = (letter) => `\x1b[${letter}`;
 
-  if (ctrl && k.length === 1) {
+  if (ctrl && !altGraph && k.length === 1) {
     const c = k.toUpperCase().charCodeAt(0);
     // Ctrl-A..Ctrl-Z plus the handful of control punctuation codes.
     if (c >= 64 && c <= 95) return String.fromCharCode(c - 64);
@@ -434,7 +438,7 @@ function keySequence(e) {
     case "F12": return "\x1b[24~";
     default: break;
   }
-  if (k.length === 1) return alt ? "\x1b" + k : k;
+  if (k.length === 1) return alt && !altGraph ? "\x1b" + k : k;
   return null;
 }
 
@@ -525,6 +529,15 @@ class TermView {
     this.sessionHistory = [];
     this.historyArrowIndex = -1;
     this.historyArrowDraft = "";
+    // Chromium may collapse a DOM selection while dispatching the browser's
+    // native paste. Keep the shell edit calculated at Ctrl+V keydown so the
+    // following paste event can still replace exactly what was selected.
+    this.pendingPasteErase = "";
+    this.bracketedPaste = false;
+    this.mouseMode = 0;
+    this.mouseSgr = false;
+    this.mouseButton = -1;
+    this.composing = false;
     this.stickToBottom = true;
     /** While a resize is in flight, ConPTY repaints cannot move the viewport. */
     this.scrollHeld = false;
@@ -543,6 +556,7 @@ class TermView {
       '<div class="term-scroll"><div class="term-history"></div>' +
       '<div class="term-screen"></div><div class="term-cursor"></div>' +
       '<div class="term-link"></div></div>' +
+      '<textarea class="term-input" tabindex="-1" aria-label="Terminal input" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>' +
       '<div class="term-history-search" hidden><div class="term-history-query"><kbd>^R</kbd><span class="ms">search</span><input type="text" spellcheck="false" aria-label="Search command history"><small></small><button type="button" data-history-close aria-label="Close">&#215;</button></div><div class="term-history-filters"><button class="on" data-history-sort="recent">Recent</button><button data-history-sort="used">Most used</button><button data-history-sort="match">Best match</button></div><div class="term-history-results" role="listbox"></div><div class="term-history-foot"><span></span><div><button data-history-run>Run <kbd>Enter</kbd></button><button data-history-edit>Edit <kbd>Tab</kbd></button><small><kbd>^R</kbd> older &middot; <kbd>^S</kbd> newer &middot; <kbd>^G</kbd> cancel</small></div></div></div>';
     this.scroll = host.querySelector(".term-scroll");
     this.history = host.querySelector(".term-history");
@@ -552,6 +566,7 @@ class TermView {
      *  column like everything else on a row, so it lines up with the text
      *  whatever the font did. */
     this.linkEl = host.querySelector(".term-link");
+    this.input = host.querySelector(".term-input");
     this.link = null;
     this.commandDraft = "";
     this.historySearch = host.querySelector(".term-history-search");
@@ -640,6 +655,9 @@ class TermView {
     this.host.addEventListener("keydown", (e) => {
       if (e.key === "Control") this.setLink(this.pointer ? this.linkUnder(this.pointer) : null);
       if (this.exited) return;
+      // The IME owns every intermediate key. Only compositionend contains the
+      // finished text that belongs in the pseudoconsole.
+      if (e.isComposing || this.composing || e.key === "Process") return;
       if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === "r" || e.key === "R") && enhancedHistoryEnabled()) {
         e.preventDefault(); e.stopPropagation(); this.openHistorySearch(); return;
       }
@@ -650,8 +668,14 @@ class TermView {
       // through to the native paste event, which is far more dependable than
       // reading the clipboard ourselves. Ctrl+V, Ctrl+Shift+V and the old
       // Shift+Insert all land there.
-      if (e.ctrlKey && !e.altKey && (e.key === "v" || e.key === "V")) return;
-      if (e.shiftKey && !e.ctrlKey && e.key === "Insert") return;
+      if (e.ctrlKey && !e.altKey && (e.key === "v" || e.key === "V")) {
+        this.pendingPasteErase = this.eraseSelectionSeq(false);
+        return;
+      }
+      if (e.shiftKey && !e.ctrlKey && e.key === "Insert") {
+        this.pendingPasteErase = this.eraseSelectionSeq(false);
+        return;
+      }
       // Ctrl+Shift+C is the copy that never means interrupt; Ctrl+Insert is
       // the same thing in Notepad's older spelling.
       if (e.ctrlKey && e.shiftKey && e.key === "C") return;
@@ -727,23 +751,54 @@ class TermView {
     this.host.addEventListener("paste", (e) => {
       e.preventDefault();
       const text = (e.clipboardData || window.clipboardData).getData("text");
-      if (!text) return;
-      const erase = this.eraseSelectionSeq();
+      if (!text) { this.pendingPasteErase = ""; return; }
+      const erase = this.pendingPasteErase || this.eraseSelectionSeq(false);
+      this.pendingPasteErase = "";
       this.clearSelection();
-      this.send(erase + text.replace(/\r?\n/g, "\r"));
+      let pasted = text.replace(/\r?\n/g, "\r");
+      if (this.bracketedPaste) pasted = `\x1b[200~${pasted}\x1b[201~`;
+      this.send(erase + pasted);
+    });
+    this.input.addEventListener("compositionstart", () => { this.composing = true; });
+    this.input.addEventListener("compositionend", (e) => {
+      this.composing = false;
+      if (e.data) this.send(e.data);
+      queueMicrotask(() => { this.input.value = ""; });
+    });
+    // Dead keys can produce text without a printable keydown. Normal typing is
+    // already prevented and sent by keydown, so only an actual insert reaching
+    // the hidden input takes this fallback path.
+    this.input.addEventListener("beforeinput", (e) => {
+      if (this.composing || e.isComposing || e.inputType !== "insertText" || !e.data) return;
+      e.preventDefault();
+      this.send(e.data);
+      this.input.value = "";
     });
     this.host.addEventListener("mousedown", (e) => {
-      this.host.focus();
+      this.input.focus({ preventScroll: true });
+      if (this.reportMouse(e, false)) return;
       // Ctrl on a link is a click, not the beginning of a selection drag.
       if (e.ctrlKey && e.button === 0 && this.linkUnder(e)) e.preventDefault();
     });
     this.host.addEventListener("mousemove", (e) => {
+      if (this.reportMouse(e, true)) return;
       this.pointer = { target: e.target, clientX: e.clientX };
       this.setLink(e.ctrlKey ? this.linkUnder(this.pointer) : null);
     });
     this.host.addEventListener("mouseleave", () => this.setLink(null));
     this.host.addEventListener("keyup", (e) => {
       if (e.key === "Control") this.setLink(null);
+      if (e.key === "v" || e.key === "V" || e.key === "Insert") this.pendingPasteErase = "";
+    });
+    this.windowMouseUp = (e) => this.reportMouse(e, false, true);
+    window.addEventListener("mouseup", this.windowMouseUp);
+    this.scroll.addEventListener("wheel", (e) => {
+      if (!this.mouseMode || e.shiftKey) return;
+      e.preventDefault();
+      this.sendMouse(e, e.deltaY < 0 ? 64 : 65, false);
+    }, { passive: false });
+    this.host.addEventListener("contextmenu", (e) => {
+      if (this.mouseMode) e.preventDefault();
     });
     this.host.addEventListener("click", (e) => {
       if (!e.ctrlKey || e.button !== 0) return;
@@ -1117,7 +1172,7 @@ class TermView {
    *  is only honest for a selection sitting on the line being edited - the
    *  scrollback above it is output that has already happened, and a full-screen
    *  program owns its own keyboard - so everything else is left alone. */
-  eraseSelectionSeq() {
+  eraseSelectionSeq(clear = true) {
     if (this.host.classList.contains("alt")) return "";
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || !sel.rangeCount) return "";
@@ -1131,7 +1186,7 @@ class TermView {
     const text = row.textContent || "";
     const commandStart = this.commandStart(text, Math.min(this.cx, text.length));
     if (commandStart === null || start < commandStart || end > text.trimEnd().length) return "";
-    sel.removeAllRanges();
+    if (clear) sel.removeAllRanges();
     const dx = start - this.cx;
     const walk = dx > 0 ? "\x1b[C".repeat(dx) : "\x1b[D".repeat(-dx);
     return walk + "\x1b[3~".repeat(end - start);
@@ -1160,12 +1215,53 @@ class TermView {
     const text = sel.toString();
     if (!text) return false;
     if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).catch(() => {});
+      navigator.clipboard.writeText(text).then(() => {
+        const current = window.getSelection();
+        if (current && current.toString() === text) current.removeAllRanges();
+      }).catch(() => {});
     } else {
-      document.execCommand("copy");
+      if (document.execCommand("copy")) sel.removeAllRanges();
     }
-    sel.removeAllRanges();
     return true;
+  }
+
+  /** Reports a browser mouse event when the foreground terminal application
+   *  requested DEC mouse tracking. Otherwise the browser keeps the event for
+   *  ordinary text selection. */
+  reportMouse(e, motion, release = false) {
+    // Shift is the conventional terminal override for selecting and copying
+    // text while a TUI has mouse reporting enabled.
+    if (!this.mouseMode || (e.shiftKey && !release)) return false;
+    if (motion) {
+      if (this.mouseMode === 1000 || (this.mouseMode === 1002 && this.mouseButton < 0)) return false;
+      this.sendMouse(e, (this.mouseButton < 0 ? 3 : this.mouseButton) + 32, false);
+    } else if (release) {
+      if (this.mouseButton < 0) return false;
+      const button = this.mouseButton;
+      this.mouseButton = -1;
+      this.sendMouse(e, button, true);
+    } else {
+      if (e.button < 0 || e.button > 2) return false;
+      this.mouseButton = e.button;
+      this.sendMouse(e, e.button, false);
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    return true;
+  }
+
+  /** Encodes one mouse action using SGR 1006 when requested, falling back to
+   *  the original X10 coordinate encoding for older applications. */
+  sendMouse(e, code, release) {
+    const box = this.screen.getBoundingClientRect();
+    const x = Math.max(1, Math.min(this.cols, Math.floor((e.clientX - box.left) / this.cellW) + 1));
+    const y = Math.max(1, Math.min(this.rows, Math.floor((e.clientY - box.top) / this.cellH) + 1));
+    if (this.mouseSgr) {
+      this.send(`\x1b[<${code};${x};${y}${release ? "m" : "M"}`);
+    } else {
+      const legacyCode = release ? 3 : code;
+      this.send(`\x1b[M${String.fromCharCode(legacyCode + 32, Math.min(x, 223) + 32, Math.min(y, 223) + 32)}`);
+    }
   }
 
   openHistorySearch() {
@@ -1322,6 +1418,10 @@ class TermView {
     this.buildScreen();
     for (const row of snap.screen) this.paintRow(row.y, row.runs);
     this.moveCursor(snap.cx, snap.cy, snap.cursorVisible, snap.cursorStyle, snap.cursorChar);
+    this.bracketedPaste = Boolean(snap.bracketedPaste);
+    this.mouseMode = snap.mouseMode || 0;
+    this.mouseSgr = Boolean(snap.mouseSgr);
+    this.host.classList.toggle("mouse-reporting", Boolean(this.mouseMode));
     this.settleScroll();
     return snap.info;
   }
@@ -1366,6 +1466,11 @@ class TermView {
     }
     for (const row of payload.rows) this.paintRow(row.y, row.runs);
     this.moveCursor(payload.cx, payload.cy, payload.cursorVisible, payload.cursorStyle, payload.cursorChar);
+    this.bracketedPaste = Boolean(payload.bracketedPaste);
+    this.mouseMode = payload.mouseMode || 0;
+    this.mouseSgr = Boolean(payload.mouseSgr);
+    if (!this.mouseMode) this.mouseButton = -1;
+    this.host.classList.toggle("mouse-reporting", Boolean(this.mouseMode));
     this.host.classList.toggle("alt", payload.alt);
     if (this.onFirstOutput) {
       const fire = this.onFirstOutput;
@@ -1590,12 +1695,13 @@ class TermView {
   }
 
   focus() {
-    this.host.focus();
+    this.input.focus({ preventScroll: true });
   }
 
   /** Detaches the view. The session keeps running — that is the whole point. */
   dispose() {
     this.setLink(null);
+    window.removeEventListener("mouseup", this.windowMouseUp);
     if (views.get(this.id) === this) views.delete(this.id);
   }
 }

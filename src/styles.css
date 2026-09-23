@@ -1738,6 +1738,8 @@ html[dir="rtl"] .changelog-pop{right:auto;left:0;direction:rtl;text-align:right}
   line-height:17px;
   user-select:text;cursor:text;height:100%;
 }
+.term-input{position:absolute;width:1px;height:1px;left:-10000px;top:0;opacity:0;pointer-events:none;resize:none}
+.term.mouse-reporting,.term.mouse-reporting .term-scroll{cursor:default}
 .term-scroll{position:relative;height:100%;overflow-y:auto;overflow-x:hidden;padding:6px 8px}
 /* Rows are the grid runs are positioned against. */
 .term-history div,.term-screen div{position:relative;white-space:pre;min-height:17px}
@@ -4928,3 +4930,135 @@ body.projects-window #status-term-popout{display:none!important}
 .model-key-state{flex:1 1 auto;font-size:11px;color:var(--dim)}
 .model-key input{flex:1 1 190px;min-width:150px}
 .model-key .model-note{flex:1 0 100%;grid-column:auto}
+
+/* ---------------------------------------------------------------- torrents */
+/* The list is virtualized, so `.tr-row` and `.tr-frow` have to keep the exact
+   heights torrent.js scrolls by (ROW = 34, FILE_ROW = 28). Changing either
+   here means changing it there. */
+[data-torrent-host]{height:100%;min-height:0;display:flex;flex-direction:column}
+.tr-page{flex:1 1 auto;display:flex;flex-direction:column;gap:12px;min-height:0}
+.tr-banner{flex:none;display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg2);font-size:12px}
+/* Without this the bar keeps its display:flex and shows as an empty box. */
+.tr-banner[hidden]{display:none}
+.tr-banner .ms{color:var(--amber)}
+.tr-banner.bad{border-color:rgba(242,84,91,.4);background:rgba(242,84,91,.08)}
+.tr-banner.bad .ms{color:var(--red)}
+.tr-banner span{flex:1;min-width:0}
+.tr-ask{flex:none;display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid rgba(90,160,255,.35);border-radius:10px;background:rgba(90,160,255,.08);font-size:12px}
+.tr-ask[hidden]{display:none}
+.tr-ask .ms{color:var(--accent)}
+.tr-ask>span{flex:1;min-width:0}
+.tr-ask b{font-weight:600}
+
+/* The Settings tab's read-out of what Windows currently does. */
+.tr-assocline{display:flex;align-items:center;gap:8px;padding:7px 12px;font-size:12px;color:var(--dim)}
+.tr-assocline .ms{font-size:16px;color:var(--dim2)}
+.tr-assocline.on{color:var(--text)}
+.tr-assocline.on .ms{color:var(--green)}
+.tr-assocnote{margin:0;padding:0 12px 6px;color:var(--dim2);font-size:11px}
+.tr-assocnote code{font-size:11px;word-break:break-all}
+
+.tr-tabs{flex:none;display:flex;align-items:center;gap:4px;border-bottom:1px solid var(--line)}
+.tr-tab{border:0;background:none;color:var(--dim);padding:8px 12px;border-bottom:2px solid transparent;cursor:pointer;font-size:12.5px}
+.tr-tab:hover{color:var(--text)}
+.tr-tab.on{color:var(--text);border-bottom-color:var(--accent)}
+.tr-count{margin-left:auto;padding-right:4px;color:var(--dim2);font-size:11px}
+.tr-view{flex:1 1 auto;display:flex;flex-direction:column;gap:12px;min-height:0}
+.tr-view[hidden]{display:none}
+
+.tr-add{flex:none;display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--bg1)}
+.tr-add .ms{color:var(--accent)}
+.tr-magnet{flex:1;min-width:0;border:0;background:none;color:var(--text);font-size:12px;outline:none}
+.tr-magnet::placeholder{color:var(--dim2)}
+
+.tr-work{flex:1 1 auto;display:flex;align-items:stretch;gap:12px;min-height:0}
+.tr-list{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow:hidden}
+.tr-list.tr-drop{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.tr-head,.tr-row{display:grid;grid-template-columns:minmax(0,1fr) 80px 120px 150px 84px 84px 56px;gap:10px;align-items:center}
+.tr-head{padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--line);color:var(--dim2);font-size:10px;text-transform:uppercase;letter-spacing:.4px}
+.tr-scroll{flex:1 1 auto;position:relative;overflow-y:auto;min-height:0}
+.tr-spacer{width:1px}
+.tr-rows,.tr-frows{position:absolute;top:0;left:0;right:0}
+.tr-row{height:34px;box-sizing:border-box;width:100%;padding:0 12px;border:0;border-bottom:1px solid var(--line);background:var(--bg1);color:var(--text);text-align:left;font-size:11.5px;cursor:pointer}
+.tr-row:hover{background:var(--bg2)}
+.tr-row.on{background:rgba(109,139,255,.12)}
+.tr-name{display:flex;align-items:center;gap:7px;min-width:0}
+.tr-name span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tr-dot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--accent)}
+.tr-dot.good{background:var(--green)}
+.tr-dot.warn{background:var(--amber)}
+.tr-dot.bad{background:var(--red)}
+.tr-dot.muted{background:var(--dim2)}
+.tr-size,.tr-down,.tr-up,.tr-peers{color:var(--dim);font-variant-numeric:tabular-nums}
+.tr-done,.tr-fdone{display:flex;align-items:center;gap:7px}
+.tr-bar{flex:1;height:3px;border-radius:2px;background:var(--line);overflow:hidden}
+.tr-bar b{display:block;height:100%;background:var(--accent);border-radius:2px}
+.tr-done small,.tr-fpct{color:var(--dim2);font-size:10px;min-width:32px;text-align:right;font-variant-numeric:tabular-nums}
+.tr-status{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim)}
+.tr-status.good{color:var(--green)}
+.tr-status.warn{color:var(--amber)}
+.tr-status.bad{color:var(--red)}
+.tr-status.muted{color:var(--dim2)}
+.tr-empty{padding:40px;text-align:center;color:var(--dim2)}
+.tr-empty .ms{font-size:28px;display:block;margin-bottom:8px}
+.tr-empty p{margin:0;font-size:12px}
+.tr-skeleton{height:34px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,var(--bg1),var(--bg2),var(--bg1));background-size:200% 100%;animation:tr-shimmer 1.4s linear infinite}
+@keyframes tr-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+@media(prefers-reduced-motion:reduce){.tr-skeleton{animation:none}}
+
+.tr-detail{flex:0 0 360px;min-width:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow:hidden}
+.tr-detail[hidden]{display:none}
+.tr-dhead{flex:none;display:flex;flex-direction:column;gap:10px;min-width:0;padding:11px 12px;border-bottom:1px solid var(--line);background:var(--bg2)}
+.tr-dtitle{min-width:0;display:flex;flex-direction:column;gap:4px}
+.tr-dtitle strong{font-size:12.5px;line-height:1.35;overflow-wrap:anywhere}
+.tr-dtitle small{color:var(--dim2);font-size:10.5px;line-height:1.5;overflow-wrap:anywhere}
+.tr-dactions{display:flex;flex-wrap:wrap;gap:6px}
+.tr-dactions .btn{flex:1 1 auto;justify-content:center}
+.tr-fhead,.tr-frow{display:grid;grid-template-columns:18px minmax(0,1fr) 62px 76px;gap:8px;align-items:center}
+.tr-fhead{padding:6px 12px;grid-template-columns:18px minmax(0,1fr) 62px 76px;color:var(--dim2);font-size:10px;text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid var(--line)}
+.tr-files{flex:1 1 auto;display:flex;flex-direction:column;min-width:0;min-height:0}
+.tr-fscroll{flex:1 1 auto;position:relative;overflow-y:auto;min-height:0}
+.tr-frow{height:28px;box-sizing:border-box;padding:0 12px;font-size:11px;border-bottom:1px solid var(--line)}
+.tr-frow.off{opacity:.45}
+.tr-frow.tr-skeleton{height:28px}
+.tr-fnote{color:var(--red);grid-column:1/-1}
+.tr-fcheck{margin:0;cursor:pointer}
+.tr-frow.on{background:color-mix(in srgb,var(--accent) 16%,transparent)}
+.tr-frow{cursor:default;user-select:none}
+.tr-frow:hover{background:var(--bg2)}
+.tr-frow.on:hover{background:color-mix(in srgb,var(--accent) 20%,transparent)}
+.tr-fname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.tr-fsize{color:var(--dim);font-variant-numeric:tabular-nums}
+/* Too narrow for two columns: the torrent goes back above its files. */
+@media(max-width:900px){.tr-work{flex-direction:column;max-height:none}
+.tr-scroll{min-height:160px;max-height:40vh}.tr-detail{flex:none}.tr-fscroll{min-height:140px;max-height:34vh}}
+
+.tr-foot{flex:none;display:flex;align-items:center;gap:16px;padding:0 2px;color:var(--dim);font-size:11px}
+.tr-rate{display:flex;align-items:center;gap:5px}
+.tr-rate .ms{font-size:15px;color:var(--dim2)}
+.tr-rate strong{font-weight:600;font-variant-numeric:tabular-nums}
+.tr-note{margin-left:auto;color:var(--dim2)}
+
+.tr-settings{display:flex;flex-direction:column;gap:12px;max-width:620px}
+.tr-setrow{display:flex;align-items:center;gap:12px;padding:9px 12px;border-top:1px solid var(--line);font-size:12px}
+.tr-setrow:first-of-type{border-top:0}
+.tr-setrow>span:first-child{flex:1;display:flex;flex-direction:column;gap:2px}
+.tr-setrow>span small{color:var(--dim2);font-size:10.5px}
+.tr-setrow code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim);font-size:11px}
+.tr-setrow select{min-width:130px}
+.tr-enginepanel .tr-setrow span{color:var(--dim2);font-size:11px}
+/* The torrent right-click menu. Same shape as the one in Disk Space, with a
+   destructive last item set apart from the rest. */
+.tr-context{position:fixed;z-index:10000;min-width:216px;padding:4px;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:7px;background:var(--bg2);box-shadow:0 12px 34px #0009}
+.tr-context>button{display:flex;align-items:center;gap:9px;padding:7px 10px;border:0;border-radius:5px;background:none;color:var(--text);text-align:left;font-size:11.5px;cursor:pointer;white-space:nowrap}
+.tr-context>button:hover{background:color-mix(in srgb,var(--accent) 16%,transparent)}
+.tr-context>button .ms{font-size:16px;color:var(--dim2)}
+.tr-context>button[data-act="forever"],.tr-context>button[data-act="recycle"]{color:var(--red)}
+.tr-context>button[data-act="forever"] .ms,.tr-context>button[data-act="recycle"] .ms{color:var(--red)}
+.tr-context>button[data-act="forever"]:hover,.tr-context>button[data-act="recycle"]:hover{background:rgba(242,84,91,.12)}
+.tr-context>hr{margin:4px 6px;border:0;border-top:1px solid var(--line)}
+/* The contents header doubles as the sort control. */
+.tr-fhead>button{display:flex;align-items:center;gap:4px;padding:0;border:0;background:none;color:inherit;font:inherit;text-transform:inherit;letter-spacing:inherit;cursor:pointer}
+.tr-fhead>button:hover{color:var(--text)}
+.tr-fhead>button.on{color:var(--accent)}
+.tr-fsort-arrow{font-style:normal;font-size:8px;line-height:1}

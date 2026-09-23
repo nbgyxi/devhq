@@ -277,6 +277,67 @@ unsafe fn place(hwnd: HWND) {
     );
 }
 
+/// Put a window of ours back somewhere it can actually be seen, and say
+/// whether it had to be moved.
+///
+/// Showing a window is not the same as being able to see it. A window left on
+/// a monitor that was then unplugged - a laptop undocked, a second screen
+/// switched off, a remote session resized - keeps the coordinates it had, and
+/// those coordinates belong to no screen any more. Windows does not correct
+/// them, and neither does restarting Explorer: the position is the window's
+/// own. The result is a WinT that shows and hides and takes focus exactly as
+/// it is told while never appearing anywhere.
+///
+/// Two things count as lost: no monitor covers any part of the window, or what
+/// does overlap one is too small a sliver to grab with the mouse. A maximized
+/// window is restored first, because `SetWindowPos` on a maximized window
+/// leaves it in a half-maximized state.
+pub(crate) unsafe fn ensure_on_screen(hwnd: HWND) -> bool {
+    use windows::Win32::Graphics::Gdi::{MonitorFromRect, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL};
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsZoomed, ShowWindow, SW_RESTORE};
+
+    let mut rect = RECT::default();
+    if GetWindowRect(hwnd, &mut rect).is_err() {
+        return false;
+    }
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    let nearest = MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST);
+    if !GetMonitorInfoW(nearest, &mut info).as_bool() {
+        return false;
+    }
+    let work = info.rcWork;
+    let seen_wide = rect.right.min(work.right) - rect.left.max(work.left);
+    let seen_tall = rect.bottom.min(work.bottom) - rect.top.max(work.top);
+    let lost = MonitorFromRect(&rect, MONITOR_DEFAULTTONULL).is_invalid()
+        || seen_wide < 120
+        || seen_tall < 48;
+    if !lost {
+        return false;
+    }
+    if IsZoomed(hwnd).as_bool() {
+        let _ = ShowWindow(hwnd, SW_RESTORE);
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return false;
+        }
+    }
+    let (room_wide, room_tall) = (work.right - work.left, work.bottom - work.top);
+    let width = (rect.right - rect.left).clamp(480, room_wide);
+    let height = (rect.bottom - rect.top).clamp(320, room_tall);
+    let _ = SetWindowPos(
+        hwnd,
+        None,
+        work.left + ((room_wide - width) / 2).max(0),
+        work.top + ((room_tall - height) / 2).max(0),
+        width,
+        height,
+        SWP_NOZORDER,
+    );
+    true
+}
+
 /// Read the real taskbar's auto-hide / always-on-top state.
 unsafe fn taskbar_state() -> u32 {
     let mut data = APPBARDATA {
@@ -849,37 +910,20 @@ fn changed(app: &AppHandle) -> SidebarState {
 }
 
 /// Bring a window to the front from a click on the rail, and report whether
-/// Windows let it. `SetForegroundWindow` is refused unless the caller's input
-/// queue is the one Windows considers active, so ours is briefly attached to
-/// the current foreground window's — the same step Search's global shortcut
-/// takes. `SwitchToThisWindow` is the last resort.
+/// Windows let it. Keep this best-effort and asynchronous: attaching input
+/// queues to an app that is stalled while restoring can stall the sidebar's
+/// drawing thread as well.
 unsafe fn bring_forward(hwnd: HWND) -> bool {
-    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, IsIconic,
-        SetForegroundWindow, ShowWindow, SwitchToThisWindow, SW_RESTORE, SW_SHOW,
+        BringWindowToTop, GetForegroundWindow, IsIconic, SetForegroundWindow,
+        ShowWindowAsync, SW_RESTORE, SW_SHOW,
     };
-    let _ = ShowWindow(hwnd, if IsIconic(hwnd).as_bool() { SW_RESTORE } else { SW_SHOW });
-    let current = GetCurrentThreadId();
-    let foreground = GetForegroundWindow();
-    let foreground_thread = if foreground.0.is_null() {
-        0
-    } else {
-        GetWindowThreadProcessId(foreground, None)
-    };
-    let attached = foreground_thread != 0
-        && foreground_thread != current
-        && AttachThreadInput(current, foreground_thread, true).as_bool();
+    // A tray-hidden target can be busy or hung while restoring. Never attach
+    // its input queue to ours: that makes its wait the sidebar's wait too and
+    // wedges the rail even though this function is running off-thread.
+    let _ = ShowWindowAsync(hwnd, if IsIconic(hwnd).as_bool() { SW_RESTORE } else { SW_SHOW });
     let _ = BringWindowToTop(hwnd);
-    let mut done = SetForegroundWindow(hwnd).as_bool();
-    if attached {
-        let _ = AttachThreadInput(current, foreground_thread, false);
-    }
-    if !done {
-        SwitchToThisWindow(hwnd, true);
-        done = GetForegroundWindow() == hwnd;
-    }
-    done
+    SetForegroundWindow(hwnd).as_bool() || GetForegroundWindow() == hwnd
 }
 
 /// The last window other than the sidebar that had the foreground. Clicking
@@ -968,6 +1012,14 @@ unsafe fn is_taskbar_window(hwnd: HWND) -> bool {
 /// are 0x0 or a few pixels square.
 const REAL_WINDOW_MIN: i32 = 160;
 
+/// Framework-owned top-level windows that exist only to receive notification
+/// area messages. Some of them have a caption and a plausible restored size,
+/// so the normal window-shape checks cannot distinguish them from an app's
+/// hidden main window.
+fn is_tray_message_window(class: &str) -> bool {
+    class.eq_ignore_ascii_case("QTrayIconMessageWindow")
+}
+
 /// Whether this window is one the user could actually be shown — whether or
 /// not it is on screen right now, because a tray app's main window is hidden
 /// by definition.
@@ -981,11 +1033,16 @@ const REAL_WINDOW_MIN: i32 = 160;
 unsafe fn showable_window(hwnd: HWND) -> bool {
     use windows::Win32::Foundation::RECT;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindow, GetWindowLongW, GetWindowPlacement, GetWindowRect, GetWindowTextLengthW,
-        IsWindow, GWL_EXSTYLE, GWL_STYLE, GW_OWNER, WINDOWPLACEMENT, WS_CAPTION, WS_EX_APPWINDOW,
-        WS_EX_TOOLWINDOW,
+        GetClassNameW, GetWindow, GetWindowLongW, GetWindowPlacement, GetWindowRect,
+        GetWindowTextLengthW, IsWindow, GWL_EXSTYLE, GWL_STYLE, GW_OWNER, WINDOWPLACEMENT,
+        WS_CAPTION, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
     };
     if !IsWindow(Some(hwnd)).as_bool() || GetWindowTextLengthW(hwnd) == 0 {
+        return false;
+    }
+    let mut class = [0u16; 256];
+    let class_len = GetClassNameW(hwnd, &mut class).max(0) as usize;
+    if is_tray_message_window(&String::from_utf16_lossy(&class[..class_len])) {
         return false;
     }
     if GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CAPTION.0 == 0 {
@@ -1102,7 +1159,7 @@ pub(crate) fn list_windows(sidebar: isize) -> Vec<OpenWindow> {
 
 #[cfg(test)]
 mod sidebar_order_tests {
-    use super::editor_workspace;
+    use super::{editor_workspace, is_tray_message_window};
 
     #[test]
     fn vscode_workspace_ignores_the_active_file() {
@@ -1120,6 +1177,13 @@ mod sidebar_order_tests {
     #[test]
     fn other_apps_do_not_get_title_based_identity() {
         assert_eq!(editor_workspace(r"C:\notepad.exe", "notes - work - Notepad"), "");
+    }
+
+    #[test]
+    fn qt_tray_message_sink_is_not_a_user_window() {
+        assert!(is_tray_message_window("QTrayIconMessageWindow"));
+        assert!(is_tray_message_window("qtrayiconmessagewindow"));
+        assert!(!is_tray_message_window("Qt5152QWindowIcon"));
     }
 }
 
@@ -2605,6 +2669,22 @@ unsafe fn reveal_app(hwnd: HWND, exe: Option<String>, name: Option<String>) -> R
                         .map(|_| ())
                         .map_err(|e| format!("Could not open it: {e}"));
                 }
+                // Do not ShowWindow a desktop app's tray-hidden main window.
+                // Frameworks such as Qt need the application to run its own
+                // restore handler; forcing qBittorrent's HWND visible, for
+                // example, produces a captioned but completely blank window.
+                // Starting its executable again delivers that request to the
+                // existing single-instance process, like opening it from the
+                // Start menu, so it restores and repaints itself properly.
+                let mut command = std::process::Command::new(&want);
+                if let Some(dir) = std::path::Path::new(&want).parent() {
+                    command.current_dir(dir);
+                }
+                return command
+                    .creation_flags(DETACHED_PROCESS)
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|e| format!("Could not open it: {e}"));
             }
             bring_forward(found);
             return Ok(());
