@@ -117,3 +117,8 @@ members = ["torrent-helper"]
 
 [patch.crates-io]
 librqbit = { path = "../vendor/librqbit" }
+# Patched so one oversized or rejected UDP datagram cannot kill the DHT for
+# good: on Windows an over-large packet fails the receive rather than being
+# truncated, and that error used to end the DHT task while the session
+# carried on waiting for a DHT that would never answer again.
+librqbit-dht = { path = "../vendor/librqbit-dht" }

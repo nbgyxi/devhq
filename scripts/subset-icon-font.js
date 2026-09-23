@@ -45,6 +45,10 @@ const HB_SUBSET_WASM = path.join(ROOT, "node_modules", "harfbuzzjs", "dist", "ha
 const SCAN_EXTENSIONS = new Set([".js", ".mjs", ".cjs", ".html", ".css", ".json", ".rs"]);
 const SCAN_SKIP = new Set([
   "node_modules", "target", ".git", "dist", "gen", ".cache", "fonts", "tool-icons", "icons",
+  // Vendored third-party crates. Their source names no icon of ours, and the
+  // scan is blunt enough that an ordinary two-letter identifier in one of them
+  // matches a real glyph name and grows the bundled font for nothing.
+  "vendor",
 ]);
 
 // Release notes are prose, and prose collides with glyph names — "paid",

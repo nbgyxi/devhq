@@ -786,6 +786,141 @@ async function maybeDrag(event) {
   }
 }
 
+/** Rubber-band selection. Pressing on blank space - or on a row that is not
+ *  part of the current selection - and dragging paints a rectangle over the
+ *  list; every row it touches is selected while the pointer moves. Starting
+ *  on a row that IS already selected keeps meaning "drag these files out",
+ *  which is how the pointer tells the two gestures apart without a modifier.
+ *
+ *  The list is virtualised, so which rows the rectangle covers is worked out
+ *  from the row height and the scroll offset, never from the DOM - rows far
+ *  outside the viewport have no element to measure. */
+let marquee = null;
+let marqueeFrame = 0;
+
+function rowBodyTop(rows) {
+  const body = rows.querySelector(".fx-row-body");
+  if (!body) return 0;
+  return body.getBoundingClientRect().top - rows.getBoundingClientRect().top + rows.scrollTop;
+}
+
+function watchMarquee(event) {
+  if (event.button !== 0 || !fx.host || fx.path === THIS_PC || fx.rename) return;
+  if (event.target.closest("button, input, .fx-rename, .fx-row.head")) return;
+  const rows = fx.host.querySelector(".fx-rows");
+  // Anywhere in the scroller counts, including the blank space under the
+  // last row - on a tall window that gap is the easiest place to start.
+  if (!rows || !rows.contains(event.target)) return;
+  const row = event.target.closest("[data-fx-item]");
+  // Pressing on something already selected means "drag these out".
+  if (row && selection().some((path) => same(path, row.dataset.fxItem))) return;
+  const rect = rows.getBoundingClientRect();
+  marquee = {
+    rows,
+    rect,
+    base: event.ctrlKey || event.shiftKey ? new Set(fx.selectedPaths) : new Set(),
+    x: event.clientX - rect.left + rows.scrollLeft,
+    y: event.clientY - rect.top + rows.scrollTop,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    pointerId: event.pointerId,
+    live: false,
+    box: null,
+  };
+  // Whichever gesture the pointer turns into, it cannot be both: a row that
+  // is not selected yet starts a rectangle, never a file drag.
+  dragFrom = null;
+}
+
+function maybeMarquee(event) {
+  if (!marquee) return;
+  if (!(event.buttons & 1)) { endMarquee(); return; }
+  marquee.clientX = event.clientX;
+  marquee.clientY = event.clientY;
+  if (!marquee.live) {
+    const { rows, rect } = marquee;
+    const fromX = rect.left + marquee.x - rows.scrollLeft;
+    const fromY = rect.top + marquee.y - rows.scrollTop;
+    if (Math.hypot(event.clientX - fromX, event.clientY - fromY) < 6) return;
+    marquee.live = true;
+    // A rectangle and a file drag can never both be running.
+    dragFrom = null;
+    marquee.box = document.createElement("div");
+    marquee.box.className = "fx-marquee";
+    rows.appendChild(marquee.box);
+    document.body.classList.add("fx-marqueeing");
+    try { rows.setPointerCapture(marquee.pointerId); } catch (_) { /* no capture, no harm */ }
+  }
+  event.preventDefault();
+  paintMarquee();
+  autoScrollMarquee();
+}
+
+function paintMarquee() {
+  if (!marquee?.live) return;
+  const { rows, rect } = marquee;
+  const x = Math.max(0, Math.min(rows.scrollWidth, marquee.clientX - rect.left + rows.scrollLeft));
+  const y = Math.max(0, Math.min(rows.scrollHeight, marquee.clientY - rect.top + rows.scrollTop));
+  const left = Math.min(marquee.x, x);
+  const top = Math.min(marquee.y, y);
+  const height = Math.abs(y - marquee.y);
+  marquee.box.style.transform = `translate(${left}px,${top}px)`;
+  marquee.box.style.width = `${Math.abs(x - marquee.x)}px`;
+  marquee.box.style.height = `${height}px`;
+
+  const shown = visible().shown;
+  const rowHeight = fx.thumbsOn ? THUMB_ROW_PX : ROW_PX;
+  const bodyTop = rowBodyTop(rows);
+  const first = Math.floor((top - bodyTop) / rowHeight);
+  const last = Math.floor((top + height - bodyTop) / rowHeight);
+  const picked = new Set(marquee.base);
+  for (let index = Math.max(0, first); index <= Math.min(shown.length - 1, last); index += 1) {
+    picked.add(shown[index].path);
+  }
+  fx.selectedPaths = picked;
+  fx.selected = [...picked].slice(-1)[0] || "";
+  fx.selectionAnchor = fx.selected;
+  paintSelection();
+}
+
+/** Dragging past the top or bottom edge keeps the list moving, so a rectangle
+ *  can reach rows that were never on screen when it started. */
+function autoScrollMarquee() {
+  cancelAnimationFrame(marqueeFrame);
+  if (!marquee?.live) return;
+  const { rows, rect } = marquee;
+  const above = rect.top + 24 - marquee.clientY;
+  const below = marquee.clientY - (rect.bottom - 24);
+  const step = above > 0 ? -Math.min(24, above) : below > 0 ? Math.min(24, below) : 0;
+  if (!step) return;
+  marqueeFrame = requestAnimationFrame(() => {
+    if (!marquee?.live) return;
+    rows.scrollTop = Math.max(0, Math.min(rows.scrollHeight - rows.clientHeight, rows.scrollTop + step));
+    paintVirtualRows(rows);
+    paintMarquee();
+    autoScrollMarquee();
+  });
+}
+
+function endMarquee() {
+  cancelAnimationFrame(marqueeFrame);
+  if (!marquee) return;
+  const { live, box, rows, pointerId } = marquee;
+  marquee = null;
+  if (!live) return;
+  box?.remove();
+  document.body.classList.remove("fx-marqueeing");
+  try { rows.releasePointerCapture(pointerId); } catch (_) { /* already gone */ }
+  // The release that ends a rectangle is not a click on the row underneath.
+  dragJustEnded = Date.now();
+  if (fx.previewPane) {
+    fx.previewUrl = "";
+    fx.previewLoading = false;
+    paintPreview();
+    loadPreview();
+  }
+}
+
 /** Rows use the same selection model as Windows Explorer: one click selects,
  *  while double-click or Enter activates the selected item. */
 function selection() { return [...fx.selectedPaths]; }
@@ -845,9 +980,13 @@ async function loadPreview() {
   const token = ++previewToken;
   fx.previewLoading = true;
   paintPreview();
+  // Making a preview reads the whole file and rescales it, which on a big
+  // picture or a slow drive is long enough to look like nothing happened.
+  window.wintWork?.beginWork("explorer-preview", `Making a preview of ${entry.name}`);
   let url = "";
   try { url = (await invoke("explorer_thumbnail", { path, size: PREVIEW_PX })) || ""; }
   catch (_) { url = ""; }
+  finally { if (token === previewToken) window.wintWork?.endWork("explorer-preview"); }
   if (token !== previewToken) return;
   fx.previewUrl = url;
   fx.previewLoading = false;
@@ -914,7 +1053,7 @@ function renderPreviewPane() {
     : fx.previewUrl
       ? `<img class="fx-preview-image" src="${fx.previewUrl}" alt="${esc(entry.name)}">`
       : fx.previewLoading
-        ? `<div class="fx-preview-empty loading">${icon("progress_activity")}<p>Reading the picture…</p></div>`
+        ? `<div class="fx-preview-making"><div class="fx-preview-frame"></div><p>${icon("progress_activity")}Making a preview of <b>${esc(entry.name)}</b>…</p></div>`
         : `<div class="fx-preview-empty">${icon("broken_image")}<p>Could not make a preview of this file.</p></div>`;
   return `<aside class="fx-preview" aria-label="Preview">
     <div class="fx-preview-stage">${body}</div>
@@ -1041,7 +1180,11 @@ function renderChips(counts) {
     const on = fx.kinds.has(kind.id);
     return `<button class="fx-chip${on ? " on" : ""}" type="button" data-fx-kind="${kind.id}" aria-pressed="${on}">${icon(kind.icon)}${kind.name}<b>${counts.kinds.get(kind.id)}</b></button>`;
   }).join("");
-  return chips || `<span class="fx-chip-none">Nothing to filter — this folder is empty.</span>`;
+  if (chips) return chips;
+  // While the folder is still being read there is nothing to count yet, and
+  // saying "empty" would be a lie that corrects itself a moment later.
+  if (fx.loading) return `<span class="fx-chip-none">${icon("progress_activity")}Reading this folder…</span>`;
+  return `<span class="fx-chip-none">Nothing to filter — this folder is empty.</span>`;
 }
 
 function renderTypes(counts) {
@@ -1055,7 +1198,7 @@ function renderTypes(counts) {
     }).join("");
   return `<div class="fx-types" role="group" aria-label="Filter by file extension">
     <header>Every extension in this folder<button class="fx-type-clear" type="button" data-fx-clear-ext ${fx.exts.size ? "" : "disabled"}>Clear</button></header>
-    <div class="fx-type-list">${rows || `<p class="fx-type-empty">This folder holds no files, only folders.</p>`}</div>
+    <div class="fx-type-list">${rows || `<p class="fx-type-empty">${fx.loading ? "Reading this folder…" : "This folder holds no files, only folders."}</p>`}</div>
   </div>`;
 }
 
@@ -1176,12 +1319,12 @@ function render() {
         <button class="fx-nav" type="button" data-fx-refresh title="${fx.path === THIS_PC ? "Read the drives again" : "Read this folder again"}" aria-label="Refresh">${icon("refresh")}</button>
         <button class="fx-nav" type="button" data-fx-new-window title="Open this folder in a new window" aria-label="New window">${icon("tab_duplicate")}</button>
         <label class="fx-address" title="Type or paste a folder path">${icon("folder")}<input type="text" value="${esc(fx.path)}" placeholder="This PC" aria-label="Folder path" spellcheck="false"></label>
-        <label class="fx-search">${icon("search")}<input type="text" placeholder="Filter by name" aria-label="Filter by name"></label>
         <button class="fx-nav${fx.thumbsOn ? " on" : ""}" type="button" data-fx-thumbs aria-pressed="${fx.thumbsOn}" title="${fx.thumbsOn ? "Back to plain rows" : "Show a picture on every image row"}" aria-label="Thumbnails">${icon("photo_library")}</button>
         <button class="fx-nav${fx.previewPane ? " on" : ""}" type="button" data-fx-preview aria-pressed="${fx.previewPane}" title="${fx.previewPane ? "Close the preview panel" : "Open a preview panel beside the list"}" aria-label="Preview panel">${icon("preview")}</button>
         <button class="fx-nav${fx.showHidden ? " on" : ""}" type="button" data-fx-hidden aria-pressed="${fx.showHidden}" title="${fx.showHidden ? "Hide hidden and system items" : "Show hidden and system items"}" aria-label="Hidden items">${icon(fx.showHidden ? "visibility" : "visibility_off")}</button>
       </div>
       ${fx.path === THIS_PC ? "" : `<div class="fx-chips">${renderChips(counts)}
+        <label class="fx-search">${icon("search")}<input type="text" placeholder="Filter by name" aria-label="Filter by name"></label>
         <button class="fx-chip more${fx.typesOpen ? " on" : ""}${fx.exts.size ? " picked" : ""}" type="button" data-fx-types aria-expanded="${fx.typesOpen}">${icon("filter_alt")}${fx.exts.size ? `${fx.exts.size} extension${fx.exts.size === 1 ? "" : "s"}` : "By extension"}${icon(fx.typesOpen ? "expand_less" : "expand_more")}</button>
         ${filtering ? `<button class="fx-chip clear" type="button" data-fx-clear>${icon("close")}Clear</button>` : ""}
       </div>`}
@@ -1198,7 +1341,7 @@ function render() {
           : fx.loading ? `${icon("progress_activity")}Reading this folder…`
           : `${shown.length}${shown.length === total ? "" : ` of ${total}`} item${shown.length === 1 ? "" : "s"}${selection().length ? ` · ${selection().length} selected` : ""}`}</span>
         ${fx.listing?.skipped ? `<span title="Windows would not report these">${icon("warning")}${fx.listing.skipped} could not be read</span>` : ""}
-        <span class="fx-foot-hint">${icon("mouse")}${isInsideZip(fx.path) ? "Inside a zip · read-only" : "Double-click to open · right-click for more"}</span>
+        <span class="fx-foot-hint">${icon("mouse")}${isInsideZip(fx.path) ? "Inside a zip · read-only" : "Double-click to open · drag a box to select · right-click for more"}</span>
       </footer>
     </section>
     ${fx.previewPane ? `<div class="fx-split" data-fx-split="preview" role="separator" aria-orientation="vertical" aria-label="Resize the preview" title="Drag to resize the preview"></div>${renderPreviewPane()}` : ""}
@@ -1404,7 +1547,7 @@ function mount(host) {
       if (event.ctrlKey || event.shiftKey) select(row.dataset.fxItem, { add: event.ctrlKey, range: event.shiftKey });
       else select(row.dataset.fxItem);
       row.focus();
-    } else if (!row && event.target.closest(".fx-row-body") && !event.target.closest("button, input")) {
+    } else if (!row && Date.now() - dragJustEnded > 400 && event.target.closest(".fx-rows") && !event.target.closest(".fx-row.head, button, input")) {
       fx.selected = "";
       fx.selectedPaths.clear();
       fx.selectionAnchor = "";
@@ -1530,8 +1673,11 @@ function mount(host) {
     if (!painting && event.target.closest(".fx-rename")) commitRename();
   });
   host.addEventListener("pointerdown", watchDrag);
+  host.addEventListener("pointerdown", watchMarquee);
   host.addEventListener("pointermove", maybeDrag);
-  host.addEventListener("pointerup", () => { dragFrom = null; });
+  host.addEventListener("pointermove", maybeMarquee);
+  host.addEventListener("pointerup", () => { dragFrom = null; endMarquee(); });
+  host.addEventListener("pointercancel", () => { dragFrom = null; endMarquee(); });
   // Drag the splitters. Widths are applied as CSS variables so the list can
   // reflow without a full re-render fighting the pointer.
   host.addEventListener("pointerdown", (event) => {

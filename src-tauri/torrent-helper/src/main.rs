@@ -1343,8 +1343,55 @@ fn parse_args() -> Args {
     args
 }
 
+/// Send the engine's own diagnostics, and its dying words, to stderr.
+///
+/// WinT drains this pipe into the durable health log, so whatever is written
+/// here survives the helper, the window and the app. Without a subscriber the
+/// torrent library's `tracing` output goes nowhere at all, which is why a
+/// helper that failed on start-up used to die without saying why.
+///
+/// stderr, never stdout: stdout is the protocol, and a log line written into
+/// it would be read as a malformed message.
+fn start_logging() {
+    use tracing_subscriber::{fmt, EnvFilter};
+
+    // Noisy by default would cost real throughput at a thousand peers, so the
+    // default names the things that explain a failure and little else. Set
+    // RUST_LOG to widen it; WinT does that when diagnostics are turned on.
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("warn,wint_torrent_helper=info,librqbit=info"));
+    fmt()
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .with_target(true)
+        .with_env_filter(filter)
+        .init();
+
+    // A panic in a worker thread unwinds that thread alone: the process can
+    // limp on with a dead task and no explanation anywhere. Printing the
+    // payload and the location makes it a line in the health log instead.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let where_ = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "an unknown location".into());
+        let what = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "a non-text payload".into());
+        eprintln!("PANIC at {where_}: {what}");
+        let thread = std::thread::current();
+        eprintln!("PANIC thread: {}", thread.name().unwrap_or("unnamed"));
+        previous(info);
+    }));
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<()> {
+    start_logging();
     let args = parse_args();
     let state_dir = args
         .state_dir
@@ -1406,6 +1453,32 @@ async fn main() -> Result<()> {
         })
         .context("cannot start the torrent protocol writer")?;
 
+    // The heartbeat has its own OS thread as well as avoiding the session
+    // lock. Thus a blocking torrent-library call cannot starve it by occupying
+    // the async runtime, even on a machine with only one runtime worker.
+    //
+    // It starts *before* the session is built, and that ordering matters:
+    // building one bootstraps the DHT, reads the persisted torrents and
+    // resumes them, which on a large queue takes far longer than WinT's
+    // heartbeat timeout. Started afterwards, as it used to be, the helper said
+    // nothing at all for the whole of that work and was killed for being
+    // unresponsive while it was in fact busy coming up — the same start-up
+    // killed over and over.
+    {
+        let writer = writer.clone();
+        std::thread::Builder::new()
+            .name("torrent-heartbeat".into())
+            .spawn(move || loop {
+                if !writer.event("heartbeat", json!({ "pid": std::process::id() })) {
+                    // A full/disconnected queue means WinT cannot currently
+                    // receive liveness. Its watchdog remains the authority.
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            })
+            .context("cannot start the torrent heartbeat")?;
+    }
+
+    tracing::info!("building the torrent session; this reads and resumes saved torrents");
     let session = Session::new_with_opts(
         PathBuf::from(&settings.download_folder),
         SessionOptions {
@@ -1437,6 +1510,7 @@ async fn main() -> Result<()> {
     .await
     .context("cannot start the torrent engine")?;
 
+    tracing::info!("torrent session ready");
     let api = Api::new(session.clone(), None);
     let state = Arc::new(Mutex::new(State {
         api,
@@ -1518,23 +1592,6 @@ async fn main() -> Result<()> {
                 }
             }
         });
-    }
-
-    // The heartbeat has its own OS thread as well as avoiding the session
-    // lock. Thus a blocking torrent-library call cannot starve it by occupying
-    // the async runtime, even on a machine with only one runtime worker.
-    {
-        let writer = writer.clone();
-        std::thread::Builder::new()
-            .name("torrent-heartbeat".into())
-            .spawn(move || loop {
-                if !writer.event("heartbeat", json!({ "pid": std::process::id() })) {
-                    // A full/disconnected queue means WinT cannot currently
-                    // receive liveness. Its watchdog remains the authority.
-                }
-                std::thread::sleep(Duration::from_secs(1));
-            })
-            .context("cannot start the torrent heartbeat")?;
     }
 
     // Commands. Each runs on its own task, so one slow command — adding a

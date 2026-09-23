@@ -31,7 +31,14 @@
   const COLUMN_KEY = "wint:torrent-columns";
   const COLUMN_WIDTH_KEY = "wint:torrent-column-widths";
   const COLUMN_SORT_KEY = "wint:torrent-column-sort";
+  /** The flag that says the tick column has already been folded into a column
+   *  order saved before the column existed. The ticks themselves are not kept
+   *  here: `localStorage` is written to disk whenever WebView2 gets round to
+   *  it, so a tick made shortly before the window closed was lost. They go to
+   *  the backend, which has them on disk before it answers. */
+  const MARK_COLUMN_KEY = "wint:torrent-marks-column";
   const COLUMNS = [
+    ["mark", "Mark", "48px"],
     ["name", "Name", "minmax(0,1fr)"], ["size", "Size", "80px"],
     ["done", "Done", "120px"], ["status", "Status", "150px"],
     ["completed", "Completed", "136px"], ["down", "Down", "84px"],
@@ -41,13 +48,35 @@
     ["known", "Known peers", "82px"],
   ];
   const ALL_COLUMN_IDS = COLUMNS.map(([id]) => id);
-  const DEFAULT_COLUMNS = ["name", "size", "done", "status", "completed", "down", "up", "peers"];
+  const DEFAULT_COLUMNS = ["mark", "name", "size", "done", "status", "completed", "down", "up", "peers"];
   function savedColumns() {
     try {
       const saved = JSON.parse(localStorage.getItem(COLUMN_KEY) || "null");
       const valid = Array.isArray(saved) ? saved.filter((id) => ALL_COLUMN_IDS.includes(id)) : [];
-      return valid.length ? valid : DEFAULT_COLUMNS;
+      if (!valid.length) return DEFAULT_COLUMNS;
+      // A column order saved before the tick column existed would hide it for
+      // good. Show it once, in front, and remember that it was offered — so
+      // switching it back off afterwards sticks.
+      if (!valid.includes("mark") && !localStorage.getItem(MARK_COLUMN_KEY)) {
+        valid.unshift("mark");
+        try { localStorage.setItem(COLUMN_KEY, JSON.stringify(valid)); } catch { /* unavailable */ }
+      }
+      try { localStorage.setItem(MARK_COLUMN_KEY, "1"); } catch { /* unavailable */ }
+      return valid;
     } catch { return DEFAULT_COLUMNS; }
+  }
+
+  /** Reads the ticked-off info hashes back from disk. Called once, on mount;
+   *  until it answers the boxes simply draw unticked. */
+  function loadMarks() {
+    return invoke("torrent_marks")
+      .then((hashes) => {
+        if (!Array.isArray(hashes)) return;
+        // A tick made while this was in flight wins over what was on disk.
+        for (const hash of hashes) if (!st.markCleared.has(hash)) st.marks.add(hash);
+        drawRows();
+      })
+      .catch((error) => console.warn("Torrent marks could not be read", error));
   }
   function savedColumnWidths() {
     try {
@@ -118,12 +147,21 @@
     columns: savedColumns(),
     columnWidths: savedColumnWidths(),
     columnSort: savedColumnSort(),
+    /** Info hashes the user has ticked off in the list, and the ones unticked
+     *  in this session — the latter so a slow read cannot bring one back. */
+    marks: new Set(),
+    markCleared: new Set(),
+    /** The row a Shift-tick measures from. */
+    markAnchor: null,
     draggedColumn: null,
     columnDragged: false,
   };
 
   function recoverView(error) {
     console.error("Torrent view failed", error);
+    // The console belongs to this webview alone and is almost never open when
+    // it matters; the health log outlives the window.
+    window.wintErrorLog?.report("torrent view failed", error);
     const now = Date.now();
     let previous = 0;
     let canRemember = true;
@@ -290,6 +328,7 @@
     node.querySelector("[data-tr-scroll]").addEventListener("scroll", () => drawRows(), { passive: true });
 
     drawColumns();
+    loadMarks();
     listen();
     if (!st.assocFocusBound) {
       st.assocFocusBound = true;
@@ -610,6 +649,7 @@
     const sort = st.columnSort;
     if (!sort) return rows;
     const value = (row) => {
+      if (sort.id === "mark") return st.marks.has(row.infoHash) ? 1 : 0;
       if (sort.id === "name") return row.name || "";
       if (sort.id === "size") return row.totalBytes || 0;
       if (sort.id === "done") return percent(row);
@@ -704,6 +744,7 @@
     el.className = "tr-row";
     el.dataset.trPooled = "row";
     el.innerHTML = `
+      <span class="tr-mark" data-col="mark"><input type="checkbox" class="tr-check" data-tr-mark tabindex="-1" title="Mark this torrent as dealt with"></span>
       <span class="tr-name" data-col="name"><i class="tr-dot"></i><span></span></span>
       <span class="tr-size" data-col="size"></span>
       <span class="tr-done" data-col="done"><i class="tr-bar"><b></b></i><small></small></span>
@@ -731,6 +772,10 @@
     el.setAttribute("aria-disabled", String(disabled));
     el.classList.toggle("on", st.selectedIds.has(row.id));
     el.setAttribute("aria-selected", String(st.selectedIds.has(row.id)));
+    const mark = el.querySelector("[data-tr-mark]");
+    const marked = st.marks.has(row.infoHash);
+    if (mark.checked !== marked) mark.checked = marked;
+    el.classList.toggle("marked", marked);
     el.querySelector(".tr-dot").className = `tr-dot ${status.tone}`;
     setText(el.querySelector(".tr-name span"), row.name);
     el.querySelector(".tr-name span").title = row.name;
@@ -753,6 +798,48 @@
     setText(el.querySelector('[data-col="uploaded"]'), bytes(row.uploadedBytes));
     setText(el.querySelector('[data-col="ratio"]'), row.progressBytes ? (row.uploadedBytes / row.progressBytes).toFixed(2) : "—");
     setText(el.querySelector('[data-col="known"]'), row.state === "live" ? String(row.peers + row.peersQueued) : "—");
+  }
+
+  /** Ticks a torrent off, or unticks it. Shift extends the tick from the last
+   *  one touched down the list as it is currently sorted, the way the rows
+   *  themselves are selected. The marks are written out whole, minus any hash
+   *  the engine no longer knows about, so removed torrents do not accumulate. */
+  function toggleMark(row, checked, event) {
+    const rows = sortedRows([...st.pendingAdds, ...(st.snap?.torrents || [])]);
+    let touched = [row];
+    if (event?.shiftKey && st.markAnchor && st.markAnchor !== row.infoHash) {
+      const from = rows.findIndex((item) => item.infoHash === st.markAnchor);
+      const to = rows.findIndex((item) => item.infoHash === row.infoHash);
+      if (from >= 0 && to >= 0) touched = rows.slice(Math.min(from, to), Math.max(from, to) + 1);
+    }
+    for (const item of touched) {
+      if (!item.infoHash) continue;
+      if (checked) {
+        st.marks.add(item.infoHash);
+        st.markCleared.delete(item.infoHash);
+      } else {
+        st.marks.delete(item.infoHash);
+        st.markCleared.add(item.infoHash);
+      }
+    }
+    st.markAnchor = row.infoHash;
+    // Forget marks for torrents the engine no longer has, so the list does
+    // not grow for ever — but only against a snapshot that actually arrived.
+    // A helper that is restarting reports nothing, and that is not the same
+    // as every torrent having been removed.
+    if (st.snap?.torrents?.length) {
+      const known = new Set(st.snap.torrents.map((item) => item.infoHash).filter(Boolean));
+      for (const hash of [...st.marks]) if (!known.has(hash)) st.marks.delete(hash);
+    }
+    // Drawn first, saved second: the tick is the user's, and it must not wait
+    // on a round trip to show. The save is its own little piece of work so the
+    // status bar says it is happening, and says so if it fails.
+    drawRows();
+    note(touched.length > 1
+      ? `${touched.length} torrents ${checked ? "marked" : "unmarked"}.`
+      : `${row.name} ${checked ? "marked" : "unmarked"}.`);
+    invoke("torrent_marks_save", { hashes: [...st.marks] })
+      .catch((error) => note(`Your marks could not be saved: ${error}`));
   }
 
   /** Writes only when the text actually differs. A `textContent` assignment
@@ -1333,6 +1420,13 @@
       return void invoke("torrent_restart")
         .then((engine) => { st.engine = engine; note("The torrent engine was restarted."); drawBanner(); })
         .catch((error) => note(String(error)));
+    }
+
+    if (t.closest("[data-tr-mark]")) {
+      const el = t.closest("[data-tr-id]");
+      const row = (st.snap?.torrents || []).find((item) => item.id === Number(el?.dataset.trId));
+      if (row) toggleMark(row, t.checked, event);
+      return;
     }
 
     if (t.closest("[data-tr-recheck]")) {

@@ -52,6 +52,14 @@ const ADD_TIMEOUT: Duration = Duration::from_secs(90);
 const EMIT_EVERY: Duration = Duration::from_millis(300);
 /// The helper beats once a second. Four missed in a row is a wedged engine.
 const HEARTBEAT_DEAD: Duration = Duration::from_secs(5);
+/// How long a helper may take to say anything at all before it is treated as
+/// dead. Far longer than `HEARTBEAT_DEAD`, because the two measure different
+/// things: that one is the gap between beats from an engine already up, this
+/// one covers building the session — bootstrapping the DHT, reading the saved
+/// torrents and resuming them — which on a large queue is not quick. Holding a
+/// starting engine to the running engine's timeout killed it mid-start-up and
+/// restarted it into the same wall, forever.
+const STARTUP_GRACE: Duration = Duration::from_secs(90);
 /// A working set past this is treated as a fault rather than a busy engine.
 const MEMORY_CEILING_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// More requests outstanding than this means nothing is coming back.
@@ -64,9 +72,30 @@ const DIAGNOSTIC_LINES: usize = 40;
 /// one line without a newline.
 const MAX_PROTOCOL_LINE: usize = 32 * 1024 * 1024;
 const MAX_STDERR_LINE: usize = 16 * 1024;
-/// Rapid failures are retried forever, but increasingly slowly so a corrupt
-/// session or unavailable disk cannot turn recovery into a busy crash loop.
-const MAX_RESTART_BACKOFF: Duration = Duration::from_secs(60);
+/// Consecutive failures are retried increasingly slowly, so a corrupt session
+/// or an unavailable disk cannot turn recovery into a busy crash loop. The
+/// last step repeats, so the slowest the supervisor ever retries is once a
+/// minute.
+const RESTART_BACKOFF_SECS: [u64; 6] = [1, 2, 5, 10, 30, 60];
+/// How long to wait for a killed helper to actually exit before starting its
+/// replacement. The new one binds the same DHT port, and the old one holds it
+/// until the kernel has torn the process down.
+const EXIT_GRACE: Duration = Duration::from_millis(1500);
+/// A helper that has been answering for this long counts as having worked,
+/// and the failure count goes back to zero. It is measured from the moment it
+/// reported ready, not from when the process was spawned: a helper that comes
+/// up and wedges without ever answering has not succeeded at anything.
+///
+/// Requiring a sustained run rather than resetting on ready alone is what
+/// stops a helper that reaches ready and then dies seconds later from
+/// resetting the ladder on every attempt and retrying forever.
+const HEALTHY_RUN: Duration = Duration::from_secs(120);
+/// After this many consecutive failures the supervisor stops on its own and
+/// says so. Backing off alone still retries forever, and a helper that can
+/// never start (a missing runtime, a corrupt session) would spawn a process a
+/// minute for as long as WinT is open. Recovery is meant to ride out a crash,
+/// not to hide a broken install.
+const MAX_CONSECUTIVE_FAILURES: u32 = 8;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -75,11 +104,12 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// Set while `start` is putting a helper up, so the watchdog and a second
 /// caller do not both try at once.
 static STARTING: AtomicBool = AtomicBool::new(false);
-
-fn last_engine_restart() -> &'static Mutex<Option<Instant>> {
-    static LAST: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
-    LAST.get_or_init(|| Mutex::new(None))
-}
+/// Set when a write to the helper fails. Writing happens under the pipe lock,
+/// and the engine lock is taken while holding the pipe lock in `start_inner`;
+/// taking them the other way round here would be a lock-order inversion and a
+/// deadlock. A flag costs no lock, and the watchdog is already the one place
+/// that turns a fault into a restart.
+static PIPE_BROKEN: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
 
@@ -199,7 +229,13 @@ fn send_line(line: &str) -> Result<(), String> {
         .ok_or_else(|| "The torrent engine is not running.".to_string())?;
     writeln!(stdin, "{line}")
         .and_then(|_| stdin.flush())
-        .map_err(|e| format!("The torrent engine stopped listening: {e}"))
+        .map_err(|e| {
+            // The reader at the other end is gone. Telling the caller is not
+            // enough: without this the engine sits broken until someone
+            // presses Restart, because nothing else notices a failed write.
+            PIPE_BROKEN.store(true, Ordering::SeqCst);
+            format!("The torrent engine stopped listening: {e}")
+        })
 }
 
 #[derive(Default)]
@@ -211,9 +247,14 @@ struct Engine {
     last_snapshot: Option<Instant>,
     memory_bytes: u64,
     restarts: u32,
-    /// When the restarts in the current window began, so a burst of failures
-    /// can be told from one failure a day.
-    restart_window_started: Option<Instant>,
+    /// Failures since the last helper that stayed up. This drives the backoff
+    /// ladder and the point at which the supervisor gives up; `restarts` is
+    /// the lifetime count the UI shows and never paces anything.
+    consecutive_failures: u32,
+    /// When the current helper first reported ready. The watchdog clears the
+    /// failure count once this is `HEALTHY_RUN` old, so a machine left awake
+    /// for months never carries an old crash toward the give-up limit.
+    healthy_since: Option<Instant>,
     generation: u64,
     /// The newest snapshot, kept rather than queued: the emitter sends this
     /// and nothing older ever goes out.
@@ -236,17 +277,41 @@ fn diagnose(message: impl Into<String>) {
     crate::health::note(format!("torrent   {message}"));
 }
 
-fn restart_delay() -> Duration {
-    let rapid = last_engine_restart()
-        .lock()
-        .ok()
-        .and_then(|last| *last)
-        .is_some_and(|last| last.elapsed() < Duration::from_secs(60));
-    if rapid {
-        Duration::from_secs(5)
-    } else {
-        Duration::ZERO
+/// How long to wait before the nth consecutive retry.
+fn restart_delay(failures: u32) -> Duration {
+    let step = (failures.saturating_sub(1) as usize).min(RESTART_BACKOFF_SECS.len() - 1);
+    Duration::from_secs(RESTART_BACKOFF_SECS[step])
+}
+
+/// Record a death and decide what happens next.
+///
+/// Every path that loses the helper comes through here — the pipe closing, a
+/// watchdog fault, a failed write — so the backoff, the give-up point and the
+/// message the user reads are defined once rather than three times.
+///
+/// Returns the delay to restart after, or `None` when the supervisor has
+/// given up and the user has to ask. The caller holds the engine lock.
+fn note_failure(engine: &mut Engine, fault: &str) -> Option<Duration> {
+    engine.healthy_since = None;
+    engine.restarts = engine.restarts.saturating_add(1);
+    engine.consecutive_failures = engine.consecutive_failures.saturating_add(1);
+    if engine.consecutive_failures > MAX_CONSECUTIVE_FAILURES {
+        engine.state = "failed".into();
+        engine.message = Some(format!(
+            "{fault} It has failed {} times in a row, so WinT has stopped restarting it. Use Restart the engine to try again.",
+            engine.consecutive_failures
+        ));
+        return None;
     }
+
+    let delay = restart_delay(engine.consecutive_failures);
+    engine.state = "starting".into();
+    engine.message = Some(format!(
+        "{fault} Retrying in {} seconds (attempt {}).",
+        delay.as_secs(),
+        engine.consecutive_failures
+    ));
+    Some(delay)
 }
 
 fn restart_later(generation: u64, delay: Duration) {
@@ -254,7 +319,7 @@ fn restart_later(generation: u64, delay: Duration) {
         .name("torrent-auto-restart".into())
         .spawn(move || {
             if !delay.is_zero() {
-                std::thread::sleep(delay.min(MAX_RESTART_BACKOFF));
+                std::thread::sleep(delay);
             }
             let still_needed = engine()
                 .lock()
@@ -356,7 +421,13 @@ fn start_inner() -> EngineStatus {
                 ..Default::default()
             };
         };
-        if engine.running.is_some() && engine.state == "running" {
+        // Any live helper, not only one that has finished starting. Asking
+        // for "running" here meant a caller arriving during the start-up
+        // window — before the first `ready` — killed the helper that was
+        // coming up and spawned another over it. The two then raced for the
+        // DHT's UDP port and the second died with "only one usage of each
+        // socket address".
+        if engine.running.is_some() && engine.state != "failed" {
             drop(engine);
             return status();
         }
@@ -370,12 +441,38 @@ fn start_inner() -> EngineStatus {
         return set_failed("Windows did not provide a folder to keep torrents in.");
     };
 
+    PIPE_BROKEN.store(false, Ordering::SeqCst);
+
+    // Before binding anything: a helper from a WinT that did not shut down
+    // cleanly still owns the DHT port, and the one about to start would fail
+    // on it. `stop_inner` above has already taken ours down, so anything
+    // still answering to that name is an orphan.
+    let strays = kill_stray_helpers(None);
+    if strays > 0 {
+        diagnose(format!(
+            "Killed {strays} torrent engine(s) left over from an earlier session."
+        ));
+        // Terminate is asynchronous; give the kernel the same moment to
+        // release their sockets that a helper we stopped ourselves gets.
+        std::thread::sleep(EXIT_GRACE.min(Duration::from_millis(500)));
+    }
+
     let mut command = Command::new(&exe);
     command
         .arg("--state-dir")
         .arg(&dir)
         .arg("--snapshot-ms")
         .arg("300")
+        // The engine's own diagnostics, on stderr, drained into the health
+        // log. Set in the environment rather than hard-coded in the helper so
+        // it can be turned up without a rebuild.
+        .env(
+            "RUST_LOG",
+            std::env::var("WINT_TORRENT_LOG")
+                .unwrap_or_else(|_| "warn,wint_torrent_helper=info,librqbit=info".into()),
+        )
+        // A panic in the engine should name a line, not just say it panicked.
+        .env("RUST_BACKTRACE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         // Drain stderr on its own thread. Besides preventing a full pipe from
@@ -429,8 +526,12 @@ fn start_inner() -> EngineStatus {
         });
         engine.state = "starting".into();
         engine.message = None;
-        engine.last_beat = Some(Instant::now());
+        // Not `Some(now)`: it has not spoken yet, and saying it had makes the
+        // start-up wait indistinguishable from a live engine going quiet.
+        engine.last_beat = None;
         engine.last_snapshot = None;
+        // A new helper has not proved anything yet.
+        engine.healthy_since = None;
         engine.snapshot_dirty = false;
         engine.latest_snapshot = None;
         generation
@@ -488,10 +589,12 @@ fn set_failed(message: &str) -> EngineStatus {
 fn stop_inner(reason: &str) {
     let mut running = match engine().lock() {
         Ok(mut engine) => {
-            engine.state = if reason == "restarting" {
-                "starting".into()
-            } else {
-                "stopped".into()
+            engine.state = match reason {
+                "restarting" => "starting".into(),
+                // The supervisor has given up. Saying "starting" here would
+                // overwrite that and promise a restart nothing will perform.
+                "failed" => "failed".into(),
+                _ => "stopped".into(),
             };
             engine.running.take()
         }
@@ -509,8 +612,23 @@ fn stop_inner(reason: &str) {
         // exists to avoid, so there is no `wait()` here.
         std::thread::sleep(Duration::from_millis(120));
         let _ = running.child.kill();
-        let _ = running.child.try_wait();
+        // Poll, briefly, for the process to actually be gone. Its UDP sockets
+        // belong to the kernel until then, and the replacement binds the same
+        // DHT port: spawning over a process that has been asked to die but has
+        // not finished is what produces "only one usage of each socket
+        // address". Bounded, because a helper that will not die must not hold
+        // the rest of the app up — the job object collects it either way.
+        let deadline = Instant::now() + EXIT_GRACE;
+        while Instant::now() < deadline {
+            match running.child.try_wait() {
+                Ok(Some(_)) | Err(_) => break,
+                Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            }
+        }
     }
+    // Closing the pipe ourselves fails the shutdown write above. That is this
+    // function working, not a fault for the watchdog to act on.
+    PIPE_BROKEN.store(false, Ordering::SeqCst);
     // Everything still waiting is never going to be answered now.
     if let Ok(mut pending) = pending().lock() {
         for (_, tx) in pending.drain() {
@@ -589,6 +707,7 @@ fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>)
                             engine.state = "running".into();
                             engine.message = None;
                         }
+                        engine.healthy_since.get_or_insert_with(Instant::now);
                     }
                 }
                 "heartbeat" | "ready" => {
@@ -597,6 +716,7 @@ fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>)
                         if event == "ready" {
                             engine.state = "running".into();
                             engine.message = None;
+                            engine.healthy_since.get_or_insert_with(Instant::now);
                             let name = data
                                 .get("engine")
                                 .and_then(Value::as_str)
@@ -633,8 +753,7 @@ fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>)
         }
     }
 
-    // The pipe closed: the helper is gone. Say so, and let the watchdog be the
-    // one that decides about restarting.
+    // The pipe closed: the helper is gone.
     let mut changed = false;
     let mut retry_after = None;
     if let Ok(mut engine) = engine().lock() {
@@ -646,24 +765,13 @@ fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>)
                 .map(|status| format!(" with exit status {status}"))
                 .unwrap_or_else(|| " without an exit status".into());
             engine.running = None;
-            // `starting` is an intentional restart already in progress.
-            // Only a helper that vanished while running is self-healed here.
-            if engine.state == "running" {
-                let delay = restart_delay();
-                if let Ok(mut last) = last_engine_restart().lock() {
-                    *last = Some(Instant::now());
-                }
-                engine.restarts = engine.restarts.saturating_add(1);
-                engine.state = "starting".into();
-                engine.message = Some(if delay.is_zero() {
-                    "The torrent engine stopped and is restarting.".into()
-                } else {
-                    format!(
-                        "The torrent engine stopped again; retrying in {} seconds.",
-                        delay.as_secs()
-                    )
-                });
-                retry_after = Some(delay);
+            // Anything but a deliberate stop is recovered. This used to insist
+            // the engine had reached `running` first, which silently gave up on
+            // the worst case there is: a helper that dies during start-up, and
+            // so never reports ready. The generation check above already tells
+            // a real death from a restart we asked for.
+            if engine.state != "stopped" {
+                retry_after = note_failure(&mut engine, "The torrent engine stopped.");
                 changed = true;
             }
             drop(engine);
@@ -731,18 +839,29 @@ fn request(op: &str, arg: Value, timeout: Duration) -> Result<Value, String> {
 
 /// Send a command, start the engine first if it is not up.
 fn request_started(op: &str, arg: Value, timeout: Duration) -> Result<Value, String> {
-    let up = engine()
+    let (answering, alive) = engine()
         .lock()
-        .map(|e| e.running.is_some() && e.state == "running")
-        .unwrap_or(false);
-    if !up {
-        let status = start();
-        if status.state == "failed" {
-            return Err(status
-                .message
-                .unwrap_or_else(|| "The torrent engine is not running.".into()));
+        .map(|e| {
+            (
+                e.running.is_some() && e.state == "running",
+                e.running.is_some(),
+            )
+        })
+        .unwrap_or((false, false));
+
+    if !answering {
+        // Only when there is no helper at all. One that exists but has not
+        // said `ready` yet is already on its way up, and `start` would
+        // replace it mid-flight.
+        if !alive {
+            let status = start();
+            if status.state == "failed" {
+                return Err(status
+                    .message
+                    .unwrap_or_else(|| "The torrent engine is not running.".into()));
+            }
         }
-        // Give a just-started engine a moment to say `ready`, but no more than
+        // Give a starting engine a moment to say `ready`, but no more than
         // the request would have waited for anyway.
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
@@ -859,63 +978,117 @@ fn watchdog() {
                 let mut fault: Option<String> = None;
                 let mut restart_after = None;
                 let mut generation = 0;
+                let mut gave_up = false;
+                let mut recovered = None;
 
                 {
                     let Ok(mut engine) = engine().lock() else {
                         continue;
                     };
-                    let Some(running) = engine.running.as_ref() else {
+                    // A start we asked for is already in flight. Nothing below
+                    // is true while the helper is being replaced.
+                    if STARTING.load(Ordering::SeqCst) {
                         continue;
-                    };
-                    let pid = running.pid;
-                    // Measuring the child's memory from out here, rather than
-                    // asking it, is deliberate: a wedged process still has a
-                    // working set, and would never answer the question.
-                    let memory = memory_of(pid);
-                    engine.memory_bytes = memory;
-
-                    let silent = engine
-                        .last_beat
-                        .map(|at| at.elapsed() > HEARTBEAT_DEAD)
-                        .unwrap_or(false);
-                    let depth = pending().lock().map(|p| p.len()).unwrap_or(0);
-
-                    if silent {
-                        fault = Some("The torrent engine stopped answering.".into());
-                    } else if memory > MEMORY_CEILING_BYTES {
-                        fault = Some(format!(
-                            "The torrent engine was using {} MB and was restarted.",
-                            memory / (1024 * 1024)
-                        ));
-                    } else if depth >= PENDING_CEILING {
-                        fault = Some("The torrent engine stopped replying to commands.".into());
                     }
+                    let broken = PIPE_BROKEN.swap(false, Ordering::SeqCst);
+                    // Copied out so the borrow ends before the engine is
+                    // written to below.
+                    let running_pid = engine.running.as_ref().map(|running| running.pid);
+                    let since_spawn = engine
+                        .running
+                        .as_ref()
+                        .map(|running| running.started.elapsed());
 
-                    if fault.is_some() {
-                        let delay = restart_delay();
-                        if let Ok(mut last) = last_engine_restart().lock() {
-                            *last = Some(Instant::now());
+                    match running_pid {
+                        // The engine is down. This is the case the supervisor
+                        // used to skip: it only ever inspected a live helper,
+                        // so an engine that had already died could never be
+                        // revived from here. "stopped" is the user's own doing,
+                        // "failed" is this having given up, and "starting"
+                        // means a restart is already scheduled.
+                        None => {
+                            if engine.state != "stopped"
+                                && engine.state != "failed"
+                                && engine.state != "starting"
+                            {
+                                fault = Some("The torrent engine is not running.".into());
+                            }
                         }
-                        engine.restarts = engine.restarts.saturating_add(1);
-                        generation = engine.generation;
-                        restart_after = Some(delay);
-                        engine.state = "not-responding".into();
-                        engine.message = Some(if delay.is_zero() {
-                            fault.clone().unwrap_or_default()
-                        } else {
-                            format!(
-                                "{} Retrying in {} seconds.",
-                                fault.clone().unwrap_or_default(),
-                                delay.as_secs()
-                            )
-                        });
+                        Some(pid) => {
+                            // Measuring the child's memory from out here, rather
+                            // than asking it, is deliberate: a wedged process
+                            // still has a working set, and would never answer.
+                            let memory = memory_of(pid);
+                            engine.memory_bytes = memory;
+
+                            let silent = match engine.last_beat {
+                                // Answering already: the ordinary gap applies.
+                                Some(at) => at.elapsed() > HEARTBEAT_DEAD,
+                                // Still coming up and has never spoken.
+                                None => since_spawn
+                                    .is_some_and(|since| since > STARTUP_GRACE),
+                            };
+                            let depth = pending().lock().map(|p| p.len()).unwrap_or(0);
+
+                            if broken {
+                                fault =
+                                    Some("The torrent engine stopped accepting commands.".into());
+                            } else if silent {
+                                fault = Some(if engine.last_beat.is_some() {
+                                    "The torrent engine stopped answering.".into()
+                                } else {
+                                    format!(
+                                        "The torrent engine did not finish starting within {} seconds.",
+                                        STARTUP_GRACE.as_secs()
+                                    )
+                                });
+                            } else if memory > MEMORY_CEILING_BYTES {
+                                fault = Some(format!(
+                                    "The torrent engine was using {} MB and was restarted.",
+                                    memory / (1024 * 1024)
+                                ));
+                            } else if depth >= PENDING_CEILING {
+                                fault =
+                                    Some("The torrent engine stopped replying to commands.".into());
+                            }
+
+                            // Nothing wrong, and it has been answering long
+                            // enough to call the last burst over. Without this
+                            // the count only ever rose, so a machine left
+                            // awake for months would walk into the give-up
+                            // limit one ordinary crash at a time.
+                            if fault.is_none()
+                                && engine.consecutive_failures > 0
+                                && engine
+                                    .healthy_since
+                                    .is_some_and(|since| since.elapsed() >= HEALTHY_RUN)
+                            {
+                                recovered = Some(engine.consecutive_failures);
+                                engine.consecutive_failures = 0;
+                            }
+                        }
                     }
+
+                    if let Some(text) = fault.as_deref() {
+                        generation = engine.generation;
+                        restart_after = note_failure(&mut engine, text);
+                        gave_up = restart_after.is_none();
+                    }
+                }
+
+                if let Some(count) = recovered {
+                    diagnose(format!(
+                        "The torrent engine has been answering for {} seconds;                          the count of {count} recent failure(s) is cleared.",
+                        HEALTHY_RUN.as_secs()
+                    ));
                 }
 
                 if let Some(fault) = fault {
                     diagnose(format!("Watchdog: {fault}"));
                     broadcast(&status());
-                    stop_inner("restarting");
+                    // A give-up has to survive the stop, or the UI would show
+                    // "starting" and promise a restart that is not coming.
+                    stop_inner(if gave_up { "failed" } else { "restarting" });
                     broadcast(&status());
                     if let Some(delay) = restart_after {
                         restart_later(generation, delay);
@@ -949,6 +1122,66 @@ fn memory_of(pid: u32) -> u64 {
 
 #[cfg(not(windows))]
 fn memory_of(_pid: u32) -> u64 {
+    0
+}
+
+/// Kill any helper this WinT does not own.
+///
+/// The job object kills our helper when WinT exits normally, but nothing
+/// collects one left by a WinT that was killed outright, that crashed, or by
+/// the previous run of `npm run dev`. Such an orphan still holds the DHT's
+/// UDP port, so the new helper cannot bind it and dies on start-up with
+/// "only one usage of each socket address" — a failure that looks like the
+/// engine being broken when it is really a ghost of the last session.
+///
+/// Returns how many were killed, for the log.
+#[cfg(windows)]
+fn kill_stray_helpers(keep: Option<u32>) -> usize {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+
+    let mut killed = 0usize;
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return 0;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                let end = entry
+                    .szExeFile
+                    .iter()
+                    .position(|c| *c == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
+                let pid = entry.th32ProcessID;
+                if name.eq_ignore_ascii_case("wint-torrent-helper.exe") && Some(pid) != keep {
+                    if let Ok(handle) = OpenProcess(PROCESS_TERMINATE, false, pid) {
+                        if TerminateProcess(handle, 1).is_ok() {
+                            killed += 1;
+                        }
+                        let _ = CloseHandle(handle);
+                    }
+                }
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(HANDLE(snapshot.0));
+    }
+    killed
+}
+
+#[cfg(not(windows))]
+fn kill_stray_helpers(_keep: Option<u32>) -> usize {
     0
 }
 
@@ -1016,12 +1249,11 @@ pub async fn torrent_stop() -> EngineStatus {
 pub async fn torrent_restart() -> Result<EngineStatus, String> {
     off!({
         stop_inner("restarting");
-        if let Ok(mut last) = last_engine_restart().lock() {
-            *last = Some(Instant::now());
-        }
         if let Ok(mut engine) = engine().lock() {
             engine.restarts = 0;
-            engine.restart_window_started = None;
+            // Asking for it by hand clears the give-up, so automatic recovery
+            // is armed again from this point.
+            engine.consecutive_failures = 0;
         }
         let status = start();
         if status.state == "failed" {
@@ -1156,6 +1388,33 @@ pub async fn torrent_file_path(id: u64, index: u64) -> Result<Value, String> {
         json!({ "id": id, "index": index }),
         REQUEST_TIMEOUT
     ))
+}
+
+/// The info hashes the user has ticked off in the list. These go through the
+/// durable store rather than the webview's `localStorage`, which is flushed to
+/// disk whenever WebView2 feels like it: a tick made a moment before the window
+/// closed was simply gone. Here it is on disk before the command answers.
+const MARKS_KEY: &str = "torrent-marks";
+
+#[tauri::command]
+pub async fn torrent_marks(app: AppHandle) -> Result<Vec<String>, String> {
+    off!({
+        Ok(crate::ui_state::read(&app, MARKS_KEY)
+            .and_then(|value| serde_json::from_value::<Vec<String>>(value).ok())
+            .unwrap_or_default())
+    })
+}
+
+/// Replace the ticked-off set.
+#[tauri::command]
+pub async fn torrent_marks_save(app: AppHandle, hashes: Vec<String>) -> Result<(), String> {
+    off!({
+        let hashes: Vec<String> = hashes
+            .into_iter()
+            .filter(|hash| hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+            .collect();
+        crate::ui_state::write(&app, MARKS_KEY, &json!(hashes))
+    })
 }
 
 /// Per-peer detail for one torrent, on demand only.

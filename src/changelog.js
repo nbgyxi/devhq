@@ -16,6 +16,87 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.149.0",
+      date: "2026-09-23",
+      title: "Draw a box around the files you want",
+      changes: [
+        ["new", "Files lets you drag a rectangle across the list to select everything it touches. Start anywhere in the list - including the blank area under the last row on a tall window - or on a row that is not selected yet; hold Ctrl or Shift to add to what is already picked, and drag past the top or bottom edge to keep the list moving."],
+        ["better", "Dragging files out of Files now starts from a row that is already selected, so the two gestures never fight over the same press."],
+        ["better", "Picking an image with the preview panel open says so: the panel shows a shimmering frame named after the file while the preview is being made, and the status bar carries the same line."],
+      ],
+    },
+    {
+      version: "0.148.0",
+      date: "2026-09-23",
+      title: "Tick a torrent off",
+      changes: [
+        ["new", "Torrents has a Mark column: a checkbox on every row for keeping track of which transfers you have already dealt with. A marked row is tinted green, the mark survives restarts, and the column sorts like any other so the unmarked ones can be brought together."],
+        ["new", "Shift-click a mark to tick off every row between it and the last one you ticked."],
+      ],
+    },
+    {
+      version: "0.147.0",
+      date: "2026-09-23",
+      title: "One bad packet no longer kills the DHT",
+      changes: [
+        ["fix", "The torrent engine no longer gets stuck starting up. A single oversized UDP packet killed its peer discovery outright, and the engine then waited for a network service that would never answer again - which is why Torrents could sit on starting forever."],
+        ["fix", "Peer discovery now survives a rejected packet instead of shutting down for the rest of the session, so it keeps finding peers on a busy or unreliable network."],
+      ],
+    },
+    {
+      version: "0.146.0",
+      date: "2026-09-23",
+      title: "The engine is allowed to finish starting",
+      changes: [
+        ["fix", "The torrent engine is no longer killed while it is still starting. It says nothing while it builds its session - bootstrapping the DHT, reading the saved torrents and resuming them - and was being treated as unresponsive after five seconds, then restarted into the same wall over and over."],
+        ["fix", "The engine now reports that it is alive from the moment it starts, rather than only once its session is built, so a slow start is visible instead of looking like a hang."],
+        ["better", "A start that genuinely never finishes is now reported as such, and given ninety seconds rather than five before it is given up on."],
+      ],
+    },
+    {
+      version: "0.145.0",
+      date: "2026-09-23",
+      title: "Why the torrent engine would not start",
+      changes: [
+        ["fix", "Opening Torrents no longer starts two engines at once. The second was spawned over the first while it was still coming up, and the two fought over the same DHT port until one died - which is what the engine failing immediately on open actually was."],
+        ["fix", "A torrent engine left behind by a WinT that did not shut down cleanly, or by a previous development run, is now killed before a new one starts instead of holding the port it needs."],
+        ["fix", "Stopping the engine now waits for it to actually exit before its replacement starts, so the new one can bind the ports the old one still held."],
+        ["new", "The engine now writes its own diagnostics and any panic to the health log. Until now it had no logging at all, so an engine that died during start-up did so without leaving a reason anywhere."],
+        ["better", "Set WINT_TORRENT_LOG to turn the engine log up or down without rebuilding."],
+      ],
+    },
+    {
+      version: "0.144.0",
+      date: "2026-09-23",
+      title: "The torrent engine recovers from a failed start",
+      changes: [
+        ["fix", "A torrent engine that died while starting up is now restarted. Until now only an engine that had already reported itself ready was ever recovered, so the one failure that can never fix itself was the one left alone."],
+        ["fix", "The watchdog now supervises an engine that is down, not only one that is running, so an engine lost by any means is brought back instead of sitting stopped until Restart the engine was pressed."],
+        ["fix", "A command that cannot be written to the engine now counts as a fault and triggers recovery, rather than only showing a message."],
+        ["better", "Repeated failures now back off further each time, one second up to a minute, instead of retrying every five seconds forever."],
+        ["better", "After eight failures in a row the engine stops restarting itself and says so, so a broken install no longer starts a process a minute for as long as WinT is open. Restart the engine arms it again."],
+        ["better", "Once the engine has been answering for two minutes the count of recent failures is cleared, so a PC left awake for months never walks into that limit one ordinary crash at a time."],
+      ],
+    },
+    {
+      version: "0.143.1",
+      date: "2026-09-23",
+      title: "Files stops calling a folder empty before it has read it",
+      changes: [
+        ["fix", "Files no longer says there is nothing to filter while the folder is still being read - the filter row now says it is reading, and the type buttons appear as the folder lands."],
+        ["better", "Filter by name has moved down to the filter row, next to the extension button, giving the address bar the width it was competing for."],
+      ],
+    },
+    {
+      version: "0.143.0",
+      date: "2026-09-23",
+      title: "Front-end faults reach the health log",
+      changes: [
+        ["new", "Errors thrown by any tool window are now written to the durable health log, with the window that threw them and the line they came from, instead of disappearing into a console nobody had open."],
+        ["better", "A repeated fault is recorded once and then counted, so one failing redraw can no longer flood the log and push the rest of a session out of it."],
+      ],
+    },
+    {
       version: "0.142.2",
       date: "2026-09-23",
       title: "Double click the corner icon to close",

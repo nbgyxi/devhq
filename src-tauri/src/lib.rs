@@ -54,6 +54,7 @@ mod term;
 mod time_tracker;
 pub mod todo;
 mod tool_window;
+mod ui_state;
 mod torrent;
 mod torrent_assoc;
 pub mod tray;
@@ -3276,6 +3277,10 @@ pub fn run() {
             torrent::torrent_only_files,
             torrent::torrent_details,
             torrent::torrent_peers,
+            ui_state::ui_state_get,
+            ui_state::ui_state_set,
+            torrent::torrent_marks,
+            torrent::torrent_marks_save,
             torrent::torrent_paths,
             torrent::torrent_file_path,
             torrent::torrent_settings,
