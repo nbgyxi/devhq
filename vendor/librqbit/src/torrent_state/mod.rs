@@ -8,8 +8,7 @@ pub mod utils;
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::Weak;
+use std::sync::{Arc, OnceLock, Weak};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -54,6 +53,13 @@ use initializing::TorrentStateInitializing;
 use self::paused::TorrentStatePaused;
 pub use self::stats::{TorrentStats, TorrentStatsState};
 pub use self::streaming::FileStream;
+
+fn initialization_semaphore() -> Arc<tokio::sync::Semaphore> {
+    static SEMAPHORE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+    SEMAPHORE
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1)))
+        .clone()
+}
 
 // State machine transitions.
 //
@@ -369,38 +375,17 @@ impl ManagedTorrent {
                         "initialize_and_start",
                         token.clone(),
                         async move {
-                            // Initialization is disk-heavy. Queue it per Windows
-                            // drive so separate drives can work concurrently
-                            // without two checks seeking over the same drive.
-                            let drive = t
-                                .shared()
-                                .options
-                                .output_folder
-                                .components()
-                                .next()
-                                .map(|component| PathBuf::from(component.as_os_str()))
-                                .unwrap_or_default();
-                            let concurrent_init_semaphore = {
-                                let mut semaphores =
-                                    session.concurrent_initialize_semaphores.lock();
-                                if let Some(existing) =
-                                    semaphores.get(&drive).and_then(Weak::upgrade)
-                                {
-                                    existing
-                                } else {
-                                    let created = Arc::new(tokio::sync::Semaphore::new(
-                                        session.concurrent_init_limit,
-                                    ));
-                                    semaphores.insert(drive, Arc::downgrade(&created));
-                                    created
-                                }
-                            };
-                            let _permit = concurrent_init_semaphore
+                            // Hash-checking is deliberately process-wide serial.
+                            // Exactly one torrent may read and hash files at a time,
+                            // regardless of its volume or Session.
+                            let _check_permit = initialization_semaphore()
                                 .acquire_owned()
                                 .await
                                 .context("bug: concurrent init semaphore was closed")?;
 
+                            init.check_active.store(true, Ordering::Release);
                             let check_result = init.check().await;
+                            init.check_active.store(false, Ordering::Release);
                             init.finish_check();
 
                             match check_result {
@@ -546,7 +531,10 @@ impl ManagedTorrent {
             let g = self.locked.read();
             match &g.state {
                 ManagedTorrentState::Initializing(i) => {
-                    resp.state = S::Initializing { paused: g.paused };
+                    resp.state = S::Initializing {
+                        paused: g.paused,
+                        queued: !i.check_active.load(Ordering::Acquire),
+                    };
                     resp.progress_bytes = i.checked_bytes.load(Ordering::Relaxed);
                 }
                 ManagedTorrentState::Paused(p) => {

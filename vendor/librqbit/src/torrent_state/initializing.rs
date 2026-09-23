@@ -33,6 +33,7 @@ pub struct TorrentStateInitializing {
     pub(crate) checked_bytes: AtomicU64,
     pause_requested: AtomicBool,
     check_running: AtomicBool,
+    pub(crate) check_active: AtomicBool,
     previously_errored: bool,
 }
 
@@ -52,6 +53,7 @@ impl TorrentStateInitializing {
             checked_bytes: AtomicU64::new(0),
             pause_requested: AtomicBool::new(false),
             check_running: AtomicBool::new(false),
+            check_active: AtomicBool::new(false),
             previously_errored,
         }
     }

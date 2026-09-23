@@ -4,7 +4,8 @@
 //
 // It has to exist before `tauri build` runs, because tauri.conf.json bundles
 // `target/release/wint-torrent-helper.exe` as a resource and the bundle step
-// fails on a resource that is not there. Runs as part of npm's `prebuild`.
+// fails on a resource that is not there. Development also calls this with
+// `--debug`, otherwise an old debug helper can survive UI/backend rebuilds.
 //
 // The PATH dance is the same one `tauri-with-cargo-path.js` does: cargo lives
 // in the user profile and is not always on PATH for a spawned build.
@@ -20,7 +21,12 @@ if (fs.existsSync(cargoBin) && !parts.some((p) => p.toLowerCase() === cargoBin.t
   process.env.PATH = [cargoBin, ...parts].join(path.delimiter);
 }
 
-const child = spawn("cargo", ["build", "--release", "-p", "wint-torrent-helper"], {
+const debug = process.argv.includes("--debug");
+const cargoArgs = ["build"];
+if (!debug) cargoArgs.push("--release");
+cargoArgs.push("-p", "wint-torrent-helper");
+
+const child = spawn("cargo", cargoArgs, {
   cwd: path.join(__dirname, "..", "src-tauri"),
   env: process.env,
   stdio: "inherit",

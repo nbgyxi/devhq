@@ -16,12 +16,154 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.140.20",
+      date: "2026-09-23",
+      title: "Files remembers how you left it",
+      changes: [
+        ["better", "Files windows reopen at their latest size and restore thumbnails, the image preview panel, hidden files, sorting, columns, and pane widths."],
+      ],
+    },
+    {
+      version: "0.140.19",
+      date: "2026-09-23",
+      title: "Files open through Windows correctly",
+      changes: [
+        ["fix", "Opening an individual torrent file now uses its registered Windows app instead of passing the file to Explorer, which could report Access is denied."],
+        ["fix", "Open in WinT Files now crosses the isolated-tool boundary through the main WinT shell."],
+      ],
+    },
+    {
+      version: "0.140.18",
+      date: "2026-09-23",
+      title: "Torrent files open where you need them",
+      changes: [
+        ["new", "Torrent folders can be opened explicitly in WinT Files, and individual files now have right-click actions to open, reveal, copy their path, or change download inclusion."],
+        ["new", "A downloaded zip can be opened directly in WinT Files and navigated like a folder."],
+      ],
+    },
+    {
+      version: "0.140.17",
+      date: "2026-09-23",
+      title: "Reliable column reordering",
+      changes: [
+        ["fix", "Torrent columns now reorder with a pointer gesture instead of unsupported browser drag-and-drop, eliminating the blocked cursor."],
+      ],
+    },
+    {
+      version: "0.140.16",
+      date: "2026-09-23",
+      title: "Optional torrent details",
+      changes: [
+        ["new", "The Columns picker now offers Remaining, ETA, Uploaded, Ratio, and Known peers without adding them to the default layout."],
+      ],
+    },
+    {
+      version: "0.140.15",
+      date: "2026-09-23",
+      title: "Visible column drop positions",
+      changes: [
+        ["fix", "Dragging a torrent column now shows a full-height insertion marker and drops precisely before or after the indicated column."],
+      ],
+    },
+    {
+      version: "0.140.14",
+      date: "2026-09-23",
+      title: "Sortable, movable torrent columns",
+      changes: [
+        ["new", "Click a torrent column heading to sort ascending or descending, and drag headings to arrange the columns in any order."],
+        ["better", "Torrent column order and sorting are remembered between sessions."],
+        ["better", "The peer column is now labelled Connected, and an idle torrent says Finding peers, clarifying that tracker seed counts can be higher than current connections."],
+      ],
+    },
+    {
+      version: "0.140.13",
+      date: "2026-09-23",
+      title: "One check at a time",
+      changes: [
+        ["fix", "WinT now permits exactly one torrent file check at a time across the entire torrent engine, regardless of drive."],
+        ["fix", "File-check disk throughput is no longer shown as network download speed in the lower-left totals."],
+      ],
+    },
+    {
+      version: "0.140.12",
+      date: "2026-09-23",
+      title: "Current torrent engine in development",
+      changes: [
+        ["fix", "Starting WinT in development now rebuilds its separate torrent engine first, preventing stale checking behavior from surviving an app rebuild."],
+      ],
+    },
+    {
+      version: "0.140.11",
+      date: "2026-09-23",
+      title: "Clearer peer status",
+      changes: [
+        ["better", "A torrent with no connected source now says Waiting for peers or Connecting to peers instead of claiming to be downloading."],
+      ],
+    },
+    {
+      version: "0.140.10",
+      date: "2026-09-23",
+      title: "Strict per-drive check queue",
+      changes: [
+        ["fix", "File checks on the same drive now always finish one torrent before starting the next, including when Windows stores the two paths in different formats."],
+      ],
+    },
+    {
+      version: "0.140.9",
+      date: "2026-09-23",
+      title: "Windows defaults opens correctly",
+      changes: [
+        ["fix", "The torrent default-app button now opens WinT's actual Windows Default apps page instead of an Explorer window."],
+        ["better", "Torrent association settings now clearly say what WinT can register and what must be chosen in Windows."],
+      ],
+    },
+    {
+      version: "0.140.8",
+      date: "2026-09-23",
+      title: "Resizable torrent columns",
+      changes: [
+        ["new", "Torrent columns can now be resized by dragging their header dividers, and their widths are remembered."],
+      ],
+    },
+    {
+      version: "0.140.7",
+      date: "2026-09-23",
+      title: "Torrent columns",
+      changes: [
+        ["new", "The torrent list now shows when each download completed and has a Columns picker for choosing which fields stay visible."],
+      ],
+    },
+    {
+      version: "0.140.6",
+      date: "2026-09-23",
+      title: "One file check per disk",
+      changes: [
+        ["fix", "File checks on the same physical disk now visibly wait for one another instead of appearing to run together."],
+      ],
+    },
+    {
+      version: "0.140.5",
+      date: "2026-09-23",
+      title: "New torrents start cleanly",
+      changes: [
+        ["fix", "A newly added torrent no longer reports File state changed merely because its files have not been created yet."],
+      ],
+    },
+    {
+      version: "0.140.4",
+      date: "2026-09-23",
+      title: "File checks where they are needed",
+      changes: [
+        ["better", "A torrent whose file state changed now has its Check action directly on the affected row."],
+      ],
+    },
+    {
       version: "0.140.3",
       date: "2026-09-23",
       title: "Quiet torrent restarts",
       changes: [
         ["better", "Torrents now trust their saved progress at startup instead of reading pieces from every download to validate it."],
-        ["better", "Explicit file checks run one at a time on each drive, while checks on different drives can run together."],
+        ["better", "Explicit file checks run one at a time on each physical drive, while checks on different drives can run together."],
       ],
     },
     {

@@ -1758,10 +1758,12 @@ html[dir="rtl"] .changelog-pop{right:auto;left:0;direction:rtl;text-align:right}
    program painted, keyboard-driven or dragged. */
 .term ::selection{background:#2f5c8f;color:#fff}
 .term::selection{background:#2f5c8f;color:#fff}
+.term-box-selection{position:absolute;inset:0;z-index:3;pointer-events:none}
+.term-box-selection>div{position:absolute;background:rgba(47,92,143,.62)}
 .term-cursor{
   position:absolute;left:0;top:0;overflow:hidden;white-space:pre;text-align:center;
   color:var(--term-bg);background:var(--term-fg);opacity:1;
-  pointer-events:none;border-radius:1px;
+  z-index:4;pointer-events:none;border-radius:1px;
 }
 .term:not(:focus-within) .term-cursor{opacity:.3}
 
@@ -1769,7 +1771,7 @@ html[dir="rtl"] .changelog-pop{right:auto;left:0;direction:rtl;text-align:right}
    drawn over the columns the link occupies rather than around its spans, which
    a run of colour would have cut in half. */
 .term-link{
-  position:absolute;left:0;top:0;display:none;pointer-events:none;
+  position:absolute;left:0;top:0;z-index:5;display:none;pointer-events:none;
   border-bottom:1px solid var(--accent);
 }
 .term.linking,.term.linking .term-scroll{cursor:pointer}
@@ -4964,6 +4966,13 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-tab:hover{color:var(--text)}
 .tr-tab.on{color:var(--text);border-bottom-color:var(--accent)}
 .tr-count{margin-left:auto;padding-right:4px;color:var(--dim2);font-size:11px}
+.tr-column-control{position:relative;flex:none}
+.tr-column-control>.btn{height:28px;padding:3px 8px;font-size:11px}
+.tr-column-picker{position:absolute;z-index:20;top:calc(100% + 5px);right:0;width:170px;padding:5px;border:1px solid var(--line);border-radius:8px;background:var(--bg2);box-shadow:0 12px 30px #0008}
+.tr-column-picker[hidden]{display:none}
+.tr-column-picker label{display:flex;align-items:center;gap:8px;padding:6px 7px;border-radius:5px;color:var(--text);font-size:11.5px;cursor:pointer}
+.tr-column-picker label:hover{background:var(--bg3)}
+.tr-column-picker input{margin:0;accent-color:var(--accent)}
 .tr-view{flex:1 1 auto;display:flex;flex-direction:column;gap:12px;min-height:0}
 .tr-view[hidden]{display:none}
 
@@ -4973,10 +4982,17 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-magnet::placeholder{color:var(--dim2)}
 
 .tr-work{flex:1 1 auto;display:flex;align-items:stretch;gap:12px;min-height:0}
-.tr-list{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow:hidden}
+.tr-list{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow-x:auto;overflow-y:hidden}
 .tr-list.tr-drop{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
-.tr-head,.tr-row{display:grid;grid-template-columns:minmax(0,1fr) 80px 120px 150px 84px 84px 56px;gap:10px;align-items:center}
+.tr-head,.tr-row{display:grid;grid-template-columns:var(--tr-columns,minmax(0,1fr) 80px 120px 150px 136px 84px 84px 56px);gap:10px;align-items:center}
 .tr-head{padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--line);color:var(--dim2);font-size:10px;text-transform:uppercase;letter-spacing:.4px}
+.tr-head,.tr-scroll{min-width:var(--tr-table-min-width,0)}
+.tr-head>span{position:relative;min-width:0;height:100%;display:flex;align-items:center}
+.tr-head>span[data-col]{cursor:grab;user-select:none}.tr-head>span.dragging{opacity:.38}.tr-reordering-column,.tr-reordering-column *{cursor:grabbing!important;user-select:none!important}.tr-head>span.drop-before::before,.tr-head>span.drop-after::before{content:"";position:absolute;z-index:4;top:-8px;bottom:-8px;width:3px;border-radius:2px;background:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}.tr-head>span.drop-before::before{left:-7px}.tr-head>span.drop-after::before{right:-7px}.tr-sort-arrow{margin-left:4px;color:var(--accent);font-size:7px;font-style:normal}
+.tr-head [data-tr-column-resize]{position:absolute;z-index:2;top:-8px;right:-6px;width:11px;height:32px;cursor:col-resize}
+.tr-head [data-tr-column-resize]::after{content:"";position:absolute;top:7px;bottom:7px;left:5px;width:1px;background:transparent}
+.tr-head [data-tr-column-resize]:hover::after,.tr-resizing-column .tr-head [data-tr-column-resize]::after{background:var(--accent)}
+.tr-resizing-column,.tr-resizing-column *{cursor:col-resize!important;user-select:none!important}
 .tr-scroll{flex:1 1 auto;position:relative;overflow-y:auto;min-height:0}
 .tr-spacer{width:1px}
 .tr-rows,.tr-frows{position:absolute;top:0;left:0;right:0}
@@ -4990,12 +5006,19 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-dot.warn{background:var(--amber)}
 .tr-dot.bad{background:var(--red)}
 .tr-dot.muted{background:var(--dim2)}
-.tr-size,.tr-down,.tr-up,.tr-peers{color:var(--dim);font-variant-numeric:tabular-nums}
+.tr-size,.tr-completed,.tr-down,.tr-up,.tr-peers{color:var(--dim);font-variant-numeric:tabular-nums}
+.tr-completed{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10.5px}
 .tr-done,.tr-fdone{display:flex;align-items:center;gap:7px}
 .tr-bar{flex:1;height:3px;border-radius:2px;background:var(--line);overflow:hidden}
 .tr-bar b{display:block;height:100%;background:var(--accent);border-radius:2px}
 .tr-done small,.tr-fpct{color:var(--dim2);font-size:10px;min-width:32px;text-align:right;font-variant-numeric:tabular-nums}
 .tr-status{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim)}
+.tr-status:has([data-tr-recheck]:not([hidden])){display:flex;align-items:center;justify-content:space-between;gap:5px;overflow:visible}
+.tr-status:has([data-tr-recheck]:not([hidden]))>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.tr-status [data-tr-recheck]{flex:none;display:inline-flex;align-items:center;gap:3px;padding:2px 6px;border:1px solid currentColor;border-radius:5px;background:transparent;color:var(--amber);font:inherit;cursor:pointer}
+.tr-status [data-tr-recheck][hidden]{display:none}
+.tr-status [data-tr-recheck] .ms{font-size:14px}
+.tr-status [data-tr-recheck]:hover{background:rgba(242,181,68,.12)}
 .tr-status.good{color:var(--green)}
 .tr-status.warn{color:var(--amber)}
 .tr-status.bad{color:var(--red)}

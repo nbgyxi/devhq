@@ -51,6 +51,8 @@ pub enum TorrentStatsState {
         // avoid confusion with the `paused` state once flattened into the JSON.
         #[serde(rename = "initializing_paused")]
         paused: bool,
+        #[serde(rename = "initializing_queued")]
+        queued: bool,
     },
     Live,
     Paused,

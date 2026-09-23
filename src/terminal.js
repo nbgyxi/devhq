@@ -533,6 +533,11 @@ class TermView {
     // native paste. Keep the shell edit calculated at Ctrl+V keydown so the
     // following paste event can still replace exactly what was selected.
     this.pendingPasteErase = "";
+    // Alt+drag owns a rectangular selection. A browser Selection can only
+    // describe one continuous DOM range, so column selection is painted and
+    // copied separately.
+    this.boxSelection = null;
+    this.boxSelecting = false;
     this.bracketedPaste = false;
     this.mouseMode = 0;
     this.mouseSgr = false;
@@ -555,7 +560,7 @@ class TermView {
     host.innerHTML =
       '<div class="term-scroll"><div class="term-history"></div>' +
       '<div class="term-screen"></div><div class="term-cursor"></div>' +
-      '<div class="term-link"></div></div>' +
+      '<div class="term-link"></div><div class="term-box-selection"></div></div>' +
       '<textarea class="term-input" tabindex="-1" aria-label="Terminal input" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>' +
       '<div class="term-history-search" hidden><div class="term-history-query"><kbd>^R</kbd><span class="ms">search</span><input type="text" spellcheck="false" aria-label="Search command history"><small></small><button type="button" data-history-close aria-label="Close">&#215;</button></div><div class="term-history-filters"><button class="on" data-history-sort="recent">Recent</button><button data-history-sort="used">Most used</button><button data-history-sort="match">Best match</button></div><div class="term-history-results" role="listbox"></div><div class="term-history-foot"><span></span><div><button data-history-edit>Use <kbd>Enter</kbd></button><small><kbd>^R</kbd> older &middot; <kbd>^S</kbd> newer &middot; <kbd>^G</kbd> cancel</small></div></div></div>';
     this.scroll = host.querySelector(".term-scroll");
@@ -566,6 +571,7 @@ class TermView {
      *  column like everything else on a row, so it lines up with the text
      *  whatever the font did. */
     this.linkEl = host.querySelector(".term-link");
+    this.boxSelectionEl = host.querySelector(".term-box-selection");
     this.input = host.querySelector(".term-input");
     this.link = null;
     this.commandDraft = "";
@@ -679,7 +685,13 @@ class TermView {
       }
       // Ctrl+Shift+C is the copy that never means interrupt; Ctrl+Insert is
       // the same thing in Notepad's older spelling.
-      if (e.ctrlKey && e.shiftKey && e.key === "C") return;
+      if (e.ctrlKey && e.shiftKey && e.key === "C") {
+        if (this.copySelection()) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        return;
+      }
       if (e.ctrlKey && !e.shiftKey && e.key === "Insert") {
         this.copySelection();
         e.preventDefault();
@@ -785,6 +797,8 @@ class TermView {
     });
     this.host.addEventListener("mousedown", (e) => {
       this.input.focus({ preventScroll: true });
+      if (e.altKey && e.button === 0 && this.startBoxSelection(e)) return;
+      this.clearBoxSelection();
       if (this.reportMouse(e, false)) return;
       // Ctrl on a link is a click, not the beginning of a selection drag.
       if (e.ctrlKey && e.button === 0 && this.linkUnder(e)) e.preventDefault();
@@ -801,6 +815,10 @@ class TermView {
     });
     this.windowMouseUp = (e) => this.reportMouse(e, false, true);
     window.addEventListener("mouseup", this.windowMouseUp);
+    this.windowBoxMove = (e) => this.moveBoxSelection(e);
+    this.windowBoxUp = (e) => this.endBoxSelection(e);
+    window.addEventListener("mousemove", this.windowBoxMove);
+    window.addEventListener("mouseup", this.windowBoxUp);
     this.scroll.addEventListener("wheel", (e) => {
       if (!this.mouseMode || e.shiftKey) return;
       e.preventDefault();
@@ -1040,7 +1058,99 @@ class TermView {
 
   /** Every drawn row, history first, in the order they appear. */
   rowList() {
-    return [...this.history.children, ...this.rowEls];
+    return this.host.classList.contains("alt")
+      ? [...this.rowEls]
+      : [...this.history.children, ...this.rowEls];
+  }
+
+  /** Terminal grid position nearest a mouse event. All terminal rows have one
+   *  cell height, including empty screen rows, so this also works while the
+   *  pointer is just outside the viewport during a drag. */
+  gridPoint(e) {
+    const rows = this.rowList();
+    if (!rows.length) return null;
+    const first = rows[0].getBoundingClientRect();
+    const index = Math.max(0, Math.min(rows.length - 1,
+      Math.floor((e.clientY - first.top) / this.cellH)));
+    const row = rows[index];
+    const box = row.getBoundingClientRect();
+    const col = Math.max(0, Math.min(this.cols,
+      Math.floor((e.clientX - box.left) / this.cellW)));
+    return { index, col };
+  }
+
+  startBoxSelection(e) {
+    const point = this.gridPoint(e);
+    if (!point) return false;
+    window.getSelection()?.removeAllRanges();
+    this.boxSelection = { anchor: point, focus: point };
+    this.boxSelecting = true;
+    this.paintBoxSelection();
+    e.preventDefault();
+    e.stopPropagation();
+    return true;
+  }
+
+  moveBoxSelection(e) {
+    if (!this.boxSelecting || !this.boxSelection) return;
+    const point = this.gridPoint(e);
+    if (point) this.boxSelection.focus = point;
+    this.paintBoxSelection();
+    const view = this.scroll.getBoundingClientRect();
+    if (e.clientY < view.top) this.scroll.scrollTop -= this.cellH;
+    else if (e.clientY > view.bottom) this.scroll.scrollTop += this.cellH;
+    e.preventDefault();
+  }
+
+  endBoxSelection(e) {
+    if (!this.boxSelecting) return;
+    this.moveBoxSelection(e);
+    this.boxSelecting = false;
+    if (this.boxSelectionText() === "") this.clearBoxSelection();
+    e.preventDefault();
+  }
+
+  paintBoxSelection() {
+    const selection = this.boxSelection;
+    if (!selection) { this.boxSelectionEl.replaceChildren(); return; }
+    const rows = this.rowList();
+    const top = Math.min(selection.anchor.index, selection.focus.index);
+    const bottom = Math.max(selection.anchor.index, selection.focus.index);
+    const left = Math.min(selection.anchor.col, selection.focus.col);
+    const right = Math.max(selection.anchor.col, selection.focus.col);
+    const scrollBox = this.scroll.getBoundingClientRect();
+    const frag = document.createDocumentFragment();
+    for (let index = top; index <= bottom; index++) {
+      const row = rows[index];
+      if (!row) continue;
+      const box = row.getBoundingClientRect();
+      const mark = document.createElement("div");
+      mark.style.left = `${box.left - scrollBox.left + this.scroll.scrollLeft + colX(left, this.cellW)}px`;
+      mark.style.top = `${box.top - scrollBox.top + this.scroll.scrollTop}px`;
+      mark.style.width = `${colX(right, this.cellW) - colX(left, this.cellW)}px`;
+      mark.style.height = `${box.height || this.cellH}px`;
+      frag.appendChild(mark);
+    }
+    this.boxSelectionEl.replaceChildren(frag);
+  }
+
+  boxSelectionText() {
+    if (!this.boxSelection) return "";
+    const rows = this.rowList();
+    const top = Math.min(this.boxSelection.anchor.index, this.boxSelection.focus.index);
+    const bottom = Math.max(this.boxSelection.anchor.index, this.boxSelection.focus.index);
+    const left = Math.min(this.boxSelection.anchor.col, this.boxSelection.focus.col);
+    const right = Math.max(this.boxSelection.anchor.col, this.boxSelection.focus.col);
+    if (left === right) return "";
+    return rows.slice(top, bottom + 1)
+      .map((row) => (row.textContent || "").slice(left, right))
+      .join("\r\n");
+  }
+
+  clearBoxSelection() {
+    this.boxSelecting = false;
+    this.boxSelection = null;
+    this.boxSelectionEl.replaceChildren();
   }
 
   /** Where the loose end of the selection sits, as a row and a column, or null
@@ -1167,6 +1277,7 @@ class TermView {
 
   /** Drops this terminal's selection, the way typing does in an editor. */
   clearSelection() {
+    this.clearBoxSelection();
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || !sel.rangeCount) return;
     if (!this.host.contains(sel.anchorNode) || !this.host.contains(sel.focusNode)) return;
@@ -1218,6 +1329,11 @@ class TermView {
    *  copying, which is both the visible confirmation that something was copied
    *  and what makes an immediately repeated Ctrl+C an interrupt. */
   copySelection() {
+    const boxText = this.boxSelectionText();
+    if (boxText) {
+      navigator.clipboard?.writeText(boxText).then(() => this.clearBoxSelection()).catch(() => {});
+      return true;
+    }
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
     if (!this.host.contains(sel.anchorNode) || !this.host.contains(sel.focusNode)) return false;
@@ -1720,6 +1836,8 @@ class TermView {
   dispose() {
     this.setLink(null);
     window.removeEventListener("mouseup", this.windowMouseUp);
+    window.removeEventListener("mousemove", this.windowBoxMove);
+    window.removeEventListener("mouseup", this.windowBoxUp);
     if (views.get(this.id) === this) views.delete(this.id);
   }
 }

@@ -185,7 +185,25 @@ pub struct Layout {
     pub column_widths: BTreeMap<String, u32>,
     #[serde(default)]
     pub created_column: bool,
+    #[serde(default)]
+    pub thumbs_on: bool,
+    #[serde(default)]
+    pub preview_pane: bool,
+    #[serde(default)]
+    pub show_hidden: bool,
+    #[serde(default = "default_sort")]
+    pub sort: String,
+    #[serde(default)]
+    pub desc: bool,
+    #[serde(default = "default_window_width")]
+    pub window_width: u32,
+    #[serde(default = "default_window_height")]
+    pub window_height: u32,
 }
+
+fn default_sort() -> String { "name".into() }
+fn default_window_width() -> u32 { 960 }
+fn default_window_height() -> u32 { 720 }
 
 fn default_column_widths() -> BTreeMap<String, u32> {
     [("name", 320), ("type", 130), ("size", 92), ("modified", 148), ("created", 148)]
@@ -198,6 +216,9 @@ const SIDE_MIN: u32 = 64;
 const SIDE_MAX: u32 = 1200;
 const PREVIEW_MIN: u32 = 64;
 const PREVIEW_MAX: u32 = 1200;
+const WINDOW_WIDTH_MIN: u32 = 480;
+const WINDOW_HEIGHT_MIN: u32 = 320;
+const WINDOW_SIZE_MAX: u32 = 10000;
 
 fn layout_file(app_data: &Path) -> Option<PathBuf> {
     std::fs::create_dir_all(app_data).ok()?;
@@ -215,6 +236,16 @@ fn clamp_layout(layout: Layout) -> Layout {
         preview_width: layout.preview_width.clamp(PREVIEW_MIN, PREVIEW_MAX),
         column_widths,
         created_column: layout.created_column,
+        thumbs_on: layout.thumbs_on,
+        preview_pane: layout.preview_pane,
+        show_hidden: layout.show_hidden,
+        sort: match layout.sort.as_str() {
+            "name" | "type" | "size" | "modified" | "created" => layout.sort,
+            _ => default_sort(),
+        },
+        desc: layout.desc,
+        window_width: layout.window_width.clamp(WINDOW_WIDTH_MIN, WINDOW_SIZE_MAX),
+        window_height: layout.window_height.clamp(WINDOW_HEIGHT_MIN, WINDOW_SIZE_MAX),
     }
 }
 
@@ -227,6 +258,13 @@ pub fn layout(app_data: &Path) -> Layout {
         preview_width: PREVIEW_DEFAULT,
         column_widths: default_column_widths(),
         created_column: false,
+        thumbs_on: false,
+        preview_pane: false,
+        show_hidden: false,
+        sort: default_sort(),
+        desc: false,
+        window_width: default_window_width(),
+        window_height: default_window_height(),
     };
     let Some(file) = layout_file(app_data) else {
         return defaults;

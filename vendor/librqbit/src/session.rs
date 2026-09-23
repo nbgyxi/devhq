@@ -5,7 +5,7 @@ use std::{
     net::SocketAddr,
     path::{Component, Path, PathBuf},
     sync::{
-        Arc, Weak,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -64,7 +64,7 @@ use librqbit_core::{
 };
 use librqbit_lsd::{LocalServiceDiscovery, LocalServiceDiscoveryOptions};
 use librqbit_utp::BindDevice;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use peer_binary_protocol::Handshake;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
@@ -135,9 +135,6 @@ pub struct Session {
     lsd: Option<LocalServiceDiscovery>,
 
     // Limits and throttling
-    pub(crate) concurrent_initialize_semaphores:
-        Mutex<HashMap<PathBuf, Weak<tokio::sync::Semaphore>>>,
-    pub(crate) concurrent_init_limit: usize,
     pub(crate) trust_fastresume: bool,
     pub ratelimits: Limits,
 
@@ -804,8 +801,6 @@ impl Session {
                 connector: stream_connector,
                 root_span: opts.root_span,
                 stats: Arc::new(SessionStats::new()),
-                concurrent_initialize_semaphores: Mutex::new(HashMap::new()),
-                concurrent_init_limit: opts.concurrent_init_limit.unwrap_or(3),
                 trust_fastresume: opts.trust_fastresume,
                 udp_tracker_client,
                 ratelimits: Limits::new(opts.ratelimits),

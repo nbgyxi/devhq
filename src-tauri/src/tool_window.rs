@@ -829,10 +829,20 @@ pub async fn tool_popout(
         r#"document.documentElement.dataset.theme="{}";"#,
         if light { "light" } else { "dark" }
     );
+    let (window_width, window_height) = if id == "explorer" {
+        let data_dir = app.path().app_data_dir().ok();
+        off_thread(move || data_dir.map(|dir| crate::explorer::layout(&dir)))
+            .await
+            .flatten()
+            .map(|layout| (layout.window_width as f64, layout.window_height as f64))
+            .unwrap_or((960.0, 720.0))
+    } else {
+        (960.0, 720.0)
+    };
     off_thread(move || {
         let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(page.into()))
             .title(window_title)
-            .inner_size(960.0, 720.0)
+            .inner_size(window_width, window_height)
             .min_inner_size(480.0, 320.0)
             .decorations(false)
             // Hidden until tool.html paints theme + chrome, then JS calls show().

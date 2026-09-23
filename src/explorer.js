@@ -63,6 +63,7 @@ const fx = {
   /** Fixed widths for the tree and the preview. The browse list fills what is
    *  left. Remembered across windows the same way bookmarks are. */
   sideWidth: 268, previewWidth: 320,
+  windowWidth: 960, windowHeight: 720,
   columnWidths: { name: 320, type: 130, size: 92, modified: 148, created: 148 },
   createdColumn: false,
   /** Focused row plus the complete multi-selection. The focused file, when
@@ -445,7 +446,12 @@ function applyLayout() {
 
 function rememberLayout() {
   invoke("explorer_layout_set", {
-    layout: { sideWidth: fx.sideWidth, previewWidth: fx.previewWidth, columnWidths: fx.columnWidths, createdColumn: fx.createdColumn },
+    layout: {
+      sideWidth: fx.sideWidth, previewWidth: fx.previewWidth, columnWidths: fx.columnWidths,
+      createdColumn: fx.createdColumn, thumbsOn: fx.thumbsOn, previewPane: fx.previewPane,
+      showHidden: fx.showHidden, sort: fx.sort, desc: fx.desc,
+      windowWidth: fx.windowWidth, windowHeight: fx.windowHeight,
+    },
   }).catch(() => {});
 }
 
@@ -456,8 +462,16 @@ async function loadLayout() {
     if (layout?.previewWidth) fx.previewWidth = clampPreview(layout.previewWidth);
     if (layout?.columnWidths) fx.columnWidths = { ...fx.columnWidths, ...layout.columnWidths };
     fx.createdColumn = !!layout?.createdColumn;
+    fx.thumbsOn = !!layout?.thumbsOn;
+    fx.previewPane = !!layout?.previewPane;
+    fx.showHidden = !!layout?.showHidden;
+    fx.sort = layout?.sort || "name";
+    fx.desc = !!layout?.desc;
+    fx.windowWidth = Number(layout?.windowWidth) || 960;
+    fx.windowHeight = Number(layout?.windowHeight) || 720;
   } catch (_) { /* Defaults already sit on fx. */ }
   applyLayout();
+  dirty();
 }
 
 /** Bookmarks live in a file the Rust side owns. Browser storage would not do:
@@ -877,6 +891,7 @@ function paintPreview() {
 
 function togglePreviewPane() {
   fx.previewPane = !fx.previewPane;
+  rememberLayout();
   dirty();
   if (fx.previewPane) loadPreview();
   else { previewToken += 1; fx.previewUrl = ""; }
@@ -907,6 +922,7 @@ function renderPreviewPane() {
 
 function toggleThumbs() {
   fx.thumbsOn = !fx.thumbsOn;
+  rememberLayout();
   dirty();
   if (fx.thumbsOn) loadThumbs();
   else {
@@ -937,6 +953,7 @@ function clearFilters() {
 function sortBy(column) {
   if (fx.sort === column) fx.desc = !fx.desc;
   else { fx.sort = column; fx.desc = column === "size" || column === "modified"; }
+  rememberLayout();
   dirty();
 }
 
@@ -1360,7 +1377,11 @@ function mount(host) {
     if (event.target.closest("[data-fx-clear-ext]")) { fx.exts.clear(); return dirty(); }
     if (event.target.closest("[data-fx-clear]")) return clearFilters();
     if (event.target.closest("[data-fx-types]")) { fx.typesOpen = !fx.typesOpen; return dirty(); }
-    if (event.target.closest("[data-fx-hidden]")) { fx.showHidden = !fx.showHidden; return dirty(); }
+    if (event.target.closest("[data-fx-hidden]")) {
+      fx.showHidden = !fx.showHidden;
+      rememberLayout();
+      return dirty();
+    }
     if (event.target.closest("[data-fx-thumbs]")) return toggleThumbs();
     if (event.target.closest("[data-fx-preview]")) return togglePreviewPane();
     const del = event.target.closest("[data-fx-delete]");
@@ -1697,6 +1718,13 @@ function exportState() {
   };
 }
 
+function rememberWindowSize(width, height) {
+  if (!window.wintExternalToolChrome) return;
+  fx.windowWidth = Math.max(480, Math.round(Number(width) || fx.windowWidth));
+  fx.windowHeight = Math.max(320, Math.round(Number(height) || fx.windowHeight));
+  rememberLayout();
+}
+
 /** `loading` is deliberately not carried across: it describes a listing running
  *  in a webview that is gone, whose result can never arrive, and restoring it
  *  true would show skeletons nothing will ever replace. `opened` re-reads the
@@ -1735,5 +1763,5 @@ try {
   }
 } catch (_) { /* An empty explorer is a safe start when storage is unavailable. */ }
 
-window.wintExplorer = { mount, render, opened, preparePopout, exportState, importState, openInNewWindow };
+window.wintExplorer = { mount, render, opened, preparePopout, exportState, importState, openInNewWindow, rememberWindowSize };
 })();

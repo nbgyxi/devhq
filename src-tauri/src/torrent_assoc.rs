@@ -94,13 +94,9 @@ pub async fn torrent_assoc_choose_default() -> Result<Assoc, String> {
     crate::off_thread(|| {
         set_asked();
         register()?;
-        take_default()?;
-        // Nothing left to ask: the legacy write was enough.
-        let after = status();
-        if after.default_file && after.default_magnet {
-            return Ok(after);
-        }
-        ask_windows(&after)?;
+        // Windows protects the actual choice. Open WinT's own page in
+        // Default apps, where the user can assign both entries explicitly.
+        settings_page()?;
         Ok(status())
     })
     .await
@@ -149,25 +145,20 @@ fn unregister() -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn take_default() -> Result<(), String> {
-    Err("File associations are only supported on Windows.".into())
-}
-
-#[cfg(not(windows))]
-fn ask_windows(_assoc: &Assoc) -> Result<(), String> {
-    Err("File associations are only supported on Windows.".into())
-}
-
-#[cfg(not(windows))]
 fn asked() -> bool {
     true
+}
+
+#[cfg(not(windows))]
+fn settings_page() -> Result<(), String> {
+    Err("File associations are only supported on Windows.".into())
 }
 
 #[cfg(not(windows))]
 fn set_asked() {}
 
 #[cfg(windows)]
-use imp::{ask_windows, asked, register, set_asked, status, take_default, unregister};
+use imp::{asked, register, set_asked, settings_page, status, unregister};
 
 #[cfg(windows)]
 mod imp {
@@ -178,18 +169,10 @@ mod imp {
         RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER,
         REG_SZ, RRF_RT_REG_SZ,
     };
-    use windows::Win32::System::Com::{
-        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
-    };
     use windows::Win32::UI::Shell::{
-        SHChangeNotify, SHOpenWithDialog, OAIF_REGISTER_EXT, OPENASINFO, OPEN_AS_INFO_FLAGS,
-        SHCNE_ASSOCCHANGED, SHCNF_IDLIST,
+        SHChangeNotify, ShellExecuteW, SHCNE_ASSOCCHANGED, SHCNF_IDLIST,
     };
-
-    /// `OAIF_FORCE_ASSOCIATION_UI`. Documented, and the one flag that matters
-    /// here, but missing from the Win32 metadata the `windows` crate is
-    /// generated from - so it is written out rather than imported.
-    const OAIF_FORCE_ASSOCIATION_UI: OPEN_AS_INFO_FLAGS = OPEN_AS_INFO_FLAGS(0x10);
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
     /// `RegSetKeyValueW` creates the subkey it is given, so this is the only
     /// writer needed. `name` is `None` for a key's own default value.
@@ -203,7 +186,9 @@ mod imp {
             RegSetKeyValueW(
                 HKEY_CURRENT_USER,
                 PCWSTR(sub_h.as_ptr()),
-                name_h.as_ref().map_or(PCWSTR::null(), |n| PCWSTR(n.as_ptr())),
+                name_h
+                    .as_ref()
+                    .map_or(PCWSTR::null(), |n| PCWSTR(n.as_ptr())),
                 REG_SZ.0,
                 Some(value_h.as_ptr().cast()),
                 bytes,
@@ -222,7 +207,9 @@ mod imp {
             RegGetValueW(
                 HKEY_CURRENT_USER,
                 PCWSTR(sub_h.as_ptr()),
-                name_h.as_ref().map_or(PCWSTR::null(), |n| PCWSTR(n.as_ptr())),
+                name_h
+                    .as_ref()
+                    .map_or(PCWSTR::null(), |n| PCWSTR(n.as_ptr())),
                 RRF_RT_REG_SZ,
                 None,
                 Some(buf.as_mut_ptr().cast()),
@@ -242,7 +229,9 @@ mod imp {
         if result == ERROR_FILE_NOT_FOUND {
             return Ok(());
         }
-        result.ok().map_err(|e| format!("Could not remove {sub}: {e}"))
+        result
+            .ok()
+            .map_err(|e| format!("Could not remove {sub}: {e}"))
     }
 
     fn delete_value(sub: &str, name: &str) {
@@ -250,7 +239,13 @@ mod imp {
         let name_h = HSTRING::from(name);
         // Missing is the expected case on a fresh install; there is nothing
         // to report either way.
-        let _ = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, PCWSTR(sub_h.as_ptr()), PCWSTR(name_h.as_ptr())) };
+        let _ = unsafe {
+            RegDeleteKeyValueW(
+                HKEY_CURRENT_USER,
+                PCWSTR(sub_h.as_ptr()),
+                PCWSTR(name_h.as_ptr()),
+            )
+        };
     }
 
     fn exe() -> Result<String, String> {
@@ -287,8 +282,16 @@ mod imp {
 
         // Offers WinT under "Open with" for .torrent without taking the
         // extension over: whatever opens one today still opens one.
-        set_sz(r"Software\Classes\.torrent\OpenWithProgids", Some(PROGID_FILE), "")?;
-        set_sz(r"Software\Classes\.torrent", Some("Content Type"), "application/x-bittorrent")?;
+        set_sz(
+            r"Software\Classes\.torrent\OpenWithProgids",
+            Some(PROGID_FILE),
+            "",
+        )?;
+        set_sz(
+            r"Software\Classes\.torrent",
+            Some("Content Type"),
+            "application/x-bittorrent",
+        )?;
 
         // What the Default apps page reads. Without the Capabilities keys and
         // the RegisteredApplications entry, WinT is not something the user
@@ -299,9 +302,21 @@ mod imp {
             Some("ApplicationDescription"),
             "Opens torrent files and magnet links in WinT's Torrents tool.",
         )?;
-        set_sz(&format!(r"{CAPABILITIES}\FileAssociations"), Some(".torrent"), PROGID_FILE)?;
-        set_sz(&format!(r"{CAPABILITIES}\URLAssociations"), Some("magnet"), PROGID_MAGNET)?;
-        set_sz(r"Software\RegisteredApplications", Some("WinT"), CAPABILITIES)?;
+        set_sz(
+            &format!(r"{CAPABILITIES}\FileAssociations"),
+            Some(".torrent"),
+            PROGID_FILE,
+        )?;
+        set_sz(
+            &format!(r"{CAPABILITIES}\URLAssociations"),
+            Some("magnet"),
+            PROGID_MAGNET,
+        )?;
+        set_sz(
+            r"Software\RegisteredApplications",
+            Some("WinT"),
+            CAPABILITIES,
+        )?;
 
         notify_shell();
         Ok(())
@@ -350,11 +365,18 @@ mod imp {
             return None;
         }
         let label = get_sz(&format!(r"Software\Classes\{progid}"), None).unwrap_or_default();
-        Some(if label.trim().is_empty() { progid.to_string() } else { label })
+        Some(if label.trim().is_empty() {
+            progid.to_string()
+        } else {
+            label
+        })
     }
 
     pub fn status() -> Assoc {
-        let command = get_sz(&format!(r"Software\Classes\{PROGID_FILE}\shell\open\command"), None);
+        let command = get_sz(
+            &format!(r"Software\Classes\{PROGID_FILE}\shell\open\command"),
+            None,
+        );
         let expected = exe().map(|exe| open_command(&exe)).unwrap_or_default();
         let (registered, other_exe) = match command.as_deref() {
             None | Some("") => (false, None),
@@ -374,8 +396,16 @@ mod imp {
             other_exe,
             default_file,
             default_magnet,
-            file_owner: if default_file { None } else { owner_name(&file_choice) },
-            magnet_owner: if default_magnet { None } else { owner_name(&magnet_choice) },
+            file_owner: if default_file {
+                None
+            } else {
+                owner_name(&file_choice)
+            },
+            magnet_owner: if default_magnet {
+                None
+            } else {
+                owner_name(&magnet_choice)
+            },
             asked: asked(),
             supported: true,
         }
@@ -384,35 +414,6 @@ mod imp {
     /// Where the value `.torrent` and `magnet` had before WinT took them is
     /// kept, so that giving them back is possible.
     const BACKUP: &str = r"Software\WinT\AssociationBackup";
-
-    /// The association every torrent client used before `UserChoice` existed,
-    /// and which still decides the matter for a type the user has never been
-    /// asked about. Writing it is not a hijack: it loses to any explicit
-    /// choice, silently, which is exactly the behaviour wanted.
-    pub fn take_default() -> Result<(), String> {
-        let command = open_command(&exe()?);
-
-        // .torrent: the extension key's default value names the ProgID.
-        let previous = get_sz(r"Software\Classes\.torrent", None).unwrap_or_default();
-        if !previous.is_empty() && previous != PROGID_FILE {
-            set_sz(BACKUP, Some(".torrent"), &previous)?;
-        }
-        set_sz(r"Software\Classes\.torrent", None, PROGID_FILE)?;
-
-        // magnet: a protocol has no ProgID indirection - the scheme key *is*
-        // the handler, so what is replaced is the command itself.
-        let previous =
-            get_sz(r"Software\Classes\magnet\shell\open\command", None).unwrap_or_default();
-        if !previous.is_empty() && !previous.eq_ignore_ascii_case(&command) {
-            set_sz(BACKUP, Some("magnet"), &previous)?;
-        }
-        set_sz(r"Software\Classes\magnet", None, "URL:Magnet Protocol")?;
-        set_sz(r"Software\Classes\magnet", Some("URL Protocol"), "")?;
-        set_sz(r"Software\Classes\magnet\shell\open\command", None, &command)?;
-
-        notify_shell();
-        Ok(())
-    }
 
     /// Put back whatever had these before WinT did. Anything with no backup
     /// recorded is left alone rather than guessed at.
@@ -425,7 +426,11 @@ mod imp {
             let _ = set_sz(r"Software\Classes\.torrent", None, "");
         }
         if let Some(previous) = get_sz(BACKUP, Some("magnet")) {
-            let _ = set_sz(r"Software\Classes\magnet\shell\open\command", None, &previous);
+            let _ = set_sz(
+                r"Software\Classes\magnet\shell\open\command",
+                None,
+                &previous,
+            );
         } else if get_sz(r"Software\Classes\magnet\shell\open\command", None)
             .is_some_and(|found| found.to_ascii_lowercase().contains("wint.exe"))
         {
@@ -434,88 +439,31 @@ mod imp {
         let _ = delete_tree(BACKUP);
     }
 
-    /// A file for the shell's picker to be about. `SHOpenWithDialog` asks
-    /// about a *file* and reads nothing but its extension - but it shows the
-    /// name, so the name is written to be read by whoever it is shown to.
-    fn sample_torrent() -> Result<std::path::PathBuf, String> {
-        let dir = std::env::var_os("LOCALAPPDATA")
-            .map(std::path::PathBuf::from)
-            .ok_or("Windows did not provide LOCALAPPDATA.")?
-            .join("WinT")
-            .join("runtime");
-        std::fs::create_dir_all(&dir).map_err(|e| format!("Could not prepare the picker: {e}"))?;
-        let path = dir.join("Torrent files.torrent");
-        if !path.exists() {
-            // Enough bencode to be a torrent rather than an empty file, in
-            // case anything on the way to the dialog looks inside.
-            std::fs::write(&path, b"d4:infod4:name4:WinT12:piece lengthi16384e6:pieces0:eee")
-                .map_err(|e| format!("Could not prepare the picker: {e}"))?;
-        }
-        Ok(path)
-    }
-
-    /// The shell's own "How do you want to open this?", with *Always use this
-    /// app* on it. This is the furthest an application is allowed to go: the
-    /// dialog is the shell's, the choice is the user's, and `UserChoice` is
-    /// written by Windows rather than by us.
-    ///
-    /// Modal. It sits here until somebody answers it, which is why the
-    /// command that calls it carries no deadline.
-    fn open_with_dialog(path: &std::path::Path) -> Result<(), String> {
-        let file = HSTRING::from(path.as_os_str());
-        // The dialog is a shell object and wants an apartment. A thread from
-        // the blocking pool may never have had one; one that already did
-        // answers RPC_E_CHANGED_MODE, which is not an error here - it only
-        // means the uninitialise below is somebody else's to do.
-        let owned = unsafe {
-            CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_ok()
+    /// Windows' own Default apps page, opened directly at WinT.
+    pub fn settings_page() -> Result<(), String> {
+        // WinT is registered in HKCU, so Windows requires registeredAppUser.
+        // ShellExecute dispatches the URI to Settings itself; passing it to
+        // explorer.exe can open an ordinary folder window instead.
+        let verb = HSTRING::from("open");
+        let uri = HSTRING::from("ms-settings:defaultapps?registeredAppUser=WinT");
+        let result = unsafe {
+            ShellExecuteW(
+                None,
+                PCWSTR(verb.as_ptr()),
+                PCWSTR(uri.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            )
         };
-        let info = OPENASINFO {
-            pcszFile: PCWSTR(file.as_ptr()),
-            pcszClass: PCWSTR::null(),
-            // FORCE_ASSOCIATION_UI is what puts the "always" tick on it.
-            // Without it, a type that already has an owner simply opens in
-            // that owner and the user is never asked anything.
-            oaifInFlags: OAIF_FORCE_ASSOCIATION_UI | OAIF_REGISTER_EXT,
-        };
-        let result = unsafe { SHOpenWithDialog(None, &info) };
-        if owned {
-            unsafe { CoUninitialize() };
+        if result.0 as isize <= 32 {
+            Err(format!(
+                "Windows could not open Default apps (shell error {}).",
+                result.0 as isize
+            ))
+        } else {
+            Ok(())
         }
-        result.map_err(|e| format!("Windows would not show the Open with dialog: {e}"))
-    }
-
-    /// Rung two, then rung three. Only a type that is still not WinT's is
-    /// asked about, so somebody who already has magnet links is asked about
-    /// `.torrent` alone.
-    pub fn ask_windows(assoc: &Assoc) -> Result<(), String> {
-        if !assoc.default_file {
-            if let Ok(sample) = sample_torrent() {
-                if open_with_dialog(&sample).is_ok() {
-                    notify_shell();
-                    // They have now been asked in the place Windows keeps the
-                    // answer. Whatever they picked stands.
-                    if status().default_file {
-                        return Ok(());
-                    }
-                }
-            }
-        }
-        settings_page()
-    }
-
-    /// Rung three: Windows' own Default apps page, opened at WinT.
-    fn settings_page() -> Result<(), String> {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        // Named, so the page opens on WinT rather than at the top of a list
-        // of every app on the machine. Explorer resolves an ms-settings: URI.
-        std::process::Command::new("explorer.exe")
-            .arg("ms-settings:defaultapps?registeredAppName=WinT")
-            .creation_flags(DETACHED_PROCESS)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("Could not open Windows' Default apps page: {e}"))
     }
 
     /// Kept in WinT's own key because it is read on the way up and must be

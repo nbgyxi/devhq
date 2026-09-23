@@ -170,7 +170,18 @@
     maxButton.setAttribute("aria-label", maxed ? "Restore" : "Maximize");
   }
   syncMaximizeButton();
-  win.onResized(() => syncMaximizeButton());
+  let sizeSaveTimer = 0;
+  win.onResized(() => {
+    syncMaximizeButton();
+    if (id !== "explorer") return;
+    clearTimeout(sizeSaveTimer);
+    sizeSaveTimer = setTimeout(async () => {
+      if (await win.isMaximized().catch(() => false)) return;
+      const size = await win.innerSize().catch(() => null);
+      const scale = await win.scaleFactor().catch(() => 1);
+      if (size) window.wintExplorer?.rememberWindowSize?.(size.width / scale, size.height / scale);
+    }, 250);
+  });
 
   win.onCloseRequested(async (event) => {
     if (!closed && !handedOver) event.preventDefault();

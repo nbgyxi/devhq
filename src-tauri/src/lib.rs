@@ -1911,6 +1911,7 @@ pub fn open_in_sync(path: String, target: String, context: Option<String>) -> Re
     let ok = match target.as_str() {
         "explorer" => util::run_lossy("explorer", &[&path], None).is_some(),
         "reveal" => util::run_lossy("explorer", &["/select,", &path], None).is_some(),
+        "default" => open_with_default_app(&path),
         "vscode" => util::open_vscode(&path, context.as_deref()),
         "terminal" => util::run_lossy(
             "cmd",
@@ -1925,6 +1926,32 @@ pub fn open_in_sync(path: String, target: String, context: Option<String>) -> Re
     } else {
         Err(format!("Could not open with {target}."))
     }
+}
+
+#[cfg(windows)]
+fn open_with_default_app(path: &str) -> bool {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::core::{HSTRING, PCWSTR};
+
+    let verb = HSTRING::from("open");
+    let file = HSTRING::from(path);
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(file.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    result.0 as isize > 32
+}
+
+#[cfg(not(windows))]
+fn open_with_default_app(path: &str) -> bool {
+    util::run_lossy("open", &[path], None).is_some()
 }
 
 #[tauri::command]
@@ -2014,6 +2041,13 @@ async fn explorer_layout(app: AppHandle) -> explorer::Layout {
             preview_width: 320,
             column_widths: Default::default(),
             created_column: false,
+            thumbs_on: false,
+            preview_pane: false,
+            show_hidden: false,
+            sort: "name".into(),
+            desc: false,
+            window_width: 960,
+            window_height: 720,
         };
     };
     off_thread(move || explorer::layout(&dir))
@@ -2023,6 +2057,13 @@ async fn explorer_layout(app: AppHandle) -> explorer::Layout {
             preview_width: 320,
             column_widths: Default::default(),
             created_column: false,
+            thumbs_on: false,
+            preview_pane: false,
+            show_hidden: false,
+            sort: "name".into(),
+            desc: false,
+            window_width: 960,
+            window_height: 720,
         })
 }
 

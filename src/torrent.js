@@ -28,6 +28,40 @@
   const ROW = 34;
   const FILE_ROW = 28;
   const UI_CRASH_KEY = "wint:torrent-ui-crash";
+  const COLUMN_KEY = "wint:torrent-columns";
+  const COLUMN_WIDTH_KEY = "wint:torrent-column-widths";
+  const COLUMN_SORT_KEY = "wint:torrent-column-sort";
+  const COLUMNS = [
+    ["name", "Name", "minmax(0,1fr)"], ["size", "Size", "80px"],
+    ["done", "Done", "120px"], ["status", "Status", "150px"],
+    ["completed", "Completed", "136px"], ["down", "Down", "84px"],
+    ["up", "Up", "84px"], ["peers", "Connected", "72px"],
+    ["remaining", "Remaining", "86px"], ["eta", "ETA", "82px"],
+    ["uploaded", "Uploaded", "86px"], ["ratio", "Ratio", "62px"],
+    ["known", "Known peers", "82px"],
+  ];
+  const ALL_COLUMN_IDS = COLUMNS.map(([id]) => id);
+  const DEFAULT_COLUMNS = ["name", "size", "done", "status", "completed", "down", "up", "peers"];
+  function savedColumns() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(COLUMN_KEY) || "null");
+      const valid = Array.isArray(saved) ? saved.filter((id) => ALL_COLUMN_IDS.includes(id)) : [];
+      return valid.length ? valid : DEFAULT_COLUMNS;
+    } catch { return DEFAULT_COLUMNS; }
+  }
+  function savedColumnWidths() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(COLUMN_WIDTH_KEY) || "{}");
+      return saved && typeof saved === "object" ? saved : {};
+    } catch { return {}; }
+  }
+  function savedColumnSort() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(COLUMN_SORT_KEY) || "null");
+      return saved && ALL_COLUMN_IDS.includes(saved.id) && ["asc", "desc"].includes(saved.direction)
+        ? saved : null;
+    } catch { return null; }
+  }
   /** Rows drawn above and below the viewport, so a fast scroll does not show
    *  blank space before the next frame. */
   const OVERSCAN = 6;
@@ -73,9 +107,15 @@
     assoc: null,
     assocBusy: false,
     assocTried: false,
+    assocFocusBound: false,
     listening: false,
     unlisten: [],
     recoveryTimer: 0,
+    columns: savedColumns(),
+    columnWidths: savedColumnWidths(),
+    columnSort: savedColumnSort(),
+    draggedColumn: null,
+    columnDragged: false,
   };
 
   function recoverView(error) {
@@ -141,11 +181,22 @@
     if (row.state === "needs-check") return { text: "File state changed", tone: "warn" };
     if (row.state === "error") return { text: row.error || "Error", tone: "bad" };
     if (row.state === "initializing") return { text: "Checking files", tone: "warn" };
+    if (row.state === "check-queued") return { text: "Waiting to check", tone: "muted" };
     if (row.state === "queued") return { text: "Waiting its turn", tone: "muted" };
     if (row.state === "paused") return { text: "Paused", tone: "muted" };
     if (row.finished) return { text: "Seeding", tone: "good" };
+    if (!row.peers && row.peersQueued) return { text: "Connecting to peers", tone: "muted" };
+    if (!row.peers) return { text: "Finding peers", tone: "muted" };
     const left = eta(row.etaSeconds);
     return { text: left || "Downloading", tone: "" };
+  }
+
+  function completedAt(value) {
+    if (!value) return "—";
+    return new Intl.DateTimeFormat(undefined, {
+      year: "numeric", month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit",
+    }).format(new Date(value));
   }
 
   function percent(row) {
@@ -170,6 +221,10 @@
           <button type="button" class="tr-tab on" data-tr-tab="transfers" role="tab">Transfers</button>
           <button type="button" class="tr-tab" data-tr-tab="settings" role="tab">Settings</button>
           <span class="tr-count" data-tr-count></span>
+          <div class="tr-column-control">
+            <button type="button" class="btn" data-tr-columns>${icon("tune")}<span>Columns</span></button>
+            <div class="tr-column-picker" data-tr-column-picker hidden></div>
+          </div>
         </div>
 
         <section class="tr-view" data-tr-view="transfers">
@@ -182,10 +237,7 @@
 
           <div class="tr-work">
             <div class="tr-list" data-tr-list>
-              <div class="tr-head">
-                <span>Name</span><span>Size</span><span>Done</span><span>Status</span>
-                <span>Down</span><span>Up</span><span>Peers</span>
-              </div>
+              <div class="tr-head" data-tr-head></div>
               <div class="tr-scroll" data-tr-scroll>
                 <div class="tr-spacer" data-tr-spacer></div>
                 <div class="tr-rows" data-tr-rows></div>
@@ -211,7 +263,14 @@
 
     node.addEventListener("click", guarded(click));
     node.addEventListener("keydown", guarded(keydown));
+    node.addEventListener("pointerdown", guarded(startColumnResize));
+    node.addEventListener("pointerdown", guarded(startColumnReorder));
     node.addEventListener("contextmenu", (event) => {
+      const file = event.target.closest("[data-tr-file]");
+      if (file) {
+        event.preventDefault();
+        return void openFileMenu(event, Number(file.dataset.trFile));
+      }
       const el = event.target.closest("[data-tr-id]");
       if (!el) return;
       const row = (st.snap?.torrents || []).find((x) => x.id === Number(el.dataset.trId));
@@ -227,7 +286,14 @@
     });
     node.querySelector("[data-tr-scroll]").addEventListener("scroll", () => drawRows(), { passive: true });
 
+    drawColumns();
     listen();
+    if (!st.assocFocusBound) {
+      st.assocFocusBound = true;
+      window.addEventListener("focus", () => {
+        if (st.host?.isConnected) refreshAssoc();
+      });
+    }
     drawBanner();
     drawSkeleton();
     // What the shell may already have handed over, and what Windows makes of
@@ -401,6 +467,162 @@
     if (up) up.textContent = speed(snap.uploadBps);
   }
 
+  function drawColumns() {
+    const host = st.host;
+    if (!host) return;
+    const selected = new Set(st.columns);
+    applyColumnWidths();
+    const head = host.querySelector("[data-tr-head]");
+    if (head) head.innerHTML = st.columns
+      .map((id) => COLUMNS.find(([key]) => key === id))
+      .filter(Boolean)
+      .map(([id, label]) => {
+        const direction = st.columnSort?.id === id ? st.columnSort.direction : "";
+        return `<span data-col="${id}" aria-sort="${direction === "asc" ? "ascending" : direction === "desc" ? "descending" : "none"}" title="Sort by ${label}; drag to reorder">${label}<em class="tr-sort-arrow">${direction === "asc" ? "▲" : direction === "desc" ? "▼" : ""}</em><i data-tr-column-resize="${id}" title="Resize ${label}"></i></span>`;
+      })
+      .join("");
+    const picker = host.querySelector("[data-tr-column-picker]");
+    if (picker) picker.innerHTML = COLUMNS.map(([id, label]) => `<label>
+      <input type="checkbox" data-tr-column="${id}"${selected.has(id) ? " checked" : ""}>
+      <span>${label}</span>
+    </label>`).join("");
+    for (const row of host.querySelectorAll(".tr-row")) applyRowColumnOrder(row);
+  }
+
+  function applyColumnWidths() {
+    const list = st.host?.querySelector("[data-tr-list]");
+    if (!list) return;
+    const visible = st.columns.map((id) => COLUMNS.find(([key]) => key === id)).filter(Boolean);
+    list.style.setProperty("--tr-columns", visible
+      .map(([id, , width]) => st.columnWidths[id] ? `${st.columnWidths[id]}px` : width)
+      .join(" "));
+    const minimum = visible.reduce((sum, [id, , width]) =>
+      sum + (st.columnWidths[id] || (id === "name" ? 180 : Number.parseInt(width, 10))), 0)
+      + Math.max(0, visible.length - 1) * 10 + 24;
+    list.style.setProperty("--tr-table-min-width", `${minimum}px`);
+  }
+
+  function startColumnResize(event) {
+    const handle = event.target.closest("[data-tr-column-resize]");
+    if (!handle || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const id = handle.dataset.trColumnResize;
+    const header = handle.parentElement;
+    const startX = event.clientX;
+    const startWidth = header.getBoundingClientRect().width;
+    document.body.classList.add("tr-resizing-column");
+    const move = (next) => {
+      st.columnWidths[id] = Math.max(48, Math.min(600, Math.round(startWidth + next.clientX - startX)));
+      applyColumnWidths();
+    };
+    const end = () => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", end);
+      document.removeEventListener("pointercancel", end);
+      document.body.classList.remove("tr-resizing-column");
+      try { localStorage.setItem(COLUMN_WIDTH_KEY, JSON.stringify(st.columnWidths)); } catch { /* unavailable */ }
+    };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", end, { once: true });
+    document.addEventListener("pointercancel", end, { once: true });
+  }
+
+  function startColumnReorder(event) {
+    const source = event.target.closest(".tr-head > [data-col]");
+    if (!source || event.button !== 0 || event.target.closest("[data-tr-column-resize]")) return;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let target = null;
+    let after = false;
+
+    const clearMarker = () => {
+      for (const header of st.host.querySelectorAll(".tr-head .drop-before,.tr-head .drop-after")) {
+        header.classList.remove("drop-before", "drop-after");
+      }
+    };
+    const move = (next) => {
+      if (!st.columnDragged && Math.hypot(next.clientX - startX, next.clientY - startY) < 5) return;
+      st.columnDragged = true;
+      st.draggedColumn = source.dataset.col;
+      source.classList.add("dragging");
+      document.body.classList.add("tr-reordering-column");
+      clearMarker();
+      target = document.elementFromPoint(next.clientX, next.clientY)?.closest(".tr-head > [data-col]") || null;
+      if (!target || target === source) return;
+      after = next.clientX > target.getBoundingClientRect().left + target.offsetWidth / 2;
+      target.classList.add(after ? "drop-after" : "drop-before");
+      next.preventDefault();
+    };
+    const end = () => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", end);
+      document.removeEventListener("pointercancel", cancel);
+      if (st.columnDragged && target && target !== source) {
+        const order = st.columns.filter((id) => id !== source.dataset.col);
+        let index = order.indexOf(target.dataset.col) + (after ? 1 : 0);
+        order.splice(Math.max(0, index), 0, source.dataset.col);
+        st.columns = order;
+        try { localStorage.setItem(COLUMN_KEY, JSON.stringify(st.columns)); } catch { /* unavailable */ }
+        drawColumns();
+        drawRows();
+      }
+      clearMarker();
+      document.body.classList.remove("tr-reordering-column");
+      endColumnDrag();
+    };
+    const cancel = () => { target = null; end(); };
+    document.addEventListener("pointermove", move, { passive: false });
+    document.addEventListener("pointerup", end, { once: true });
+    document.addEventListener("pointercancel", cancel, { once: true });
+  }
+
+  function endColumnDrag() {
+    st.draggedColumn = null;
+    for (const header of st.host?.querySelectorAll(".tr-head .dragging,.tr-head .drop-before,.tr-head .drop-after") || []) {
+      header.classList.remove("dragging", "drop-before", "drop-after");
+    }
+    setTimeout(() => { st.columnDragged = false; }, 0);
+  }
+
+  function applyRowColumnOrder(row) {
+    const selected = new Set(st.columns);
+    for (const cell of row.querySelectorAll("[data-col]")) {
+      cell.hidden = !selected.has(cell.dataset.col);
+      cell.style.order = String(st.columns.indexOf(cell.dataset.col));
+    }
+  }
+
+  function sortedRows(rows) {
+    const sort = st.columnSort;
+    if (!sort) return rows;
+    const value = (row) => {
+      if (sort.id === "name") return row.name || "";
+      if (sort.id === "size") return row.totalBytes || 0;
+      if (sort.id === "done") return percent(row);
+      if (sort.id === "status") return statusWords(row).text;
+      if (sort.id === "completed") return row.completedAt || 0;
+      if (sort.id === "down") return row.downloadBps || 0;
+      if (sort.id === "up") return row.uploadBps || 0;
+      if (sort.id === "peers") return row.peers || 0;
+      if (sort.id === "remaining") return Math.max(0, (row.totalBytes || 0) - (row.progressBytes || 0));
+      if (sort.id === "eta") return row.etaSeconds ?? Number.MAX_SAFE_INTEGER;
+      if (sort.id === "uploaded") return row.uploadedBytes || 0;
+      if (sort.id === "ratio") return row.progressBytes ? (row.uploadedBytes || 0) / row.progressBytes : 0;
+      if (sort.id === "known") return (row.peers || 0) + (row.peersQueued || 0);
+      return 0;
+    };
+    const direction = sort.direction === "desc" ? -1 : 1;
+    return rows.map((row, index) => ({ row, index })).sort((a, b) => {
+      const left = value(a.row);
+      const right = value(b.row);
+      const compared = typeof left === "string"
+        ? left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })
+        : left - right;
+      return compared ? compared * direction : a.index - b.index;
+    }).map(({ row }) => row);
+  }
+
   // --------------------------------------------------------- the virtual list
 
   /** Draws only the rows the viewport can show. Each row is reused: if the
@@ -416,7 +638,7 @@
     const empty = host.querySelector("[data-tr-empty]");
     if (!scroll || !box) return;
 
-    const rows = [...st.pendingAdds, ...(st.snap?.torrents || [])];
+    const rows = sortedRows([...st.pendingAdds, ...(st.snap?.torrents || [])]);
     if (!st.snap && !rows.length) return drawSkeleton();
 
     spacer.style.height = `${rows.length * ROW}px`;
@@ -456,18 +678,26 @@
   }
 
   function rowElement() {
-    const el = document.createElement("button");
-    el.type = "button";
+    const el = document.createElement("div");
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
     el.className = "tr-row";
     el.dataset.trPooled = "row";
     el.innerHTML = `
-      <span class="tr-name"><i class="tr-dot"></i><span></span></span>
-      <span class="tr-size"></span>
-      <span class="tr-done"><i class="tr-bar"><b></b></i><small></small></span>
-      <span class="tr-status"></span>
-      <span class="tr-down"></span>
-      <span class="tr-up"></span>
-      <span class="tr-peers"></span>`;
+      <span class="tr-name" data-col="name"><i class="tr-dot"></i><span></span></span>
+      <span class="tr-size" data-col="size"></span>
+      <span class="tr-done" data-col="done"><i class="tr-bar"><b></b></i><small></small></span>
+      <span class="tr-status" data-col="status"><span></span><button type="button" data-tr-recheck title="Check files">${icon("fact_check")}<span>Check</span></button></span>
+      <span class="tr-completed" data-col="completed"></span>
+      <span class="tr-down" data-col="down"></span>
+      <span class="tr-up" data-col="up"></span>
+      <span class="tr-peers" data-col="peers"></span>
+      <span data-col="remaining"></span>
+      <span data-col="eta"></span>
+      <span data-col="uploaded"></span>
+      <span data-col="ratio"></span>
+      <span data-col="known"></span>`;
+    applyRowColumnOrder(el);
     return el;
   }
 
@@ -476,7 +706,9 @@
     const status = statusWords(row);
     const pct = percent(row);
     if (el.dataset.trId !== String(row.id)) el.dataset.trId = String(row.id);
-    el.disabled = row.state === "adding";
+    const disabled = row.state === "adding";
+    el.tabIndex = disabled ? -1 : 0;
+    el.setAttribute("aria-disabled", String(disabled));
     el.classList.toggle("on", st.selected === row.id);
     el.querySelector(".tr-dot").className = `tr-dot ${status.tone}`;
     setText(el.querySelector(".tr-name span"), row.name);
@@ -485,12 +717,21 @@
     el.querySelector(".tr-bar b").style.width = `${pct}%`;
     setText(el.querySelector(".tr-done small"), `${pct.toFixed(pct >= 100 || pct === 0 ? 0 : 1)}%`);
     const statusEl = el.querySelector(".tr-status");
-    setText(statusEl, status.text);
+    setText(statusEl.querySelector(":scope > span"), status.text);
     statusEl.className = `tr-status ${status.tone}`;
     statusEl.title = row.error || "";
+    statusEl.querySelector("[data-tr-recheck]").hidden = row.state !== "needs-check";
+    setText(el.querySelector(".tr-completed"), completedAt(row.completedAt));
     setText(el.querySelector(".tr-down"), row.state === "live" && !row.finished ? speed(row.downloadBps) : "—");
     setText(el.querySelector(".tr-up"), row.uploadBps ? speed(row.uploadBps) : "—");
-    setText(el.querySelector(".tr-peers"), row.state === "live" ? String(row.peers) : "—");
+    const peersEl = el.querySelector(".tr-peers");
+    setText(peersEl, row.state === "live" ? String(row.peers) : "—");
+    peersEl.title = "Peers currently connected to WinT; tracker seeder totals may be higher";
+    setText(el.querySelector('[data-col="remaining"]'), bytes(Math.max(0, row.totalBytes - row.progressBytes)));
+    setText(el.querySelector('[data-col="eta"]'), eta(row.etaSeconds) || "—");
+    setText(el.querySelector('[data-col="uploaded"]'), bytes(row.uploadedBytes));
+    setText(el.querySelector('[data-col="ratio"]'), row.progressBytes ? (row.uploadedBytes / row.progressBytes).toFixed(2) : "—");
+    setText(el.querySelector('[data-col="known"]'), row.state === "live" ? String(row.peers + row.peersQueued) : "—");
   }
 
   /** Writes only when the text actually differs. A `textContent` assignment
@@ -536,7 +777,7 @@
     // older version of this renderer in the DOM. Rebuild when any required
     // control is absent; otherwise one missing node would throw on every
     // snapshot and make both refreshing and row selection appear dead.
-    if (!pane.querySelector("[data-tr-dhead]") || !pane.querySelector("[data-tr-recheck]")) {
+    if (!pane.querySelector("[data-tr-dhead]")) {
       // Two columns: what this torrent is and what you can do to it on the
       // left, its contents on the right. The file list is the part that wants
       // room and the part you read down, so it gets the width and its own
@@ -546,7 +787,6 @@
           <div class="tr-dtitle"><strong></strong><small></small></div>
           <div class="tr-dactions">
             <button type="button" class="btn" data-tr-open>${icon("folder")}<span>Open folder</span></button>
-            <button type="button" class="btn" data-tr-recheck hidden>${icon("fact_check")}<span>Check files</span></button>
             <button type="button" class="btn" data-tr-toggle><span class="ms" aria-hidden="true">pause</span><span>Pause</span></button>
             <button type="button" class="btn danger" data-tr-remove>${icon("delete")}<span>Remove</span></button>
           </div>
@@ -580,8 +820,6 @@
       `${bytes(row.totalBytes)} · ${pct.toFixed(pct >= 100 || pct === 0 ? 0 : 1)}% complete · ${row.outputFolder}${cut}`);
     drawFileHead();
     const toggle = pane.querySelector("[data-tr-toggle]");
-    const recheck = pane.querySelector("[data-tr-recheck]");
-    if (recheck) recheck.hidden = row.state !== "needs-check";
     if (!toggle) return;
     toggle.hidden = row.state === "needs-check";
     setText(toggle.querySelector(".ms"), paused ? "play_arrow" : "pause");
@@ -908,12 +1146,12 @@
     const owner = a.fileOwner || a.magnetOwner;
     el.hidden = false;
     el.innerHTML = `${icon("link")}
-      <span>Let WinT open torrents? A <b>.torrent</b> double-clicked in Files, or a
-        <b>magnet</b> link followed in a browser, would come straight here.${
+      <span>Open torrents in WinT? Windows will show WinT's Default apps page, where you can assign
+        both <b>.torrent</b> files and <b>magnet:</b> links.${
           owner ? ` They open in ${esc(owner)} today.` : ""
         }</span>
-      <button type="button" class="btn primary" data-tr-assoc-default>${icon("done")}<span>Make WinT the default</span></button>
-      <button type="button" class="btn" data-tr-ask-dismiss>${icon("close")}<span>Keep current default</span></button>`;
+      <button type="button" class="btn primary" data-tr-assoc-default>${icon("open_in_new")}<span>Choose in Windows</span></button>
+      <button type="button" class="btn" data-tr-ask-dismiss>${icon("close")}<span>Not now</span></button>`;
   }
 
   /** The Settings tab's version, which says what Windows actually thinks
@@ -938,17 +1176,17 @@
       ${a.otherExe ? `<p class="tr-assocnote">Another copy of WinT is registered: <code>${esc(a.otherExe)}</code></p>` : ""}
       <div class="tr-setrow">
         <span>${a.defaultFile && a.defaultMagnet
-            ? "WinT gets both. Nothing more to do."
-            : "Take both. Where Windows has already been told otherwise it asks you to confirm, because only you can change that."}</span>
-        <button type="button" class="btn primary" data-tr-assoc-default${busy}>${icon(a.registered ? "done" : "open_in_new")}<span>${st.assocBusy ? "Asking Windows…" : "Make WinT the default"}</span></button>
+            ? "Both types already open in WinT."
+            : "Choose WinT for .torrent files and magnet: links on its Windows Default apps page."}</span>
+        <button type="button" class="btn primary" data-tr-assoc-default${busy}>${icon("open_in_new")}<span>${st.assocBusy ? "Opening Windows…" : "Open Windows defaults"}</span></button>
       </div>
       <div class="tr-setrow">
         <span>${a.registered
-            ? "Or take WinT back out of Open with entirely."
-            : "Or just appear under Open with, without taking anything over."}</span>
+            ? "WinT is available in Windows' app choices. Remove it from that list if you no longer want it offered."
+            : "Add WinT to Windows' app choices without changing what opens torrents today."}</span>
         ${a.registered
-            ? `<button type="button" class="btn" data-tr-assoc-remove${busy}>${icon("delete")}<span>Remove</span></button>`
-            : `<button type="button" class="btn" data-tr-assoc-register${busy}>${icon("link")}<span>Register</span></button>`}
+            ? `<button type="button" class="btn" data-tr-assoc-remove${busy}>${icon("delete")}<span>Remove WinT choice</span></button>`
+            : `<button type="button" class="btn" data-tr-assoc-register${busy}>${icon("link")}<span>Add WinT choice</span></button>`}
       </div>`;
   }
 
@@ -963,7 +1201,7 @@
     markAsked();
     drawAsk();
     drawAssocPanel();
-    note("Asking Windows…");
+    note("Opening Windows Default apps…");
     invoke(command)
       .then((assoc) => {
         st.assoc = assoc;
@@ -976,6 +1214,12 @@
   // ----------------------------------------------------------------- actions
 
   function keydown(event) {
+    const row = event.target.closest("[data-tr-id]");
+    if (row && event.target === row && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      row.click();
+      return;
+    }
     if (!event.target.matches("[data-tr-magnet]") || event.key !== "Enter") return;
     const value = event.target.value.trim();
     if (!value) return;
@@ -986,11 +1230,48 @@
   function click(event) {
     const t = event.target;
 
+    const heading = t.closest(".tr-head > [data-col]");
+    if (heading && !t.closest("[data-tr-column-resize]")) {
+      if (st.columnDragged) return;
+      const id = heading.dataset.col;
+      st.columnSort = st.columnSort?.id === id
+        ? { id, direction: st.columnSort.direction === "asc" ? "desc" : "asc" }
+        : { id, direction: "asc" };
+      try { localStorage.setItem(COLUMN_SORT_KEY, JSON.stringify(st.columnSort)); } catch { /* unavailable */ }
+      drawColumns();
+      drawRows();
+      return;
+    }
+
+    if (t.closest("[data-tr-columns]")) {
+      const picker = st.host.querySelector("[data-tr-column-picker]");
+      if (picker) picker.hidden = !picker.hidden;
+      return;
+    }
+
+    const column = t.closest("[data-tr-column]");
+    if (column) {
+      const id = column.dataset.trColumn;
+      if (!column.checked && st.columns.length === 1) {
+        column.checked = true;
+        return;
+      }
+      st.columns = column.checked
+        ? [...st.columns, id]
+        : st.columns.filter((key) => key !== id);
+      try { localStorage.setItem(COLUMN_KEY, JSON.stringify(st.columns)); } catch { /* unavailable */ }
+      drawColumns();
+      drawRows();
+      return;
+    }
+
     const tab = t.closest("[data-tr-tab]");
     if (tab) {
       st.tab = tab.dataset.trTab;
       for (const el of st.host.querySelectorAll("[data-tr-tab]")) el.classList.toggle("on", el === tab);
       for (const el of st.host.querySelectorAll("[data-tr-view]")) el.hidden = el.dataset.trView !== st.tab;
+      const columns = st.host.querySelector(".tr-column-control");
+      if (columns) columns.hidden = st.tab !== "transfers";
       return draw();
     }
 
@@ -1005,7 +1286,9 @@
     }
 
     if (t.closest("[data-tr-recheck]")) {
-      const row = (st.snap?.torrents || []).find((item) => item.id === st.selected);
+      const rowElement = t.closest("[data-tr-id]");
+      const id = rowElement ? Number(rowElement.dataset.trId) : st.selected;
+      const row = (st.snap?.torrents || []).find((item) => item.id === id);
       if (!row) return;
       note(`Checking ${row.name}…`);
       return void invoke("torrent_recheck", { infoHash: row.infoHash })
@@ -1031,6 +1314,7 @@
 
     const row = t.closest("[data-tr-id]");
     if (row) {
+      if (row.getAttribute("aria-disabled") === "true") return;
       const id = Number(row.dataset.trId);
       st.selected = st.selected === id ? null : id;
       drawRows();
@@ -1059,9 +1343,7 @@
       assocAct("torrent_assoc_choose_default", (assoc) =>
         assoc.defaultFile && assoc.defaultMagnet
           ? "Torrents and magnet links now open in WinT."
-          : assoc.defaultFile || assoc.defaultMagnet
-            ? "Partly done — the rest is Windows' to give, on the page it just opened."
-            : "Windows has the question now. Pick WinT there and it sticks.");
+          : "Windows Default apps is open. Choose WinT for .torrent and magnet there.");
       return;
     }
 
@@ -1240,6 +1522,14 @@
     }
   }
 
+  function openInWintFiles(path) {
+    if (!path) return Promise.reject(new Error("That folder could not be worked out."));
+    if (window.wintShell?.openExplorerWindow) return window.wintShell.openExplorerWindow(path);
+    const emit = window.__TAURI__?.event?.emit;
+    if (!emit) return Promise.reject(new Error("WinT Files could not be contacted."));
+    return emit("files:open-window", { path });
+  }
+
   // ------------------------------------------------------------ right-click
 
   function closeMenu() {
@@ -1253,7 +1543,7 @@
     menu.className = "tr-context";
     menu.innerHTML = `
       <button type="button" data-act="explorer">${icon("folder_open")}Open folder</button>
-      <button type="button" data-act="files">${icon("dock_to_right")}Show in Files</button>
+      <button type="button" data-act="files">${icon("dock_to_right")}Open in WinT Files</button>
       <hr />
       <button type="button" data-act="toggle">${icon(paused ? "play_arrow" : "pause")}${paused ? "Resume" : "Pause"}</button>
       <hr />
@@ -1274,7 +1564,8 @@
       if (!act) return;
       if (act === "explorer") return void invoke("open_in", { path: await torrentFolder(row), target: "explorer", context: null })
         .catch(() => note("That folder could not be opened."));
-      if (act === "files") return void window.wintShell?.openExplorerWindow?.(await torrentFolder(row));
+      if (act === "files") return void openInWintFiles(await torrentFolder(row))
+        .catch((error) => note(String(error)));
       if (act === "toggle") return void invoke("torrent_action", { id: row.id, action: paused ? "start" : "pause" })
         .catch((error) => note(String(error)));
       if (act === "keep") return void removeTorrent(row, "keep");
@@ -1291,6 +1582,58 @@
         tone: "danger",
       });
       if (ok === true) removeTorrent(row, forGood ? "forever" : "recycle");
+    };
+    setTimeout(() => document.addEventListener("click", closeMenu, { once: true }), 0);
+  }
+
+  function parentPath(path) {
+    const normalized = String(path || "").replace(/\/+$/g, "");
+    const end = Math.max(normalized.lastIndexOf("\\"), normalized.lastIndexOf("/"));
+    return end > 2 ? normalized.slice(0, end) : normalized;
+  }
+
+  async function openFileMenu(event, index) {
+    closeMenu();
+    if (st.selected == null) return;
+    let resolved;
+    try {
+      resolved = await invoke("torrent_file_path", { id: st.selected, index });
+    } catch (error) {
+      return note(String(error));
+    }
+    if (!resolved?.path) return note("That file's path could not be worked out.");
+    const exists = resolved.exists !== false;
+    const isZip = /\.zip$/i.test(resolved.path);
+    const details = st.details?.details?.files?.[index];
+    const included = details?.included !== false;
+    const menu = document.createElement("div");
+    menu.className = "tr-context";
+    menu.innerHTML = `
+      <button type="button" data-act="open"${exists ? "" : " disabled"}>${icon("open_in_new")}Open with default app</button>
+      <button type="button" data-act="files"${exists ? "" : " disabled"}>${icon(isZip ? "folder_zip" : "dock_to_right")}${isZip ? "Browse archive in WinT Files" : "Open containing folder in WinT Files"}</button>
+      <button type="button" data-act="reveal"${exists ? "" : " disabled"}>${icon("folder_open")}Show in Windows Explorer</button>
+      <hr />
+      <button type="button" data-act="copy">${icon("content_copy")}Copy full path</button>
+      <button type="button" data-act="include">${icon(included ? "check_box_outline_blank" : "check_box")}${included ? "Do not download this file" : "Download this file"}</button>`;
+    document.body.appendChild(menu);
+    const box = menu.getBoundingClientRect();
+    menu.style.left = `${Math.min(event.clientX, window.innerWidth - box.width - 8)}px`;
+    menu.style.top = `${Math.min(event.clientY, window.innerHeight - box.height - 8)}px`;
+    menu.onclick = async (click) => {
+      const act = click.target.closest("[data-act]")?.dataset.act;
+      closeMenu();
+      if (act === "open") return void invoke("open_in", { path: resolved.path, target: "default", context: null })
+        .catch((error) => note(String(error)));
+      if (act === "files") {
+        const destination = isZip ? resolved.path : parentPath(resolved.path);
+        return void openInWintFiles(destination).catch((error) => note(String(error)));
+      }
+      if (act === "reveal") return void invoke("open_in", { path: resolved.path, target: "reveal", context: null })
+        .catch((error) => note(String(error)));
+      if (act === "copy") return void navigator.clipboard.writeText(resolved.path)
+        .then(() => note("Path copied."))
+        .catch(() => note("The path could not be copied."));
+      if (act === "include") toggleFile(index, !included);
     };
     setTimeout(() => document.addEventListener("click", closeMenu, { once: true }), 0);
   }

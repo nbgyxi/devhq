@@ -8066,6 +8066,10 @@ async function wireToolPopoutEvents() {
     const id = event.payload?.id;
     if (id) openTool(id);
   });
+  listen("files:open-window", (event) => {
+    const path = event.payload?.path;
+    if (typeof path === "string" && path) openExplorerWindow(path);
+  });
   listen("tool:shell-search", () => {
     openSearchCommands({ fresh: true });
   });

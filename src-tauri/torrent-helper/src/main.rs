@@ -80,6 +80,25 @@ fn authorized_checks() -> &'static StdMutex<HashSet<String>> {
     ALLOWED.get_or_init(|| StdMutex::new(HashSet::new()))
 }
 
+/// Torrents added during this helper run. Missing files are expected while
+/// their initial piece scan runs: the download has not created them yet.
+fn new_torrents_initializing() -> &'static StdMutex<HashSet<String>> {
+    static INITIALIZING: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
+    INITIALIZING.get_or_init(|| StdMutex::new(HashSet::new()))
+}
+
+fn note_recovery_read_failure(info_hash: &str) {
+    let is_new = new_torrents_initializing()
+        .lock()
+        .map(|hashes| hashes.contains(info_hash))
+        .unwrap_or(false);
+    if !is_new {
+        if let Ok(mut found) = recovery_mismatches().lock() {
+            found.insert(info_hash.to_owned());
+        }
+    }
+}
+
 /// librqbit's filesystem backend sizes every selected file to its final length
 /// during initialization. Those sparse files consume little physical space on
 /// Windows, but Explorer presents a 20 GB torrent as 20 GB of files before a
@@ -133,9 +152,7 @@ impl TorrentStorage for GrowingFiles {
                 return Err(error);
             }
             buf.fill(0);
-            if let Ok(mut found) = recovery_mismatches().lock() {
-                found.insert(self.info_hash.clone());
-            }
+            note_recovery_read_failure(&self.info_hash);
         }
         Ok(())
     }
@@ -233,6 +250,8 @@ struct State {
     state_dir: PathBuf,
     settings: Settings,
     queue: Queue,
+    completed_at: HashMap<String, u64>,
+    completion_candidates: HashSet<String>,
     rates: HashMap<usize, RateWindow>,
 }
 
@@ -288,6 +307,20 @@ mod rate_tests {
     use super::*;
 
     #[test]
+    fn missing_files_are_expected_while_a_new_torrent_initializes() {
+        let hash = "fresh-torrent-test".to_string();
+        new_torrents_initializing()
+            .lock()
+            .unwrap()
+            .insert(hash.clone());
+
+        note_recovery_read_failure(&hash);
+
+        assert!(!recovery_mismatches().lock().unwrap().contains(&hash));
+        new_torrents_initializing().lock().unwrap().remove(&hash);
+    }
+
+    #[test]
     fn rate_uses_only_the_last_five_seconds() {
         let start = std::time::Instant::now();
         let mut rate = RateWindow::default();
@@ -296,7 +329,10 @@ mod rate_tests {
         assert_eq!(rate.update(start + Duration::from_secs(2), 6_000, 0).0, 0);
         // The initial burst is outside the window now: the last five seconds
         // contain 5,000 bytes, so the displayed rate is 1,000 B/s.
-        assert_eq!(rate.update(start + Duration::from_secs(6), 10_000, 0).0, 1_000);
+        assert_eq!(
+            rate.update(start + Duration::from_secs(6), 10_000, 0).0,
+            1_000
+        );
     }
 
     #[test]
@@ -304,9 +340,13 @@ mod rate_tests {
         let start = std::time::Instant::now();
         let mut rate = RateWindow::default();
         rate.update(start, 0, 0);
-        assert_eq!(rate.update(start + Duration::from_secs(5), 5_000, 0).0, 1_000);
         assert_eq!(
-            rate.update(start + Duration::from_millis(5_300), 5_900, 0).0,
+            rate.update(start + Duration::from_secs(5), 5_000, 0).0,
+            1_000
+        );
+        assert_eq!(
+            rate.update(start + Duration::from_millis(5_300), 5_900, 0)
+                .0,
             1_000
         );
     }
@@ -318,6 +358,9 @@ impl State {
     }
     fn queue_path(&self) -> PathBuf {
         self.state_dir.join("queue.json")
+    }
+    fn completions_path(&self) -> PathBuf {
+        self.state_dir.join("completions.json")
     }
 
     fn save_settings(&self) {
@@ -331,6 +374,13 @@ impl State {
         let _ = std::fs::write(
             self.queue_path(),
             serde_json::to_vec_pretty(&self.queue).unwrap_or_default(),
+        );
+    }
+
+    fn save_completions(&self) {
+        let _ = std::fs::write(
+            self.completions_path(),
+            serde_json::to_vec_pretty(&self.completed_at).unwrap_or_default(),
         );
     }
 
@@ -407,6 +457,9 @@ struct Row {
     progress_bytes: u64,
     uploaded_bytes: u64,
     finished: bool,
+    /// Unix time in milliseconds. Absent for torrents completed before WinT
+    /// began recording this field.
+    completed_at: Option<u64>,
     download_bps: u64,
     upload_bps: u64,
     peers: u32,
@@ -426,12 +479,17 @@ struct Snapshot {
     settings: Settings,
 }
 
-fn build_snapshot(state: &mut State, queued: &HashSet<usize>, missing: &HashSet<usize>) -> Snapshot {
+fn build_snapshot(
+    state: &mut State,
+    queued: &HashSet<usize>,
+    missing: &HashSet<usize>,
+) -> Snapshot {
     let list = state
         .api
         .api_torrent_list_ext(ApiTorrentListOpts { with_stats: true });
     let mut torrents = Vec::with_capacity(list.torrents.len());
     let mut live_ids = HashSet::with_capacity(list.torrents.len());
+    let mut completions_changed = false;
     let now = std::time::Instant::now();
     for t in list.torrents {
         let id = t.id.unwrap_or(0);
@@ -441,9 +499,44 @@ fn build_snapshot(state: &mut State, queued: &HashSet<usize>, missing: &HashSet<
             None => continue,
         };
         let live = stats.live.as_ref();
+        if stats.finished && !state.completed_at.contains_key(&t.info_hash) {
+            let newly_completed = state.completion_candidates.remove(&t.info_hash);
+            let completed_at = if newly_completed {
+                Some(std::time::SystemTime::now())
+            } else {
+                // Before WinT recorded completion dates, the final write to
+                // librqbit's piece map is the closest durable timestamp.
+                std::fs::metadata(state.state_dir.join(format!("{}.bitv", t.info_hash)))
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+            };
+            if let Some(completed_at) = completed_at {
+                let completed_at = completed_at
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_millis() as u64)
+                    .unwrap_or(0);
+                state.completed_at.insert(t.info_hash.clone(), completed_at);
+                completions_changed = true;
+            }
+        }
+        if !matches!(
+            &stats.state,
+            librqbit::TorrentStatsState::Initializing { .. }
+        ) {
+            if let Ok(mut hashes) = new_torrents_initializing().lock() {
+                hashes.remove(&t.info_hash);
+            }
+        }
         let rate = state.rates.entry(id).or_default();
-        let (download_bps, upload_bps) =
-            rate.update(now, stats.progress_bytes, stats.uploaded_bytes);
+        let (download_bps, upload_bps) = if matches!(stats.state, librqbit::TorrentStatsState::Live)
+        {
+            rate.update(now, stats.progress_bytes, stats.uploaded_bytes)
+        } else {
+            // `progress_bytes` also advances while existing files are hashed.
+            // That is disk read progress, not network download traffic.
+            *rate = RateWindow::default();
+            (0, 0)
+        };
         let eta_seconds = (download_bps > 0)
             .then(|| stats.total_bytes.saturating_sub(rate.shown_downloaded) / download_bps);
         // Files gone from disk outranks everything the engine would say: a
@@ -457,15 +550,18 @@ fn build_snapshot(state: &mut State, queued: &HashSet<usize>, missing: &HashSet<
             "needs-check"
         } else if missing.contains(&id) {
             "missing"
-        } else { match &stats.state {
-            librqbit::TorrentStatsState::Initializing { .. } => "initializing",
-            librqbit::TorrentStatsState::Live => "live",
-            librqbit::TorrentStatsState::Error => "error",
-            // A torrent the user wants but that is behind the active limit is
-            // "queued", not "paused" — the difference is whose decision it was.
-            librqbit::TorrentStatsState::Paused if queued.contains(&id) => "queued",
-            librqbit::TorrentStatsState::Paused => "paused",
-        } };
+        } else {
+            match &stats.state {
+                librqbit::TorrentStatsState::Initializing { queued: true, .. } => "check-queued",
+                librqbit::TorrentStatsState::Initializing { .. } => "initializing",
+                librqbit::TorrentStatsState::Live => "live",
+                librqbit::TorrentStatsState::Error => "error",
+                // A torrent the user wants but that is behind the active limit is
+                // "queued", not "paused" — the difference is whose decision it was.
+                librqbit::TorrentStatsState::Paused if queued.contains(&id) => "queued",
+                librqbit::TorrentStatsState::Paused => "paused",
+            }
+        };
         torrents.push(Row {
             id,
             info_hash: t.info_hash.clone(),
@@ -477,6 +573,7 @@ fn build_snapshot(state: &mut State, queued: &HashSet<usize>, missing: &HashSet<
             progress_bytes: stats.progress_bytes,
             uploaded_bytes: stats.uploaded_bytes,
             finished: stats.finished,
+            completed_at: state.completed_at.get(&t.info_hash).copied(),
             download_bps,
             upload_bps,
             peers: live.map(|l| l.snapshot.peer_stats.live).unwrap_or(0),
@@ -485,6 +582,9 @@ fn build_snapshot(state: &mut State, queued: &HashSet<usize>, missing: &HashSet<
             // estimate is a display string with no number behind it.
             eta_seconds,
         });
+    }
+    if completions_changed {
+        state.save_completions();
     }
     state.rates.retain(|id, _| live_ids.contains(id));
     let session = state.api.api_session_stats();
@@ -703,8 +803,8 @@ fn torrent_id(arg: &Value) -> Result<TorrentIdOrHash> {
 /// download — into a folder whose name cannot escape where it was put.
 fn folder_name_for(name: Option<&str>) -> String {
     const RESERVED: [&str; 22] = [
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
-        "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
     let raw = name.unwrap_or("").trim();
     let mut cleaned: String = raw
@@ -729,16 +829,16 @@ fn folder_name_for(name: Option<&str>) -> String {
         }
     }
     let stem = cleaned.split('.').next().unwrap_or("").to_ascii_uppercase();
-    if cleaned.is_empty()
-        || cleaned == "."
-        || cleaned == ".."
-        || RESERVED.contains(&stem.as_str())
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." || RESERVED.contains(&stem.as_str())
     {
         // Nothing usable in the name: the torrent still needs somewhere to go.
-        return format!("torrent-{:x}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0));
+        return format!(
+            "torrent-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        );
     }
     cleaned
 }
@@ -857,10 +957,11 @@ async fn handle(state: &Mutex<State>, op: &str, arg: Value) -> Result<Value> {
                 .await
                 .context("error reading the torrent")?;
 
-            let (torrent_name, torrent_bytes) = match probe {
+            let (torrent_name, torrent_bytes, info_hash) = match probe {
                 librqbit::AddTorrentResponse::ListOnly(listing) => (
                     listing.info.name().map(|name| name.to_string()),
                     listing.torrent_bytes,
+                    listing.info_hash.as_string().to_ascii_lowercase(),
                 ),
                 // Already in the list: say so and leave it where it is.
                 librqbit::AddTorrentResponse::AlreadyManaged(id, handle) => {
@@ -895,12 +996,22 @@ async fn handle(state: &Mutex<State>, op: &str, arg: Value) -> Result<Value> {
                 ..Default::default()
             };
 
+            if let Ok(mut hashes) = new_torrents_initializing().lock() {
+                hashes.insert(info_hash.clone());
+            }
             let added = state
                 .api
                 .api_add_torrent(AddTorrent::from_bytes(torrent_bytes), Some(opts))
-                .await?;
+                .await;
+            if added.is_err() {
+                if let Ok(mut hashes) = new_torrents_initializing().lock() {
+                    hashes.remove(&info_hash);
+                }
+            }
+            let added = added?;
             let hash = added.details.info_hash.clone();
             if added.id.is_some() {
+                state.completion_candidates.insert(hash.clone());
                 if !state.queue.wanted.contains(&hash) {
                     state.queue.wanted.push(hash.clone());
                 }
@@ -964,6 +1075,10 @@ async fn handle(state: &Mutex<State>, op: &str, arg: Value) -> Result<Value> {
             if let Some(hash) = hash {
                 state.queue.wanted.retain(|h| *h != hash);
                 state.queue.paused.retain(|h| *h != hash);
+                state.completion_candidates.remove(&hash);
+                if state.completed_at.remove(&hash).is_some() {
+                    state.save_completions();
+                }
                 state.save_queue();
             }
             Ok(json!({}))
@@ -1187,9 +1302,9 @@ fn parse_args() -> Args {
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<()> {
     let args = parse_args();
-    let state_dir = args.state_dir.unwrap_or_else(|| {
-        std::env::temp_dir().join("wint-torrent")
-    });
+    let state_dir = args
+        .state_dir
+        .unwrap_or_else(|| std::env::temp_dir().join("wint-torrent"));
     std::fs::create_dir_all(&state_dir).context("cannot create the torrent state folder")?;
     if let Ok(entries) = std::fs::read_dir(&state_dir) {
         for entry in entries.flatten() {
@@ -1213,6 +1328,10 @@ async fn main() -> Result<()> {
         }
     }
     let queue: Queue = std::fs::read(state_dir.join("queue.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let completed_at: HashMap<String, u64> = std::fs::read(state_dir.join("completions.json"))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
@@ -1272,6 +1391,8 @@ async fn main() -> Result<()> {
         state_dir,
         settings,
         queue,
+        completed_at,
+        completion_candidates: HashSet::new(),
         rates: HashMap::new(),
     }));
 
