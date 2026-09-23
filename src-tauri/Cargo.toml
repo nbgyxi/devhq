@@ -114,3 +114,6 @@ debug = "line-tables-only"
 # and never into `wint.exe`. The app talks to it over a pipe; see `torrent.rs`.
 [workspace]
 members = ["torrent-helper"]
+
+[patch.crates-io]
+librqbit = { path = "../vendor/librqbit" }

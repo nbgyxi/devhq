@@ -16,6 +16,24 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.140.3",
+      date: "2026-09-23",
+      title: "Quiet torrent restarts",
+      changes: [
+        ["better", "Torrents now trust their saved progress at startup instead of reading pieces from every download to validate it."],
+        ["better", "Explicit file checks run one at a time on each drive, while checks on different drives can run together."],
+      ],
+    },
+    {
+      version: "0.140.2",
+      date: "2026-09-23",
+      title: "Projects scans only when asked",
+      changes: [
+        ["better", "Projects is now treated like any other tool: WinT does not restore or scan projects at startup, and starts that work only when you open Projects."],
+        ["better", "The status bar no longer keeps project scan results or scan time on screen after the work has finished."],
+      ],
+    },
+    {
       version: "0.140.1",
       date: "2026-09-23",
       title: "Compatibility and icon cleanup",

@@ -59,6 +59,11 @@ const APPS_CACHE_KEY = "wint.apps.v1";
  *  something is installed, the pictures are large and never change at all. */
 const APP_ICONS_KEY = "wint.appIcons.v1";
 const SCAN_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Projects owns its scan just like every other tool owns its data loading.
+ * Until somebody opens Projects, the shell does no project disk work. */
+let projectsScanStarted = false;
+let projectsOpenRequested = false;
+let startupQuestionsDone = false;
 
 /** Set once a reset is under way, so nothing writes remembered state back
  *  between the wipe and the reload. */
@@ -1967,6 +1972,18 @@ async function evictEmbeddedTool(id) {
   await invoke("tool_embedded_destroy", { id }).catch(() => {});
 }
 
+/** Start Projects' data lifecycle on first open, never as general app startup
+ * work. The cache paints immediately; the live scan then refreshes it. */
+async function openProjectsData() {
+  projectsOpenRequested = true;
+  if (!startupQuestionsDone || projectsScanStarted) return;
+  projectsScanStarted = true;
+  const cache = loadScanCache();
+  if (cache) restoreScanCache(cache);
+  if (!state.roots.length) await firstRunFolders();
+  if (state.roots.length) rescan();
+}
+
 async function checkEmbeddedToolHealth() {
   const id = state.activeView === "isolated-tool" ? state.isolatedToolId : "";
   if (!id || embeddedToolHealthBusy || !embeddedToolReadyId || embeddedToolReadyId !== id) return;
@@ -2268,6 +2285,7 @@ function syncMainView() {
  * this pass does the same work a deliberate click would normally trigger. */
 function openRestoredView() {
   if (state.activeView === "overview") window.wintHome?.opened();
+  if (state.activeView === "projects") openProjectsData();
   if (state.activeView === "ports" && !state.ports.length) loadPorts();
   if (state.activeView === "dns") window.wintDns?.opened();
   if (state.activeView === "hosts") window.wintHosts?.opened();
@@ -3396,7 +3414,8 @@ const TOOLS = [
     id: "projects", name: "Projects", icon: "folder_copy",
     hint: "git status, running dev servers and detected tech for every project",
     keywords: "projects project overview repos repositories repository folders folder code workspace list all cards table scan rescan git status uncommitted unpushed running dev server tech technology stack filter favorites starred",
-    open: () => switchMainView("projects"), active: () => state.activeView === "projects",
+    open: () => { switchMainView("projects"); openProjectsData(); },
+    active: () => state.activeView === "projects",
   },
   {
     id: "git", name: "Git", icon: "commit",
@@ -5654,16 +5673,15 @@ function renderToolbar() {
     : "Clear the technology filter";
 }
 
-/** The status bar's left half: one line per thing the app is doing right now,
- *  and when there is nothing, what it last did. It is never empty and never
- *  hidden - a bar that comes and goes cannot be glanced at. */
+/** The status bar's left half: one line per thing the app is doing right now. */
 function renderActivity() {
   const items = [...work.values()];
   el.loadbar.hidden = !items.length;
   renderProgress();
   if (!items.length) {
+    const detail = idleDetail();
     el.activity.innerHTML = `<span class="act idle"><i class="act-dot"></i><span
-      class="act-label">Idle</span><span class="act-detail">${esc(idleDetail())}</span></span>`;
+      class="act-label">Idle</span>${detail ? `<span class="act-detail">${esc(detail)}</span>` : ""}</span>`;
     return;
   }
   el.activity.innerHTML = items
@@ -5690,15 +5708,7 @@ function renderProgress() {
 /** What the app has to say for itself when it is not doing anything. */
 function idleDetail() {
   if (state.activeView === "overview" && window.wintHome) return window.wintHome.idleDetail();
-  if (!state.projects.length) return "nothing scanned yet";
-  const settled = state.projects.filter((x) => !x.pending);
-  const dirty = settled.filter(FILTERS.dirty.test).length;
-  const running = settled.filter(FILTERS.running.test).length;
-  const parts = [`${state.projects.length} projects`];
-  if (dirty) parts.push(`${dirty} with uncommitted changes`);
-  if (running) parts.push(`${running} running`);
-  if (state.scannedAt) parts.push(`scanned at ${new Date(state.scannedAt).toLocaleTimeString()}`);
-  return parts.join(" · ");
+  return "";
 }
 
 /* --------------------------------------------------------------- the dock
@@ -8138,7 +8148,7 @@ async function startProjectsWindow() {
   await listenScan();
   const cache = loadScanCache();
   if (cache) restoreScanCache(cache);
-  else if (state.roots.length) rescan();
+  if (state.roots.length) rescan();
   requestAnimationFrame(() => requestAnimationFrame(async () => {
     await appWindow.show().catch(() => {});
     await appWindow.setFocus().catch(() => {});
@@ -8238,6 +8248,7 @@ async function askTorrentDefault() {
   mountShell();
   applyDecorations();
   await wireToolPopoutEvents();
+  await listenScan();
   syncRecentTrayTools();
   window.wintTrackPageView?.(currentPath());
   // A restored tool is optional startup work. Its own loader must never be
@@ -8263,36 +8274,18 @@ async function askTorrentDefault() {
   // Popped-out tools reopen with the shell; they do not wait on the first scan.
   restoreToolPopouts();
 
-  // On the first run, scanning waits behind the language dialog. The shell is
-  // already painted, but no disk work or stream can distract from the choice.
+  // Settle the app-wide first-run questions before any requested tool starts
+  // its own work. Projects itself no longer causes either question at startup.
   await firstRunLanguage();
 
-  listenScan().then(async () => {
-    // Nothing scanned before: ask which folder to read rather than guessing
-    // one, and start only once there is an answer.
-    const newInstall = !state.roots.length;
-    if (newInstall) {
-      await firstRunFolders();
-      // The usage question comes last, and on a new install there is nothing
-      // behind it to look at anyway, so the scan waits for the answer.
-      await firstRunUsageData();
-    }
-    if (state.roots.length) {
-      // Show the last scan immediately if there is one - ordering and content
-      // match what the user left, with nothing to wait on. A fresh scan still
-      // runs behind it and updates cards one by one as results land.
-      const cache = loadScanCache();
-      if (cache) restoreScanCache(cache);
-      rescan();
-    }
-    // An install that already has folders keeps its projects loading while it
-    // answers - the question is not worth a wait.
-    if (!newInstall) firstRunUsageData();
-  });
+  // Projects no longer participates in app startup. Its folder question,
+  // cache restore and disk scan all wait until the tool itself is opened.
+  await firstRunUsageData();
+  startupQuestionsDone = true;
+  if (projectsOpenRequested) openProjectsData();
 
   // Last, and never awaited: the shell has been interactive for a while by
-  // now, the scan is already running behind it, and this queues behind any
-  // first-run dialog rather than racing it.
+  // now, and this queues behind any first-run dialog rather than racing it.
   askTorrentDefault();
 })();
 

@@ -65,7 +65,7 @@ const MISSING_CHECK_EVERY: Duration = Duration::from_secs(10);
 /// Ceilings the engine is started with, so one torrent cannot take the machine
 /// apart. All of them are overridable from settings except the hash-check
 /// limit, which exists to keep the disk usable while checking.
-const MAX_CONCURRENT_INITIALIZING: usize = 2;
+const MAX_CONCURRENT_INITIALIZING_PER_DRIVE: usize = 1;
 const DEFAULT_PEER_LIMIT: usize = 128;
 const RATE_WINDOW: Duration = Duration::from_secs(5);
 const RATE_REFRESH: Duration = Duration::from_secs(1);
@@ -1244,12 +1244,15 @@ async fn main() -> Result<()> {
                 folder: Some(state_dir.clone()),
             }),
             fastresume: true,
+            // The saved piece map is the normal source of truth on restart.
+            // Removing it through "Check files" still forces a full hash pass.
+            trust_fastresume: true,
             // Let files grow with downloaded pieces. The stock backend calls
             // set_len() for the torrent's full logical size up front.
             default_storage_factory: Some(Box::new(GrowingFilesFactory)),
-            // Hash-checking is the disk-heaviest thing the engine does. Two at
-            // a time keeps the drive answering other programs.
-            concurrent_init_limit: Some(MAX_CONCURRENT_INITIALIZING),
+            // Hash-checking is the disk-heaviest thing the engine does. The
+            // patched engine applies this limit independently to each drive.
+            concurrent_init_limit: Some(MAX_CONCURRENT_INITIALIZING_PER_DRIVE),
             peer_limit: Some(settings.peer_limit),
             ratelimits: LimitsConfig {
                 download_bps: settings.download_bps.and_then(NonZeroU32::new),
