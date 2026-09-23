@@ -25,10 +25,10 @@
 
 use std::any::TypeId;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::IoSlice;
+use std::io::{IoSlice, Write as StdWrite};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{mpsc, Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -43,8 +43,8 @@ use librqbit::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, Mutex};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::Mutex;
 
 /// A `.torrent` is a few hundred kilobytes of bencode at most. Anything
 /// dramatically larger is not a torrent file, and is refused before a parser
@@ -242,6 +242,10 @@ struct Queue {
     wanted: Vec<String>,
     /// Info hashes explicitly paused by the user.
     paused: Vec<String>,
+    /// Info hashes allowed to run in addition to the configured download
+    /// slots. Persisted because force-start is a user scheduling decision, not
+    /// a one-process nudge to librqbit.
+    force_started: Vec<String>,
 }
 
 struct State {
@@ -350,6 +354,23 @@ mod rate_tests {
             1_000
         );
     }
+
+    #[test]
+    fn force_started_torrents_survive_queue_serialization() {
+        let queue = Queue {
+            wanted: vec!["ordinary".into(), "urgent".into()],
+            paused: vec![],
+            force_started: vec!["urgent".into()],
+        };
+        let saved = serde_json::to_vec(&queue).unwrap();
+        let restored: Queue = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(restored.force_started, ["urgent"]);
+
+        // Old queue files have no forceStarted property and must continue to
+        // load as an empty override list.
+        let old: Queue = serde_json::from_str(r#"{"wanted":["ordinary"]}"#).unwrap();
+        assert!(old.force_started.is_empty());
+    }
 }
 
 impl State {
@@ -411,7 +432,7 @@ struct Request {
 /// so lines never interleave, and the queue in front of it is bounded.
 #[derive(Clone)]
 struct Writer {
-    tx: mpsc::Sender<String>,
+    tx: mpsc::SyncSender<String>,
 }
 
 impl Writer {
@@ -457,6 +478,7 @@ struct Row {
     progress_bytes: u64,
     uploaded_bytes: u64,
     finished: bool,
+    force_started: bool,
     /// Unix time in milliseconds. Absent for torrents completed before WinT
     /// began recording this field.
     completed_at: Option<u64>,
@@ -573,6 +595,7 @@ fn build_snapshot(
             progress_bytes: stats.progress_bytes,
             uploaded_bytes: stats.uploaded_bytes,
             finished: stats.finished,
+            force_started: state.queue.force_started.contains(&t.info_hash),
             completed_at: state.completed_at.get(&t.info_hash).copied(),
             download_bps,
             upload_bps,
@@ -713,6 +736,12 @@ async fn reconcile(state: &State, missing: &HashSet<usize>) -> HashSet<usize> {
         .api
         .api_torrent_list_ext(ApiTorrentListOpts { with_stats: true });
     let paused_by_user: HashSet<&str> = state.queue.paused.iter().map(String::as_str).collect();
+    let force_started: HashSet<&str> = state
+        .queue
+        .force_started
+        .iter()
+        .map(String::as_str)
+        .collect();
 
     // Order by the queue the user built; anything not in it goes to the back.
     let order: HashMap<&str, usize> = state
@@ -754,6 +783,10 @@ async fn reconcile(state: &State, missing: &HashSet<usize>) -> HashSet<usize> {
             false
         } else if paused_by_user.contains(hash) {
             false
+        } else if force_started.contains(hash) && !stats.finished {
+            // Forced downloads are deliberately additional to `max_active`;
+            // they neither need nor consume a normal queue slot.
+            true
         } else if stats.finished {
             // A finished torrent seeds without taking a download slot.
             state.settings.seed_when_finished
@@ -1031,20 +1064,30 @@ async fn handle(state: &Mutex<State>, op: &str, arg: Value) -> Result<Value> {
             }))
         }
 
-        "pause" | "start" => {
+        "pause" | "start" | "force_start" => {
             let mut state = state.lock().await;
             let id = torrent_id(&arg)?;
             let handle = state.api.mgr_handle(id)?;
             let hash = handle.shared().info_hash.as_string();
             if op == "pause" {
                 if !state.queue.paused.contains(&hash) {
-                    state.queue.paused.push(hash);
+                    state.queue.paused.push(hash.clone());
                 }
+                state.queue.force_started.retain(|h| *h != hash);
                 state.api.api_torrent_action_pause(id).await?;
             } else {
                 state.queue.paused.retain(|h| *h != hash);
                 if !state.queue.wanted.contains(&hash) {
-                    state.queue.wanted.push(hash);
+                    state.queue.wanted.push(hash.clone());
+                }
+                if op == "force_start" {
+                    if !state.queue.force_started.contains(&hash) {
+                        state.queue.force_started.push(hash);
+                    }
+                } else {
+                    // A regular Start/Resume explicitly puts it back under
+                    // the configured queue limit.
+                    state.queue.force_started.retain(|h| *h != hash);
                 }
             }
             state.save_queue();
@@ -1075,6 +1118,7 @@ async fn handle(state: &Mutex<State>, op: &str, arg: Value) -> Result<Value> {
             if let Some(hash) = hash {
                 state.queue.wanted.retain(|h| *h != hash);
                 state.queue.paused.retain(|h| *h != hash);
+                state.queue.force_started.retain(|h| *h != hash);
                 state.completion_candidates.remove(&hash);
                 if state.completed_at.remove(&hash).is_some() {
                     state.save_completions();
@@ -1337,21 +1381,30 @@ async fn main() -> Result<()> {
         .unwrap_or_default();
     let _ = std::fs::create_dir_all(&settings.download_folder);
 
-    // The writer task owns stdout. Everything else hands it lines.
-    let (tx, mut rx) = mpsc::channel::<String>(WRITER_QUEUE);
+    // A dedicated OS thread owns stdout. It deliberately does not live on the
+    // async runtime: a synchronous call inside the torrent library may occupy
+    // a runtime worker, but can never prevent replies and heartbeats already
+    // in this bounded queue from reaching WinT.
+    let (tx, rx) = mpsc::sync_channel::<String>(WRITER_QUEUE);
     let writer = Writer { tx };
-    tokio::spawn(async move {
-        let mut out = tokio::io::stdout();
-        while let Some(line) = rx.recv().await {
-            if out.write_all(line.as_bytes()).await.is_err() {
-                break;
+    std::thread::Builder::new()
+        .name("torrent-protocol-writer".into())
+        .spawn(move || {
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            while let Ok(line) = rx.recv() {
+                if out.write_all(line.as_bytes()).is_err() {
+                    break;
+                }
+                if out.write_all(b"\n").is_err() {
+                    break;
+                }
+                if out.flush().is_err() {
+                    break;
+                }
             }
-            if out.write_all(b"\n").await.is_err() {
-                break;
-            }
-            let _ = out.flush().await;
-        }
-    });
+        })
+        .context("cannot start the torrent protocol writer")?;
 
     let session = Session::new_with_opts(
         PathBuf::from(&settings.download_folder),
@@ -1467,22 +1520,21 @@ async fn main() -> Result<()> {
         });
     }
 
-    // The heartbeat is separate from the snapshot on purpose: it is answered
-    // without the session lock, so it keeps arriving even while the engine is
-    // deep in a hash check, and the app can tell "busy" from "wedged".
+    // The heartbeat has its own OS thread as well as avoiding the session
+    // lock. Thus a blocking torrent-library call cannot starve it by occupying
+    // the async runtime, even on a machine with only one runtime worker.
     {
         let writer = writer.clone();
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(Duration::from_secs(1));
-            loop {
-                tick.tick().await;
+        std::thread::Builder::new()
+            .name("torrent-heartbeat".into())
+            .spawn(move || loop {
                 if !writer.event("heartbeat", json!({ "pid": std::process::id() })) {
-                    // The queue is full, which means the app is not reading.
-                    // Nothing to do about it here; the app's own watchdog is
-                    // what acts on the silence.
+                    // A full/disconnected queue means WinT cannot currently
+                    // receive liveness. Its watchdog remains the authority.
                 }
-            }
-        });
+                std::thread::sleep(Duration::from_secs(1));
+            })
+            .context("cannot start the torrent heartbeat")?;
     }
 
     // Commands. Each runs on its own task, so one slow command — adding a

@@ -4947,6 +4947,10 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-banner.bad>.ms{color:var(--red)}
 .tr-banner>span{flex:1;min-width:0}
 .tr-banner>.btn{flex:0 0 auto}
+.tr-diagnostics{flex:0 0 100%;margin-left:24px;color:var(--muted);line-height:1.5}
+.tr-diagnostics summary{cursor:pointer;color:var(--text);width:max-content}
+.tr-diagnostics pre{margin:6px 0 0;padding:8px 10px;max-height:150px;overflow:auto;border:1px solid var(--line);border-radius:7px;background:var(--bg);white-space:pre-wrap;user-select:text}
+.tr-banner:has(.tr-diagnostics){flex-wrap:wrap}
 .tr-ask{flex:none;display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid rgba(90,160,255,.35);border-radius:10px;background:rgba(90,160,255,.08);font-size:12px}
 .tr-ask[hidden]{display:none}
 .tr-ask .ms{color:var(--accent)}

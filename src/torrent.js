@@ -77,6 +77,10 @@
     pendingSequence: 0,
     /** Torrent id the detail pane is showing. */
     selected: null,
+    /** All selected torrent ids. `selected` is the focused item whose files
+     * are shown; this set drives bulk actions. */
+    selectedIds: new Set(),
+    selectionAnchor: null,
     /** The file list for `selected`, fetched once per selection. */
     details: null,
     detailsFor: null,
@@ -184,6 +188,7 @@
     if (row.state === "check-queued") return { text: "Waiting to check", tone: "muted" };
     if (row.state === "queued") return { text: "Waiting its turn", tone: "muted" };
     if (row.state === "paused") return { text: "Paused", tone: "muted" };
+    if (row.forceStarted && !row.finished) return { text: "Force downloading", tone: "" };
     if (row.finished) return { text: "Seeding", tone: "good" };
     if (!row.peers && row.peersQueued) return { text: "Connecting to peers", tone: "muted" };
     if (!row.peers) return { text: "Finding peers", tone: "muted" };
@@ -276,6 +281,7 @@
       const row = (st.snap?.torrents || []).find((x) => x.id === Number(el.dataset.trId));
       if (!row) return;
       event.preventDefault();
+      if (!st.selectedIds.has(row.id)) selectTorrent(row.id, event);
       openMenu(event, row);
     });
     node.addEventListener("dblclick", (event) => {
@@ -424,6 +430,21 @@
     const el = st.host?.querySelector("[data-tr-banner]");
     if (!el) return;
     const s = st.engine || {};
+    const diagnostics = () => {
+      const lines = Array.isArray(s.diagnostics) ? s.diagnostics : [];
+      const facts = [
+        s.pid ? `PID ${s.pid}` : "No process ID",
+        s.uptimeMs != null ? `Uptime ${Math.round(s.uptimeMs / 1000)}s` : "Not running",
+        s.lastBeatMs != null ? `Heartbeat ${Math.round(s.lastBeatMs / 1000)}s ago` : "No heartbeat",
+        s.lastSnapshotMs != null ? `Snapshot ${Math.round(s.lastSnapshotMs / 1000)}s ago` : "No snapshot",
+        `${Number(s.pendingRequests) || 0} pending requests`,
+        `${bytes(s.memoryBytes)} memory`,
+        `${Number(s.restarts) || 0} restarts`,
+      ];
+      return `<details class="tr-diagnostics"><summary>Troubleshooting details</summary>
+        <div>${facts.map(esc).join(" · ")}</div>
+        ${lines.length ? `<pre>${esc(lines.join("\n"))}</pre>` : ""}</details>`;
+    };
     // Gone quiet, but still nominally up: the numbers on screen have stopped
     // being true and the page says so rather than letting them sit there
     // looking live. The list stays on screen and stays clickable throughout.
@@ -433,7 +454,8 @@
       el.innerHTML = `${icon("warning")}<span>${st.lastSnapshotAt
         ? "No updates have arrived from the torrent engine. The list below may be stale."
         : "The torrent engine started, but it has not sent any torrent data."}</span>
-        <button type="button" class="btn" data-tr-restart>${icon("restart_alt")}<span>Restart the engine</span></button>`;
+        <button type="button" class="btn" data-tr-restart>${icon("restart_alt")}<span>Restart the engine</span></button>
+        ${diagnostics()}`;
       return;
     }
     if (s.state === "running" || s.state === "starting") {
@@ -446,7 +468,8 @@
     el.hidden = false;
     el.className = `tr-banner ${s.state === "failed" || s.state === "not-responding" ? "bad" : ""}`;
     el.innerHTML = `${icon("warning")}<span>${esc(message)}</span>
-      <button type="button" class="btn" data-tr-restart>${icon("restart_alt")}<span>Restart the engine</span></button>`;
+      <button type="button" class="btn" data-tr-restart>${icon("restart_alt")}<span>Restart the engine</span></button>
+      ${diagnostics()}`;
   }
 
   function note(text) {
@@ -601,7 +624,7 @@
       if (sort.id === "size") return row.totalBytes || 0;
       if (sort.id === "done") return percent(row);
       if (sort.id === "status") return statusWords(row).text;
-      if (sort.id === "completed") return row.completedAt || 0;
+      if (sort.id === "completed") return row.completedAt || null;
       if (sort.id === "down") return row.downloadBps || 0;
       if (sort.id === "up") return row.uploadBps || 0;
       if (sort.id === "peers") return row.peers || 0;
@@ -616,6 +639,13 @@
     return rows.map((row, index) => ({ row, index })).sort((a, b) => {
       const left = value(a.row);
       const right = value(b.row);
+      // An unfinished torrent has no completion date. Keep those rows after
+      // every actual completion instead of treating them as Unix epoch (and
+      // therefore older than everything) or as a date in the future.
+      if (sort.id === "completed" && (left == null || right == null)) {
+        if (left == null && right == null) return a.index - b.index;
+        return left == null ? 1 : -1;
+      }
       const compared = typeof left === "string"
         ? left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })
         : left - right;
@@ -709,7 +739,8 @@
     const disabled = row.state === "adding";
     el.tabIndex = disabled ? -1 : 0;
     el.setAttribute("aria-disabled", String(disabled));
-    el.classList.toggle("on", st.selected === row.id);
+    el.classList.toggle("on", st.selectedIds.has(row.id));
+    el.setAttribute("aria-selected", String(st.selectedIds.has(row.id)));
     el.querySelector(".tr-dot").className = `tr-dot ${status.tone}`;
     setText(el.querySelector(".tr-name span"), row.name);
     el.querySelector(".tr-name span").title = row.name;
@@ -1213,6 +1244,35 @@
 
   // ----------------------------------------------------------------- actions
 
+  function selectedRows(fallback) {
+    const picked = (st.snap?.torrents || []).filter((row) => st.selectedIds.has(row.id));
+    return picked.length ? picked : (fallback ? [fallback] : []);
+  }
+
+  function selectTorrent(id, event = {}) {
+    const rows = sortedRows(st.snap?.torrents || []);
+    if (event.shiftKey && st.selectionAnchor != null) {
+      const from = rows.findIndex((row) => row.id === st.selectionAnchor);
+      const to = rows.findIndex((row) => row.id === id);
+      if (from >= 0 && to >= 0) {
+        if (!event.ctrlKey && !event.metaKey) st.selectedIds.clear();
+        for (let i = Math.min(from, to); i <= Math.max(from, to); i++) {
+          st.selectedIds.add(rows[i].id);
+        }
+      }
+    } else if (event.ctrlKey || event.metaKey) {
+      if (st.selectedIds.has(id)) st.selectedIds.delete(id);
+      else st.selectedIds.add(id);
+      st.selectionAnchor = id;
+    } else {
+      st.selectedIds = new Set([id]);
+      st.selectionAnchor = id;
+    }
+    st.selected = st.selectedIds.has(id) ? id : (st.selectedIds.values().next().value ?? null);
+    drawRows();
+    drawDetail();
+  }
+
   function keydown(event) {
     const row = event.target.closest("[data-tr-id]");
     if (row && event.target === row && (event.key === "Enter" || event.key === " ")) {
@@ -1316,9 +1376,7 @@
     if (row) {
       if (row.getAttribute("aria-disabled") === "true") return;
       const id = Number(row.dataset.trId);
-      st.selected = st.selected === id ? null : id;
-      drawRows();
-      return drawDetail();
+      return selectTorrent(id, event);
     }
 
     const sort = t.closest("[data-tr-fsort]");
@@ -1430,21 +1488,23 @@
   }
 
   function toggleSelected() {
-    const row = (st.snap?.torrents || []).find((x) => x.id === st.selected);
-    if (!row) return;
-    const action = row.state === "paused" ? "start" : "pause";
-    invoke("torrent_action", { id: row.id, action }).catch((error) => note(String(error)));
+    const rows = selectedRows();
+    if (!rows.length) return;
+    const action = rows.every((row) => row.state === "paused" || row.state === "queued") ? "start" : "pause";
+    Promise.all(rows.map((row) => invoke("torrent_action", { id: row.id, action })))
+      .catch((error) => note(String(error)));
   }
 
   async function removeSelected() {
-    const row = (st.snap?.torrents || []).find((x) => x.id === st.selected);
-    if (!row) return;
+    const rows = selectedRows();
+    if (!rows.length) return;
+    const row = rows[0];
     // Three answers, because there are three: bin the files, leave them where
     // they are, or do nothing. `true` is the confirm button, `"alternate"` the
     // middle one, `false` cancel. Deleting for good is not offered here — it
     // is on the right-click menu, where it has to be chosen deliberately.
     const answer = await window.wintConfirm?.({
-      title: `Remove ${row.name}?`,
+      title: rows.length === 1 ? `Remove ${row.name}?` : `Remove ${rows.length} torrents?`,
       message: "The transfer stops either way. The question is what happens to what has already been downloaded.",
       confirmLabel: "Remove and bin the files",
       alternateLabel: "Remove but keep the files",
@@ -1453,7 +1513,7 @@
       tone: "danger",
     });
     if (answer !== true && answer !== "alternate") return;
-    removeTorrent(row, answer === true ? "recycle" : "keep");
+    for (const item of rows) await removeTorrent(item, answer === true ? "recycle" : "keep");
   }
 
   /** Takes a torrent off the list, and does the chosen thing with its files.
@@ -1488,7 +1548,11 @@
     } catch (error) {
       return note(`${row.name} could not be removed: ${error}`);
     }
-    if (st.selected === row.id) { st.selected = null; drawDetail(); }
+    st.selectedIds.delete(row.id);
+    if (st.selected === row.id) {
+      st.selected = st.selectedIds.values().next().value ?? null;
+      drawDetail();
+    }
 
     if (mode === "keep") return note(`Removed ${row.name}. The files were left where they are.`);
     if (gone) return note(`Removed ${row.name}. Its files were already gone.`);
@@ -1539,13 +1603,17 @@
   function openMenu(event, row) {
     closeMenu();
     const paused = row.state === "paused";
+    const targets = selectedRows(row);
+    const many = targets.length > 1;
+    const allForced = targets.every((item) => item.forceStarted);
     const menu = document.createElement("div");
     menu.className = "tr-context";
     menu.innerHTML = `
       <button type="button" data-act="explorer">${icon("folder_open")}Open folder</button>
       <button type="button" data-act="files">${icon("dock_to_right")}Open in WinT Files</button>
       <hr />
-      <button type="button" data-act="toggle">${icon(paused ? "play_arrow" : "pause")}${paused ? "Resume" : "Pause"}</button>
+      <button type="button" data-act="toggle">${icon(paused ? "play_arrow" : "pause")}${paused ? "Resume" : "Pause"}${many ? ` ${targets.length} torrents` : ""}</button>
+      <button type="button" data-act="force">${icon(allForced ? "playlist_play" : "bolt")}${allForced ? "Use download queue" : "Force start"}${many ? ` ${targets.length} torrents` : ""}</button>
       <hr />
       <button type="button" data-act="keep">${icon("playlist_remove")}Remove, keep the files</button>
       <button type="button" data-act="recycle">${icon("delete")}Remove, files to Recycle Bin</button>
@@ -1566,13 +1634,21 @@
         .catch(() => note("That folder could not be opened."));
       if (act === "files") return void openInWintFiles(await torrentFolder(row))
         .catch((error) => note(String(error)));
-      if (act === "toggle") return void invoke("torrent_action", { id: row.id, action: paused ? "start" : "pause" })
+      if (act === "toggle") return void Promise.all(targets.map((item) => invoke("torrent_action", { id: item.id, action: paused ? "start" : "pause" })))
         .catch((error) => note(String(error)));
-      if (act === "keep") return void removeTorrent(row, "keep");
+      if (act === "force") return void Promise.all(targets.map((item) => invoke("torrent_action", { id: item.id, action: allForced ? "start" : "force_start" })))
+        .then(() => note(allForced ? `${targets.length} torrent${many ? "s will" : " will"} use the download queue.` : `${targets.length} torrent${many ? "s were" : " was"} force started.`))
+        .catch((error) => note(String(error)));
+      if (act === "keep") {
+        for (const item of targets) await removeTorrent(item, "keep");
+        return;
+      }
 
       const forGood = act === "forever";
       const ok = await window.wintConfirm?.({
-        title: forGood ? `Delete ${row.name} and its files?` : `Remove ${row.name}?`,
+        title: many
+          ? `${forGood ? "Delete" : "Remove"} ${targets.length} torrents?`
+          : (forGood ? `Delete ${row.name} and its files?` : `Remove ${row.name}?`),
         message: forGood
           ? "The files are deleted straight away, not sent to the Recycle Bin. This cannot be undone."
           : "The torrent is removed and its files go to the Recycle Bin, where Windows can still bring them back.",
@@ -1581,7 +1657,9 @@
         icon: forGood ? "delete_forever" : "delete",
         tone: "danger",
       });
-      if (ok === true) removeTorrent(row, forGood ? "forever" : "recycle");
+      if (ok === true) {
+        for (const item of targets) await removeTorrent(item, forGood ? "forever" : "recycle");
+      }
     };
     setTimeout(() => document.addEventListener("click", closeMenu, { once: true }), 0);
   }

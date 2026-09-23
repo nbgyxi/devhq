@@ -27,19 +27,19 @@
 //!   told, and it is restarted. Because the torrents are persisted on the
 //!   helper's side, a restart loses nothing.
 
-use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::collections::{HashMap, VecDeque};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 type Reply = Result<Value, String>;
 
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 /// Most commands are a message to a running engine and come back at once.
@@ -56,6 +56,17 @@ const HEARTBEAT_DEAD: Duration = Duration::from_secs(5);
 const MEMORY_CEILING_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// More requests outstanding than this means nothing is coming back.
 const PENDING_CEILING: usize = 64;
+/// Enough recent evidence to diagnose a failure without allowing a noisy
+/// dependency to grow the supervisor forever.
+const DIAGNOSTIC_LINES: usize = 40;
+/// Pipe records are length-bounded before allocation. A corrupt helper must
+/// not be able to make WinT allocate an arbitrary amount of memory by writing
+/// one line without a newline.
+const MAX_PROTOCOL_LINE: usize = 32 * 1024 * 1024;
+const MAX_STDERR_LINE: usize = 16 * 1024;
+/// Rapid failures are retried forever, but increasingly slowly so a corrupt
+/// session or unavailable disk cannot turn recovery into a busy crash loop.
+const MAX_RESTART_BACKOFF: Duration = Duration::from_secs(60);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -85,6 +96,12 @@ pub struct EngineStatus {
     pub memory_bytes: u64,
     pub pending_requests: usize,
     pub restarts: u32,
+    /// Milliseconds since this helper process was spawned.
+    pub uptime_ms: Option<u64>,
+    /// Milliseconds since a torrent snapshot (not merely a heartbeat) arrived.
+    pub last_snapshot_ms: Option<u64>,
+    /// Recent lifecycle, protocol and stderr lines, oldest first.
+    pub diagnostics: Vec<String>,
     /// Why it is not running, when it is not.
     pub message: Option<String>,
 }
@@ -93,6 +110,7 @@ struct Running {
     child: Child,
     pid: u32,
     engine: Option<String>,
+    started: Instant,
     #[cfg(windows)]
     _kill_job: KillJob,
 }
@@ -118,19 +136,21 @@ impl Drop for KillJob {
 #[cfg(windows)]
 fn contain_helper(child: &Child) -> Result<KillJob, String> {
     use std::os::windows::io::AsRawHandle;
+    use windows::core::PCWSTR;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        SetInformationJobObject,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
     };
-    use windows::core::PCWSTR;
 
     unsafe {
         let job = CreateJobObjectW(None, PCWSTR::null())
             .map_err(|error| format!("Windows could not contain the torrent engine: {error}"))?;
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        limits.BasicLimitInformation.LimitFlags =
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+        limits.ProcessMemoryLimit = MEMORY_CEILING_BYTES as usize;
         if let Err(error) = SetInformationJobObject(
             job,
             JobObjectExtendedLimitInformation,
@@ -138,12 +158,16 @@ fn contain_helper(child: &Child) -> Result<KillJob, String> {
             std::mem::size_of_val(&limits) as u32,
         ) {
             let _ = windows::Win32::Foundation::CloseHandle(job);
-            return Err(format!("Windows could not secure the torrent engine: {error}"));
+            return Err(format!(
+                "Windows could not secure the torrent engine: {error}"
+            ));
         }
         let process = HANDLE(child.as_raw_handle());
         if let Err(error) = AssignProcessToJobObject(job, process) {
             let _ = windows::Win32::Foundation::CloseHandle(job);
-            return Err(format!("Windows could not contain the torrent engine: {error}"));
+            return Err(format!(
+                "Windows could not contain the torrent engine: {error}"
+            ));
         }
         Ok(KillJob(job))
     }
@@ -184,6 +208,7 @@ struct Engine {
     state: String,
     message: Option<String>,
     last_beat: Option<Instant>,
+    last_snapshot: Option<Instant>,
     memory_bytes: u64,
     restarts: u32,
     /// When the restarts in the current window began, so a burst of failures
@@ -195,6 +220,52 @@ struct Engine {
     latest_snapshot: Option<Value>,
     /// Whether `latest_snapshot` has changed since it was last emitted.
     snapshot_dirty: bool,
+    diagnostics: VecDeque<String>,
+}
+
+fn diagnose(message: impl Into<String>) {
+    let message = message.into();
+    if let Ok(mut engine) = engine().lock() {
+        if engine.diagnostics.len() == DIAGNOSTIC_LINES {
+            engine.diagnostics.pop_front();
+        }
+        engine.diagnostics.push_back(message.clone());
+    }
+    // The in-memory tail makes troubleshooting immediate in the torrent UI;
+    // the health log survives both the helper and WinT itself going down.
+    crate::health::note(format!("torrent   {message}"));
+}
+
+fn restart_delay() -> Duration {
+    let rapid = last_engine_restart()
+        .lock()
+        .ok()
+        .and_then(|last| *last)
+        .is_some_and(|last| last.elapsed() < Duration::from_secs(60));
+    if rapid {
+        Duration::from_secs(5)
+    } else {
+        Duration::ZERO
+    }
+}
+
+fn restart_later(generation: u64, delay: Duration) {
+    std::thread::Builder::new()
+        .name("torrent-auto-restart".into())
+        .spawn(move || {
+            if !delay.is_zero() {
+                std::thread::sleep(delay.min(MAX_RESTART_BACKOFF));
+            }
+            let still_needed = engine()
+                .lock()
+                .map(|engine| engine.generation == generation && engine.running.is_none())
+                .unwrap_or(false);
+            if still_needed {
+                let restarted = start();
+                broadcast(&restarted);
+            }
+        })
+        .ok();
 }
 
 fn engine() -> &'static Mutex<Engine> {
@@ -307,9 +378,10 @@ fn start_inner() -> EngineStatus {
         .arg("300")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        // The helper's own complaints go nowhere. Nothing here reads them, and
-        // an unread pipe that fills would block the process that writes it.
-        .stderr(Stdio::null());
+        // Drain stderr on its own thread. Besides preventing a full pipe from
+        // wedging the helper, these are usually the only useful words left by
+        // a panic or a failed tracker/session initialization.
+        .stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -330,6 +402,7 @@ fn start_inner() -> EngineStatus {
             return set_failed(&error);
         }
     };
+    let stderr = child.stderr.take();
     let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         let _ = child.kill();
         return set_failed("The torrent engine started without a pipe to talk over.");
@@ -350,16 +423,43 @@ fn start_inner() -> EngineStatus {
             child,
             pid,
             engine: None,
+            started: Instant::now(),
             #[cfg(windows)]
             _kill_job: kill_job,
         });
         engine.state = "starting".into();
         engine.message = None;
         engine.last_beat = Some(Instant::now());
+        engine.last_snapshot = None;
         engine.snapshot_dirty = false;
         engine.latest_snapshot = None;
         generation
     };
+
+    diagnose(format!(
+        "Started torrent engine PID {pid} (generation {generation})."
+    ));
+
+    if let Some(stderr) = stderr {
+        std::thread::Builder::new()
+            .name("torrent-stderr".into())
+            .spawn(move || {
+                let mut reader = BufReader::new(stderr);
+                while let Ok(Some((line, truncated))) = bounded_line(&mut reader, MAX_STDERR_LINE) {
+                    if engine().lock().map(|e| e.generation).unwrap_or(0) != generation {
+                        return;
+                    }
+                    let line = line.trim();
+                    if !line.is_empty() {
+                        diagnose(format!(
+                            "Engine stderr: {line}{}",
+                            if truncated { " [line truncated]" } else { "" }
+                        ));
+                    }
+                }
+            })
+            .ok();
+    }
 
     // The reader. One thread, one helper; it ends when the pipe does.
     std::thread::Builder::new()
@@ -423,15 +523,58 @@ fn stop_inner(reason: &str) {
 // Reading
 // ---------------------------------------------------------------------------
 
-fn read_lines(generation: u64, reader: BufReader<std::process::ChildStdout>) {
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
+fn bounded_line<R: BufRead>(reader: &mut R, limit: usize) -> io::Result<Option<(String, bool)>> {
+    let mut bytes = Vec::with_capacity(limit.min(8192));
+    let mut truncated = false;
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return if bytes.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some((
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                    truncated,
+                )))
+            };
+        }
+        let end = available.iter().position(|byte| *byte == b'\n');
+        let consumed = end.map_or(available.len(), |index| index + 1);
+        let content = end.map_or(available, |index| &available[..index]);
+        let room = limit.saturating_sub(bytes.len());
+        bytes.extend_from_slice(&content[..content.len().min(room)]);
+        truncated |= content.len() > room;
+        reader.consume(consumed);
+        if end.is_some() {
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+            return Ok(Some((
+                String::from_utf8_lossy(&bytes).into_owned(),
+                truncated,
+            )));
+        }
+    }
+}
+
+fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>) {
+    while let Ok(Some((line, truncated))) = bounded_line(&mut reader, MAX_PROTOCOL_LINE) {
         // A helper that was replaced while this thread was blocked on `lines`
         // must not write over the new one's state.
         if engine().lock().map(|e| e.generation).unwrap_or(0) != generation {
             return;
         }
-        let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
+        if truncated {
+            diagnose("The engine sent an oversized protocol message; it was discarded.");
+            continue;
+        }
+        let Ok(message) = serde_json::from_str::<Value>(&line) else {
+            diagnose(format!(
+                "Invalid engine output: {}",
+                line.chars().take(500).collect::<String>()
+            ));
+            continue;
+        };
 
         if let Some(event) = message.get("event").and_then(Value::as_str) {
             let data = message.get("data").cloned().unwrap_or(Value::Null);
@@ -441,6 +584,7 @@ fn read_lines(generation: u64, reader: BufReader<std::process::ChildStdout>) {
                         engine.latest_snapshot = Some(data);
                         engine.snapshot_dirty = true;
                         engine.last_beat = Some(Instant::now());
+                        engine.last_snapshot = Some(Instant::now());
                         if engine.state != "running" {
                             engine.state = "running".into();
                             engine.message = None;
@@ -471,7 +615,9 @@ fn read_lines(generation: u64, reader: BufReader<std::process::ChildStdout>) {
             continue;
         }
 
-        let Some(id) = message.get("id").and_then(Value::as_u64) else { continue };
+        let Some(id) = message.get("id").and_then(Value::as_u64) else {
+            continue;
+        };
         let reply = if message.get("ok").and_then(Value::as_bool) == Some(true) {
             Ok(message.get("result").cloned().unwrap_or(Value::Null))
         } else {
@@ -490,48 +636,42 @@ fn read_lines(generation: u64, reader: BufReader<std::process::ChildStdout>) {
     // The pipe closed: the helper is gone. Say so, and let the watchdog be the
     // one that decides about restarting.
     let mut changed = false;
-    let mut auto_restart = false;
+    let mut retry_after = None;
     if let Ok(mut engine) = engine().lock() {
         if engine.generation == generation {
+            let exit = engine
+                .running
+                .as_mut()
+                .and_then(|running| running.child.try_wait().ok().flatten())
+                .map(|status| format!(" with exit status {status}"))
+                .unwrap_or_else(|| " without an exit status".into());
             engine.running = None;
             // `starting` is an intentional restart already in progress.
             // Only a helper that vanished while running is self-healed here.
             if engine.state == "running" {
-                let repeated = last_engine_restart()
-                    .lock()
-                    .ok()
-                    .and_then(|last| *last)
-                    .is_some_and(|last| last.elapsed() < Duration::from_secs(60));
-                if repeated {
-                    engine.state = "failed".into();
-                    engine.message = Some(
-                        "The torrent engine stopped again within a minute. Restart it when you are ready."
-                            .into(),
-                    );
-                } else {
-                    if let Ok(mut last) = last_engine_restart().lock() {
-                        *last = Some(Instant::now());
-                    }
-                    engine.restarts = engine.restarts.saturating_add(1);
-                    engine.state = "starting".into();
-                    engine.message = Some("The torrent engine stopped and is restarting.".into());
-                    auto_restart = true;
+                let delay = restart_delay();
+                if let Ok(mut last) = last_engine_restart().lock() {
+                    *last = Some(Instant::now());
                 }
+                engine.restarts = engine.restarts.saturating_add(1);
+                engine.state = "starting".into();
+                engine.message = Some(if delay.is_zero() {
+                    "The torrent engine stopped and is restarting.".into()
+                } else {
+                    format!("The torrent engine stopped again; retrying in {} seconds.", delay.as_secs())
+                });
+                retry_after = Some(delay);
                 changed = true;
             }
+            drop(engine);
+            diagnose(format!("The engine output pipe closed{exit}."));
         }
     }
     if changed {
         broadcast(&status());
     }
-    if auto_restart {
-        std::thread::Builder::new()
-            .name("torrent-auto-restart".into())
-            .spawn(|| {
-                let restarted = start();
-                broadcast(&restarted);
-            })
-            .ok();
+    if let Some(delay) = retry_after {
+        restart_later(generation, delay);
     }
 }
 
@@ -603,7 +743,10 @@ fn request_started(op: &str, arg: Value, timeout: Duration) -> Result<Value, Str
         // the request would have waited for anyway.
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
-            let ready = engine().lock().map(|e| e.state == "running").unwrap_or(false);
+            let ready = engine()
+                .lock()
+                .map(|e| e.state == "running")
+                .unwrap_or(false);
             if ready {
                 break;
             }
@@ -635,6 +778,14 @@ pub fn status() -> EngineStatus {
         memory_bytes: engine.memory_bytes,
         pending_requests: pending().lock().map(|p| p.len()).unwrap_or(0),
         restarts: engine.restarts,
+        uptime_ms: engine
+            .running
+            .as_ref()
+            .map(|running| running.started.elapsed().as_millis().min(u64::MAX as u128) as u64),
+        last_snapshot_ms: engine
+            .last_snapshot
+            .map(|at| at.elapsed().as_millis().min(u64::MAX as u128) as u64),
+        diagnostics: engine.diagnostics.iter().cloned().collect(),
         message: engine.message.clone(),
     }
 }
@@ -703,7 +854,8 @@ fn watchdog() {
             loop {
                 std::thread::sleep(Duration::from_secs(2));
                 let mut fault: Option<String> = None;
-                let mut allow_restart = false;
+                let mut restart_after = None;
+                let mut generation = 0;
 
                 {
                     let Ok(mut engine) = engine().lock() else { continue };
@@ -733,37 +885,29 @@ fn watchdog() {
                     }
 
                     if fault.is_some() {
-                        allow_restart = last_engine_restart()
-                            .lock()
-                            .ok()
-                            .and_then(|last| *last)
-                            .map_or(true, |last| last.elapsed() >= Duration::from_secs(60));
-                        if allow_restart {
-                            if let Ok(mut last) = last_engine_restart().lock() {
-                                *last = Some(Instant::now());
-                            }
-                            engine.restarts = engine.restarts.saturating_add(1);
+                        let delay = restart_delay();
+                        if let Ok(mut last) = last_engine_restart().lock() {
+                            *last = Some(Instant::now());
                         }
+                        engine.restarts = engine.restarts.saturating_add(1);
+                        generation = engine.generation;
+                        restart_after = Some(delay);
                         engine.state = "not-responding".into();
-                        engine.message = fault.clone();
+                        engine.message = Some(if delay.is_zero() {
+                            fault.clone().unwrap_or_default()
+                        } else {
+                            format!("{} Retrying in {} seconds.", fault.clone().unwrap_or_default(), delay.as_secs())
+                        });
                     }
                 }
 
                 if let Some(fault) = fault {
+                    diagnose(format!("Watchdog: {fault}"));
                     broadcast(&status());
-                    if allow_restart {
-                        stop_inner("restarting");
-                        start();
-                        broadcast(&status());
-                    } else {
-                        stop_inner("stopped");
-                        if let Ok(mut engine) = engine().lock() {
-                            engine.state = "failed".into();
-                            engine.message = Some(format!(
-                                "{fault} It failed again within a minute; restart it when you are ready."
-                            ));
-                        }
-                        broadcast(&status());
+                    stop_inner("restarting");
+                    broadcast(&status());
+                    if let Some(delay) = restart_after {
+                        restart_later(generation, delay);
                     }
                 }
             }
@@ -784,7 +928,11 @@ fn memory_of(pid: u32) -> u64 {
         let sized = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
         let measured = GetProcessMemoryInfo(handle, &mut counters, sized).is_ok();
         let _ = CloseHandle(handle);
-        if measured { counters.WorkingSetSize as u64 } else { 0 }
+        if measured {
+            counters.WorkingSetSize as u64
+        } else {
+            0
+        }
     }
 }
 
@@ -890,11 +1038,16 @@ pub async fn torrent_recheck(info_hash: String) -> Result<EngineStatus, String> 
             std::fs::remove_file(&bitfield)
                 .map_err(|e| format!("Could not reset that torrent's saved check: {e}"))?;
         }
-        std::fs::write(dir.join(format!("recheck-{}", info_hash.to_ascii_lowercase())), [])
-            .map_err(|e| format!("Could not schedule that file check: {e}"))?;
+        std::fs::write(
+            dir.join(format!("recheck-{}", info_hash.to_ascii_lowercase())),
+            [],
+        )
+        .map_err(|e| format!("Could not schedule that file check: {e}"))?;
         let status = start();
         if status.state == "failed" {
-            return Err(status.message.unwrap_or_else(|| "The torrent engine would not restart.".into()));
+            return Err(status
+                .message
+                .unwrap_or_else(|| "The torrent engine would not restart.".into()));
         }
         Ok(status)
     })
@@ -935,6 +1088,7 @@ pub async fn torrent_action(
     off!({
         let op = match action.as_str() {
             "start" => "start",
+            "force_start" => "force_start",
             "pause" => "pause",
             "remove" => "remove",
             other => return Err(format!("There is no torrent action called {other}.")),
@@ -986,7 +1140,11 @@ pub async fn torrent_paths(id: u64) -> Result<Value, String> {
 /// One file's absolute path, for opening it. Asked for on a double-click.
 #[tauri::command]
 pub async fn torrent_file_path(id: u64, index: u64) -> Result<Value, String> {
-    off!(request("file_path", json!({ "id": id, "index": index }), REQUEST_TIMEOUT))
+    off!(request(
+        "file_path",
+        json!({ "id": id, "index": index }),
+        REQUEST_TIMEOUT
+    ))
 }
 
 /// Per-peer detail for one torrent, on demand only.

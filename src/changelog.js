@@ -16,6 +16,42 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.142.1",
+      date: "2026-09-23",
+      title: "Self-healing torrent engine",
+      changes: [
+        ["better", "The torrent engine now keeps retrying after repeated failures with a short backoff instead of giving up and waiting for a manual restart."],
+        ["better", "Torrent engine starts, watchdog repairs, stderr and exit statuses are now kept in the durable health log for troubleshooting after an app restart."],
+      ],
+    },
+    {
+      version: "0.142.0",
+      date: "2026-09-23",
+      title: "Force-start a torrent",
+      changes: [
+        ["new", "Right-click a torrent to force start it beyond the configured download limit, or put it back under the normal queue later; the choice survives engine and app restarts."],
+        ["new", "Torrent rows now support Ctrl-click and Shift-click multi-selection, with pause, resume, force-start and removal actions applying to the whole selection."],
+      ],
+    },
+    {
+      version: "0.141.0",
+      date: "2026-09-23",
+      title: "Torrent engine diagnostics",
+      changes: [
+        ["new", "Torrent engine warnings now include expandable troubleshooting details with process health, restart history, protocol errors and the engine's recent error output."],
+        ["better", "WinT now bounds every message from the separate torrent process and has Windows enforce its memory ceiling, so a broken engine cannot exhaust the app through its pipes or memory use."],
+        ["fix", "Torrent snapshots can no longer starve the engine heartbeat and cause the repeated watchdog restarts shown in the troubleshooting log."],
+      ],
+    },
+    {
+      version: "0.140.27",
+      date: "2026-09-23",
+      title: "Completed means completed",
+      changes: [
+        ["fix", "Sorting torrents by completion date now keeps unfinished torrents below every torrent with a real completion time."],
+      ],
+    },
+    {
       version: "0.140.26",
       date: "2026-09-23",
       title: "One WinT again",
