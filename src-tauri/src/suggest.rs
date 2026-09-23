@@ -36,19 +36,47 @@ const COUNT_KEYS: [&str; 2] = [
 /// Paths are stored under a known-folder GUID rather than a drive letter.
 const KNOWN_FOLDERS: [(&str, &str); 8] = [
     ("{6D809377-6AF0-444B-8957-A3773F02200E}", "ProgramW6432"),
-    ("{7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}", "ProgramFiles(x86)"),
-    ("{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}", r"SystemRoot\System32"),
-    ("{D65231B0-B2F1-4857-A4CE-A8E7C6EA7D27}", r"SystemRoot\SysWOW64"),
+    (
+        "{7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}",
+        "ProgramFiles(x86)",
+    ),
+    (
+        "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}",
+        r"SystemRoot\System32",
+    ),
+    (
+        "{D65231B0-B2F1-4857-A4CE-A8E7C6EA7D27}",
+        r"SystemRoot\SysWOW64",
+    ),
     ("{F38BF404-1D43-42F2-9305-67DE0B28FC23}", "SystemRoot"),
-    ("{0139D44E-6AFE-49F2-8690-3DAFCAE6FFB8}", r"ProgramData\Microsoft\Windows\Start Menu\Programs"),
-    ("{A77F5D77-2E2B-44C3-A6A2-ABA601054A51}", r"APPDATA\Microsoft\Windows\Start Menu\Programs"),
-    ("{9E3995AB-1F9C-4F13-B827-48B24B6C7174}", r"APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned"),
+    (
+        "{0139D44E-6AFE-49F2-8690-3DAFCAE6FFB8}",
+        r"ProgramData\Microsoft\Windows\Start Menu\Programs",
+    ),
+    (
+        "{A77F5D77-2E2B-44C3-A6A2-ABA601054A51}",
+        r"APPDATA\Microsoft\Windows\Start Menu\Programs",
+    ),
+    (
+        "{9E3995AB-1F9C-4F13-B827-48B24B6C7174}",
+        r"APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned",
+    ),
 ];
 
 /// Housekeeping that shows up in the counts but nobody means to reopen.
 const NOISE: [&str; 12] = [
-    "ueme_", "explorer.exe", "setup", "install", "unins", "update", "logonui", "searchhost",
-    "shellexperiencehost", "startmenuexperiencehost", "wint.exe", "consent.exe",
+    "ueme_",
+    "explorer.exe",
+    "setup",
+    "install",
+    "unins",
+    "update",
+    "logonui",
+    "searchhost",
+    "shellexperiencehost",
+    "startmenuexperiencehost",
+    "wint.exe",
+    "consent.exe",
 ];
 
 fn rot13(text: &str) -> String {
@@ -65,7 +93,9 @@ fn expand_known_folder(name: &str) -> String {
     for (guid, var) in KNOWN_FOLDERS {
         if let Some(rest) = name.strip_prefix(guid) {
             let (var, tail) = var.split_once('\\').unwrap_or((var, ""));
-            let Some(base) = std::env::var_os(var) else { return name.to_string() };
+            let Some(base) = std::env::var_os(var) else {
+                return name.to_string();
+            };
             let mut path = std::path::PathBuf::from(base);
             if !tail.is_empty() {
                 path.push(tail);
@@ -91,8 +121,13 @@ fn read_counts() -> Vec<(String, u32, u64)> {
     for sub in COUNT_KEYS {
         unsafe {
             let mut key = HKEY::default();
-            if RegOpenKeyExW(HKEY_CURRENT_USER, &HSTRING::from(sub), Some(0), KEY_READ, &mut key)
-                != ERROR_SUCCESS
+            if RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                &HSTRING::from(sub),
+                Some(0),
+                KEY_READ,
+                &mut key,
+            ) != ERROR_SUCCESS
             {
                 continue;
             }
@@ -122,8 +157,9 @@ fn read_counts() -> Vec<(String, u32, u64)> {
                 let runs = u32::from_le_bytes(data[4..8].try_into().unwrap());
                 let filetime = u64::from_le_bytes(data[60..68].try_into().unwrap());
                 let last = (filetime / 10_000_000).saturating_sub(11_644_473_600);
-                let target =
-                    expand_known_folder(&rot13(&String::from_utf16_lossy(&name[..name_len as usize])));
+                let target = expand_known_folder(&rot13(&String::from_utf16_lossy(
+                    &name[..name_len as usize],
+                )));
                 found.push((target, runs, last));
             }
             let _ = RegCloseKey(key);
@@ -243,7 +279,9 @@ pub fn suggestions(running: &std::collections::HashSet<String>) -> Vec<Suggestio
                 continue;
             }
         }
-        let Some((name, _)) = (unsafe { shell_item(&target) }) else { continue };
+        let Some((name, _)) = (unsafe { shell_item(&target) }) else {
+            continue;
+        };
         let name_key = format!("name:{}", name.to_lowercase());
         let exe_key = exe.map(|exe| format!("exe:{exe}"));
         let known = seen
@@ -264,7 +302,12 @@ pub fn suggestions(running: &std::collections::HashSet<String>) -> Vec<Suggestio
                 if running_stems.contains(&name.to_lowercase()) {
                     continue;
                 }
-                out.push(Suggestion { name: name.clone(), target, runs, last_used: last });
+                out.push(Suggestion {
+                    name: name.clone(),
+                    target,
+                    runs,
+                    last_used: last,
+                });
                 out.len() - 1
             }
         };
@@ -282,10 +325,15 @@ pub fn suggestions(running: &std::collections::HashSet<String>) -> Vec<Suggestio
 /// program shortcut (an advertised installer shortcut, a URL).
 unsafe fn shortcut_target(lnk: &str) -> Option<String> {
     use windows::core::{Interface, HSTRING};
-    use windows::Win32::System::Com::{CoCreateInstance, IPersistFile, CLSCTX_INPROC_SERVER, STGM_READ};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, IPersistFile, CLSCTX_INPROC_SERVER, STGM_READ,
+    };
     use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
     let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
-    link.cast::<IPersistFile>().ok()?.Load(&HSTRING::from(lnk), STGM_READ).ok()?;
+    link.cast::<IPersistFile>()
+        .ok()?
+        .Load(&HSTRING::from(lnk), STGM_READ)
+        .ok()?;
     let mut buffer = [0u16; 1024];
     link.GetPath(&mut buffer, std::ptr::null_mut(), 0).ok()?;
     let len = buffer.iter().position(|&c| c == 0).unwrap_or(0);

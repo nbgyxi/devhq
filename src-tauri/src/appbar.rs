@@ -124,7 +124,11 @@ unsafe fn reclaim(hwnd: HWND) {
     // died or is still hanging — which is the call this file already warns
     // never comes back. The new Explorer has no record of us to clear.
     let mut data = appbar_data(hwnd);
-    shell(ABM_NEW, "SHAppBarMessage ABM_NEW (shell restarted)", &mut data);
+    shell(
+        ABM_NEW,
+        "SHAppBarMessage ABM_NEW (shell restarted)",
+        &mut data,
+    );
     if HIDE_TASKBAR.load(Ordering::SeqCst) {
         auto_hide_taskbar();
     }
@@ -205,7 +209,11 @@ fn notify_pos_changed(hwnd: HWND) {
                     return;
                 }
                 let mut data = appbar_data(hwnd);
-                shell(ABM_WINDOWPOSCHANGED, "SHAppBarMessage ABM_WINDOWPOSCHANGED", &mut data);
+                shell(
+                    ABM_WINDOWPOSCHANGED,
+                    "SHAppBarMessage ABM_WINDOWPOSCHANGED",
+                    &mut data,
+                );
             }
         })
         .ok();
@@ -228,7 +236,12 @@ unsafe fn place(hwnd: HWND) {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
         ..Default::default()
     };
-    if !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mut monitor).as_bool() {
+    if !GetMonitorInfoW(
+        MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY),
+        &mut monitor,
+    )
+    .as_bool()
+    {
         return;
     }
     let screen = monitor.rcMonitor;
@@ -273,7 +286,11 @@ unsafe fn place(hwnd: HWND) {
         rc.top,
         rc.right - rc.left,
         rc.bottom - rc.top,
-        if topmost { SWP_NOACTIVATE | SWP_NOZORDER } else { SWP_NOACTIVATE },
+        if topmost {
+            SWP_NOACTIVATE | SWP_NOZORDER
+        } else {
+            SWP_NOACTIVATE
+        },
     );
 }
 
@@ -293,8 +310,12 @@ unsafe fn place(hwnd: HWND) {
 /// window is restored first, because `SetWindowPos` on a maximized window
 /// leaves it in a half-maximized state.
 pub(crate) unsafe fn ensure_on_screen(hwnd: HWND) -> bool {
-    use windows::Win32::Graphics::Gdi::{MonitorFromRect, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL};
-    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsZoomed, ShowWindow, SW_RESTORE};
+    use windows::Win32::Graphics::Gdi::{
+        MonitorFromRect, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, IsZoomed, ShowWindow, SW_RESTORE,
+    };
 
     let mut rect = RECT::default();
     if GetWindowRect(hwnd, &mut rect).is_err() {
@@ -460,7 +481,9 @@ fn remember_taskbar(was: Option<u32>) {
 /// and never got to put it back, put it back now.
 pub(crate) fn recover_taskbar() {
     let Some(note) = taskbar_note() else { return };
-    let Ok(text) = std::fs::read_to_string(&note) else { return };
+    let Ok(text) = std::fs::read_to_string(&note) else {
+        return;
+    };
     if let Ok(was) = text.trim().parse::<u32>() {
         if HOST.load(Ordering::SeqCst) == 0 && TASKBAR_WAS.load(Ordering::SeqCst) == u32::MAX {
             unsafe { set_taskbar_state(was) };
@@ -473,7 +496,11 @@ pub(crate) fn recover_taskbar() {
 /// where the user left it.
 fn geometry_file() -> Option<std::path::PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA")?;
-    Some(std::path::PathBuf::from(local).join("WinT").join("sidebar-dock.json"))
+    Some(
+        std::path::PathBuf::from(local)
+            .join("WinT")
+            .join("sidebar-dock.json"),
+    )
 }
 
 fn remember_geometry(edge: String, width: u32) {
@@ -482,7 +509,10 @@ fn remember_geometry(edge: String, width: u32) {
         if let Some(dir) = file.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(&file, serde_json::json!({ "edge": edge, "width": width }).to_string());
+        let _ = std::fs::write(
+            &file,
+            serde_json::json!({ "edge": edge, "width": width }).to_string(),
+        );
     });
 }
 
@@ -540,21 +570,30 @@ pub async fn sidebar_start_menu() {
 #[tauri::command]
 pub async fn sidebar_hidden_icons() {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
-        VK_B, VK_LWIN, VK_RETURN,
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_B,
+        VK_LWIN, VK_RETURN,
     };
     let key = |vk: VIRTUAL_KEY, up: bool| INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: vk,
-                dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() },
+                dwFlags: if up {
+                    KEYEVENTF_KEYUP
+                } else {
+                    Default::default()
+                },
                 ..Default::default()
             },
         },
     };
     std::thread::spawn(move || unsafe {
-        let focus = [key(VK_LWIN, false), key(VK_B, false), key(VK_B, true), key(VK_LWIN, true)];
+        let focus = [
+            key(VK_LWIN, false),
+            key(VK_B, false),
+            key(VK_B, true),
+            key(VK_LWIN, true),
+        ];
         SendInput(&focus, std::mem::size_of::<INPUT>() as i32);
         std::thread::sleep(std::time::Duration::from_millis(150));
         let open = [key(VK_RETURN, false), key(VK_RETURN, true)];
@@ -599,7 +638,11 @@ unsafe extern "system" fn sidebar_proc(
                 // A game or a video went fullscreen. Staying topmost would draw
                 // this bar over it, so drop to the bottom until it comes back.
                 ABN_FULLSCREENAPP => {
-                    let insert_after = if lparam.0 == 0 { HWND_TOPMOST } else { HWND_BOTTOM };
+                    let insert_after = if lparam.0 == 0 {
+                        HWND_TOPMOST
+                    } else {
+                        HWND_BOTTOM
+                    };
                     let _ = SetWindowPos(
                         hwnd,
                         Some(insert_after),
@@ -915,13 +958,20 @@ fn changed(app: &AppHandle) -> SidebarState {
 /// drawing thread as well.
 unsafe fn bring_forward(hwnd: HWND) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, GetForegroundWindow, IsIconic, SetForegroundWindow,
-        ShowWindowAsync, SW_RESTORE, SW_SHOW,
+        BringWindowToTop, GetForegroundWindow, IsIconic, SetForegroundWindow, ShowWindowAsync,
+        SW_RESTORE, SW_SHOW,
     };
     // A tray-hidden target can be busy or hung while restoring. Never attach
     // its input queue to ours: that makes its wait the sidebar's wait too and
     // wedges the rail even though this function is running off-thread.
-    let _ = ShowWindowAsync(hwnd, if IsIconic(hwnd).as_bool() { SW_RESTORE } else { SW_SHOW });
+    let _ = ShowWindowAsync(
+        hwnd,
+        if IsIconic(hwnd).as_bool() {
+            SW_RESTORE
+        } else {
+            SW_SHOW
+        },
+    );
     let _ = BringWindowToTop(hwnd);
     SetForegroundWindow(hwnd).as_bool() || GetForegroundWindow() == hwnd
 }
@@ -961,7 +1011,10 @@ fn editor_workspace(exe: &str, title: &str) -> String {
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if !matches!(stem.as_str(), "code" | "code-insiders" | "code - insiders" | "codium" | "vscodium") {
+    if !matches!(
+        stem.as_str(),
+        "code" | "code-insiders" | "code - insiders" | "codium" | "vscodium"
+    ) {
         return String::new();
     }
     let parts: Vec<&str> = title.split(" - ").collect();
@@ -1132,7 +1185,10 @@ pub(crate) fn list_windows(sidebar: isize) -> Vec<OpenWindow> {
         if foreground != 0 && foreground != sidebar {
             LAST_FOREGROUND.store(foreground, Ordering::SeqCst);
         }
-        let _ = EnumWindows(Some(collect), LPARAM(std::ptr::addr_of_mut!(handles) as isize));
+        let _ = EnumWindows(
+            Some(collect),
+            LPARAM(std::ptr::addr_of_mut!(handles) as isize),
+        );
     }
     let active = LAST_FOREGROUND.load(Ordering::SeqCst);
     handles
@@ -1164,19 +1220,37 @@ mod sidebar_order_tests {
     #[test]
     fn vscode_workspace_ignores_the_active_file() {
         let exe = r"C:\Users\me\AppData\Local\Programs\Microsoft VS Code\Code.exe";
-        assert_eq!(editor_workspace(exe, "app.rs - devhq - Visual Studio Code"), "devhq");
-        assert_eq!(editor_workspace(exe, "README.md - another - Visual Studio Code"), "another");
+        assert_eq!(
+            editor_workspace(exe, "app.rs - devhq - Visual Studio Code"),
+            "devhq"
+        );
+        assert_eq!(
+            editor_workspace(exe, "README.md - another - Visual Studio Code"),
+            "another"
+        );
     }
 
     #[test]
     fn vscode_folder_only_title_is_supported() {
-        assert_eq!(editor_workspace(r"C:\Code.exe", "devhq - Visual Studio Code"), "devhq");
-        assert_eq!(editor_workspace(r"C:\Code - Insiders.exe", "devhq - Visual Studio Code - Insiders"), "devhq");
+        assert_eq!(
+            editor_workspace(r"C:\Code.exe", "devhq - Visual Studio Code"),
+            "devhq"
+        );
+        assert_eq!(
+            editor_workspace(
+                r"C:\Code - Insiders.exe",
+                "devhq - Visual Studio Code - Insiders"
+            ),
+            "devhq"
+        );
     }
 
     #[test]
     fn other_apps_do_not_get_title_based_identity() {
-        assert_eq!(editor_workspace(r"C:\notepad.exe", "notes - work - Notepad"), "");
+        assert_eq!(
+            editor_workspace(r"C:\notepad.exe", "notes - work - Notepad"),
+            ""
+        );
     }
 
     #[test]
@@ -1202,7 +1276,10 @@ pub(crate) unsafe fn window_title_and_exe(hwnd: HWND) -> (String, String) {
     use windows::Win32::UI::WindowsAndMessaging::GetWindowTextW;
     let mut title = [0u16; 512];
     let len = GetWindowTextW(hwnd, &mut title).max(0) as usize;
-    (String::from_utf16_lossy(&title[..len]), window_exe(app_window(hwnd)))
+    (
+        String::from_utf16_lossy(&title[..len]),
+        window_exe(app_window(hwnd)),
+    )
 }
 
 fn sidebar_hwnd(app: &AppHandle) -> isize {
@@ -1216,16 +1293,16 @@ fn sidebar_hwnd(app: &AppHandle) -> isize {
 #[tauri::command]
 pub async fn sidebar_windows(app: AppHandle) -> Vec<OpenWindow> {
     let sidebar = sidebar_hwnd(&app);
-    off_thread(move || list_windows(sidebar)).await.unwrap_or_default()
+    off_thread(move || list_windows(sidebar))
+        .await
+        .unwrap_or_default()
 }
 
 /// Bring a window forward, restoring it if minimized, or minimize it when it
 /// was already the active one — the taskbar's own click behaviour.
 #[tauri::command]
 pub async fn sidebar_activate(id: String) -> Result<(), String> {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        IsIconic, IsWindow, ShowWindow, SW_MINIMIZE,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindow, ShowWindow, SW_MINIMIZE};
     let raw: isize = id.parse().map_err(|_| "Not a window.".to_string())?;
     off_thread(move || unsafe {
         let hwnd = HWND(raw as *mut c_void);
@@ -1259,7 +1336,8 @@ unsafe fn app_window(hwnd: HWND) -> HWND {
         let len = GetClassNameW(child, &mut class).max(0) as usize;
         let mut pid = 0u32;
         GetWindowThreadProcessId(child, Some(&mut pid));
-        if String::from_utf16_lossy(&class[..len]) == "Windows.UI.Core.CoreWindow" && pid != found.0 {
+        if String::from_utf16_lossy(&class[..len]) == "Windows.UI.Core.CoreWindow" && pid != found.0
+        {
             found.1 = child.0 as isize;
             return false.into();
         }
@@ -1268,7 +1346,11 @@ unsafe fn app_window(hwnd: HWND) -> HWND {
     let mut frame_pid = 0u32;
     GetWindowThreadProcessId(hwnd, Some(&mut frame_pid));
     let mut found = (frame_pid, 0isize);
-    let _ = EnumChildWindows(Some(hwnd), Some(find), LPARAM(std::ptr::addr_of_mut!(found) as isize));
+    let _ = EnumChildWindows(
+        Some(hwnd),
+        Some(find),
+        LPARAM(std::ptr::addr_of_mut!(found) as isize),
+    );
     if found.1 != 0 {
         HWND(found.1 as *mut c_void)
     } else {
@@ -1311,7 +1393,9 @@ unsafe fn window_icon(hwnd: HWND) -> Option<windows::Win32::UI::WindowsAndMessag
 
 /// Draw an icon into a 32-bit buffer and encode it. `DrawIconEx` handles every
 /// icon format, old masked ones included, which reading the bitmaps does not.
-pub(crate) unsafe fn icon_to_data_url(icon: windows::Win32::UI::WindowsAndMessaging::HICON) -> Option<String> {
+pub(crate) unsafe fn icon_to_data_url(
+    icon: windows::Win32::UI::WindowsAndMessaging::HICON,
+) -> Option<String> {
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, BITMAPINFO,
         BITMAPINFOHEADER, DIB_RGB_COLORS,
@@ -1337,7 +1421,8 @@ pub(crate) unsafe fn icon_to_data_url(icon: windows::Win32::UI::WindowsAndMessag
     };
     let old = SelectObject(dc, bitmap.into());
     let drawn = DrawIconEx(dc, 0, 0, icon, SIZE, SIZE, 0, None, DI_NORMAL).is_ok();
-    let mut pixels = std::slice::from_raw_parts(bits as *const u8, (SIZE * SIZE * 4) as usize).to_vec();
+    let mut pixels =
+        std::slice::from_raw_parts(bits as *const u8, (SIZE * SIZE * 4) as usize).to_vec();
     SelectObject(dc, old);
     let _ = DeleteObject(bitmap.into());
     let _ = DeleteDC(dc);
@@ -1353,7 +1438,9 @@ pub(crate) unsafe fn icon_to_data_url(icon: windows::Win32::UI::WindowsAndMessag
             pixel[3] = 255;
         }
     }
-    crate::explorer::rgba_to_data_url(SIZE as u32, SIZE as u32, &pixels).ok().flatten()
+    crate::explorer::rgba_to_data_url(SIZE as u32, SIZE as u32, &pixels)
+        .ok()
+        .flatten()
 }
 
 /// The program behind a window, whatever kind of window it is: the owner is
@@ -1421,7 +1508,11 @@ static SETTINGS: std::sync::Mutex<Option<serde_json::Value>> = std::sync::Mutex:
 
 fn settings_file() -> Option<std::path::PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA")?;
-    Some(std::path::PathBuf::from(local).join("WinT").join("sidebar-settings.json"))
+    Some(
+        std::path::PathBuf::from(local)
+            .join("WinT")
+            .join("sidebar-settings.json"),
+    )
 }
 
 fn load_settings() -> serde_json::Value {
@@ -1441,12 +1532,17 @@ fn load_settings() -> serde_json::Value {
 /// in its own defaults, so a missing key is never an error.
 #[tauri::command]
 pub async fn sidebar_settings() -> serde_json::Value {
-    off_thread(load_settings).await.unwrap_or_else(|| serde_json::json!({}))
+    off_thread(load_settings)
+        .await
+        .unwrap_or_else(|| serde_json::json!({}))
 }
 
 /// Save the settings and hand them to the rail straight away.
 #[tauri::command]
-pub async fn sidebar_settings_set(app: AppHandle, settings: serde_json::Value) -> Result<(), String> {
+pub async fn sidebar_settings_set(
+    app: AppHandle,
+    settings: serde_json::Value,
+) -> Result<(), String> {
     use tauri::Emitter;
     *SETTINGS.lock().unwrap_or_else(|e| e.into_inner()) = Some(settings.clone());
     // To every page: the rail applies it, and a second copy of the tool page
@@ -1472,7 +1568,9 @@ unsafe fn app_id(hwnd: HWND) -> Option<String> {
     use windows::Win32::Foundation::PROPERTYKEY;
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
-    use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
+    use windows::Win32::UI::Shell::PropertiesSystem::{
+        IPropertyStore, SHGetPropertyStoreForWindow,
+    };
     // PKEY_AppUserModel_ID, spelled out so it needs no extra crate feature.
     const APP_ID: PROPERTYKEY = PROPERTYKEY {
         fmtid: GUID::from_u128(0x9F4C2855_9F79_4B39_A8D0_E1D42DE1D5F3),
@@ -1570,21 +1668,38 @@ pub(crate) fn exe_description(exe: &str) -> Option<String> {
         let mut ptr: *mut c_void = std::ptr::null_mut();
         let mut len = 0u32;
         let key = HSTRING::from(r"\VarFileInfo\Translation");
-        if !VerQueryValueW(data.as_ptr().cast(), PCWSTR(key.as_ptr()), &mut ptr, &mut len).as_bool()
+        if !VerQueryValueW(
+            data.as_ptr().cast(),
+            PCWSTR(key.as_ptr()),
+            &mut ptr,
+            &mut len,
+        )
+        .as_bool()
             || len < 4
         {
             return None;
         }
         let lang = *(ptr as *const u16);
         let codepage = *(ptr as *const u16).add(1);
-        let key = HSTRING::from(format!(r"\StringFileInfo\{lang:04x}{codepage:04x}\FileDescription"));
-        if !VerQueryValueW(data.as_ptr().cast(), PCWSTR(key.as_ptr()), &mut ptr, &mut len).as_bool()
+        let key = HSTRING::from(format!(
+            r"\StringFileInfo\{lang:04x}{codepage:04x}\FileDescription"
+        ));
+        if !VerQueryValueW(
+            data.as_ptr().cast(),
+            PCWSTR(key.as_ptr()),
+            &mut ptr,
+            &mut len,
+        )
+        .as_bool()
             || len == 0
         {
             return None;
         }
         let text = std::slice::from_raw_parts(ptr as *const u16, len as usize);
-        let text = String::from_utf16_lossy(text).trim_end_matches('\0').trim().to_string();
+        let text = String::from_utf16_lossy(text)
+            .trim_end_matches('\0')
+            .trim()
+            .to_string();
         (!text.is_empty()).then_some(text)
     }
 }
@@ -1593,7 +1708,9 @@ pub(crate) fn exe_description(exe: &str) -> Option<String> {
 /// directly; it has to be activated through its AppUserModelID instead.
 fn is_packaged(exe: &str) -> bool {
     let lower = exe.to_ascii_lowercase();
-    lower.is_empty() || lower.contains(r"\windowsapps\") || lower.ends_with(r"\applicationframehost.exe")
+    lower.is_empty()
+        || lower.contains(r"\windowsapps\")
+        || lower.ends_with(r"\applicationframehost.exe")
 }
 
 // ---- browser profiles ------------------------------------------------------------
@@ -1610,8 +1727,7 @@ fn is_packaged(exe: &str) -> bool {
 
 /// The exes this is worth trying at all. Every one of them is Chromium, lays
 /// its install out the same way and writes the same kind of AppUserModelID.
-const CHROMIUM_EXES: [&str; 6] =
-    ["msedge", "chrome", "brave", "vivaldi", "opera", "thorium"];
+const CHROMIUM_EXES: [&str; 6] = ["msedge", "chrome", "brave", "vivaldi", "opera", "thorium"];
 
 /// Where a Chromium browser keeps its profiles. It is read off the exe's own
 /// path rather than a list of browsers: every one of them installs as
@@ -1624,16 +1740,25 @@ const CHROMIUM_EXES: [&str; 6] =
 /// folder that is really there wins.
 fn user_data_dirs(exe: &str) -> Vec<std::path::PathBuf> {
     let path = std::path::Path::new(exe);
-    let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+    let stem = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
     if !CHROMIUM_EXES.contains(&stem.as_str()) {
         return Vec::new();
     }
-    let Some(local) = std::env::var_os("LOCALAPPDATA") else { return Vec::new() };
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+        return Vec::new();
+    };
     let local = std::path::Path::new(&local);
     let mut candidates = Vec::new();
     // `…\Google\Chrome\Application\chrome.exe` → `Google\Chrome`, and the
     // product on its own for the browsers that skip the vendor folder.
-    if let Some(product) = path.parent().filter(|dir| dir.ends_with("Application")).and_then(std::path::Path::parent)
+    if let Some(product) = path
+        .parent()
+        .filter(|dir| dir.ends_with("Application"))
+        .and_then(std::path::Path::parent)
     {
         if let Some(name) = product.file_name() {
             if let Some(vendor) = product.parent().and_then(std::path::Path::file_name) {
@@ -1660,7 +1785,10 @@ fn user_data_dirs(exe: &str) -> Vec<std::path::PathBuf> {
 
 /// The folder name a profile's part of an AppUserModelID is made from.
 fn profile_id(dir: &str) -> String {
-    dir.chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_ascii_lowercase()
+    dir.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 /// The browser profile a window belongs to: the folder to start the browser
@@ -1680,17 +1808,16 @@ fn browser_profile(exe: &str, aumid: &str) -> Option<(String, Option<String>)> {
         // `MSEdge.UserData.Profile1`, etc. It still needs an explicit
         // `--profile-directory=Default` when launched from a pin; a plain
         // start may reuse whichever profile was active last.
-        if parts.len() == 1
-            && browser.as_deref() == Some(tail)
-            && data.join("Default").is_dir()
-        {
+        if parts.len() == 1 && browser.as_deref() == Some(tail) && data.join("Default").is_dir() {
             return Some(("Default".into(), profile_name(&data, "Default")));
         }
         // The folder the AppUserModelID was built from has to be the folder
         // being read, or this is a different install of the same browser —
         // stable's profiles answering for Canary's, or a browser started
         // against some other `--user-data-dir` altogether.
-        let named = data.file_name().map(|name| profile_id(&name.to_string_lossy()));
+        let named = data
+            .file_name()
+            .map(|name| profile_id(&name.to_string_lossy()));
         if parts.len() > 2 && named.as_deref() != parts.get(parts.len() - 2).map(String::as_str) {
             continue;
         }
@@ -1727,7 +1854,9 @@ fn profile_name(data: &std::path::Path, dir: &str) -> Option<String> {
 
 /// The arguments that start one window's app as the same profile it is.
 unsafe fn profile_args(hwnd: HWND, exe: &str) -> Vec<String> {
-    let Some(aumid) = window_app_id(hwnd) else { return Vec::new() };
+    let Some(aumid) = window_app_id(hwnd) else {
+        return Vec::new();
+    };
     match browser_profile(exe, &aumid) {
         Some((dir, _)) => vec![format!("--profile-directory={dir}")],
         None => Vec::new(),
@@ -1752,7 +1881,11 @@ pub async fn sidebar_window_menu(id: String) -> Result<WindowMenu, String> {
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_default()
         });
-        let target = if packaged { window_app_id(hwnd).unwrap_or_default() } else { exe.clone() };
+        let target = if packaged {
+            window_app_id(hwnd).unwrap_or_default()
+        } else {
+            exe.clone()
+        };
         // A browser profile is its own app on the rail, so it is named as one:
         // "Gyxi — Microsoft Edge", not a second row called Microsoft Edge.
         let profile = window_app_id(hwnd).and_then(|aumid| browser_profile(&exe, &aumid));
@@ -1842,7 +1975,9 @@ pub async fn sidebar_window_recent(id: String) -> Vec<crate::recent::RecentItem>
         if !own.is_empty() {
             return own;
         }
-        window_app_id(hwnd).map(|aumid| crate::recent::jump_list(&aumid)).unwrap_or_default()
+        window_app_id(hwnd)
+            .map(|aumid| crate::recent::jump_list(&aumid))
+            .unwrap_or_default()
     })
     .await
     .unwrap_or_default()
@@ -1874,7 +2009,8 @@ pub async fn sidebar_window_command(id: String, command: String) -> Result<(), S
             // Posted, not sent: an app that asks "save changes?" must not
             // hold this thread while the user decides.
             "close" => {
-                PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)).map_err(|e| e.to_string())?;
+                PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0))
+                    .map_err(|e| e.to_string())?;
             }
             other => return Err(format!("Unknown window command: {other}")),
         }
@@ -1907,7 +2043,9 @@ pub async fn sidebar_suggestions(app: AppHandle) -> Vec<crate::suggest::Suggesti
 
 #[tauri::command]
 pub async fn sidebar_suggest_icon(target: String) -> Option<String> {
-    off_thread(move || crate::suggest::icon(&target)).await.flatten()
+    off_thread(move || crate::suggest::icon(&target))
+        .await
+        .flatten()
 }
 
 #[tauri::command]
@@ -1945,10 +2083,12 @@ pub async fn sidebar_suggest_launch(
         // A pin carrying arguments is skipped: those say which browser
         // profile it stands for, and a window that is already up may well be
         // a different one.
-        let path = crate::suggest::is_path(&target) && target.to_ascii_lowercase().ends_with(".exe");
+        let path =
+            crate::suggest::is_path(&target) && target.to_ascii_lowercase().ends_with(".exe");
         if args.is_empty() && path {
             let want = app.as_deref().filter(|app| !crate::suggest::is_path(app));
-            if let Some(found) = app_window_for(&target, name.as_deref().unwrap_or_default(), want) {
+            if let Some(found) = app_window_for(&target, name.as_deref().unwrap_or_default(), want)
+            {
                 return reveal_app(found, Some(target), name);
             }
         }
@@ -2038,7 +2178,11 @@ pub async fn sidebar_network() -> NetStatus {
             Default::default()
         };
         NetStatus {
-            kind: if wireless { "wifi".into() } else { "wired".into() },
+            kind: if wireless {
+                "wifi".into()
+            } else {
+                "wired".into()
+            },
             name: if ssid.is_empty() { description } else { ssid },
             signal,
             ipv4,
@@ -2171,7 +2315,13 @@ pub async fn sidebar_connections(app: AppHandle) -> Vec<Connection> {
                     .cloned()
                     .unwrap_or_else(|| format!("pid {pid}"));
                 let window = windows.get(&process.to_ascii_lowercase()).cloned();
-                Connection { process, pid, remote, count, window }
+                Connection {
+                    process,
+                    pid,
+                    remote,
+                    count,
+                    window,
+                }
             })
             .collect();
         // Busiest first, so the top of the menu is the app doing the talking.
@@ -2222,9 +2372,7 @@ pub struct TrayApp {
 pub async fn sidebar_tray_apps(app: AppHandle) -> Vec<TrayApp> {
     use std::collections::HashMap;
     use windows::core::BOOL;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetShellWindow,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetShellWindow};
 
     unsafe extern "system" fn collect(hwnd: HWND, found: LPARAM) -> BOOL {
         let found = &mut *(found.0 as *mut Vec<isize>);
@@ -2269,14 +2417,19 @@ pub async fn sidebar_tray_apps(app: AppHandle) -> Vec<TrayApp> {
             (Some(_), Some(raw)) => {
                 format!("WinT is in the notification area; the rail draws {raw:#x} for it")
             }
-            (Some(_), None) => "WinT's main window is on screen, so the rail leaves it out".to_string(),
+            (Some(_), None) => {
+                "WinT's main window is on screen, so the rail leaves it out".to_string()
+            }
         },
     );
 
     off_thread(move || {
         let mut handles: Vec<isize> = Vec::new();
         let shell = unsafe {
-            let _ = EnumWindows(Some(collect), LPARAM(std::ptr::addr_of_mut!(handles) as isize));
+            let _ = EnumWindows(
+                Some(collect),
+                LPARAM(std::ptr::addr_of_mut!(handles) as isize),
+            );
             // The desktop's own window belongs to Explorer, which owns several
             // of the tray's icons (volume, network, safely remove). Leaving the
             // shell out is what keeps those from being listed as an app.
@@ -2564,7 +2717,8 @@ pub async fn sidebar_reveal(
     let own = std::env::current_exe()
         .map(|path| path.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
-    if !own.is_empty() && exe.as_deref().map(str::to_ascii_lowercase).as_deref() == Some(own.as_str())
+    if !own.is_empty()
+        && exe.as_deref().map(str::to_ascii_lowercase).as_deref() == Some(own.as_str())
     {
         crate::show_main_window(&app);
         return Ok(());
@@ -2604,8 +2758,13 @@ pub(crate) unsafe fn app_window_for(exe: &str, name: &str, want_app: Option<&str
     // worth showing can belong to either.
     let family = family_pids(&want);
     let mut handles: Vec<isize> = Vec::new();
-    let _ = EnumWindows(Some(collect), LPARAM(std::ptr::addr_of_mut!(handles) as isize));
-    let wanted = want_app.map(str::to_ascii_lowercase).filter(|app| !app.is_empty());
+    let _ = EnumWindows(
+        Some(collect),
+        LPARAM(std::ptr::addr_of_mut!(handles) as isize),
+    );
+    let wanted = want_app
+        .map(str::to_ascii_lowercase)
+        .filter(|app| !app.is_empty());
     type WindowRank = (u8, (u8, u8, u8, i64));
     let mut best: Option<(WindowRank, HWND)> = None;
     for other in handles {
@@ -2625,9 +2784,7 @@ pub(crate) unsafe fn app_window_for(exe: &str, name: &str, want_app: Option<&str
         // profile instead.
         let same = match wanted.as_deref() {
             Some(app) => {
-                if !window_app_id(candidate)
-                    .is_some_and(|id| id.eq_ignore_ascii_case(app))
-                {
+                if !window_app_id(candidate).is_some_and(|id| id.eq_ignore_ascii_case(app)) {
                     continue;
                 }
                 1
@@ -2645,7 +2802,11 @@ unsafe fn reveal_app(hwnd: HWND, exe: Option<String>, name: Option<String>) -> R
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
 
-    let own_exe = if hwnd.0.is_null() { String::new() } else { window_exe(app_window(hwnd)) };
+    let own_exe = if hwnd.0.is_null() {
+        String::new()
+    } else {
+        window_exe(app_window(hwnd))
+    };
     let want = exe
         .clone()
         .filter(|exe| !exe.is_empty())
@@ -2714,7 +2875,9 @@ unsafe fn reveal_app(hwnd: HWND, exe: Option<String>, name: Option<String>) -> R
         .ok_or("That app has no window to show.")?;
     // An exe under WindowsApps cannot be started by its path: the package
     // has to be activated, or Windows answers with nothing at all.
-    let activation = (!hwnd.0.is_null()).then(|| shell_activation(hwnd)).flatten();
+    let activation = (!hwnd.0.is_null())
+        .then(|| shell_activation(hwnd))
+        .flatten();
     let mut command = match activation {
         Some(command) if is_packaged(&exe) => command,
         _ => {

@@ -5,13 +5,13 @@
 //! is exactly what makes a folder listing slow. A listing must come back fast
 //! enough that clicking a tree node feels like the folder was already open.
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
-use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 
 #[derive(Serialize, Clone)]
@@ -134,7 +134,10 @@ fn seed() -> Vec<String> {
 /// The tool owns the order, so it writes the whole list back rather than
 /// asking for one to be added or removed.
 pub fn bookmarks_set(app_data: &Path, paths: Vec<String>) -> Result<Vec<String>, String> {
-    let kept: Vec<String> = paths.into_iter().filter(|path| bookmarkable(path)).collect();
+    let kept: Vec<String> = paths
+        .into_iter()
+        .filter(|path| bookmarkable(path))
+        .collect();
     let file = bookmarks_file(app_data).ok_or("There is nowhere to save bookmarks.")?;
     std::fs::write(
         &file,
@@ -201,13 +204,27 @@ pub struct Layout {
     pub window_height: u32,
 }
 
-fn default_sort() -> String { "name".into() }
-fn default_window_width() -> u32 { 960 }
-fn default_window_height() -> u32 { 720 }
+fn default_sort() -> String {
+    "name".into()
+}
+fn default_window_width() -> u32 {
+    960
+}
+fn default_window_height() -> u32 {
+    720
+}
 
 fn default_column_widths() -> BTreeMap<String, u32> {
-    [("name", 320), ("type", 130), ("size", 92), ("modified", 148), ("created", 148)]
-        .into_iter().map(|(name, width)| (name.to_string(), width)).collect()
+    [
+        ("name", 320),
+        ("type", 130),
+        ("size", 92),
+        ("modified", 148),
+        ("created", 148),
+    ]
+    .into_iter()
+    .map(|(name, width)| (name.to_string(), width))
+    .collect()
 }
 
 const SIDE_DEFAULT: u32 = 268;
@@ -227,10 +244,18 @@ fn layout_file(app_data: &Path) -> Option<PathBuf> {
 
 fn clamp_layout(layout: Layout) -> Layout {
     let defaults = default_column_widths();
-    let column_widths = defaults.into_iter().map(|(name, fallback)| {
-        let width = layout.column_widths.get(&name).copied().unwrap_or(fallback).clamp(64, 800);
-        (name, width)
-    }).collect();
+    let column_widths = defaults
+        .into_iter()
+        .map(|(name, fallback)| {
+            let width = layout
+                .column_widths
+                .get(&name)
+                .copied()
+                .unwrap_or(fallback)
+                .clamp(64, 800);
+            (name, width)
+        })
+        .collect();
     Layout {
         side_width: layout.side_width.clamp(SIDE_MIN, SIDE_MAX),
         preview_width: layout.preview_width.clamp(PREVIEW_MIN, PREVIEW_MAX),
@@ -245,7 +270,9 @@ fn clamp_layout(layout: Layout) -> Layout {
         },
         desc: layout.desc,
         window_width: layout.window_width.clamp(WINDOW_WIDTH_MIN, WINDOW_SIZE_MAX),
-        window_height: layout.window_height.clamp(WINDOW_HEIGHT_MIN, WINDOW_SIZE_MAX),
+        window_height: layout
+            .window_height
+            .clamp(WINDOW_HEIGHT_MIN, WINDOW_SIZE_MAX),
     }
 }
 
@@ -403,7 +430,11 @@ fn join_zip(archive: &Path, inner: &str) -> String {
     if inner.is_empty() {
         archive.to_string_lossy().into_owned()
     } else {
-        format!("{}\\{}", archive.to_string_lossy(), inner.replace('/', "\\"))
+        format!(
+            "{}\\{}",
+            archive.to_string_lossy(),
+            inner.replace('/', "\\")
+        )
     }
 }
 
@@ -421,12 +452,8 @@ fn zip_parent(archive: &Path, inner: &str) -> Option<String> {
 }
 
 fn open_zip(archive: &Path) -> Result<ZipArchive<File>, String> {
-    let file = File::open(archive).map_err(|error| {
-        format!(
-            "{} could not be opened. {error}",
-            name_of(archive)
-        )
-    })?;
+    let file = File::open(archive)
+        .map_err(|error| format!("{} could not be opened. {error}", name_of(archive)))?;
     ZipArchive::new(file).map_err(|error| {
         format!(
             "{} is not a readable zip archive. {error}",
@@ -683,9 +710,14 @@ fn list_dir(path: PathBuf, dirs_only: bool, include_created: bool) -> Result<Lis
             bytes: if is_dir && !is_archive { 0 } else { meta.len() },
             modified: modified_ms(&meta),
             created: if include_created {
-                meta.created().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|duration| duration.as_millis() as u64).unwrap_or(0)
-            } else { 0 },
+                meta.created()
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_millis() as u64)
+                    .unwrap_or(0)
+            } else {
+                0
+            },
             hidden,
             readonly: readonly || is_archive,
         });
@@ -794,12 +826,11 @@ fn shell_thumbnail(path: &Path, size: u32) -> Result<Option<String>, String> {
         // THUMBNAILONLY: a real extracted picture, never the generic type
         // icon. When the cache is empty the call fails and the decode path
         // below builds one from the file instead.
-        let bitmap = match unsafe {
-            factory.GetImage(wanted, SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK)
-        } {
-            Ok(bitmap) => bitmap,
-            Err(_) => return Ok(None),
-        };
+        let bitmap =
+            match unsafe { factory.GetImage(wanted, SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK) } {
+                Ok(bitmap) => bitmap,
+                Err(_) => return Ok(None),
+            };
         let mut info = BITMAP::default();
         let read = unsafe {
             GetObjectW(
@@ -895,7 +926,11 @@ fn decode_thumbnail(path: &Path, size: u32) -> Result<Option<String>, String> {
     rgba_to_data_url(rgba.width(), rgba.height(), rgba.as_raw())
 }
 
-pub(crate) fn rgba_to_data_url(width: u32, height: u32, pixels: &[u8]) -> Result<Option<String>, String> {
+pub(crate) fn rgba_to_data_url(
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> Result<Option<String>, String> {
     let mut png = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut png, width, height);
@@ -959,8 +994,8 @@ fn delete_outright(paths: &[&String]) -> Result<(), String> {
 pub fn delete(paths: Vec<String>, recycle: bool) -> Result<(), String> {
     use windows::core::PCWSTR;
     use windows::Win32::UI::Shell::{
-        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT,
-        FO_DELETE, SHFILEOPSTRUCTW,
+        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE,
+        SHFILEOPSTRUCTW,
     };
 
     if let Some(path) = paths.iter().find(|path| inside_zip(path)) {
@@ -1046,15 +1081,22 @@ pub fn rename(path: String, new_name: String) -> Result<String, String> {
     if name.is_empty() || name == "." || name == ".." {
         return Err("A name cannot be empty.".into());
     }
-    if let Some(bad) = name.chars().find(|c| "\\/:*?\"<>|".contains(*c) || c.is_control()) {
+    if let Some(bad) = name
+        .chars()
+        .find(|c| "\\/:*?\"<>|".contains(*c) || c.is_control())
+    {
         return Err(format!("A name cannot contain {bad}"));
     }
     let from = PathBuf::from(&path);
-    let parent = from.parent().ok_or("The top of a drive cannot be renamed.")?;
+    let parent = from
+        .parent()
+        .ok_or("The top of a drive cannot be renamed.")?;
     let to = parent.join(name);
     // A change of case only is the same item to Windows, so it must not be
     // mistaken for a clash with itself.
-    let same_item = to.to_string_lossy().eq_ignore_ascii_case(&from.to_string_lossy());
+    let same_item = to
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&from.to_string_lossy());
     if to.exists() && !same_item {
         return Err(format!("{name} already exists here."));
     }
@@ -1075,22 +1117,35 @@ pub fn rename_many(paths: Vec<String>, base: String) -> Result<Vec<String>, Stri
     if stem.is_empty() || stem == "." || stem == ".." {
         return Err("A name cannot be empty.".into());
     }
-    if let Some(bad) = stem.chars().find(|c| "\\/:*?\"<>|".contains(*c) || c.is_control()) {
+    if let Some(bad) = stem
+        .chars()
+        .find(|c| "\\/:*?\"<>|".contains(*c) || c.is_control())
+    {
         return Err(format!("A name cannot contain {bad}"));
     }
     let mut moves = Vec::with_capacity(paths.len());
     for (index, raw) in paths.iter().enumerate() {
         let from = PathBuf::from(raw);
-        let parent = from.parent().ok_or("The top of a drive cannot be renamed.")?;
-        let suffix = if index == 0 { String::new() } else { format!(" ({})", index + 1) };
+        let parent = from
+            .parent()
+            .ok_or("The top of a drive cannot be renamed.")?;
+        let suffix = if index == 0 {
+            String::new()
+        } else {
+            format!(" ({})", index + 1)
+        };
         let extension = if from.is_file() {
-            from.extension().map(|value| format!(".{}", value.to_string_lossy())).unwrap_or_default()
+            from.extension()
+                .map(|value| format!(".{}", value.to_string_lossy()))
+                .unwrap_or_default()
         } else {
             String::new()
         };
         let to = parent.join(format!("{stem}{suffix}{extension}"));
         let belongs_to_batch = paths.iter().any(|candidate| {
-            Path::new(candidate).to_string_lossy().eq_ignore_ascii_case(&to.to_string_lossy())
+            Path::new(candidate)
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&to.to_string_lossy())
         });
         if to.exists() && !belongs_to_batch {
             return Err(format!("{} already exists here.", name_of(&to)));
@@ -1102,12 +1157,22 @@ pub fn rename_many(paths: Vec<String>, base: String) -> Result<Vec<String>, Stri
     let nonce = format!(
         "wint-rename-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
     );
-    let staged: Vec<(PathBuf, PathBuf, PathBuf)> = moves.into_iter().enumerate().map(|(index, (from, to))| {
-        let temp = from.parent().unwrap_or_else(|| Path::new(".")).join(format!(".{nonce}-{index}.tmp"));
-        (from, temp, to)
-    }).collect();
+    let staged: Vec<(PathBuf, PathBuf, PathBuf)> = moves
+        .into_iter()
+        .enumerate()
+        .map(|(index, (from, to))| {
+            let temp = from
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(format!(".{nonce}-{index}.tmp"));
+            (from, temp, to)
+        })
+        .collect();
     for (index, (from, temp, _)) in staged.iter().enumerate() {
         if let Err(error) = std::fs::rename(from, temp) {
             for (restore, staged_path, _) in staged[..index].iter().rev() {
@@ -1119,13 +1184,19 @@ pub fn rename_many(paths: Vec<String>, base: String) -> Result<Vec<String>, Stri
     for (_, temp, to) in &staged {
         if let Err(error) = std::fs::rename(temp, to) {
             for (from, staged_path, final_path) in staged.iter() {
-                if staged_path.exists() { let _ = std::fs::rename(staged_path, from); }
-                else if final_path.exists() { let _ = std::fs::rename(final_path, from); }
+                if staged_path.exists() {
+                    let _ = std::fs::rename(staged_path, from);
+                } else if final_path.exists() {
+                    let _ = std::fs::rename(final_path, from);
+                }
             }
             return Err(format!("{} could not be renamed. {error}", name_of(to)));
         }
     }
-    Ok(staged.into_iter().map(|(_, _, to)| to.to_string_lossy().into_owned()).collect())
+    Ok(staged
+        .into_iter()
+        .map(|(_, _, to)| to.to_string_lossy().into_owned())
+        .collect())
 }
 
 /// Makes "New folder" - or "New folder (2)" and so on when that is taken -
@@ -1134,7 +1205,11 @@ pub fn new_folder(dir: String) -> Result<String, String> {
     refuse_zip(std::slice::from_ref(&dir), "changed")?;
     let base = PathBuf::from(&dir);
     for n in 1..1000 {
-        let name = if n == 1 { "New folder".to_string() } else { format!("New folder ({n})") };
+        let name = if n == 1 {
+            "New folder".to_string()
+        } else {
+            format!("New folder ({n})")
+        };
         let path = base.join(name);
         if path.exists() {
             continue;
@@ -1163,7 +1238,10 @@ pub fn transfer(paths: Vec<String>, dest: String, copy: bool) -> Result<(), Stri
     if !dest_dir.is_dir() {
         return Err(format!("{} is not a folder.", name_of(&dest_dir)));
     }
-    let same = |a: &Path, b: &Path| a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy());
+    let same = |a: &Path, b: &Path| {
+        a.to_string_lossy()
+            .eq_ignore_ascii_case(&b.to_string_lossy())
+    };
     let sources: Vec<&String> = paths
         .iter()
         .filter(|path| {
@@ -1177,9 +1255,11 @@ pub fn transfer(paths: Vec<String>, dest: String, copy: bool) -> Result<(), Stri
     if sources.is_empty() {
         return Ok(());
     }
-    let into_own_folder = sources
-        .iter()
-        .any(|path| Path::new(path.as_str()).parent().is_some_and(|parent| same(parent, &dest_dir)));
+    let into_own_folder = sources.iter().any(|path| {
+        Path::new(path.as_str())
+            .parent()
+            .is_some_and(|parent| same(parent, &dest_dir))
+    });
     let wide = |items: &[&String]| {
         let mut buffer: Vec<u16> = Vec::new();
         for item in items {
@@ -1226,7 +1306,9 @@ pub struct Clip {
 #[cfg(windows)]
 fn preferred_effect_format() -> u32 {
     use windows::core::w;
-    unsafe { windows::Win32::System::DataExchange::RegisterClipboardFormatW(w!("Preferred DropEffect")) }
+    unsafe {
+        windows::Win32::System::DataExchange::RegisterClipboardFormatW(w!("Preferred DropEffect"))
+    }
 }
 
 /// The Windows clipboard, opened with a few retries: another program holding
@@ -1288,7 +1370,8 @@ pub fn clipboard_set(paths: Vec<String>, cut: bool) -> Result<(), String> {
         EmptyClipboard().map_err(|e| e.to_string())?;
         // CF_HDROP
         SetClipboardData(15, Some(HANDLE(files.0))).map_err(|e| e.to_string())?;
-        SetClipboardData(preferred_effect_format(), Some(HANDLE(mode.0))).map_err(|e| e.to_string())?;
+        SetClipboardData(preferred_effect_format(), Some(HANDLE(mode.0)))
+            .map_err(|e| e.to_string())?;
         Ok(())
     })
 }
@@ -1318,7 +1401,11 @@ pub fn clipboard_get() -> Result<Option<Clip>, String> {
             Ok(mode) => {
                 let global = HGLOBAL(mode.0);
                 let data = GlobalLock(global) as *const u32;
-                let value = if data.is_null() { 1 } else { data.read_unaligned() };
+                let value = if data.is_null() {
+                    1
+                } else {
+                    data.read_unaligned()
+                };
                 let _ = GlobalUnlock(global);
                 value & 2 != 0
             }
@@ -1379,7 +1466,10 @@ pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
     refuse_zip(paths, "dragged out")?;
     let mut pidls = Vec::new();
     for path in paths {
-        let wide: Vec<u16> = std::ffi::OsStr::new(path.as_str()).encode_wide().chain([0]).collect();
+        let wide: Vec<u16> = std::ffi::OsStr::new(path.as_str())
+            .encode_wide()
+            .chain([0])
+            .collect();
         let pidl = unsafe { ILCreateFromPathW(PCWSTR(wide.as_ptr())) };
         if !pidl.is_null() {
             pidls.push(pidl as *const _);
@@ -1389,12 +1479,20 @@ pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
         if pidls.is_empty() {
             return Err("Nothing to drag.".to_string());
         }
-        let items = unsafe { SHCreateShellItemArrayFromIDLists(&pidls) }.map_err(|e| e.to_string())?;
+        let items =
+            unsafe { SHCreateShellItemArrayFromIDLists(&pidls) }.map_err(|e| e.to_string())?;
         let data: IDataObject =
             unsafe { items.BindToHandler(None, &BHID_DataObject) }.map_err(|e| e.to_string())?;
         let source: IDropSource = Source.into();
         let mut effect = DROPEFFECT_NONE;
-        let _ = unsafe { DoDragDrop(&data, &source, DROPEFFECT_COPY | DROPEFFECT_MOVE, &mut effect) };
+        let _ = unsafe {
+            DoDragDrop(
+                &data,
+                &source,
+                DROPEFFECT_COPY | DROPEFFECT_MOVE,
+                &mut effect,
+            )
+        };
         Ok(if effect.0 & DROPEFFECT_MOVE.0 != 0 {
             "move"
         } else if effect.0 & DROPEFFECT_COPY.0 != 0 {
@@ -1429,7 +1527,11 @@ mod tests {
             .expect("the thumbnail call itself failed");
         let url = made.expect("Windows returned no thumbnail for a PNG");
         assert!(url.starts_with("data:image/png;base64,"));
-        assert!(url.len() > 200, "suspiciously small thumbnail: {}", url.len());
+        assert!(
+            url.len() > 200,
+            "suspiciously small thumbnail: {}",
+            url.len()
+        );
     }
 
     #[test]
@@ -1440,7 +1542,8 @@ mod tests {
 
     #[test]
     fn delete_removes_a_file_outright() {
-        let file = std::env::temp_dir().join(format!("wint-explorer-test-{}.txt", std::process::id()));
+        let file =
+            std::env::temp_dir().join(format!("wint-explorer-test-{}.txt", std::process::id()));
         std::fs::write(&file, b"delete me").unwrap();
         delete(vec![file.to_string_lossy().into_owned()], false).unwrap();
         assert!(!file.exists());
@@ -1460,11 +1563,18 @@ mod tests {
         std::fs::write(&first, b"one").unwrap();
         std::fs::write(&second, b"two").unwrap();
         let renamed = rename_many(
-            vec![first.to_string_lossy().into_owned(), second.to_string_lossy().into_owned()],
+            vec![
+                first.to_string_lossy().into_owned(),
+                second.to_string_lossy().into_owned(),
+            ],
             "report".into(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(Path::new(&renamed[0]).file_name().unwrap(), "report.txt");
-        assert_eq!(Path::new(&renamed[1]).file_name().unwrap(), "report (2).png");
+        assert_eq!(
+            Path::new(&renamed[1]).file_name().unwrap(),
+            "report (2).png"
+        );
         assert!(Path::new(&renamed[0]).is_file());
         assert!(Path::new(&renamed[1]).is_file());
     }
@@ -1475,11 +1585,17 @@ mod tests {
         let first = dir.path().join("one.txt");
         let second = dir.path().join("two.txt");
         let collision = dir.path().join("report (2).txt");
-        for path in [&first, &second, &collision] { std::fs::write(path, b"x").unwrap(); }
+        for path in [&first, &second, &collision] {
+            std::fs::write(path, b"x").unwrap();
+        }
         assert!(rename_many(
-            vec![first.to_string_lossy().into_owned(), second.to_string_lossy().into_owned()],
+            vec![
+                first.to_string_lossy().into_owned(),
+                second.to_string_lossy().into_owned()
+            ],
             "report".into(),
-        ).is_err());
+        )
+        .is_err());
         assert!(first.is_file());
         assert!(second.is_file());
     }

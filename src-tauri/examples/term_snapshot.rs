@@ -11,9 +11,9 @@
 
 #[cfg(windows)]
 fn main() {
+    use std::sync::{Arc, Mutex};
     use wint_lib::conpty::{self, ConPty};
     use wint_lib::vt::{Cell, Grid, DEFAULT_COLOR};
-    use std::sync::{Arc, Mutex};
 
     let dir = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
     let (cols, rows) = (100usize, 20usize);

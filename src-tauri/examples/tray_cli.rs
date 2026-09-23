@@ -28,7 +28,10 @@ fn main() {
 
     let mut handles: Vec<isize> = Vec::new();
     unsafe {
-        let _ = EnumWindows(Some(collect), LPARAM(std::ptr::addr_of_mut!(handles) as isize));
+        let _ = EnumWindows(
+            Some(collect),
+            LPARAM(std::ptr::addr_of_mut!(handles) as isize),
+        );
     }
 
     println!("-- every window wint.exe owns --");
@@ -106,7 +109,10 @@ fn main() {
     for icon in wint_lib::tray::icons() {
         if icon.exe.to_ascii_lowercase().contains("wint") {
             found = true;
-            println!("  promoted={} exe={} tooltip={:?}", icon.promoted, icon.exe, icon.tooltip);
+            println!(
+                "  promoted={} exe={} tooltip={:?}",
+                icon.promoted, icon.exe, icon.tooltip
+            );
         }
     }
     if !found {

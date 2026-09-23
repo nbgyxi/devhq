@@ -1,68 +1,68 @@
 mod ai;
+pub mod analytics;
 #[cfg(windows)]
 mod appbar;
-#[cfg(windows)]
-mod focus_mode;
-#[cfg(windows)]
-mod media_control;
-#[cfg(windows)]
-pub mod indicators;
-mod autostart;
-pub mod analytics;
+mod apps;
 mod assistant;
+mod autostart;
+#[cfg(windows)]
+mod claude;
 mod cli_registration;
 pub mod clipboard;
 #[cfg(windows)]
-pub mod conpty;
-mod cwd;
-pub mod disk_space;
-pub mod dns;
+mod codex;
 pub mod com;
-pub mod explorer;
-pub mod health;
-mod download;
-pub mod git;
-pub mod github;
 #[cfg(windows)]
-mod jump_list;
-pub mod network;
-mod path_ping;
-mod recent;
-mod suggest;
-mod apps;
-#[cfg(windows)]
-mod picker;
-pub mod procs;
-#[cfg(windows)]
-mod shells;
-mod tech;
-#[cfg(windows)]
-mod claude;
+pub mod conpty;
 #[cfg(windows)]
 mod copilot;
 #[cfg(windows)]
-mod codex;
-#[cfg(windows)]
 mod cursor;
+mod cwd;
+pub mod disk_space;
+pub mod dns;
+mod download;
+pub mod explorer;
+#[cfg(windows)]
+mod focus_mode;
 #[cfg(windows)]
 mod gemini;
+pub mod git;
+pub mod github;
+pub mod health;
+#[cfg(windows)]
+pub mod indicators;
+#[cfg(windows)]
+mod jump_list;
+#[cfg(windows)]
+mod media_control;
+pub mod network;
+mod path_ping;
+#[cfg(windows)]
+mod picker;
+pub mod procs;
+mod recent;
 #[cfg(windows)]
 mod security_audit;
+#[cfg(windows)]
+mod shells;
 mod stall_watch;
-mod torrent;
-mod torrent_assoc;
-mod time_tracker;
-mod workspace;
-mod term;
 pub mod startup;
+mod suggest;
+mod tech;
+mod term;
+mod time_tracker;
 pub mod todo;
 mod tool_window;
+mod torrent;
+mod torrent_assoc;
 pub mod tray;
 mod util;
 #[cfg(windows)]
 pub mod vt;
 pub mod wifi;
 pub mod windows_tools;
+mod workspace;
 
 use procs::{ProcessSnapshot, RunningProc};
 use serde::Serialize;
@@ -143,17 +143,32 @@ fn search_global_binding_set(
                 .id,
         )
     };
-    *state.0.lock().map_err(|_| "Search shortcut state is unavailable.".to_string())? = id;
+    *state
+        .0
+        .lock()
+        .map_err(|_| "Search shortcut state is unavailable.".to_string())? = id;
     Ok(())
 }
 
 #[tauri::command]
-fn clipboard_global_binding_set(state: tauri::State<'_, ClipboardGlobalShortcut>, binding: String) -> Result<(), String> {
-    let id = if binding.trim().is_empty() { None } else {
-        Some(binding.parse::<tauri_plugin_global_shortcut::Shortcut>()
-            .map_err(|e| format!("That Clipboard shortcut is invalid: {e}"))?.id)
+fn clipboard_global_binding_set(
+    state: tauri::State<'_, ClipboardGlobalShortcut>,
+    binding: String,
+) -> Result<(), String> {
+    let id = if binding.trim().is_empty() {
+        None
+    } else {
+        Some(
+            binding
+                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                .map_err(|e| format!("That Clipboard shortcut is invalid: {e}"))?
+                .id,
+        )
     };
-    *state.0.lock().map_err(|_| "Clipboard shortcut state is unavailable.".to_string())? = id;
+    *state
+        .0
+        .lock()
+        .map_err(|_| "Clipboard shortcut state is unavailable.".to_string())? = id;
     Ok(())
 }
 
@@ -194,7 +209,11 @@ fn queue_torrents(app: &AppHandle, items: Vec<String>) -> bool {
 /// closed and opened again.
 #[tauri::command]
 fn take_pending_torrents(state: tauri::State<'_, PendingTorrents>) -> Vec<String> {
-    state.0.lock().map(|mut queue| std::mem::take(&mut *queue)).unwrap_or_default()
+    state
+        .0
+        .lock()
+        .map(|mut queue| std::mem::take(&mut *queue))
+        .unwrap_or_default()
 }
 
 fn deliver_tool_arg(app: &AppHandle, args: &[String]) {
@@ -261,7 +280,9 @@ fn start_wt_request_queue(app: AppHandle) {
         let mut passes: u32 = 0;
         loop {
             passes = passes.wrapping_add(1);
-            if passes % 50 == 0 { sweep_wt_replies(); }
+            if passes % 50 == 0 {
+                sweep_wt_replies();
+            }
             // The windows are deliberately not a condition for staying here.
             // Ending this thread the first time none could be found - during
             // startup, or for the instant one is being replaced - took every
@@ -272,13 +293,19 @@ fn start_wt_request_queue(app: AppHandle) {
                     reported = false;
                     for entry in entries.flatten() {
                         let path = entry.path();
-                        let valid = path.file_name().and_then(|name| name.to_str())
+                        let valid = path
+                            .file_name()
+                            .and_then(|name| name.to_str())
                             .is_some_and(|name| name.starts_with("wt-") && name.ends_with(".json"));
-                        if !valid { continue; }
+                        if !valid {
+                            continue;
+                        }
                         // Nothing can act on it yet. Leave it where it is and
                         // take it on a later pass rather than dropping it.
                         if app.webview_windows().is_empty() {
-                            if wt_request_is_stale(&path) { let _ = std::fs::remove_file(&path); }
+                            if wt_request_is_stale(&path) {
+                                let _ = std::fs::remove_file(&path);
+                            }
                             continue;
                         }
                         let token = path
@@ -298,7 +325,10 @@ fn start_wt_request_queue(app: AppHandle) {
                 }
                 Err(error) => {
                     if !reported {
-                        eprintln!("WinT: the wt request queue at {} cannot be read: {error}", queue.display());
+                        eprintln!(
+                            "WinT: the wt request queue at {} cannot be read: {error}",
+                            queue.display()
+                        );
                         reported = true;
                     }
                 }
@@ -593,8 +623,12 @@ async fn wt_report(token: String, ok: bool, message: String) -> Result<(), Strin
 /// the proxy was killed. They are worthless after a few seconds and must not
 /// pile up in a folder WinT reads on a timer.
 fn sweep_wt_replies() {
-    let Some(replies) = wt_reply_dir() else { return };
-    let Ok(entries) = std::fs::read_dir(&replies) else { return };
+    let Some(replies) = wt_reply_dir() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&replies) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if wt_request_is_stale(&path) {
@@ -817,7 +851,11 @@ where
     let origin: &'static str = Box::leak(
         format!(
             "{}:{}",
-            origin.file().rsplit(['\\', '/']).next().unwrap_or(origin.file()),
+            origin
+                .file()
+                .rsplit(['\\', '/'])
+                .next()
+                .unwrap_or(origin.file()),
             origin.line()
         )
         .into_boxed_str(),
@@ -833,7 +871,9 @@ where
 /// The health log's tail, and what the app is doing right now.
 #[tauri::command]
 async fn health_report() -> health::Report {
-    off_thread(|| health::report(400)).await.unwrap_or_else(|| health::report(0))
+    off_thread(|| health::report(400))
+        .await
+        .unwrap_or_else(|| health::report(0))
 }
 
 /// Show the health log in Explorer, so it can be read, kept or sent on.
@@ -852,6 +892,16 @@ async fn health_reveal() -> Result<(), String> {
 #[tauri::command]
 async fn health_note(text: String) {
     health::note(text.chars().take(300).collect::<String>());
+}
+
+/// An uncaught fault from a webview.
+///
+/// Deliberately not `health::note`: that sets the "last thing the UI did"
+/// line used to name a freeze, and a render throwing three times a second
+/// would overwrite the step that actually mattered. This only appends.
+#[tauri::command]
+async fn ui_error(text: String) {
+    health::record("ui-error", text.chars().take(1200).collect::<String>());
 }
 
 /// Everything that starts with Windows, for the Startup and tray tool. It
@@ -1038,7 +1088,10 @@ async fn ai_models(app: AppHandle) -> ai::registry::ModelList {
     let handle = app.clone();
     off_thread(move || ai::registry::list(&handle, root))
         .await
-        .unwrap_or_else(|| ai::registry::ModelList { models: Vec::new(), selected: String::new() })
+        .unwrap_or_else(|| ai::registry::ModelList {
+            models: Vec::new(),
+            selected: String::new(),
+        })
 }
 
 /// Records the shared choice. Every window hears about it, including the
@@ -1936,9 +1989,9 @@ pub fn open_in_sync(path: String, target: String, context: Option<String>) -> Re
 
 #[cfg(windows)]
 fn open_with_default_app(path: &str) -> bool {
+    use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-    use windows::core::{HSTRING, PCWSTR};
 
     let verb = HSTRING::from("open");
     let file = HSTRING::from(path);
@@ -1966,7 +2019,11 @@ async fn explorer_roots() -> Vec<explorer::Root> {
 }
 
 #[tauri::command]
-async fn explorer_list(path: String, dirs_only: bool, include_created: Option<bool>) -> Result<explorer::Listing, String> {
+async fn explorer_list(
+    path: String,
+    dirs_only: bool,
+    include_created: Option<bool>,
+) -> Result<explorer::Listing, String> {
     off_thread(move || explorer::list(path, dirs_only, include_created.unwrap_or(false)))
         .await
         .unwrap_or_else(|| Err("The folder listing did not finish.".into()))
@@ -1980,7 +2037,9 @@ async fn explorer_watch(window: tauri::Window, path: String) -> Result<(), Strin
     static WATCHERS: OnceLock<Mutex<HashMap<String, RecommendedWatcher>>> = OnceLock::new();
     let label = window.label().to_string();
     let watchers = WATCHERS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut held = watchers.lock().map_err(|_| "The folder watcher is unavailable.".to_string())?;
+    let mut held = watchers
+        .lock()
+        .map_err(|_| "The folder watcher is unavailable.".to_string())?;
     held.remove(&label);
     if path.is_empty() || !std::path::Path::new(&path).is_dir() {
         return Ok(());
@@ -1990,14 +2049,20 @@ async fn explorer_watch(window: tauri::Window, path: String) -> Result<(), Strin
     let last_notice = std::sync::Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
     let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
         if result.is_ok() {
-            let Ok(mut last) = last_notice.lock() else { return; };
+            let Ok(mut last) = last_notice.lock() else {
+                return;
+            };
             let now = std::time::Instant::now();
-            if last.is_some_and(|previous| now.duration_since(previous).as_millis() < 100) { return; }
+            if last.is_some_and(|previous| now.duration_since(previous).as_millis() < 100) {
+                return;
+            }
             *last = Some(now);
             let _ = event_window.emit("explorer-external-change", &watched_path);
         }
-    }).map_err(|error| error.to_string())?;
-    watcher.watch(std::path::Path::new(&path), RecursiveMode::NonRecursive)
+    })
+    .map_err(|error| error.to_string())?;
+    watcher
+        .watch(std::path::Path::new(&path), RecursiveMode::NonRecursive)
         .map_err(|error| format!("That folder cannot be watched. {error}"))?;
     held.insert(label, watcher);
     Ok(())
@@ -2074,7 +2139,10 @@ async fn explorer_layout(app: AppHandle) -> explorer::Layout {
 }
 
 #[tauri::command]
-async fn explorer_layout_set(app: AppHandle, layout: explorer::Layout) -> Result<explorer::Layout, String> {
+async fn explorer_layout_set(
+    app: AppHandle,
+    layout: explorer::Layout,
+) -> Result<explorer::Layout, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     off_thread(move || explorer::layout_set(&dir, layout))
         .await
@@ -2156,10 +2224,13 @@ async fn explorer_drag_out(app: AppHandle, paths: Vec<String>) -> Result<String,
             let _ = tx.send(explorer::drag_out(&paths));
         })
         .map_err(|e| e.to_string())?;
-        off_thread(move || rx.recv().unwrap_or_else(|_| Err("The drag did not finish.".into())))
-            .await
-            .unwrap_or_else(|| Err("The drag did not finish.".into()))
-            .map(str::to_string)
+        off_thread(move || {
+            rx.recv()
+                .unwrap_or_else(|_| Err("The drag did not finish.".into()))
+        })
+        .await
+        .unwrap_or_else(|| Err("The drag did not finish.".into()))
+        .map(str::to_string)
     }
     #[cfg(not(windows))]
     {
@@ -2167,7 +2238,6 @@ async fn explorer_drag_out(app: AppHandle, paths: Vec<String>) -> Result<String,
         Err("Dragging files out is only available on Windows.".into())
     }
 }
-
 
 #[tauri::command]
 async fn disk_space_drives() -> Result<Vec<disk_space::Drive>, String> {
@@ -2934,7 +3004,12 @@ pub fn run() {
                         tool_window::focus_search_from_global(app);
                         return;
                     }
-                    let clipboard_id = app.state::<ClipboardGlobalShortcut>().0.lock().ok().and_then(|value| *value);
+                    let clipboard_id = app
+                        .state::<ClipboardGlobalShortcut>()
+                        .0
+                        .lock()
+                        .ok()
+                        .and_then(|value| *value);
                     if clipboard_id == Some(shortcut.id) {
                         tool_window::focus_clipboard_from_global(app);
                     }
@@ -2994,7 +3069,9 @@ pub fn run() {
             // same way `--open-tool=` is, so the window comes up on Torrents
             // with the file already waiting for it.
             let opened_torrents = queue_torrents(app.handle(), torrent_args(&args));
-            if let Some(id) = tool_arg(&args).or_else(|| opened_torrents.then(|| "torrents".to_string())) {
+            if let Some(id) =
+                tool_arg(&args).or_else(|| opened_torrents.then(|| "torrents".to_string()))
+            {
                 if let Ok(mut pending) = app.state::<PendingTool>().0.lock() {
                     *pending = Some(id);
                 }
@@ -3072,8 +3149,8 @@ pub fn run() {
             take_startup_tool,
             wt_report,
             cli_status,
-        autostart_status,
-        autostart_set,
+            autostart_status,
+            autostart_set,
             autostart_status,
             autostart_set,
             cli_install,
@@ -3303,6 +3380,7 @@ pub fn run() {
             health_report,
             health_reveal,
             health_note,
+            ui_error,
             startup_entries,
             startup_set_enabled,
             startup_tray_icons,
@@ -3534,93 +3612,93 @@ pub fn run() {
         tool_window::tool_drag_preview,
         tool_window::tool_dock,
         tool_window::tool_embedded_show,
-        tool_window::tool_embedded_hide
-        ,tool_window::tool_embedded_destroy
-        ,tool_window::tool_bridge_state_put
-        ,tool_window::tool_bridge_state_take
-        ,tool_window::search_show
-        ,tool_window::search_hide
-        ,tool_window::search_prepare
-        ,tool_window::changelog_show
-        ,tool_window::changelog_hide
-        ,tool_window::maturity_show
-        ,tool_window::maturity_hide
-        ,tool_window::calendar_show
-        ,tool_window::calendar_hide
-        ,tool_window::calendar_visible
-        ,search_global_binding_set
-        ,term::term_serving
-        ,workspace::workspace_open
-        ,claude::claude_status
-        ,claude::claude_send
-        ,claude::claude_cancel
-        ,claude::claude_install
-        ,claude::claude_terminal_command
-        ,claude::claude_sessions
-        ,claude::claude_transcript
-        ,copilot::copilot_status
-        ,copilot::copilot_send
-        ,copilot::copilot_cancel
-        ,copilot::copilot_install
-        ,copilot::copilot_terminal_command
-        ,copilot::copilot_sessions
-        ,copilot::copilot_transcript
-        ,codex::codex_status
-        ,codex::codex_send
-        ,codex::codex_cancel
-        ,codex::codex_install
-        ,codex::codex_terminal_command
-        ,codex::codex_sessions
-        ,codex::codex_transcript
-        ,cursor::cursor_status
-        ,cursor::cursor_send
-        ,cursor::cursor_cancel
-        ,cursor::cursor_install
-        ,cursor::cursor_terminal_command
-        ,cursor::cursor_sessions
-        ,cursor::cursor_transcript
-        ,gemini::gemini_status
-        ,gemini::gemini_send
-        ,gemini::gemini_cancel
-        ,gemini::gemini_install
-        ,gemini::gemini_terminal_command
-        ,gemini::gemini_sessions
-        ,gemini::gemini_transcript
-        ,stall_watch::stall_watch_status
-        ,stall_watch::stall_watch_set
-        ,stall_watch::stall_watch_mark
-        ,stall_watch::stall_watch_clear
-        ,stall_watch::stall_watch_events
-        ,time_tracker::time_tracker_status
-        ,time_tracker::time_tracker_sessions
-        ,time_tracker::time_tracker_set
-        ,time_tracker::time_tracker_clear
-        ,security_audit::audit_agents
-        ,security_audit::audit_begin
-        ,security_audit::audit_turn
-        ,security_audit::audit_save
-        ,security_audit::audit_history
-        ,security_audit::audit_load
-        ,security_audit::audit_delete
-        ,security_audit::audit_cancel
-        ,security_audit::audit_end
-        ,security_audit::audit_repair
-        ,security_audit::audit_repo_preflight
-        ,workspace::workspace_browser_show
-        ,workspace::workspace_browser_hide
-        ,workspace::workspace_browser_navigate
-        ,workspace::workspace_browser_reload
-        ,workspace::workspace_browser_back
-        ,workspace::workspace_browser_forward
-        ,workspace::workspace_browser_close
-        ,workspace::workspace_teardown
-        ,workspace::workspace_list_dir
-        ,workspace::workspace_read_file
-        ,workspace::workspace_write_file
-        ,workspace::workspace_read_image
-        ,workspace::workspace_attach_path
-        ,workspace::workspace_attach_bytes
-        ,workspace::workspace_attach_text
+        tool_window::tool_embedded_hide,
+        tool_window::tool_embedded_destroy,
+        tool_window::tool_bridge_state_put,
+        tool_window::tool_bridge_state_take,
+        tool_window::search_show,
+        tool_window::search_hide,
+        tool_window::search_prepare,
+        tool_window::changelog_show,
+        tool_window::changelog_hide,
+        tool_window::maturity_show,
+        tool_window::maturity_hide,
+        tool_window::calendar_show,
+        tool_window::calendar_hide,
+        tool_window::calendar_visible,
+        search_global_binding_set,
+        term::term_serving,
+        workspace::workspace_open,
+        claude::claude_status,
+        claude::claude_send,
+        claude::claude_cancel,
+        claude::claude_install,
+        claude::claude_terminal_command,
+        claude::claude_sessions,
+        claude::claude_transcript,
+        copilot::copilot_status,
+        copilot::copilot_send,
+        copilot::copilot_cancel,
+        copilot::copilot_install,
+        copilot::copilot_terminal_command,
+        copilot::copilot_sessions,
+        copilot::copilot_transcript,
+        codex::codex_status,
+        codex::codex_send,
+        codex::codex_cancel,
+        codex::codex_install,
+        codex::codex_terminal_command,
+        codex::codex_sessions,
+        codex::codex_transcript,
+        cursor::cursor_status,
+        cursor::cursor_send,
+        cursor::cursor_cancel,
+        cursor::cursor_install,
+        cursor::cursor_terminal_command,
+        cursor::cursor_sessions,
+        cursor::cursor_transcript,
+        gemini::gemini_status,
+        gemini::gemini_send,
+        gemini::gemini_cancel,
+        gemini::gemini_install,
+        gemini::gemini_terminal_command,
+        gemini::gemini_sessions,
+        gemini::gemini_transcript,
+        stall_watch::stall_watch_status,
+        stall_watch::stall_watch_set,
+        stall_watch::stall_watch_mark,
+        stall_watch::stall_watch_clear,
+        stall_watch::stall_watch_events,
+        time_tracker::time_tracker_status,
+        time_tracker::time_tracker_sessions,
+        time_tracker::time_tracker_set,
+        time_tracker::time_tracker_clear,
+        security_audit::audit_agents,
+        security_audit::audit_begin,
+        security_audit::audit_turn,
+        security_audit::audit_save,
+        security_audit::audit_history,
+        security_audit::audit_load,
+        security_audit::audit_delete,
+        security_audit::audit_cancel,
+        security_audit::audit_end,
+        security_audit::audit_repair,
+        security_audit::audit_repo_preflight,
+        workspace::workspace_browser_show,
+        workspace::workspace_browser_hide,
+        workspace::workspace_browser_navigate,
+        workspace::workspace_browser_reload,
+        workspace::workspace_browser_back,
+        workspace::workspace_browser_forward,
+        workspace::workspace_browser_close,
+        workspace::workspace_teardown,
+        workspace::workspace_list_dir,
+        workspace::workspace_read_file,
+        workspace::workspace_write_file,
+        workspace::workspace_read_image,
+        workspace::workspace_attach_path,
+        workspace::workspace_attach_bytes,
+        workspace::workspace_attach_text
     ]);
 
     builder

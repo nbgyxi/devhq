@@ -1,4 +1,5 @@
 use super::TrayTool;
+use std::path::PathBuf;
 use windows::core::{Interface, PCWSTR};
 use windows::Win32::Foundation::PROPERTYKEY;
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
@@ -11,7 +12,6 @@ use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 use windows::Win32::UI::Shell::{
     DestinationList, EnumerableObjectCollection, ICustomDestinationList, IShellLinkW, ShellLink,
 };
-use std::path::PathBuf;
 
 const PKEY_TITLE: PROPERTYKEY = PROPERTYKEY {
     fmtid: windows::core::GUID::from_u128(0xf29f85e0_4ff9_1068_ab91_08002b27b3d9),
@@ -59,8 +59,12 @@ unsafe fn set_recent_tools_com(
             link.SetPath(PCWSTR(executable.as_ptr()))?;
             link.SetArguments(PCWSTR(arguments.as_ptr()))?;
             let development_icon = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("icons").join("tools").join("dark").join(format!("{id}.ico"));
-            let icon = packaged_icons.as_ref()
+                .join("icons")
+                .join("tools")
+                .join("dark")
+                .join(format!("{id}.ico"));
+            let icon = packaged_icons
+                .as_ref()
                 .map(|directory| directory.join(format!("{id}.ico")))
                 .filter(|path| path.is_file())
                 .unwrap_or(development_icon);

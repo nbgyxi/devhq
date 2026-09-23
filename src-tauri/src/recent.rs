@@ -30,15 +30,17 @@ fn item(path: String) -> RecentItem {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.clone());
-    RecentItem { folder: p.is_dir(), name, path }
+    RecentItem {
+        folder: p.is_dir(),
+        name,
+        path,
+    }
 }
 
 /// The recent list Windows keeps for this AppUserModelID, newest first.
 pub fn jump_list(aumid: &str) -> Vec<RecentItem> {
     use windows::core::HSTRING;
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER,
-    };
+    use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
     use windows::Win32::UI::Shell::Common::IObjectArray;
     use windows::Win32::UI::Shell::{
         ApplicationDocumentLists, IApplicationDocumentLists, IShellItem, IShellLinkW, ADLT_RECENT,
@@ -65,17 +67,22 @@ pub fn jump_list(aumid: &str) -> Vec<RecentItem> {
             // An entry is a shell item or a shortcut; either way we want the
             // path of the file it stands for.
             let path = if let Ok(shell_item) = array.GetAt::<IShellItem>(index) {
-                shell_item.GetDisplayName(SIGDN_FILESYSPATH).ok().and_then(|text| {
-                    let path = text.to_string().ok();
-                    CoTaskMemFree(Some(text.0 as *const _));
-                    path
-                })
+                shell_item
+                    .GetDisplayName(SIGDN_FILESYSPATH)
+                    .ok()
+                    .and_then(|text| {
+                        let path = text.to_string().ok();
+                        CoTaskMemFree(Some(text.0 as *const _));
+                        path
+                    })
             } else if let Ok(link) = array.GetAt::<IShellLinkW>(index) {
                 let mut buffer = [0u16; 1024];
-                link.GetPath(&mut buffer, std::ptr::null_mut(), 0).ok().map(|_| {
-                    let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
-                    String::from_utf16_lossy(&buffer[..len])
-                })
+                link.GetPath(&mut buffer, std::ptr::null_mut(), 0)
+                    .ok()
+                    .map(|_| {
+                        let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+                        String::from_utf16_lossy(&buffer[..len])
+                    })
             } else {
                 None
             };

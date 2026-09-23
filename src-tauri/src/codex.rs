@@ -56,18 +56,37 @@ pub(crate) fn codex_path() -> Option<PathBuf> {
         .or_else(|| {
             std::env::var_os("LOCALAPPDATA")
                 .map(PathBuf::from)
-                .map(|local| local.join("Programs").join("OpenAI").join("Codex").join("bin").join("codex.exe"))
+                .map(|local| {
+                    local
+                        .join("Programs")
+                        .join("OpenAI")
+                        .join("Codex")
+                        .join("bin")
+                        .join("codex.exe")
+                })
                 .filter(|path| path.is_file())
         })
         .or_else(|| {
             std::env::var_os("LOCALAPPDATA")
                 .map(PathBuf::from)
-                .map(|local| local.join("OpenAI").join("Codex").join("bin").join("codex.exe"))
+                .map(|local| {
+                    local
+                        .join("OpenAI")
+                        .join("Codex")
+                        .join("bin")
+                        .join("codex.exe")
+                })
                 .filter(|path| path.is_file())
         })
         .or_else(|| {
             codex_home()
-                .map(|home| home.join("packages").join("standalone").join("current").join("bin").join("codex.exe"))
+                .map(|home| {
+                    home.join("packages")
+                        .join("standalone")
+                        .join("current")
+                        .join("bin")
+                        .join("codex.exe")
+                })
                 .filter(|path| path.is_file())
         })
         .or_else(|| {
@@ -318,8 +337,11 @@ pub async fn codex_terminal_command(
             });
         }
         let id = session.filter(|id| is_session_id(id)).unwrap_or_default();
-        let model_arg = model.as_deref().filter(|model| is_model_id(model))
-            .map(|model| format!("--model {model}")).unwrap_or_default();
+        let model_arg = model
+            .as_deref()
+            .filter(|model| is_model_id(model))
+            .map(|model| format!("--model {model}"))
+            .unwrap_or_default();
         let command = if id.is_empty() {
             terminal_command(&path, &model_arg)
         } else {
@@ -547,8 +569,11 @@ fn is_user_line(value: &serde_json::Value) -> bool {
 }
 
 fn is_model_id(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 100
-        && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    !value.is_empty()
+        && value.len() <= 100
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 fn is_agent_line(value: &serde_json::Value) -> bool {

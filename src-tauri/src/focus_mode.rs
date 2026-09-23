@@ -96,7 +96,10 @@ fn write_file(name: &str, text: String) {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn remember_hidden(hidden: &[isize]) {
@@ -106,7 +109,10 @@ fn remember_hidden(hidden: &[isize]) {
         }
         return;
     }
-    write_file("focus-hidden.json", serde_json::to_string(hidden).unwrap_or_default());
+    write_file(
+        "focus-hidden.json",
+        serde_json::to_string(hidden).unwrap_or_default(),
+    );
 }
 
 fn load_settings() -> FocusSettings {
@@ -171,7 +177,9 @@ fn hide_matching(sidebar: isize) -> FocusState {
     if apps.is_empty() && words.is_empty() {
         return FocusState {
             hidden: 0,
-            message: "No Focus mode rules yet - pick programs or title words in the Focus mode tool.".into(),
+            message:
+                "No Focus mode rules yet - pick programs or title words in the Focus mode tool."
+                    .into(),
         };
     }
     let mut hidden = HIDDEN.lock().unwrap_or_else(|e| e.into_inner());
@@ -179,7 +187,9 @@ fn hide_matching(sidebar: isize) -> FocusState {
         if !matches(&window.title, &window.exe, &apps, &words) {
             continue;
         }
-        let Ok(raw) = window.id.parse::<isize>() else { continue };
+        let Ok(raw) = window.id.parse::<isize>() else {
+            continue;
+        };
         // Written down before it is hidden, never after: a WinT that dies
         // between the two must still know about every window it hid.
         if !hidden.contains(&raw) {
@@ -261,7 +271,11 @@ fn hidden_count() -> usize {
 pub async fn focus_mode_toggle(app: AppHandle) -> Result<FocusState, String> {
     let sidebar = crate::appbar::sidebar_window_handle(&app);
     let state = off_thread(move || {
-        if hidden_count() > 0 { reveal_all() } else { hide_matching(sidebar) }
+        if hidden_count() > 0 {
+            reveal_all()
+        } else {
+            hide_matching(sidebar)
+        }
     })
     .await
     .ok_or("Focus mode could not run.")?;
@@ -271,7 +285,10 @@ pub async fn focus_mode_toggle(app: AppHandle) -> Result<FocusState, String> {
 
 #[tauri::command]
 pub async fn focus_mode_state() -> FocusState {
-    FocusState { hidden: hidden_count(), message: String::new() }
+    FocusState {
+        hidden: hidden_count(),
+        message: String::new(),
+    }
 }
 
 #[tauri::command]
@@ -281,12 +298,20 @@ pub async fn focus_mode_settings() -> FocusSettings {
 
 /// Save the rules and hand them to every page straight away.
 #[tauri::command]
-pub async fn focus_mode_settings_set(app: AppHandle, settings: FocusSettings) -> Result<(), String> {
+pub async fn focus_mode_settings_set(
+    app: AppHandle,
+    settings: FocusSettings,
+) -> Result<(), String> {
     *SETTINGS.lock().unwrap_or_else(|e| e.into_inner()) = Some(settings.clone());
     let _ = app.emit("focus-mode:settings", settings.clone());
-    off_thread(move || write_file("focus-mode.json", serde_json::to_string(&settings).unwrap_or_default()))
-        .await
-        .ok_or_else(|| "Could not save the Focus mode rules.".to_string())
+    off_thread(move || {
+        write_file(
+            "focus-mode.json",
+            serde_json::to_string(&settings).unwrap_or_default(),
+        )
+    })
+    .await
+    .ok_or_else(|| "Could not save the Focus mode rules.".to_string())
 }
 
 /// Every window open now, then the ones seen lately that are not, newest
@@ -315,16 +340,34 @@ pub async fn focus_mode_windows(app: AppHandle) -> Vec<FocusWindow> {
         for raw in hidden {
             let hwnd = HWND(raw as *mut c_void);
             let (title, exe) = unsafe { crate::appbar::window_title_and_exe(hwnd) };
-            result.push(FocusWindow { id: raw.to_string(), title, exe, last_seen: stamp, open: true, hidden: true, stray: false });
+            result.push(FocusWindow {
+                id: raw.to_string(),
+                title,
+                exe,
+                last_seen: stamp,
+                open: true,
+                hidden: true,
+                stray: false,
+            });
         }
         let (apps, words) = rules();
         for raw in stray_windows(&apps, &words) {
             let hwnd = HWND(raw as *mut c_void);
             let (title, exe) = unsafe { crate::appbar::window_title_and_exe(hwnd) };
-            result.push(FocusWindow { id: raw.to_string(), title, exe, last_seen: stamp, open: true, hidden: true, stray: true });
+            result.push(FocusWindow {
+                id: raw.to_string(),
+                title,
+                exe,
+                last_seen: stamp,
+                open: true,
+                hidden: true,
+                stray: true,
+            });
         }
-        let showing: std::collections::HashSet<String> =
-            result.iter().map(|window| key(&window.exe, &window.title)).collect();
+        let showing: std::collections::HashSet<String> = result
+            .iter()
+            .map(|window| key(&window.exe, &window.title))
+            .collect();
         let mut past: Vec<SeenWindow> = RECENT
             .lock()
             .ok()
@@ -377,14 +420,18 @@ fn stray_windows(apps: &[String], words: &[String]) -> Vec<isize> {
     }
     let mut handles: Vec<isize> = Vec::new();
     unsafe {
-        let _ = EnumWindows(Some(collect), LPARAM(std::ptr::addr_of_mut!(handles) as isize));
+        let _ = EnumWindows(
+            Some(collect),
+            LPARAM(std::ptr::addr_of_mut!(handles) as isize),
+        );
     }
     let known = HIDDEN.lock().map(|list| list.clone()).unwrap_or_default();
     handles
         .into_iter()
         .filter(|raw| !known.contains(raw))
         .filter(|&raw| {
-            let (title, exe) = unsafe { crate::appbar::window_title_and_exe(HWND(raw as *mut c_void)) };
+            let (title, exe) =
+                unsafe { crate::appbar::window_title_and_exe(HWND(raw as *mut c_void)) };
             matches(&title, &exe, apps, words)
         })
         .collect()
@@ -399,7 +446,10 @@ pub async fn focus_mode_show(app: AppHandle, id: String) -> Result<FocusState, S
         let mut hidden = HIDDEN.lock().unwrap_or_else(|e| e.into_inner());
         hidden.retain(|&known| known != raw);
         remember_hidden(&hidden);
-        FocusState { hidden: hidden.len(), message: "The window is back.".into() }
+        FocusState {
+            hidden: hidden.len(),
+            message: "The window is back.".into(),
+        }
     })
     .await
     .ok_or("Could not reach that window.")?;
@@ -413,7 +463,9 @@ pub async fn focus_mode_icon(exe: String) -> Option<String> {
     if exe.is_empty() {
         return None;
     }
-    off_thread(move || crate::explorer::thumbnail(exe, 32).ok().flatten()).await.flatten()
+    off_thread(move || crate::explorer::thumbnail(exe, 32).ok().flatten())
+        .await
+        .flatten()
 }
 
 fn key(exe: &str, title: &str) -> String {
@@ -440,10 +492,16 @@ fn record(open: &[crate::appbar::OpenWindow]) {
     let stamp = now();
     let mut added = false;
     for window in open.iter().filter(|window| !window.title.is_empty()) {
-        let entry = recent.entry(key(&window.exe, &window.title)).or_insert_with(|| {
-            added = true;
-            SeenWindow { title: window.title.clone(), exe: window.exe.clone(), last_seen: stamp }
-        });
+        let entry = recent
+            .entry(key(&window.exe, &window.title))
+            .or_insert_with(|| {
+                added = true;
+                SeenWindow {
+                    title: window.title.clone(),
+                    exe: window.exe.clone(),
+                    last_seen: stamp,
+                }
+            });
         entry.last_seen = stamp;
     }
     if recent.len() > RECENT_LIMIT {
@@ -454,7 +512,10 @@ fn record(open: &[crate::appbar::OpenWindow]) {
     }
     if added {
         let list: Vec<&SeenWindow> = recent.values().collect();
-        write_file("focus-recent.json", serde_json::to_string(&list).unwrap_or_default());
+        write_file(
+            "focus-recent.json",
+            serde_json::to_string(&list).unwrap_or_default(),
+        );
     }
 }
 

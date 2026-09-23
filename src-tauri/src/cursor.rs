@@ -64,10 +64,14 @@ impl FoundAgent {
 pub(crate) fn find_agent() -> Option<FoundAgent> {
     let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
     let versions = local.join("cursor-agent").join("versions");
-    let latest = std::fs::read_dir(&versions).ok()?.flatten().filter(|entry| {
-        let path = entry.path();
-        path.is_dir() && path.join("node.exe").is_file() && path.join("index.js").is_file()
-    }).max_by_key(|entry| entry.file_name())?;
+    let latest = std::fs::read_dir(&versions)
+        .ok()?
+        .flatten()
+        .filter(|entry| {
+            let path = entry.path();
+            path.is_dir() && path.join("node.exe").is_file() && path.join("index.js").is_file()
+        })
+        .max_by_key(|entry| entry.file_name())?;
     Some(FoundAgent {
         node: latest.path().join("node.exe"),
         script: latest.path().join("index.js"),
@@ -81,7 +85,9 @@ fn agent_shim() -> Option<PathBuf> {
         .map(PathBuf::from)
         .map(|local| local.join("cursor-agent").join("agent.cmd"))
         .filter(|path| path.is_file())
-        .or_else(|| crate::term::find_program_on_path(&["agent.cmd", "cursor-agent.cmd", "agent.exe"]))
+        .or_else(|| {
+            crate::term::find_program_on_path(&["agent.cmd", "cursor-agent.cmd", "agent.exe"])
+        })
 }
 
 fn silent(cmd: &mut Command) -> &mut Command {
@@ -342,7 +348,11 @@ pub(crate) fn create_chat(cwd: &str) -> Result<String, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
         for key in ["id", "session_id", "chatId", "chat_id"] {
-            if let Some(id) = value.get(key).and_then(serde_json::Value::as_str).filter(|id| is_session_id(id)) {
+            if let Some(id) = value
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| is_session_id(id))
+            {
                 return Ok(id.to_string());
             }
         }
@@ -392,8 +402,11 @@ pub async fn cursor_terminal_command(
             .filter(|id| is_session_id(id))
             .map(Ok)
             .unwrap_or_else(|| create_chat(&cwd))?;
-        let model_arg = model.as_deref().filter(|model| is_model_id(model))
-            .map(|model| format!(" --model {model}")).unwrap_or_default();
+        let model_arg = model
+            .as_deref()
+            .filter(|model| is_model_id(model))
+            .map(|model| format!(" --model {model}"))
+            .unwrap_or_default();
         Ok(CursorLaunch {
             command: terminal_command(&format!("--resume {id}{model_arg}"))?,
             session: id,
@@ -404,8 +417,11 @@ pub async fn cursor_terminal_command(
 }
 
 fn is_model_id(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 100
-        && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    !value.is_empty()
+        && value.len() <= 100
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 /// A command line ConPTY can start. Extra arguments have to live *inside*
@@ -418,7 +434,11 @@ pub fn login_command() -> Result<String, String> {
 }
 
 fn terminal_command(args: &str) -> Result<String, String> {
-    let extra = if args.is_empty() { String::new() } else { format!(" {args}") };
+    let extra = if args.is_empty() {
+        String::new()
+    } else {
+        format!(" {args}")
+    };
     if let Some(shim) = agent_shim() {
         let path = shim.display();
         if shim
@@ -569,8 +589,16 @@ fn chats_root() -> Option<PathBuf> {
 }
 
 fn same_cwd(meta: &str, cwd: &str) -> bool {
-    let a: String = meta.chars().map(|c| if c == '/' { '\\' } else { c }).flat_map(char::to_lowercase).collect();
-    let b: String = cwd.chars().map(|c| if c == '/' { '\\' } else { c }).flat_map(char::to_lowercase).collect();
+    let a: String = meta
+        .chars()
+        .map(|c| if c == '/' { '\\' } else { c })
+        .flat_map(char::to_lowercase)
+        .collect();
+    let b: String = cwd
+        .chars()
+        .map(|c| if c == '/' { '\\' } else { c })
+        .flat_map(char::to_lowercase)
+        .collect();
     a.trim_end_matches('\\') == b.trim_end_matches('\\')
 }
 
@@ -600,7 +628,12 @@ pub async fn cursor_sessions(cwd: String) -> Vec<CursorSession> {
         let mut sessions: Vec<CursorSession> = hashes
             .flatten()
             .filter(|entry| entry.path().is_dir())
-            .flat_map(|hash| std::fs::read_dir(hash.path()).into_iter().flatten().flatten())
+            .flat_map(|hash| {
+                std::fs::read_dir(hash.path())
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+            })
             .filter_map(|entry| {
                 let dir = entry.path();
                 if !dir.is_dir() {
@@ -610,7 +643,9 @@ pub async fn cursor_sessions(cwd: String) -> Vec<CursorSession> {
                 if !is_session_id(&id) {
                     return None;
                 }
-                let meta: Meta = serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json")).ok()?).ok()?;
+                let meta: Meta =
+                    serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json")).ok()?)
+                        .ok()?;
                 if !meta.cwd.is_empty() && !same_cwd(&meta.cwd, &cwd) {
                     return None;
                 }
@@ -619,7 +654,10 @@ pub async fn cursor_sessions(cwd: String) -> Vec<CursorSession> {
                     return None;
                 }
                 let title = if meta.title.trim().is_empty() {
-                    prompts.first().cloned().unwrap_or_else(|| "Untitled conversation".into())
+                    prompts
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "Untitled conversation".into())
                 } else {
                     meta.title
                 };
@@ -628,7 +666,11 @@ pub async fn cursor_sessions(cwd: String) -> Vec<CursorSession> {
                 Some(CursorSession {
                     id,
                     title,
-                    modified: if meta.updated_at_ms > 0 { meta.updated_at_ms } else { meta.created_at_ms },
+                    modified: if meta.updated_at_ms > 0 {
+                        meta.updated_at_ms
+                    } else {
+                        meta.created_at_ms
+                    },
                     turns: prompts.len().min(999) as u32,
                 })
             })

@@ -123,13 +123,21 @@ pub fn command_exe(command: &str) -> String {
     if let Some(end) = lower.find(".exe") {
         return command[..end + 4].to_string();
     }
-    command.split_whitespace().next().unwrap_or_default().to_string()
+    command
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn open(machine: bool, sub: &str, access: u32) -> Option<HKEY> {
     unsafe {
         let mut key = HKEY::default();
-        let hive = if machine { HKEY_LOCAL_MACHINE } else { HKEY_CURRENT_USER };
+        let hive = if machine {
+            HKEY_LOCAL_MACHINE
+        } else {
+            HKEY_CURRENT_USER
+        };
         (RegOpenKeyExW(
             hive,
             &HSTRING::from(sub),
@@ -319,8 +327,7 @@ fn startup_folders() -> Vec<(std::path::PathBuf, &'static str, bool)> {
     }
     if let Some(common) = std::env::var_os("ProgramData") {
         found.push((
-            std::path::PathBuf::from(common)
-                .join(r"Microsoft\Windows\Start Menu\Programs\Startup"),
+            std::path::PathBuf::from(common).join(r"Microsoft\Windows\Start Menu\Programs\Startup"),
             "Startup folder (all users)",
             true,
         ));
@@ -389,7 +396,10 @@ pub fn entries() -> Vec<Entry> {
             let exe = expand_env(&command_exe(&command));
             let image = file_name(&exe);
             found.push(Entry {
-                id: format!("run:{}:{approval}:{name}", if *machine { "hklm" } else { "hkcu" }),
+                id: format!(
+                    "run:{}:{approval}:{name}",
+                    if *machine { "hklm" } else { "hkcu" }
+                ),
                 description: crate::appbar::exe_description(&exe).unwrap_or_default(),
                 running: running.contains(&image),
                 tray: tray.contains(&image),
@@ -409,11 +419,17 @@ pub fn entries() -> Vec<Entry> {
         };
         for item in items.flatten() {
             let path = item.path();
-            let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let file = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
             if file.eq_ignore_ascii_case("desktop.ini") {
                 continue;
             }
-            let exe = if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("lnk")) {
+            let exe = if path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("lnk"))
+            {
                 shortcut_target(&path).unwrap_or_default()
             } else {
                 path.to_string_lossy().into_owned()
@@ -429,7 +445,11 @@ pub fn entries() -> Vec<Entry> {
                 running: running.contains(&image),
                 tray: tray.contains(&image),
                 enabled: approved("StartupFolder", &file),
-                command: if exe.is_empty() { path.to_string_lossy().into_owned() } else { exe.clone() },
+                command: if exe.is_empty() {
+                    path.to_string_lossy().into_owned()
+                } else {
+                    exe.clone()
+                },
                 exe,
                 source: label.to_string(),
                 machine_wide: machine,
@@ -529,7 +549,10 @@ pub fn close(exe: &str) -> Result<String, String> {
     }
     let mut handles: Vec<isize> = Vec::new();
     unsafe {
-        let _ = EnumWindows(Some(collect), LPARAM(std::ptr::addr_of_mut!(handles) as isize));
+        let _ = EnumWindows(
+            Some(collect),
+            LPARAM(std::ptr::addr_of_mut!(handles) as isize),
+        );
     }
 
     let mut asked = 0;
@@ -640,9 +663,15 @@ fn process_ids(image: &str) -> Vec<u32> {
 /// it in Apps & features would.
 fn uninstall_command(exe: &str) -> Option<(String, String)> {
     const UNINSTALL_KEYS: &[(bool, &str)] = &[
-        (false, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (
+            false,
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
         (true, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
-        (true, r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (
+            true,
+            r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
     ];
     let exe_lower = exe.to_ascii_lowercase();
     let mut best: Option<(usize, String, String)> = None;
@@ -666,7 +695,10 @@ fn uninstall_command(exe: &str) -> Option<(String, String)> {
             }
             // The deepest install location that still contains the program is
             // the one that belongs to it, not its publisher's parent folder.
-            if best.as_ref().map_or(true, |(len, _, _)| location.len() > *len) {
+            if best
+                .as_ref()
+                .map_or(true, |(len, _, _)| location.len() > *len)
+            {
                 best = Some((location.len(), name, command));
             }
         }
@@ -685,7 +717,9 @@ pub fn uninstall(exe: &str) -> Result<String, String> {
             .arg("ms-settings:appsfeatures")
             .spawn()
             .map_err(|e| format!("Could not open Apps & features: {e}"))?;
-        return Err("No uninstaller is registered for it — opening Windows' own app list instead.".into());
+        return Err(
+            "No uninstaller is registered for it — opening Windows' own app list instead.".into(),
+        );
     };
     // The string is a command line, not a path: it carries its own arguments
     // ("...\unins000.exe" /SILENT), so the shell parses it rather than us.
@@ -694,7 +728,9 @@ pub fn uninstall(exe: &str) -> Result<String, String> {
         .creation_flags(CREATE_NEW_CONSOLE)
         .spawn()
         .map_err(|e| format!("Could not start the uninstaller: {e}"))?;
-    Ok(format!("Started the uninstaller for {name}. It takes over from here."))
+    Ok(format!(
+        "Started the uninstaller for {name}. It takes over from here."
+    ))
 }
 
 /// Show one program in Explorer, selected, so the user can see where it lives.

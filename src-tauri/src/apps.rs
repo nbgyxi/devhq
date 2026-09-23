@@ -48,7 +48,7 @@ pub fn installed() -> Vec<InstalledApp> {
     use windows::core::HSTRING;
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::Win32::UI::Shell::{
-        IEnumShellItems, IShellItem, SHCreateItemFromParsingName, BHID_EnumItems,
+        BHID_EnumItems, IEnumShellItems, IShellItem, SHCreateItemFromParsingName,
         SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING,
     };
 

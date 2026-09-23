@@ -56,7 +56,10 @@ unsafe fn string_value(key: HKEY, sub: &HSTRING, name: &str) -> Option<String> {
 /// A path whose folder part is written as a KNOWNFOLDERID, resolved through
 /// the shell rather than assumed.
 fn expand(path: String) -> Option<String> {
-    let Some((guid, rest)) = path.strip_prefix('{').and_then(|rest| rest.split_once("}\\")) else {
+    let Some((guid, rest)) = path
+        .strip_prefix('{')
+        .and_then(|rest| rest.split_once("}\\"))
+    else {
         return (!path.is_empty()).then_some(path);
     };
     let guid = GUID::try_from(guid).ok()?;

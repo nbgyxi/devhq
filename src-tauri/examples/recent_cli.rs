@@ -10,7 +10,9 @@
 //!     cargo run --example recent_cli Cursor     # any sibling editor
 
 fn main() {
-    let stem = std::env::args().nth(1).unwrap_or_else(|| "Code".to_string());
+    let stem = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "Code".to_string());
     let Some(appdata) = std::env::var_os("APPDATA") else {
         println!("No APPDATA.");
         return;
@@ -39,7 +41,9 @@ fn main() {
     let _ = connection.busy_timeout(std::time::Duration::from_millis(200));
 
     println!("tables:");
-    if let Ok(mut statement) = connection.prepare("SELECT name FROM sqlite_master WHERE type = 'table'") {
+    if let Ok(mut statement) =
+        connection.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+    {
         if let Ok(rows) = statement.query_map([], |row| row.get::<_, String>(0)) {
             for name in rows.flatten() {
                 println!("  {name}");
@@ -93,7 +97,9 @@ fn main() {
 
     const KEY: &str = "history.recentlyOpenedPathsList";
     let text: Option<String> = connection
-        .query_row("SELECT value FROM ItemTable WHERE key = ?1", [KEY], |row| row.get(0))
+        .query_row("SELECT value FROM ItemTable WHERE key = ?1", [KEY], |row| {
+            row.get(0)
+        })
         .ok();
     let Some(text) = text else {
         println!("{KEY}: not in this database");
@@ -109,7 +115,10 @@ fn main() {
         }
     };
     let Some(entries) = value["entries"].as_array() else {
-        let shape: Vec<&String> = value.as_object().map(|map| map.keys().collect()).unwrap_or_default();
+        let shape: Vec<&String> = value
+            .as_object()
+            .map(|map| map.keys().collect())
+            .unwrap_or_default();
         println!("  no `entries` array; top-level keys are {shape:?}");
         return;
     };
@@ -124,7 +133,10 @@ fn main() {
             Some(uri) if !uri.starts_with("file:///") => println!("  skipped (not local) {uri}"),
             Some(uri) => println!("  {uri}"),
             None => {
-                let shape: Vec<&String> = entry.as_object().map(|map| map.keys().collect()).unwrap_or_default();
+                let shape: Vec<&String> = entry
+                    .as_object()
+                    .map(|map| map.keys().collect())
+                    .unwrap_or_default();
                 println!("  skipped (no uri) keys {shape:?}");
             }
         }

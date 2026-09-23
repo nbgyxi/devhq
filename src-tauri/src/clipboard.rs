@@ -340,7 +340,10 @@ fn base64(bytes: &[u8]) -> String {
 
 #[cfg(windows)]
 mod win {
-    use super::{base64, classify, new_id, now_ms, recording, remember, Clip, MAX_IMAGE_BYTES, MAX_TEXT_CHARS};
+    use super::{
+        base64, classify, new_id, now_ms, recording, remember, Clip, MAX_IMAGE_BYTES,
+        MAX_TEXT_CHARS,
+    };
     use windows::core::w;
     use windows::Win32::Foundation::{HGLOBAL, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::DataExchange::{
@@ -551,8 +554,9 @@ mod win {
         if bytes.len() < 24 {
             return (0, 0);
         }
-        let big =
-            |at: usize| i32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+        let big = |at: usize| {
+            i32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
         (big(16), big(20))
     }
 

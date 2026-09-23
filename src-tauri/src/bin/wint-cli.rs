@@ -3,8 +3,8 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 fn forward_to_wint(arguments: impl IntoIterator<Item = String>) -> Result<String, String> {
-    let term_id = std::env::var_os("WINT_TERM_ID")
-        .ok_or("WinT terminal context is unavailable.")?;
+    let term_id =
+        std::env::var_os("WINT_TERM_ID").ok_or("WinT terminal context is unavailable.")?;
     // Each running WinT owns its own queue. This matters when the installed
     // app and WinT Dev are open together: their terminal ids both begin at the
     // same value, so a shared queue can make the wrong process claim a split.
@@ -16,17 +16,25 @@ fn forward_to_wint(arguments: impl IntoIterator<Item = String>) -> Result<String
         let Some(local) = std::env::var_os("LOCALAPPDATA") else {
             return Err("the local application-data folder is unavailable.".into());
         };
-        std::path::PathBuf::from(local).join("WinT").join("runtime").join("requests")
+        std::path::PathBuf::from(local)
+            .join("WinT")
+            .join("runtime")
+            .join("requests")
     };
     if let Err(error) = std::fs::create_dir_all(&queue) {
         return Err(format!("could not open WinT's request queue: {error}"));
     }
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default().as_nanos();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     let name = format!("wt-{}-{stamp}.json", std::process::id());
     let pending = queue.join(format!(".{name}.tmp"));
     let ready = queue.join(&name);
-    let mut forwarded = vec!["wt.exe".to_string(), format!("--wint-wt={}", term_id.to_string_lossy())];
+    let mut forwarded = vec![
+        "wt.exe".to_string(),
+        format!("--wint-wt={}", term_id.to_string_lossy()),
+    ];
     forwarded.extend(arguments);
     let result = serde_json::to_vec(&forwarded)
         .map_err(|error| error.to_string())
@@ -52,13 +60,19 @@ fn forward_to_wint(arguments: impl IntoIterator<Item = String>) -> Result<String
             if answer.get("ok").and_then(Value::as_bool) == Some(true) {
                 return Ok(message.to_string());
             }
-            return Err(if message.is_empty() { "WinT could not run this command.".into() } else { message.into() });
+            return Err(if message.is_empty() {
+                "WinT could not run this command.".into()
+            } else {
+                message.into()
+            });
         }
         if !taken {
             taken = !ready.exists();
             if !taken && std::time::Instant::now() >= taken_by {
                 let _ = std::fs::remove_file(&ready);
-                return Err("WinT did not take this command. Its terminal panel is not listening.".into());
+                return Err(
+                    "WinT did not take this command. Its terminal panel is not listening.".into(),
+                );
             }
         } else if std::time::Instant::now() >= answer_by {
             // Taken, but no window owned up to it: the terminal this was typed
@@ -70,13 +84,21 @@ fn forward_to_wint(arguments: impl IntoIterator<Item = String>) -> Result<String
 }
 
 fn run_as_wt_proxy() -> bool {
-    let invoked_as_wt = std::env::current_exe().ok()
-        .and_then(|path| path.file_stem().map(|name| name.to_string_lossy().into_owned()))
+    let invoked_as_wt = std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_stem()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
         .is_some_and(|name| name.eq_ignore_ascii_case("wt"));
-    if !invoked_as_wt { return false; }
+    if !invoked_as_wt {
+        return false;
+    }
     match forward_to_wint(std::env::args().skip(1)) {
         Ok(message) => {
-            if !message.is_empty() { println!("{message}"); }
+            if !message.is_empty() {
+                println!("{message}");
+            }
             std::process::exit(0);
         }
         Err(error) => {
@@ -273,10 +295,7 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
         },
         "disk" => match need(&args, 1, "disk action")?.as_str() {
             "drives" => emit(wint_lib::disk_space::drives()?, pretty),
-            "scan" => emit(
-                wint_lib::disk_space::scan(need(&args, 2, "path")?)?,
-                pretty,
-            ),
+            "scan" => emit(wint_lib::disk_space::scan(need(&args, 2, "path")?)?, pretty),
             other => Err(format!("Unknown disk action: {other}")),
         },
         "dns" => match need(&args, 1, "DNS action")?.as_str() {
@@ -439,7 +458,9 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
 }
 
 fn main() {
-    if run_as_wt_proxy() { return; }
+    if run_as_wt_proxy() {
+        return;
+    }
     if let Err(error) = run(std::env::args().skip(1).collect()) {
         eprintln!("wint: {error}");
         std::process::exit(2);

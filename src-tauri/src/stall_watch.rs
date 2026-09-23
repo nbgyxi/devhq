@@ -141,8 +141,11 @@ fn now_ms() -> u64 {
 }
 
 fn saved_file() -> Option<std::path::PathBuf> {
-    std::env::var_os("LOCALAPPDATA")
-        .map(|root| std::path::PathBuf::from(root).join("WinT").join("stall-watch.json"))
+    std::env::var_os("LOCALAPPDATA").map(|root| {
+        std::path::PathBuf::from(root)
+            .join("WinT")
+            .join("stall-watch.json")
+    })
 }
 
 fn read_saved() -> Option<Saved> {
@@ -235,7 +238,10 @@ fn probe(generation: u64) {
         let asked = Instant::now();
         std::thread::sleep(interval);
         let woke = Instant::now();
-        let late = woke.duration_since(asked).saturating_sub(interval).as_millis() as u64;
+        let late = woke
+            .duration_since(asked)
+            .saturating_sub(interval)
+            .as_millis() as u64;
 
         checks += 1;
         if checks % 25 == 0 && !current(generation) {
@@ -255,7 +261,9 @@ fn probe(generation: u64) {
             if Some(pos) != cursor {
                 let gap = woke.duration_since(last_move).as_millis() as u64;
                 let jump = cursor
-                    .map(|(x, y)| (((pos.0 - x) as f64).powi(2) + ((pos.1 - y) as f64).powi(2)).sqrt())
+                    .map(|(x, y)| {
+                        (((pos.0 - x) as f64).powi(2) + ((pos.1 - y) as f64).powi(2)).sqrt()
+                    })
                     .unwrap_or(0.0);
                 let window_start = last_move.checked_sub(Duration::from_millis(80));
                 let was_moving = window_start
@@ -306,7 +314,9 @@ fn context(generation: u64) {
         if !current(generation) {
             return;
         }
-        let Some(sample) = sampler.sample() else { continue };
+        let Some(sample) = sampler.sample() else {
+            continue;
+        };
         let finished = {
             let Ok(mut st) = state().lock() else { return };
             st.window.push_back(sample.clone());
@@ -328,7 +338,9 @@ fn context(generation: u64) {
                 st.stalls.truncate(KEEP_STALLS);
                 save(&st);
             }
-            done.into_iter().map(|s| (st.app.clone(), s)).collect::<Vec<_>>()
+            done.into_iter()
+                .map(|s| (st.app.clone(), s))
+                .collect::<Vec<_>>()
         };
         for (app, stall) in finished {
             if let Some(app) = app {
@@ -379,7 +391,10 @@ fn diagnose(stall: &mut Stall, window: &[ContextSample]) {
     let worst_driver = cover
         .iter()
         .max_by(|a, b| a.worst_core_driver.total_cmp(&b.worst_core_driver));
-    let total_driver = cover.iter().map(|s| s.dpc + s.interrupt).fold(0.0, f32::max);
+    let total_driver = cover
+        .iter()
+        .map(|s| s.dpc + s.interrupt)
+        .fold(0.0, f32::max);
     let busy = cover.iter().max_by(|a, b| a.busy.total_cmp(&b.busy));
     let faults = cover.iter().max_by_key(|s| s.hard_faults);
     let memory = cover.iter().map(|s| s.memory_load).max().unwrap_or(0);
@@ -392,13 +407,22 @@ fn diagnose(stall: &mut Stall, window: &[ContextSample]) {
         ));
     }
     if let Some(s) = busy {
-        evidence.push(format!("All cores: {:.0}% busy, {:.1}% DPC, {:.1}% interrupt", s.busy, s.dpc, s.interrupt));
+        evidence.push(format!(
+            "All cores: {:.0}% busy, {:.1}% DPC, {:.1}% interrupt",
+            s.busy, s.dpc, s.interrupt
+        ));
         if let Some(p) = s.top.first() {
-            evidence.push(format!("Busiest process: {} (PID {}) at {:.0}% of all cores", p.name, p.pid, p.cpu));
+            evidence.push(format!(
+                "Busiest process: {} (PID {}) at {:.0}% of all cores",
+                p.name, p.pid, p.cpu
+            ));
         }
     }
     if let Some(s) = faults {
-        evidence.push(format!("Hard page faults: {}/s · memory in use {}%", s.hard_faults, memory));
+        evidence.push(format!(
+            "Hard page faults: {}/s · memory in use {}%",
+            s.hard_faults, memory
+        ));
     }
 
     let top_faulter = faults
@@ -411,7 +435,11 @@ fn diagnose(stall: &mut Stall, window: &[ContextSample]) {
             "No samples around it".into(),
             "The context sampler had not yet recorded the seconds around this moment.".into(),
         )
-    } else if worst_driver.map(|s| s.worst_core_driver >= 20.0).unwrap_or(false) || total_driver >= 8.0 {
+    } else if worst_driver
+        .map(|s| s.worst_core_driver >= 20.0)
+        .unwrap_or(false)
+        || total_driver >= 8.0
+    {
         let s = worst_driver.unwrap();
         (
             "driver",
@@ -439,7 +467,10 @@ fn diagnose(stall: &mut Stall, window: &[ContextSample]) {
             "cpu",
             "Every core was busy".into(),
             match s.top.first() {
-                Some(p) => format!("All cores were {:.0}% busy. The biggest consumer was {} (PID {}) at {:.0}%.", s.busy, p.name, p.pid, p.cpu),
+                Some(p) => format!(
+                    "All cores were {:.0}% busy. The biggest consumer was {} (PID {}) at {:.0}%.",
+                    s.busy, p.name, p.pid, p.cpu
+                ),
                 None => format!("All cores were {:.0}% busy.", s.busy),
             },
         )
@@ -482,11 +513,14 @@ impl Sampler {
         let now = Instant::now();
         let cores = win::cores();
         let procs = win::processes();
-        let elapsed = self.at.map(|t| now.duration_since(t).as_nanos() as f64 / 100.0);
+        let elapsed = self
+            .at
+            .map(|t| now.duration_since(t).as_nanos() as f64 / 100.0);
         let prev_cores = std::mem::replace(&mut self.cores, cores.clone());
         let prev_procs = std::mem::take(&mut self.procs);
         for p in &procs {
-            self.procs.insert((p.pid, p.created), (p.cpu_time, p.hard_faults));
+            self.procs
+                .insert((p.pid, p.created), (p.cpu_time, p.hard_faults));
         }
         self.at = Some(now);
         let elapsed = elapsed?;
@@ -524,7 +558,9 @@ impl Sampler {
         let capacity = elapsed * cores.len() as f64;
         let mut shares: Vec<ProcessShare> = Vec::new();
         for p in procs {
-            let Some((cpu, faults)) = prev_procs.get(&(p.pid, p.created)) else { continue };
+            let Some((cpu, faults)) = prev_procs.get(&(p.pid, p.created)) else {
+                continue;
+            };
             let hard = p.hard_faults.saturating_sub(*faults);
             sample.hard_faults += hard;
             if p.pid == 0 {
@@ -532,12 +568,21 @@ impl Sampler {
             }
             let share = ((p.cpu_time - cpu).max(0) as f64 / capacity * 100.0) as f32;
             if share >= 0.5 || hard > 0 {
-                shares.push(ProcessShare { name: p.name, pid: p.pid, cpu: share, hard_faults: hard });
+                shares.push(ProcessShare {
+                    name: p.name,
+                    pid: p.pid,
+                    cpu: share,
+                    hard_faults: hard,
+                });
             }
         }
         shares.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
         let mut top: Vec<ProcessShare> = shares.iter().take(5).cloned().collect();
-        if let Some(faulter) = shares.iter().filter(|p| p.hard_faults > 0).max_by_key(|p| p.hard_faults) {
+        if let Some(faulter) = shares
+            .iter()
+            .filter(|p| p.hard_faults > 0)
+            .max_by_key(|p| p.hard_faults)
+        {
             if !top.iter().any(|p| p.pid == faulter.pid) {
                 top.push(faulter.clone());
             }
@@ -593,7 +638,12 @@ mod win {
         loop {
             let mut len = 0u32;
             let status = unsafe {
-                NtQuerySystemInformation(SystemProcessInformation, buf.as_mut_ptr().cast(), buf.len() as u32, &mut len)
+                NtQuerySystemInformation(
+                    SystemProcessInformation,
+                    buf.as_mut_ptr().cast(),
+                    buf.len() as u32,
+                    &mut len,
+                )
             };
             if status.0 == 0xC000_0004u32 as i32 && buf.len() < (64 << 20) {
                 buf = vec![0u8; (len as usize).max(buf.len() * 2) + 65536];
@@ -618,17 +668,28 @@ mod win {
             let created = i64_at(offset + 32);
             let user = i64_at(offset + 40);
             let kernel = i64_at(offset + 48);
-            let name_len = u16::from_le_bytes(buf[offset + 56..offset + 58].try_into().unwrap()) as usize;
+            let name_len =
+                u16::from_le_bytes(buf[offset + 56..offset + 58].try_into().unwrap()) as usize;
             let name_ptr = i64_at(offset + 64) as usize as *const u16;
             let pid = i64_at(offset + 80) as u32;
             let name = if name_ptr.is_null() || name_len == 0 {
-                if pid == 0 { "Idle".to_string() } else { "System".to_string() }
+                if pid == 0 {
+                    "Idle".to_string()
+                } else {
+                    "System".to_string()
+                }
             } else {
                 // The name points back into `buf`, which is still alive.
                 let slice = unsafe { std::slice::from_raw_parts(name_ptr, name_len / 2) };
                 String::from_utf16_lossy(slice)
             };
-            out.push(Proc { pid, created, name, cpu_time: user + kernel, hard_faults });
+            out.push(Proc {
+                pid,
+                created,
+                name,
+                cpu_time: user + kernel,
+                hard_faults,
+            });
             if next == 0 {
                 break;
             }
@@ -643,7 +704,9 @@ mod win {
             dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
             ..Default::default()
         };
-        unsafe { GlobalMemoryStatusEx(&mut status) }.map(|_| status.dwMemoryLoad).unwrap_or(0)
+        unsafe { GlobalMemoryStatusEx(&mut status) }
+            .map(|_| status.dwMemoryLoad)
+            .unwrap_or(0)
     }
 }
 
@@ -663,7 +726,9 @@ mod win {
 
 #[cfg(windows)]
 fn raise_priority() {
-    use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL};
+    use windows::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+    };
     unsafe {
         let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
     }
@@ -677,7 +742,9 @@ fn cursor_pos() -> Option<(i32, i32)> {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
     let mut point = POINT::default();
-    unsafe { GetCursorPos(&mut point) }.ok().map(|_| (point.x, point.y))
+    unsafe { GetCursorPos(&mut point) }
+        .ok()
+        .map(|_| (point.x, point.y))
 }
 
 #[cfg(not(windows))]
@@ -688,7 +755,9 @@ fn cursor_pos() -> Option<(i32, i32)> {
 /* --------------------------------------------------------------- commands */
 
 fn snapshot() -> StallStatus {
-    let Ok(st) = state().lock() else { return StallStatus::default() };
+    let Ok(st) = state().lock() else {
+        return StallStatus::default();
+    };
     StallStatus {
         watching: st.watching,
         started_at: st.started_at,
@@ -703,14 +772,18 @@ fn snapshot() -> StallStatus {
 
 #[tauri::command]
 pub async fn stall_watch_status() -> StallStatus {
-    tauri::async_runtime::spawn_blocking(snapshot).await.unwrap_or_default()
+    tauri::async_runtime::spawn_blocking(snapshot)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
 pub async fn stall_watch_set(watching: bool, threshold_ms: u32) -> StallStatus {
     tauri::async_runtime::spawn_blocking(move || {
         let begin = {
-            let Ok(mut st) = state().lock() else { return StallStatus::default() };
+            let Ok(mut st) = state().lock() else {
+                return StallStatus::default();
+            };
             st.threshold_ms = threshold_ms.clamp(30, 2000);
             let begin = watching && !st.watching;
             if !watching && st.watching {
@@ -737,7 +810,9 @@ pub async fn stall_watch_set(watching: bool, threshold_ms: u32) -> StallStatus {
 pub async fn stall_watch_mark() -> Result<StallStatus, String> {
     tauri::async_runtime::spawn_blocking(|| {
         if !state().lock().map(|s| s.watching).unwrap_or(false) {
-            return Err("Start watching first - there is nothing recorded to look back at.".to_string());
+            return Err(
+                "Start watching first - there is nothing recorded to look back at.".to_string(),
+            );
         }
         queue_stall("manual", now_ms(), 0);
         Ok(snapshot())
@@ -782,7 +857,13 @@ fn nearby_events(at: u64) -> Result<Vec<NearbyEvent>, String> {
     let script = r#"$ErrorActionPreference='Stop'; $t=[DateTimeOffset]::FromUnixTimeMilliseconds([int64]$env:WINT_AT).LocalDateTime; try { Get-WinEvent -FilterHashtable @{LogName='System'; Level=1,2,3; StartTime=$t.AddMinutes(-2); EndTime=$t.AddMinutes(2)} -MaxEvents 40 | ForEach-Object { [pscustomobject]@{time=$_.TimeCreated.ToString('o');level=$_.LevelDisplayName;provider=$_.ProviderName;id=[uint32]$_.Id;message=[string]$_.Message} } | ConvertTo-Json -Compress } catch [Exception] { if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { '[]' } else { throw } }"#;
     let mut command = Command::new("powershell.exe");
     command
-        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script])
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ])
         .env("WINT_AT", at.to_string());
     #[cfg(windows)]
     {
@@ -801,7 +882,8 @@ fn nearby_events(at: u64) -> Result<Vec<NearbyEvent>, String> {
     if text.starts_with('[') {
         serde_json::from_str(text).map_err(|e| e.to_string())
     } else {
-        serde_json::from_str::<NearbyEvent>(text).map(|e| vec![e]).map_err(|e| e.to_string())
+        serde_json::from_str::<NearbyEvent>(text)
+            .map(|e| vec![e])
+            .map_err(|e| e.to_string())
     }
 }
-

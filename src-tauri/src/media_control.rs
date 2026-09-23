@@ -243,13 +243,18 @@ pub async fn media_state(app: AppHandle) -> Result<MediaState, String> {
         // The media API exposes an AppUserModelID, not the friendly name the
         // Start menu shows. Ask the shell first (important for packaged and
         // Tauri apps), then use the executable's product description.
-        let shell_name = unsafe { crate::suggest::shell_item(&source_for_lookup) }
-            .map(|(name, _)| name);
+        let shell_name =
+            unsafe { crate::suggest::shell_item(&source_for_lookup) }.map(|(name, _)| name);
         let exe_name = window
             .as_ref()
             .and_then(|window| crate::appbar::exe_description(&window.exe));
         let target = window.map(|window| window.exe).unwrap_or_default();
-        (target, shell_name.or(exe_name).unwrap_or_else(|| source_name(&source_for_lookup)))
+        (
+            target,
+            shell_name
+                .or(exe_name)
+                .unwrap_or_else(|| source_name(&source_for_lookup)),
+        )
     })
     .await
     .unwrap_or_else(|| (String::new(), source_name(&source_id)));

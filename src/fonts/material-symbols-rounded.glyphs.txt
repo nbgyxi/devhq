@@ -327,7 +327,6 @@ navigation
 network_check
 neurology
 news
-north
 north_east
 note
 note_add
@@ -370,6 +369,7 @@ place
 play_arrow
 play_circle
 play_disabled
+playlist_play
 playlist_remove
 plumbing
 policy

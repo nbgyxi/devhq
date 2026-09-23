@@ -87,10 +87,7 @@ fn now_ms() -> u64 {
 /// weekday Sunday-first, and minutes past midnight.
 fn local_now() -> (u8, u16) {
     let stamp = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
-    (
-        stamp.wDayOfWeek as u8 % 7,
-        stamp.wHour * 60 + stamp.wMinute,
-    )
+    (stamp.wDayOfWeek as u8 % 7, stamp.wHour * 60 + stamp.wMinute)
 }
 
 fn keep_awake_state() -> &'static std::sync::Mutex<KeepAwakeResult> {
@@ -106,8 +103,11 @@ fn keep_awake_state() -> &'static std::sync::Mutex<KeepAwakeResult> {
 }
 
 fn keep_awake_schedule_file() -> Option<std::path::PathBuf> {
-    std::env::var_os("LOCALAPPDATA")
-        .map(|root| std::path::PathBuf::from(root).join("WinT").join("keep-awake.json"))
+    std::env::var_os("LOCALAPPDATA").map(|root| {
+        std::path::PathBuf::from(root)
+            .join("WinT")
+            .join("keep-awake.json")
+    })
 }
 
 fn keep_awake_schedule_read() -> Option<KeepAwakeSchedule> {
@@ -585,9 +585,7 @@ pub fn keep_awake_set(
 /// Write down the hours to hold, and act on them at once. Saved next to WinT's
 /// other runtime files, so the hours survive a restart even though the hold
 /// itself cannot.
-pub fn keep_awake_schedule_set(
-    schedule: KeepAwakeSchedule,
-) -> Result<KeepAwakeResult, String> {
+pub fn keep_awake_schedule_set(schedule: KeepAwakeSchedule) -> Result<KeepAwakeResult, String> {
     let (reply, answer) = std::sync::mpsc::channel();
     keep_awake_ask(KeepAwakeMsg::Schedule(Box::new(schedule), reply))?;
     answer
@@ -1151,28 +1149,46 @@ pub fn audio_set_default(id: &str) -> ToolResult {
 
 pub fn audio_set_volume(id: &str, volume: u32) -> ToolResult {
     if id.trim().is_empty() {
-        return ToolResult { error: "Choose an audio device.".into(), ..Default::default() };
+        return ToolResult {
+            error: "Choose an audio device.".into(),
+            ..Default::default()
+        };
     }
     let level = volume.min(100).to_string();
     let script=format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [WinTAudio]::SetVolume($env:WINT_AUDIO_ID,[uint32]$env:WINT_AUDIO_VOLUME); 'Volume changed to '+$env:WINT_AUDIO_VOLUME+'%'");
-    output_result(ps(&script, &[("WINT_AUDIO_ID", id), ("WINT_AUDIO_VOLUME", &level)]))
+    output_result(ps(
+        &script,
+        &[("WINT_AUDIO_ID", id), ("WINT_AUDIO_VOLUME", &level)],
+    ))
 }
 
 pub fn audio_set_muted(id: &str, muted: bool) -> ToolResult {
     if id.trim().is_empty() {
-        return ToolResult { error: "Choose an audio device.".into(), ..Default::default() };
+        return ToolResult {
+            error: "Choose an audio device.".into(),
+            ..Default::default()
+        };
     }
     let state = if muted { "true" } else { "false" };
     let script=format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [WinTAudio]::SetMute($env:WINT_AUDIO_ID,[bool]::Parse($env:WINT_AUDIO_MUTED)); if([bool]::Parse($env:WINT_AUDIO_MUTED)){{'Device muted'}}else{{'Device unmuted'}}");
-    output_result(ps(&script, &[("WINT_AUDIO_ID", id), ("WINT_AUDIO_MUTED", state)]))
+    output_result(ps(
+        &script,
+        &[("WINT_AUDIO_ID", id), ("WINT_AUDIO_MUTED", state)],
+    ))
 }
 
 pub fn audio_test(id: &str, flow: &str) -> ToolResult {
     if id.trim().is_empty() || !matches!(flow, "playback" | "recording") {
-        return ToolResult { error: "Choose an audio device to test.".into(), ..Default::default() };
+        return ToolResult {
+            error: "Choose an audio device to test.".into(),
+            ..Default::default()
+        };
     }
     let script=format!("$ErrorActionPreference='Stop'; {CORE_AUDIO_CS} [WinTAudio]::Test($env:WINT_AUDIO_ID,$env:WINT_AUDIO_FLOW)");
-    output_result(ps(&script, &[("WINT_AUDIO_ID", id), ("WINT_AUDIO_FLOW", flow)]))
+    output_result(ps(
+        &script,
+        &[("WINT_AUDIO_ID", id), ("WINT_AUDIO_FLOW", flow)],
+    ))
 }
 
 pub fn repair_targets(id: &str) -> Result<Vec<RepairTarget>, String> {

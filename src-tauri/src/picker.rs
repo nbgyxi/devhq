@@ -197,9 +197,8 @@ unsafe fn show_torrents(owner: isize) -> Result<Vec<String>, String> {
         .map_err(|e| format!("Could not open the file picker: {e}"))?;
 
     let options = dialog.GetOptions().unwrap_or_default();
-    let _ = dialog.SetOptions(
-        options | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_ALLOWMULTISELECT,
-    );
+    let _ =
+        dialog.SetOptions(options | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_ALLOWMULTISELECT);
     let _ = dialog.SetTitle(PCWSTR(HSTRING::from("Choose torrent files").as_ptr()));
 
     let torrents = HSTRING::from("Torrent files");
@@ -232,8 +231,12 @@ unsafe fn show_torrents(owner: isize) -> Result<Vec<String>, String> {
     let count = items.GetCount().unwrap_or(0);
     let mut paths = Vec::with_capacity(count as usize);
     for index in 0..count {
-        let Ok(item) = items.GetItemAt(index) else { continue };
-        let Ok(wide) = item.GetDisplayName(SIGDN_FILESYSPATH) else { continue };
+        let Ok(item) = items.GetItemAt(index) else {
+            continue;
+        };
+        let Ok(wide) = item.GetDisplayName(SIGDN_FILESYSPATH) else {
+            continue;
+        };
         if let Ok(path) = wide.to_string() {
             paths.push(path);
         }

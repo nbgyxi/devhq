@@ -92,11 +92,27 @@ fn write_stored(app: &AppHandle, value: &Stored) -> Result<(), String> {
 /// made in the agent itself.
 fn agents() -> Vec<ModelEntry> {
     [
-        ("claude", "Claude Code", crate::term::claude_program().is_some()),
+        (
+            "claude",
+            "Claude Code",
+            crate::term::claude_program().is_some(),
+        ),
         ("codex", "Codex", crate::codex::codex_path().is_some()),
-        ("gemini", "Antigravity", crate::gemini::gemini_path().is_some()),
-        ("copilot", "GitHub Copilot", crate::copilot::copilot_path().is_some()),
-        ("cursor", "Cursor Agent", crate::cursor::find_agent().is_some()),
+        (
+            "gemini",
+            "Antigravity",
+            crate::gemini::gemini_path().is_some(),
+        ),
+        (
+            "copilot",
+            "GitHub Copilot",
+            crate::copilot::copilot_path().is_some(),
+        ),
+        (
+            "cursor",
+            "Cursor Agent",
+            crate::cursor::find_agent().is_some(),
+        ),
     ]
     .into_iter()
     .map(|(id, label, installed)| ModelEntry {
@@ -311,7 +327,10 @@ pub fn verify_agent(id: &str) -> AgentCheck {
     // can start, because the CLI has a `login` command of its own.
     if id == "cursor" {
         let found = crate::cursor::find_agent();
-        let (signed, email) = found.as_ref().map(crate::cursor::signed_in).unwrap_or_default();
+        let (signed, email) = found
+            .as_ref()
+            .map(crate::cursor::signed_in)
+            .unwrap_or_default();
         return if signed {
             AgentCheck {
                 state: "ready",
@@ -367,9 +386,9 @@ pub fn verify_agent(id: &str) -> AgentCheck {
 /// Code extension - which is why this mirrors what `copilot.rs` already does
 /// for its own version check.
 fn version_of(path: &std::path::Path) -> String {
-    use std::process::{Command, Stdio};
     #[cfg(windows)]
     use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
     let script = path
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"));

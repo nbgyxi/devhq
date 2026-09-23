@@ -269,7 +269,8 @@ Line ''
 /// ends, however it ended.
 fn claude_setup_command() -> Result<String, String> {
     let dir = crate::shells::runtime_root();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not prepare the setup script: {e}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Could not prepare the setup script: {e}"))?;
     let script = dir.join("claude-setup.ps1");
     std::fs::write(&script, CLAUDE_SETUP_PS1)
         .map_err(|e| format!("Could not write the setup script: {e}"))?;
@@ -457,14 +458,18 @@ fn install_wt_proxy(source: &Path, installed: &Path) -> Result<(), String> {
             return Ok(());
         }
     }
-    std::fs::copy(source, installed).map(|_| ()).map_err(|e| e.to_string())
+    std::fs::copy(source, installed)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// The proxies moved aside by an update, once nothing is running them. Failing
 /// to delete one means it is still in use, which is fine - the next terminal
 /// opened tries again.
 fn sweep_replaced_proxies(root: &Path) {
-    let Ok(entries) = std::fs::read_dir(root) else { return };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
     for entry in entries.flatten() {
         let name = entry.file_name();
         if name.to_string_lossy().starts_with("wt.old-") {
@@ -506,7 +511,9 @@ fn wt_compat_dir(app: &AppHandle) -> Result<PathBuf, String> {
                 // a shell because the spare copy could not be refreshed helps
                 // nobody: the terminal is the point, the shim is a convenience.
                 if !installed.is_file() {
-                    return Err(format!("Could not install WinT's wt compatibility proxy: {error}"));
+                    return Err(format!(
+                        "Could not install WinT's wt compatibility proxy: {error}"
+                    ));
                 }
             }
         }
@@ -516,7 +523,9 @@ fn wt_compat_dir(app: &AppHandle) -> Result<PathBuf, String> {
         _ => {}
     }
     let old_cmd = root.join("wt.cmd");
-    if old_cmd.is_file() { let _ = std::fs::remove_file(old_cmd); }
+    if old_cmd.is_file() {
+        let _ = std::fs::remove_file(old_cmd);
+    }
     sweep_replaced_proxies(&root);
     Ok(root)
 }
@@ -1024,8 +1033,9 @@ pub async fn term_shell_availability() -> Vec<ShellAvailability> {
         found.push(ShellAvailability {
             profile: "claude",
             available: true,
-            reason: (!installed)
-                .then_some("Not installed yet — opening it walks you through installing and signing in."),
+            reason: (!installed).then_some(
+                "Not installed yet — opening it walks you through installing and signing in.",
+            ),
             setup: !installed,
         });
         found
@@ -1516,7 +1526,11 @@ pub struct PortTaken {
 /// The printable text of one screen row, with the marker that holds the second
 /// half of a double-width glyph dropped.
 fn row_text(cells: &[Cell]) -> String {
-    cells.iter().map(|cell| cell.ch).filter(|&ch| ch != CONT).collect()
+    cells
+        .iter()
+        .map(|cell| cell.ch)
+        .filter(|&ch| ch != CONT)
+        .collect()
 }
 
 /// The first loopback address with a port in a line of terminal text, which is
@@ -1563,7 +1577,9 @@ fn scan_local_url(text: &str) -> Option<String> {
         // of the string - and either would panic this thread, taking the
         // terminal's output with it.
         while from < text.len() {
-            let Some(at) = text[from..].find(host) else { break };
+            let Some(at) = text[from..].find(host) else {
+                break;
+            };
             let start = from + at;
             let rest = &text[start + host.len()..];
             let port: String = rest.chars().take_while(char::is_ascii_digit).collect();
@@ -1639,10 +1655,16 @@ fn scan_port_conflict(text: &str) -> Option<(u16, Option<u16>)> {
         .or_else(|| port_after(&lower, "port "))
         // Node says it in an address rather than a sentence:
         // `listen EADDRINUSE: address already in use :::3000`.
-        .or_else(|| lower.rsplit(':').next().and_then(|tail| {
-            let digits: String = tail.trim().chars().take_while(char::is_ascii_digit).collect();
-            digits.parse::<u16>().ok().filter(|&port| port > 0)
-        }))?;
+        .or_else(|| {
+            lower.rsplit(':').next().and_then(|tail| {
+                let digits: String = tail
+                    .trim()
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect();
+                digits.parse::<u16>().ok().filter(|&port| port > 0)
+            })
+        })?;
     let fallback = port_after(&lower, "alternative port ")
         .or_else(|| port_after(&lower, "trying "))
         .or_else(|| port_after(&lower, "using port "))
@@ -2032,7 +2054,8 @@ pub async fn term_popout(
 /// is a shell anywhere, without the main window coming forward first.
 #[tauri::command]
 pub async fn sidebar_open_terminal(app: AppHandle) -> Result<(), String> {
-    let home = std::env::var("USERPROFILE").map_err(|_| "No home folder to open a shell in.".to_string())?;
+    let home = std::env::var("USERPROFILE")
+        .map_err(|_| "No home folder to open a shell in.".to_string())?;
     let args = OpenArgs {
         project_path: home,
         project_name: Some("Home".into()),
@@ -2043,7 +2066,19 @@ pub async fn sidebar_open_terminal(app: AppHandle) -> Result<(), String> {
         history_key: None,
     };
     let info = term_open(app.clone(), args).await?;
-    term_popout(app, info.id, None, None, None, None, None, None, Some(true), None).await
+    term_popout(
+        app,
+        info.id,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(true),
+        None,
+    )
+    .await
 }
 
 // ---- administrator terminals -------------------------------------------
@@ -2313,7 +2348,6 @@ pub fn shutdown() {
     });
 }
 
-
 #[cfg(test)]
 mod serving_tests {
     use super::{row_text, scan_local_url, scan_port_conflict};
@@ -2358,7 +2392,10 @@ mod serving_tests {
     /// output that happens to mention a port says nothing.
     #[test]
     fn leaves_ordinary_output_alone() {
-        assert_eq!(scan_port_conflict("  Local:   http://localhost:5173/"), None);
+        assert_eq!(
+            scan_port_conflict("  Local:   http://localhost:5173/"),
+            None
+        );
         assert_eq!(scan_port_conflict("export const port = 3000;"), None);
         assert_eq!(scan_port_conflict("Listening on port 8080"), None);
     }
@@ -2400,7 +2437,10 @@ mod serving_tests {
     fn stops_at_the_padding_a_row_carries() {
         let line = screen_line(b"http://localhost:3000/\r\n");
         assert_eq!(line.len(), 80);
-        assert_eq!(scan_local_url(&line).as_deref(), Some("http://localhost:3000/"));
+        assert_eq!(
+            scan_local_url(&line).as_deref(),
+            Some("http://localhost:3000/")
+        );
     }
 
     /// The other spellings of this machine. A server that binds every
@@ -2455,9 +2495,9 @@ pub fn version_line(stdout: &str) -> String {
         .map(str::trim)
         .find(|line| {
             let bytes = line.as_bytes();
-            bytes.windows(3).any(|w| {
-                w[0].is_ascii_digit() && w[1] == b'.' && w[2].is_ascii_digit()
-            })
+            bytes
+                .windows(3)
+                .any(|w| w[0].is_ascii_digit() && w[1] == b'.' && w[2].is_ascii_digit())
         })
         .unwrap_or("")
         .to_string()

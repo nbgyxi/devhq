@@ -58,7 +58,9 @@ pub fn log_path() -> Option<std::path::PathBuf> {
 fn stamp() -> String {
     // Local wall-clock time is what a user comparing this against "it froze
     // around three" needs, and the offset is whatever Windows says it is.
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let secs = now.as_secs();
     let (h, m, s) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
     format!("{h:02}:{m:02}:{s:02}.{:03}Z", now.subsec_millis())
@@ -77,7 +79,10 @@ pub fn record(kind: &str, text: impl AsRef<str>) {
         if std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0) > MAX_BYTES {
             let _ = std::fs::rename(&path, path.with_extension("log.1"));
         }
-        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
         file.write_all(line.as_bytes())
     })();
 }
@@ -95,8 +100,16 @@ pub fn start(version: &str) {
         MAIN_THREAD.store(GetCurrentThreadId(), Ordering::SeqCst);
         let me = GetCurrentProcess();
         let mut handle = HANDLE::default();
-        if DuplicateHandle(me, GetCurrentThread(), me, &mut handle, 0, false, DUPLICATE_SAME_ACCESS)
-            .is_ok()
+        if DuplicateHandle(
+            me,
+            GetCurrentThread(),
+            me,
+            &mut handle,
+            0,
+            false,
+            DUPLICATE_SAME_ACCESS,
+        )
+        .is_ok()
         {
             MAIN_HANDLE.store(handle.0 as isize, Ordering::SeqCst);
         }
@@ -126,7 +139,11 @@ pub fn start(version: &str) {
         record("PANIC", format!("{what} — at {where_at}"));
         record(
             "PANIC",
-            format!("blocking calls: {} — in flight: {}", native_summary(), in_flight_summary()),
+            format!(
+                "blocking calls: {} — in flight: {}",
+                native_summary(),
+                in_flight_summary()
+            ),
         );
         // The default hook prints and, where it is asked to, captures the
         // backtrace; it runs after this so the log has the cause first.
@@ -138,7 +155,13 @@ pub fn start(version: &str) {
 pub fn job_started(origin: &'static str) -> u64 {
     let id = NEXT_JOB.fetch_add(1, Ordering::Relaxed);
     if let Some(jobs) = IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-        jobs.insert(id, Job { origin, at: Instant::now() });
+        jobs.insert(
+            id,
+            Job {
+                origin,
+                at: Instant::now(),
+            },
+        );
     }
     id
 }
@@ -219,10 +242,7 @@ fn main_thread_stack() -> String {
 
     // `StackWalk64` takes these as raw callbacks, so they are handed over as
     // the shape it asks for rather than the crate's safe wrappers.
-    unsafe extern "system" fn table_access(
-        process: HANDLE,
-        address: u64,
-    ) -> *mut std::ffi::c_void {
+    unsafe extern "system" fn table_access(process: HANDLE, address: u64) -> *mut std::ffi::c_void {
         SymFunctionTableAccess64(process, address)
     }
     unsafe extern "system" fn module_base(process: HANDLE, address: u64) -> u64 {
@@ -410,7 +430,11 @@ fn native_summary() -> String {
     rows.iter()
         .take(8)
         .map(|(ms, what, on_main)| {
-            let thread = if *on_main { "ON THE DRAWING THREAD" } else { "off-thread" };
+            let thread = if *on_main {
+                "ON THE DRAWING THREAD"
+            } else {
+                "off-thread"
+            };
             format!("{what} ({ms} ms, {thread})")
         })
         .collect::<Vec<_>>()
@@ -426,8 +450,10 @@ pub fn in_flight_summary() -> String {
     if jobs.is_empty() {
         return "nothing".into();
     }
-    let mut rows: Vec<(u128, &'static str)> =
-        jobs.values().map(|job| (job.at.elapsed().as_millis(), job.origin)).collect();
+    let mut rows: Vec<(u128, &'static str)> = jobs
+        .values()
+        .map(|job| (job.at.elapsed().as_millis(), job.origin))
+        .collect();
     rows.sort_by_key(|(ms, _)| std::cmp::Reverse(*ms));
     rows.iter()
         .take(12)
@@ -542,7 +568,9 @@ pub fn report(limit: usize) -> Report {
         lines.drain(..lines.len() - limit);
     }
     Report {
-        path: path.map(|path| path.display().to_string()).unwrap_or_default(),
+        path: path
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
         lines,
         in_flight: in_flight_summary(),
         uptime: STARTED

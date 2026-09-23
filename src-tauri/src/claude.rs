@@ -266,7 +266,10 @@ pub async fn claude_send(
 /// conversations. The way out of anything the chat cannot do is the CLI itself:
 /// approving a command it wants to run, signing in, a slash command, plan mode.
 #[tauri::command]
-pub fn claude_terminal_command(session: Option<String>, model: Option<String>) -> Result<String, String> {
+pub fn claude_terminal_command(
+    session: Option<String>,
+    model: Option<String>,
+) -> Result<String, String> {
     let path = claude_path().ok_or("Claude Code is not installed.")?;
     let quoted = format!("\"{}\"", path.display());
     let program = if path

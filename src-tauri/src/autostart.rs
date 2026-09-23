@@ -30,7 +30,10 @@ pub enum Mode {
 /// How WinT shows itself when Windows starts it. Tray when nothing was picked,
 /// which is how every earlier version started.
 pub fn mode(dir: &Path) -> Mode {
-    match std::fs::read_to_string(dir.join(MODE_FILE)).unwrap_or_default().trim() {
+    match std::fs::read_to_string(dir.join(MODE_FILE))
+        .unwrap_or_default()
+        .trim()
+    {
         "minimized" => Mode::Minimized,
         "normal" => Mode::Normal,
         _ => Mode::Tray,
@@ -111,7 +114,9 @@ mod imp {
     use windows::core::{HSTRING, PCWSTR};
     use windows::ApplicationModel::Activation::ActivationKind;
     use windows::ApplicationModel::{AppInstance, StartupTask, StartupTaskState};
-    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
+    use windows::Win32::Foundation::{
+        ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS,
+    };
     use windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
     use windows::Win32::System::Registry::{
         RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
@@ -144,7 +149,12 @@ mod imp {
 
     fn task_state_status(state: StartupTaskState) -> Status {
         match state {
-            StartupTaskState::Enabled => Status { enabled: true, mode: Mode::Tray, changeable: true, note: None },
+            StartupTaskState::Enabled => Status {
+                enabled: true,
+                mode: Mode::Tray,
+                changeable: true,
+                note: None,
+            },
             StartupTaskState::EnabledByPolicy => Status {
                 enabled: true,
                 mode: Mode::Tray,
@@ -155,7 +165,10 @@ mod imp {
                 enabled: false,
                 mode: Mode::Tray,
                 changeable: false,
-                note: Some("Turned off in Windows Settings > Apps > Startup. Switch WinT on there first.".into()),
+                note: Some(
+                    "Turned off in Windows Settings > Apps > Startup. Switch WinT on there first."
+                        .into(),
+                ),
             },
             StartupTaskState::DisabledByPolicy => Status {
                 enabled: false,
@@ -163,7 +176,12 @@ mod imp {
                 changeable: false,
                 note: Some("Your organization does not allow WinT to start with Windows.".into()),
             },
-            _ => Status { enabled: false, mode: Mode::Tray, changeable: true, note: None },
+            _ => Status {
+                enabled: false,
+                mode: Mode::Tray,
+                changeable: true,
+                note: None,
+            },
         }
     }
 
@@ -210,7 +228,9 @@ mod imp {
         if result == ERROR_FILE_NOT_FOUND {
             return Ok(None);
         }
-        result.ok().map_err(|e| format!("Could not read the startup entry: {e}"))?;
+        result
+            .ok()
+            .map_err(|e| format!("Could not read the startup entry: {e}"))?;
         let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
         Ok(Some(String::from_utf16_lossy(&buf[..len])))
     }
@@ -218,10 +238,18 @@ mod imp {
     pub fn run_key_status() -> Result<Status, String> {
         let expected = command_line()?;
         Ok(match read_run_value()? {
-            None => Status { enabled: false, mode: Mode::Tray, changeable: true, note: None },
-            Some(value) if value.eq_ignore_ascii_case(&expected) => {
-                Status { enabled: true, mode: Mode::Tray, changeable: true, note: None }
-            }
+            None => Status {
+                enabled: false,
+                mode: Mode::Tray,
+                changeable: true,
+                note: None,
+            },
+            Some(value) if value.eq_ignore_ascii_case(&expected) => Status {
+                enabled: true,
+                mode: Mode::Tray,
+                changeable: true,
+                note: None,
+            },
             // Another copy of WinT registered itself; switching on here
             // points the entry at this one instead.
             Some(value) => Status {
@@ -252,11 +280,19 @@ mod imp {
             .ok()
             .map_err(|e| format!("Could not add WinT to startup: {e}"))
         } else {
-            let result = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, PCWSTR(key.as_ptr()), PCWSTR(name.as_ptr())) };
+            let result = unsafe {
+                RegDeleteKeyValueW(
+                    HKEY_CURRENT_USER,
+                    PCWSTR(key.as_ptr()),
+                    PCWSTR(name.as_ptr()),
+                )
+            };
             if result == ERROR_FILE_NOT_FOUND {
                 return Ok(());
             }
-            result.ok().map_err(|e| format!("Could not remove WinT from startup: {e}"))
+            result
+                .ok()
+                .map_err(|e| format!("Could not remove WinT from startup: {e}"))
         }
     }
 }

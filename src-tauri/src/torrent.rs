@@ -658,7 +658,10 @@ fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>)
                 engine.message = Some(if delay.is_zero() {
                     "The torrent engine stopped and is restarting.".into()
                 } else {
-                    format!("The torrent engine stopped again; retrying in {} seconds.", delay.as_secs())
+                    format!(
+                        "The torrent engine stopped again; retrying in {} seconds.",
+                        delay.as_secs()
+                    )
                 });
                 retry_after = Some(delay);
                 changed = true;
@@ -858,8 +861,12 @@ fn watchdog() {
                 let mut generation = 0;
 
                 {
-                    let Ok(mut engine) = engine().lock() else { continue };
-                    let Some(running) = engine.running.as_ref() else { continue };
+                    let Ok(mut engine) = engine().lock() else {
+                        continue;
+                    };
+                    let Some(running) = engine.running.as_ref() else {
+                        continue;
+                    };
                     let pid = running.pid;
                     // Measuring the child's memory from out here, rather than
                     // asking it, is deliberate: a wedged process still has a
@@ -896,7 +903,11 @@ fn watchdog() {
                         engine.message = Some(if delay.is_zero() {
                             fault.clone().unwrap_or_default()
                         } else {
-                            format!("{} Retrying in {} seconds.", fault.clone().unwrap_or_default(), delay.as_secs())
+                            format!(
+                                "{} Retrying in {} seconds.",
+                                fault.clone().unwrap_or_default(),
+                                delay.as_secs()
+                            )
                         });
                     }
                 }

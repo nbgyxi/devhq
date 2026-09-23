@@ -4,15 +4,17 @@
 //! window mounts its own copy of the tool. These commands only create, focus
 //! and destroy the webview that hosts it.
 
-use std::path::{Path, PathBuf};
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use tauri::image::Image;
 use tauri::webview::WebviewBuilder;
-use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder,
+};
 
 use crate::off_thread;
 
@@ -137,12 +139,17 @@ pub(crate) fn focus_clipboard_from_global(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(CLIPBOARD_LABEL) {
         let already_open = window.is_visible().unwrap_or(false);
         #[cfg(windows)]
-        if !already_open { remember_clipboard_return_window(&window); }
+        if !already_open {
+            remember_clipboard_return_window(&window);
+        }
         #[cfg(windows)]
         let _ = foreground_search_window(&window);
         #[cfg(not(windows))]
         let _ = focus_search_window(&window);
-        let _ = window.emit("clipboard-picker:activate", serde_json::json!({ "cycle": already_open }));
+        let _ = window.emit(
+            "clipboard-picker:activate",
+            serde_json::json!({ "cycle": already_open }),
+        );
     }
 }
 
@@ -226,18 +233,19 @@ pub async fn search_show(
     );
     let build_app = app.clone();
     off_thread(move || {
-        let mut builder = WebviewWindowBuilder::new(&app, SEARCH_LABEL, WebviewUrl::App(page.into()))
-            .title("Search WinT")
-            .inner_size(680.0, 520.0)
-            .min_inner_size(520.0, 320.0)
-            .decorations(false)
-            .transparent(false)
-            .resizable(true)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .visible(false)
-            .background_color(background)
-            .initialization_script(&init_theme);
+        let mut builder =
+            WebviewWindowBuilder::new(&app, SEARCH_LABEL, WebviewUrl::App(page.into()))
+                .title("Search WinT")
+                .inner_size(680.0, 520.0)
+                .min_inner_size(520.0, 320.0)
+                .decorations(false)
+                .transparent(false)
+                .resizable(true)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .visible(false)
+                .background_color(background)
+                .initialization_script(&init_theme);
         builder = if let (Some(x), Some(y)) = (x, y) {
             builder.position(x, y)
         } else {
@@ -266,43 +274,89 @@ pub fn search_hide(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn clipboard_picker_prepare(app: AppHandle, theme: Option<String>) -> Result<(), String> {
-    if app.get_webview_window(CLIPBOARD_LABEL).is_some() { return Ok(()); }
+    if app.get_webview_window(CLIPBOARD_LABEL).is_some() {
+        return Ok(());
+    }
     let light = theme.as_deref() == Some("light");
-    let page = format!("clipboard-picker.html?prepared=1&theme={}", if light { "light" } else { "dark" });
-    let background = if light { tauri::webview::Color(244, 245, 248, 255) } else { tauri::webview::Color(12, 13, 17, 255) };
+    let page = format!(
+        "clipboard-picker.html?prepared=1&theme={}",
+        if light { "light" } else { "dark" }
+    );
+    let background = if light {
+        tauri::webview::Color(244, 245, 248, 255)
+    } else {
+        tauri::webview::Color(12, 13, 17, 255)
+    };
     off_thread(move || {
         WebviewWindowBuilder::new(&app, CLIPBOARD_LABEL, WebviewUrl::App(page.into()))
-            .title("Clipboard history").inner_size(520.0, 430.0).min_inner_size(420.0, 280.0)
-            .decorations(false).resizable(true).always_on_top(true).skip_taskbar(true)
-            .visible(false).center().background_color(background)
-            .build().map(|_| ()).map_err(|e| format!("Could not prepare Clipboard history: {e}"))
-    }).await.unwrap_or_else(|| Err("Could not prepare Clipboard history.".into()))
+            .title("Clipboard history")
+            .inner_size(520.0, 430.0)
+            .min_inner_size(420.0, 280.0)
+            .decorations(false)
+            .resizable(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .visible(false)
+            .center()
+            .background_color(background)
+            .build()
+            .map(|_| ())
+            .map_err(|e| format!("Could not prepare Clipboard history: {e}"))
+    })
+    .await
+    .unwrap_or_else(|| Err("Could not prepare Clipboard history.".into()))
 }
 
 #[tauri::command]
-pub async fn clipboard_picker_show(app: AppHandle, theme: Option<String>, binding: Option<String>, activate: Option<bool>) -> Result<(), String> {
+pub async fn clipboard_picker_show(
+    app: AppHandle,
+    theme: Option<String>,
+    binding: Option<String>,
+    activate: Option<bool>,
+) -> Result<(), String> {
     if app.get_webview_window(CLIPBOARD_LABEL).is_none() {
         clipboard_picker_prepare(app.clone(), theme.clone()).await?;
     }
-    let window = app.get_webview_window(CLIPBOARD_LABEL).ok_or("Clipboard history was not created.")?;
+    let window = app
+        .get_webview_window(CLIPBOARD_LABEL)
+        .ok_or("Clipboard history was not created.")?;
     let already_open = window.is_visible().unwrap_or(false);
     #[cfg(windows)]
-    if !already_open { remember_clipboard_return_window(&window); }
+    if !already_open {
+        remember_clipboard_return_window(&window);
+    }
     let light = theme.as_deref() == Some("light");
-    let binding = serde_json::to_string(&binding.unwrap_or_else(|| "Ctrl+Shift+V".into())).map_err(|e| e.to_string())?;
-    window.eval(format!(r#"document.documentElement.dataset.theme="{}";"#, if light { "light" } else { "dark" })).map_err(|e| e.to_string())?;
-    window.eval(format!("window.wintClipboardBinding={binding};")).map_err(|e| e.to_string())?;
-    if !already_open { window.center().map_err(|e| e.to_string())?; }
+    let binding = serde_json::to_string(&binding.unwrap_or_else(|| "Ctrl+Shift+V".into()))
+        .map_err(|e| e.to_string())?;
+    window
+        .eval(format!(
+            r#"document.documentElement.dataset.theme="{}";"#,
+            if light { "light" } else { "dark" }
+        ))
+        .map_err(|e| e.to_string())?;
+    window
+        .eval(format!("window.wintClipboardBinding={binding};"))
+        .map_err(|e| e.to_string())?;
+    if !already_open {
+        window.center().map_err(|e| e.to_string())?;
+    }
     focus_search_window(&window)?;
     if activate.unwrap_or(true) {
-        window.emit("clipboard-picker:activate", serde_json::json!({ "cycle": already_open })).map_err(|e| e.to_string())?;
+        window
+            .emit(
+                "clipboard-picker:activate",
+                serde_json::json!({ "cycle": already_open }),
+            )
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 #[tauri::command]
 pub fn clipboard_picker_hide(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(CLIPBOARD_LABEL) { window.hide().map_err(|e| e.to_string())?; }
+    if let Some(window) = app.get_webview_window(CLIPBOARD_LABEL) {
+        window.hide().map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -323,17 +377,41 @@ pub async fn clipboard_picker_paste(app: AppHandle) -> Result<(), String> {
         };
         use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
         let raw = CLIPBOARD_RETURN_HWND.load(Ordering::Relaxed);
-        if raw == 0 { return Err("The previous window is no longer available.".into()); }
+        if raw == 0 {
+            return Err("The previous window is no longer available.".into());
+        }
         let target = HWND(raw as *mut core::ffi::c_void);
         if !unsafe { SetForegroundWindow(target) }.as_bool() {
             return Err("Windows could not return focus to the previous window.".into());
         }
         std::thread::sleep(std::time::Duration::from_millis(45));
-        let key = |code, flags| INPUT { r#type: INPUT_KEYBOARD, Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: code, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: 0 } } };
-        let inputs = [key(VK_CONTROL, Default::default()), key(VK_V, Default::default()), key(VK_V, KEYEVENTF_KEYUP), key(VK_CONTROL, KEYEVENTF_KEYUP)];
+        let key = |code, flags| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: code,
+                    wScan: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let inputs = [
+            key(VK_CONTROL, Default::default()),
+            key(VK_V, Default::default()),
+            key(VK_V, KEYEVENTF_KEYUP),
+            key(VK_CONTROL, KEYEVENTF_KEYUP),
+        ];
         let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
-        if sent == inputs.len() as u32 { Ok(()) } else { Err("Windows could not send the paste command.".into()) }
-    }).await.unwrap_or_else(|| Err("The paste command could not run.".into()))?;
+        if sent == inputs.len() as u32 {
+            Ok(())
+        } else {
+            Err("Windows could not send the paste command.".into())
+        }
+    })
+    .await
+    .unwrap_or_else(|| Err("The paste command could not run.".into()))?;
     Ok(())
 }
 
@@ -343,16 +421,25 @@ pub async fn clipboard_picker_paste(app: AppHandle) -> Result<(), String> {
 pub async fn changelog_show(app: AppHandle, theme: Option<String>) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(CHANGELOG_LABEL) {
         let light = theme.as_deref() == Some("light");
-        window.eval(format!(
-            r#"document.documentElement.dataset.theme="{}";"#,
-            if light { "light" } else { "dark" }
-        )).map_err(|e| e.to_string())?;
+        window
+            .eval(format!(
+                r#"document.documentElement.dataset.theme="{}";"#,
+                if light { "light" } else { "dark" }
+            ))
+            .map_err(|e| e.to_string())?;
         focus_search_window(&window)?;
         return Ok(());
     }
     let light = theme.as_deref() == Some("light");
-    let background = if light { tauri::webview::Color(244, 245, 248, 255) } else { tauri::webview::Color(12, 13, 17, 255) };
-    let page = format!("changelog.html?theme={}", if light { "light" } else { "dark" });
+    let background = if light {
+        tauri::webview::Color(244, 245, 248, 255)
+    } else {
+        tauri::webview::Color(12, 13, 17, 255)
+    };
+    let page = format!(
+        "changelog.html?theme={}",
+        if light { "light" } else { "dark" }
+    );
     let build_app = app.clone();
     off_thread(move || {
         WebviewWindowBuilder::new(&app, CHANGELOG_LABEL, WebviewUrl::App(page.into()))
@@ -366,9 +453,14 @@ pub async fn changelog_show(app: AppHandle, theme: Option<String>) -> Result<(),
             .visible(false)
             .center()
             .background_color(background)
-            .build().map(|_| ()).map_err(|e| format!("Could not open What's new: {e}"))
-    }).await.unwrap_or_else(|| Err("Could not open What's new.".to_string()))?;
-    let window = build_app.get_webview_window(CHANGELOG_LABEL)
+            .build()
+            .map(|_| ())
+            .map_err(|e| format!("Could not open What's new: {e}"))
+    })
+    .await
+    .unwrap_or_else(|| Err("Could not open What's new.".to_string()))?;
+    let window = build_app
+        .get_webview_window(CHANGELOG_LABEL)
         .ok_or_else(|| "What's new was created without a window.".to_string())?;
     focus_search_window(&window)
 }
@@ -479,7 +571,10 @@ pub async fn calendar_show(
     } else {
         tauri::webview::Color(12, 13, 17, 255)
     };
-    let page = format!("calendar.html?theme={}", if light { "light" } else { "dark" });
+    let page = format!(
+        "calendar.html?theme={}",
+        if light { "light" } else { "dark" }
+    );
     let build_app = app.clone();
     off_thread(move || {
         WebviewWindowBuilder::new(&app, CALENDAR_LABEL, WebviewUrl::App(page.into()))
@@ -572,13 +667,19 @@ fn bridge_states() -> &'static Mutex<HashMap<String, serde_json::Value>> {
 /// environment and therefore cannot cross the isolation boundary.
 #[tauri::command]
 pub fn tool_bridge_state_put(id: String, state: serde_json::Value) -> Result<(), String> {
-    bridge_states().lock().map_err(|_| "Tool state is unavailable.".to_string())?.insert(id, state);
+    bridge_states()
+        .lock()
+        .map_err(|_| "Tool state is unavailable.".to_string())?
+        .insert(id, state);
     Ok(())
 }
 
 #[tauri::command]
 pub fn tool_bridge_state_take(id: String) -> Result<Option<serde_json::Value>, String> {
-    Ok(bridge_states().lock().map_err(|_| "Tool state is unavailable.".to_string())?.remove(&id))
+    Ok(bridge_states()
+        .lock()
+        .map_err(|_| "Tool state is unavailable.".to_string())?
+        .remove(&id))
 }
 
 /// Show one tool inside the main window while keeping its JavaScript in a
@@ -598,7 +699,11 @@ pub async fn tool_embedded_show(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    if id.is_empty() || id.chars().any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))) {
+    if id.is_empty()
+        || id
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
+    {
         return Err("That tool id cannot be isolated.".into());
     }
     if session.len() < 16 || session.chars().any(|c| !c.is_ascii_alphanumeric()) {
@@ -683,7 +788,10 @@ pub async fn tool_embedded_show(
             .initialization_script(&init_theme)
             .background_color(background)
     };
-    embedded_sessions().lock().unwrap().insert(id.clone(), session.clone());
+    embedded_sessions()
+        .lock()
+        .unwrap()
+        .insert(id.clone(), session.clone());
     match window.add_child(make_builder(), position, size) {
         Ok(_) => Ok(()),
         Err(first_err) => {
@@ -869,7 +977,11 @@ pub async fn tool_popout(
 
 /// Focus an already-open tool window without creating one.
 #[tauri::command]
-pub async fn tool_focus(app: AppHandle, id: String, instance: Option<String>) -> Result<(), String> {
+pub async fn tool_focus(
+    app: AppHandle,
+    id: String,
+    instance: Option<String>,
+) -> Result<(), String> {
     let instance = valid_instance(instance.as_deref())?;
     let label = label_for(&id, instance.as_deref());
     off_thread(move || {

@@ -20,7 +20,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use tauri::webview::WebviewBuilder;
-use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder,
+};
 
 use crate::off_thread;
 
@@ -392,7 +394,11 @@ pub async fn workspace_browser_hide(app: AppHandle, window: String) -> Result<()
 }
 
 #[tauri::command]
-pub async fn workspace_browser_navigate(app: AppHandle, window: String, url: String) -> Result<(), String> {
+pub async fn workspace_browser_navigate(
+    app: AppHandle,
+    window: String,
+    url: String,
+) -> Result<(), String> {
     let Some(webview) = app.get_webview(&browser_label(&window)) else {
         return Err("The browser panel is not open.".into());
     };
@@ -407,9 +413,7 @@ pub async fn workspace_browser_reload(app: AppHandle, window: String) -> Result<
     let Some(webview) = app.get_webview(&browser_label(&window)) else {
         return Ok(());
     };
-    webview
-        .eval("location.reload()")
-        .map_err(|e| e.to_string())
+    webview.eval("location.reload()").map_err(|e| e.to_string())
 }
 
 /// Back and forward through the page's own history.
@@ -459,7 +463,11 @@ pub async fn workspace_browser_close(app: AppHandle, window: String) -> Result<(
 /// dock hands it over, because that is where the "still running" warning is
 /// shown and this workspace is gone.
 #[tauri::command]
-pub async fn workspace_teardown(app: AppHandle, window: String, terminals: Vec<String>) -> Result<(), String> {
+pub async fn workspace_teardown(
+    app: AppHandle,
+    window: String,
+    terminals: Vec<String>,
+) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&browser_label(&window)) {
         let _ = webview.close();
     }
@@ -472,7 +480,10 @@ pub async fn workspace_teardown(app: AppHandle, window: String, terminals: Vec<S
             let _ = crate::term::term_close_now(id);
         }
         if !expected.is_empty() {
-            let _ = app.emit("term:orphan-watch", serde_json::json!({ "expected": expected }));
+            let _ = app.emit(
+                "term:orphan-watch",
+                serde_json::json!({ "expected": expected }),
+            );
         }
     });
     Ok(())
@@ -520,7 +531,8 @@ pub async fn workspace_list_dir(path: String) -> Result<Vec<DirEntry>, String> {
         if !dir.is_dir() {
             return Err("That folder no longer exists.".to_string());
         }
-        let reader = std::fs::read_dir(dir).map_err(|e| format!("Could not read the folder: {e}"))?;
+        let reader =
+            std::fs::read_dir(dir).map_err(|e| format!("Could not read the folder: {e}"))?;
         let mut rows: Vec<DirEntry> = reader
             .flatten()
             .filter_map(|entry| {
@@ -608,8 +620,16 @@ pub(crate) fn base64(bytes: &[u8]) -> String {
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         out.push(ALPHABET[(n >> 18) as usize & 63] as char);
         out.push(ALPHABET[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { ALPHABET[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { ALPHABET[n as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -714,10 +734,20 @@ fn attachments_dir() -> Result<PathBuf, String> {
 fn free_path(dir: &Path, name: &str) -> PathBuf {
     let cleaned: String = name
         .chars()
-        .map(|c| if c.is_control() || FORBIDDEN.contains(c) { '-' } else { c })
+        .map(|c| {
+            if c.is_control() || FORBIDDEN.contains(c) {
+                '-'
+            } else {
+                c
+            }
+        })
         .collect();
     let cleaned = cleaned.trim().trim_matches('.').to_string();
-    let cleaned = if cleaned.is_empty() { "attachment".to_string() } else { cleaned };
+    let cleaned = if cleaned.is_empty() {
+        "attachment".to_string()
+    } else {
+        cleaned
+    };
     let (stem, ext) = match cleaned.rsplit_once('.') {
         Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
         _ => (cleaned.clone(), String::new()),

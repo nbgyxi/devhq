@@ -16,15 +16,15 @@ fn main() {
     use windows::core::{BOOL, GUID, PWSTR};
     use windows::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HWND, LPARAM, PROPERTYKEY};
     use windows::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
-    use windows::Win32::System::Com::{
-        CoInitializeEx, CoTaskMemFree, COINIT_MULTITHREADED,
-    };
     use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
+    use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_MULTITHREADED};
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
-    use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
+    use windows::Win32::UI::Shell::PropertiesSystem::{
+        IPropertyStore, SHGetPropertyStoreForWindow,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumChildWindows, EnumWindows, GetClassNameW, GetWindowLongW, GetWindowTextLengthW,
         GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
@@ -75,7 +75,11 @@ fn main() {
         )
         .is_ok();
         let _ = CloseHandle(process);
-        if ok { String::from_utf16_lossy(&buffer[..len as usize]) } else { String::new() }
+        if ok {
+            String::from_utf16_lossy(&buffer[..len as usize])
+        } else {
+            String::new()
+        }
     }
 
     /// The same hop the rail makes: a UWP app's real window lives inside the
@@ -87,7 +91,9 @@ fn main() {
             let len = GetClassNameW(child, &mut class).max(0) as usize;
             let mut pid = 0u32;
             GetWindowThreadProcessId(child, Some(&mut pid));
-            if String::from_utf16_lossy(&class[..len]) == "Windows.UI.Core.CoreWindow" && pid != found.0 {
+            if String::from_utf16_lossy(&class[..len]) == "Windows.UI.Core.CoreWindow"
+                && pid != found.0
+            {
                 found.1 = child.0 as isize;
                 return false.into();
             }
@@ -96,8 +102,16 @@ fn main() {
         let mut frame_pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut frame_pid));
         let mut found = (frame_pid, 0isize);
-        let _ = EnumChildWindows(Some(hwnd), Some(find), LPARAM(std::ptr::addr_of_mut!(found) as isize));
-        if found.1 != 0 { HWND(found.1 as *mut c_void) } else { hwnd }
+        let _ = EnumChildWindows(
+            Some(hwnd),
+            Some(find),
+            LPARAM(std::ptr::addr_of_mut!(found) as isize),
+        );
+        if found.1 != 0 {
+            HWND(found.1 as *mut c_void)
+        } else {
+            hwnd
+        }
     }
 
     unsafe extern "system" fn collect(hwnd: HWND, found: LPARAM) -> BOOL {
@@ -112,7 +126,10 @@ fn main() {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         let mut handles: Vec<isize> = Vec::new();
-        let _ = EnumWindows(Some(collect), LPARAM(std::ptr::addr_of_mut!(handles) as isize));
+        let _ = EnumWindows(
+            Some(collect),
+            LPARAM(std::ptr::addr_of_mut!(handles) as isize),
+        );
         for raw in handles {
             let hwnd = HWND(raw as *mut c_void);
             let mut title = [0u16; 512];
@@ -123,7 +140,10 @@ fn main() {
             let window = window_id(hwnd).or_else(|| window_id(inner));
             let package = process_id(inner).or_else(|| process_id(hwnd));
             println!("{title}");
-            println!("  exe     {}", if exe.is_empty() { "<denied>" } else { &exe });
+            println!(
+                "  exe     {}",
+                if exe.is_empty() { "<denied>" } else { &exe }
+            );
             println!("  window  {}", window.as_deref().unwrap_or("-"));
             println!("  package {}", package.as_deref().unwrap_or("-"));
             let pinnable = window.is_some()
@@ -138,4 +158,3 @@ fn main() {
 fn main() {
     println!("Windows only.");
 }
-

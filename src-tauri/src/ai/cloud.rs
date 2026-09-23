@@ -43,9 +43,15 @@ pub struct CloudStatus {
 impl CloudStatus {
     /// Read by the shared model registry, which needs to know which API
     /// models are usable without being able to see the keys themselves.
-    pub fn claude_configured(&self) -> bool { self.claude_configured }
-    pub fn openai_configured(&self) -> bool { self.openai_configured }
-    pub fn cursor_configured(&self) -> bool { self.cursor_configured }
+    pub fn claude_configured(&self) -> bool {
+        self.claude_configured
+    }
+    pub fn openai_configured(&self) -> bool {
+        self.openai_configured
+    }
+    pub fn cursor_configured(&self) -> bool {
+        self.cursor_configured
+    }
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -863,11 +869,13 @@ pub async fn verify(provider: &str, key: String) -> Result<String, String> {
                 .send()
                 .await
         }
-        "openai" => client
-            .get("https://api.openai.com/v1/models")
-            .bearer_auth(key)
-            .send()
-            .await,
+        "openai" => {
+            client
+                .get("https://api.openai.com/v1/models")
+                .bearer_auth(key)
+                .send()
+                .await
+        }
         _ => return Err("Unknown cloud provider.".into()),
     }
     .map_err(|e| format!("Could not reach the provider: {e}"))?;
@@ -879,7 +887,10 @@ pub async fn verify(provider: &str, key: String) -> Result<String, String> {
     // 401 and 403 mean the key, anything else means the service - worth
     // telling apart, because only one of them is the person's to fix.
     Err(match status.as_u16() {
-        401 | 403 => "That key was rejected. Check you copied all of it, and that it is for this provider.".into(),
+        401 | 403 => {
+            "That key was rejected. Check you copied all of it, and that it is for this provider."
+                .into()
+        }
         429 => "The key is valid, but the account is rate limited right now.".into(),
         other => format!("The provider answered {other}."),
     })

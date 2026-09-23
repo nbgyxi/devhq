@@ -9,9 +9,9 @@
 
 #[cfg(windows)]
 fn main() {
+    use std::sync::{Arc, Mutex};
     use wint_lib::conpty::{self, ConPty};
     use wint_lib::vt::{Grid, DEFAULT_COLOR};
-    use std::sync::{Arc, Mutex};
 
     let mut args = std::env::args().skip(1);
     let dir = args.next().unwrap_or_else(|| ".".to_string());

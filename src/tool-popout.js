@@ -419,7 +419,18 @@
     // The maturity badge lives in the bar and is a button: a drag started here
     // would swallow the click that opens what Alpha and Beta mean.
     if (e.target.closest("[data-maturity]")) return;
+    // The icon in the corner is where the system menu lives in Windows, and a
+    // drag started there would swallow the double click that closes the window.
+    if (e.target.closest(".brand img")) return;
     await win.startDragging();
+  });
+
+  // Double clicking that icon closes the window, the way double clicking a
+  // Windows system menu always has.
+  document.querySelector(".titlebar .brand img")?.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    finishClose();
   });
 
   /** Compact Process Explorer for the pop-out. Full shelving/pins stay in main. */

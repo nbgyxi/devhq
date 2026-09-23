@@ -4938,7 +4938,7 @@ body.projects-window #status-term-popout{display:none!important}
    heights torrent.js scrolls by (ROW = 34, FILE_ROW = 28). Changing either
    here means changing it there. */
 [data-torrent-host]{height:100%;min-height:0;display:flex;flex-direction:column}
-.tr-page{flex:1 1 auto;display:flex;flex-direction:column;gap:12px;min-height:0}
+.tr-page{position:relative;flex:1 1 auto;display:flex;flex-direction:column;gap:12px;min-height:0}
 .tr-banner{flex:none;display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg2);font-size:12px}
 /* Without this the bar keeps its display:flex and shows as an empty box. */
 .tr-banner[hidden]{display:none}
@@ -4970,6 +4970,9 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-tab:hover{color:var(--text)}
 .tr-tab.on{color:var(--text);border-bottom-color:var(--accent)}
 .tr-count{margin-left:auto;padding-right:4px;color:var(--dim2);font-size:11px}
+.tr-top-add{width:min(280px,28vw);height:28px;display:flex;align-items:center;gap:6px;margin-left:8px;padding:0 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg1)}
+.tr-top-add>.ms{flex:none;color:var(--accent);font-size:16px}
+.tr-choose{height:28px;flex:none;padding:3px 8px;font-size:11px}
 .tr-column-control{position:relative;flex:none}
 .tr-column-control>.btn{height:28px;padding:3px 8px;font-size:11px}
 .tr-column-picker{position:absolute;z-index:20;top:calc(100% + 5px);right:0;width:170px;padding:5px;border:1px solid var(--line);border-radius:8px;background:var(--bg2);box-shadow:0 12px 30px #0008}
@@ -4980,14 +4983,16 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-view{flex:1 1 auto;display:flex;flex-direction:column;gap:12px;min-height:0}
 .tr-view[hidden]{display:none}
 
-.tr-add{flex:none;display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--bg1)}
-.tr-add .ms{color:var(--accent)}
 .tr-magnet{flex:1;min-width:0;border:0;background:none;color:var(--text);font-size:12px;outline:none}
 .tr-magnet::placeholder{color:var(--dim2)}
 
 .tr-work{flex:1 1 auto;display:flex;align-items:stretch;gap:12px;min-height:0}
 .tr-list{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow-x:auto;overflow-y:hidden}
-.tr-list.tr-drop{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.tr-drop-overlay{position:absolute;z-index:50;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;border:2px dashed var(--accent);border-radius:12px;background:color-mix(in srgb,var(--bg) 88%,transparent);color:var(--text);pointer-events:none;backdrop-filter:blur(5px)}
+.tr-drop-overlay[hidden]{display:none}
+.tr-drop-overlay>.ms{color:var(--accent);font-size:42px}
+.tr-drop-overlay>strong{font-size:15px}
+.tr-drop-overlay>span{color:var(--dim);font-size:11px}
 .tr-head,.tr-row{display:grid;grid-template-columns:var(--tr-columns,minmax(0,1fr) 80px 120px 150px 136px 84px 84px 56px);gap:10px;align-items:center}
 .tr-head{padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--line);color:var(--dim2);font-size:10px;text-transform:uppercase;letter-spacing:.4px}
 .tr-head,.tr-scroll{min-width:var(--tr-table-min-width,0)}
@@ -5061,11 +5066,8 @@ body.projects-window #status-term-popout{display:none!important}
 @media(max-width:900px){.tr-work{flex-direction:column;max-height:none}
 .tr-scroll{min-height:160px;max-height:40vh}.tr-detail{flex:none}.tr-fscroll{min-height:140px;max-height:34vh}}
 
-.tr-foot{flex:none;display:flex;align-items:center;gap:16px;padding:0 2px;color:var(--dim);font-size:11px}
-.tr-rate{display:flex;align-items:center;gap:5px}
-.tr-rate .ms{font-size:15px;color:var(--dim2)}
-.tr-rate strong{font-weight:600;font-variant-numeric:tabular-nums}
-.tr-note{margin-left:auto;color:var(--dim2)}
+.tr-note{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim2);font-size:10.5px}
+@media(max-width:760px){.tr-top-add{width:min(190px,25vw)}.tr-choose span{display:none}.tr-count{display:none}}
 
 .tr-settings{display:flex;flex-direction:column;gap:12px;max-width:620px}
 .tr-setrow{display:flex;align-items:center;gap:12px;padding:9px 12px;border-top:1px solid var(--line);font-size:12px}

@@ -225,7 +225,14 @@
         <div class="tr-tabs" role="tablist">
           <button type="button" class="tr-tab on" data-tr-tab="transfers" role="tab">Transfers</button>
           <button type="button" class="tr-tab" data-tr-tab="settings" role="tab">Settings</button>
+          <div class="tr-top-add">
+            ${icon("add_link")}
+            <input type="text" class="tr-magnet" data-tr-magnet spellcheck="false"
+                   placeholder="Paste a magnet link" />
+          </div>
+          <button type="button" class="btn tr-choose" data-tr-browse>${icon("folder_open")}<span>Choose a file…</span></button>
           <span class="tr-count" data-tr-count></span>
+          <span class="tr-note" data-tr-note></span>
           <div class="tr-column-control">
             <button type="button" class="btn" data-tr-columns>${icon("tune")}<span>Columns</span></button>
             <div class="tr-column-picker" data-tr-column-picker hidden></div>
@@ -233,13 +240,6 @@
         </div>
 
         <section class="tr-view" data-tr-view="transfers">
-          <div class="tr-add">
-            ${icon("add_link")}
-            <input type="text" class="tr-magnet" data-tr-magnet spellcheck="false"
-                   placeholder="Paste a magnet link, or drop a .torrent file here — it starts right away" />
-            <button type="button" class="btn" data-tr-browse>${icon("folder_open")}<span>Choose a file…</span></button>
-          </div>
-
           <div class="tr-work">
             <div class="tr-list" data-tr-list>
               <div class="tr-head" data-tr-head></div>
@@ -255,15 +255,12 @@
                  takes the whole width back. -->
             <section class="tr-detail" data-tr-detail hidden></section>
           </div>
-
-          <footer class="tr-foot">
-            <span class="tr-rate" data-tr-down>${icon("south")}<strong>—</strong></span>
-            <span class="tr-rate" data-tr-up>${icon("north")}<strong>—</strong></span>
-            <span class="tr-note" data-tr-note></span>
-          </footer>
         </section>
 
         <section class="tr-view" data-tr-view="settings" hidden></section>
+        <div class="tr-drop-overlay" data-tr-drop-overlay hidden>
+          ${icon("download")}<strong>Drop .torrent files anywhere</strong><span>They will start right away</span>
+        </div>
       </div>`;
 
     node.addEventListener("click", guarded(click));
@@ -374,9 +371,12 @@
       webview.onDragDropEvent(({ payload }) => {
         const host = st.host;
         if (!host?.isConnected || !host.offsetParent) return;
-        const list = host.querySelector("[data-tr-list]");
-        if (payload.type === "enter" || payload.type === "over") return list?.classList.add("tr-drop");
-        list?.classList.remove("tr-drop");
+        const overlay = host.querySelector("[data-tr-drop-overlay]");
+        if (payload.type === "enter" || payload.type === "over") {
+          overlay.hidden = false;
+          return;
+        }
+        overlay.hidden = true;
         if (payload.type !== "drop") return;
         const files = (payload.paths || []).filter((p) => /\.torrent$/i.test(p));
         if (!files.length) return note("Only .torrent files can be dropped here.");
@@ -395,7 +395,6 @@
     try {
       if (st.tab === "transfers") {
         drawRows();
-        drawFoot();
         drawDetail();
       } else {
         drawSettings();
@@ -479,15 +478,6 @@
     if (!text) return;
     clearTimeout(note.timer);
     note.timer = setTimeout(() => { st.notice = ""; const n = st.host?.querySelector("[data-tr-note]"); if (n) n.textContent = ""; }, 6000);
-  }
-
-  function drawFoot() {
-    const snap = st.snap;
-    if (!snap) return;
-    const down = st.host.querySelector("[data-tr-down] strong");
-    const up = st.host.querySelector("[data-tr-up] strong");
-    if (down) down.textContent = speed(snap.downloadBps);
-    if (up) up.textContent = speed(snap.uploadBps);
   }
 
   function drawColumns() {

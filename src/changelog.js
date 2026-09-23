@@ -16,6 +16,16 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.142.2",
+      date: "2026-09-23",
+      title: "Double click the corner icon to close",
+      changes: [
+        ["better", "Double clicking the icon in the upper left corner of a popped-out tool window closes it, the way it always has in Windows."],
+        ["better", "Torrent files can now be dropped anywhere in the torrent window, while file choosing and magnet entry live in the top bar and the redundant speed footer is gone."],
+        ["fix", "The force-start entry in the torrent right-click menu no longer draws a missing icon once every selected torrent is already force started."],
+      ],
+    },
+    {
       version: "0.142.1",
       date: "2026-09-23",
       title: "Self-healing torrent engine",

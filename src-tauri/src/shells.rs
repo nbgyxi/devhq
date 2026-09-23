@@ -304,11 +304,7 @@ fn run(app: &AppHandle, entry: &Entry) -> Result<(), String> {
             app,
             profile,
             "download",
-            format!(
-                "{} of {}{rate}",
-                megabytes(t.done),
-                megabytes(t.total)
-            ),
+            format!("{} of {}{rate}", megabytes(t.done), megabytes(t.total)),
             t.done,
             t.total,
         )
