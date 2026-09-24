@@ -1145,7 +1145,7 @@ unsafe fn showable_window(hwnd: HWND) -> bool {
     rect.right - rect.left >= REAL_WINDOW_MIN && rect.bottom - rect.top >= REAL_WINDOW_MIN
 }
 
-unsafe fn window_exe(hwnd: HWND) -> String {
+pub(crate) unsafe fn window_exe(hwnd: HWND) -> String {
     use windows::core::PWSTR;
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
@@ -1753,7 +1753,7 @@ fn is_packaged(exe: &str) -> bool {
 
 /// The exes this is worth trying at all. Every one of them is Chromium, lays
 /// its install out the same way and writes the same kind of AppUserModelID.
-const CHROMIUM_EXES: [&str; 6] = ["msedge", "chrome", "brave", "vivaldi", "opera", "thorium"];
+pub(crate) const CHROMIUM_EXES: [&str; 6] = ["msedge", "chrome", "brave", "vivaldi", "opera", "thorium"];
 
 /// Where a Chromium browser keeps its profiles. It is read off the exe's own
 /// path rather than a list of browsers: every one of them installs as
@@ -1764,7 +1764,7 @@ const CHROMIUM_EXES: [&str; 6] = ["msedge", "chrome", "brave", "vivaldi", "opera
 /// makes a per-user install (Chrome puts itself under Local AppData) work
 /// without a second entry. The candidates are tried in order and the first
 /// folder that is really there wins.
-fn user_data_dirs(exe: &str) -> Vec<std::path::PathBuf> {
+pub(crate) fn user_data_dirs(exe: &str) -> Vec<std::path::PathBuf> {
     let path = std::path::Path::new(exe);
     let stem = path
         .file_stem()
@@ -1820,7 +1820,7 @@ fn profile_id(dir: &str) -> String {
 /// The browser profile a window belongs to: the folder to start the browser
 /// with, and the name the user gave that profile ("Gyxi"). `None` for anything
 /// that is not a Chromium window.
-fn browser_profile(exe: &str, aumid: &str) -> Option<(String, Option<String>)> {
+pub(crate) fn browser_profile(exe: &str, aumid: &str) -> Option<(String, Option<String>)> {
     // `MSEdge.UserData.Profile1`: the browser, the user data folder, the
     // profile folder — each with everything but letters and digits taken out.
     let parts: Vec<String> = aumid.split('.').map(profile_id).collect();
@@ -1866,7 +1866,7 @@ fn browser_profile(exe: &str, aumid: &str) -> Option<(String, Option<String>)> {
 /// What the browser calls a profile, out of its `Local State`. The name the
 /// user typed, else nothing — the folder name on its own ("Profile 7") says
 /// no more than the row already does.
-fn profile_name(data: &std::path::Path, dir: &str) -> Option<String> {
+pub(crate) fn profile_name(data: &std::path::Path, dir: &str) -> Option<String> {
     let text = std::fs::read_to_string(data.join("Local State")).ok()?;
     let state: serde_json::Value = serde_json::from_str(&text).ok()?;
     let info = state.get("profile")?.get("info_cache")?.get(dir)?;

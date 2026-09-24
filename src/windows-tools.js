@@ -20,6 +20,7 @@
     { id: "startup", name: "Startup and tray", icon: "rocket_launch", hint: "what starts with Windows and what sits in the tray - where each icon comes from, and the switch that stops it coming back", keywords: "startup start up autostart auto start autorun auto-run autoruns boot login logon sign in run key runonce registry hkcu hklm startup folder shell:startup task manager msconfig startup apps startup programs launch on login slow boot slow startup boot time disable enable turn off stop prevent block remove delete tray system tray notification area notification icons hidden icons overflow chevron icon icons background app apps background programs running silently what is this program where did it come from origin trace who started it discord steam onedrive teams spotify nordvpn greenshot docker updater helper agent daemon bloat bloatware" },
     { id: "sidebar", name: "Docked Sidebar", icon: "dock_to_right", hint: "a rail docked to the edge of the screen that Windows reserves room for, with the real taskbar out of the way", keywords: "sidebar side bar rail dock docked appbar app bar taskbar task bar replacement replace edge left right screen edge reserve work area maximize maximized under behind overlap always on top topmost launcher launch bar shortcuts autohide auto-hide auto hide hidden explorer shell desktop" },
     { id: "torrents", name: "Torrents", icon: "download", hint: "magnet links and .torrent files, downloaded by an engine that runs in its own process so a stalled tracker can never freeze WinT", keywords: "torrent torrents bittorrent bit torrent magnet magnet link .torrent torrent file download downloads downloading seed seeding seeder leech leecher peer peers swarm tracker trackers dht announce piece pieces hash check rehash ratio upload uploading share sharing p2p peer to peer client qbittorrent utorrent transmission deluge rtorrent rqbit libtorrent iso linux distro ubuntu debian archive queue priority limit throttle speed limit bandwidth cap pause resume stop start remove delete files folder save location eta progress" },
+    { id: "browser", name: "Link Router", icon: "alt_route", hint: "WinT takes every link Windows opens and sends it to the browser and profile you chose for that site — and asks when the site is new", keywords: "browser browsers default browser web browser link links url urls http https open with route router routing rule rules redirect send site domain host subdomain profile profiles chrome google chrome edge microsoft edge msedge firefox mozilla brave vivaldi opera librewolf waterfox zen floorp thorium chromium work profile personal profile second profile account accounts separate profile switch switcher choose picker ask prompt which browser default apps set default make default association associations urlassociations startmenuinternet userchoice registry teams slack outlook email link opens in wrong browser always opens wrong browser keep work and personal separate incognito"  },
     { id: "time-tracker", name: "Active Window Time Tracker", icon: "schedule", hint: "local time by application and window title", keywords: "time tracker tracking activity active window title productivity apps applications usage screen time hours focus idle away log history what did i do local private" },
   ];
   const repairTools = [
@@ -278,6 +279,7 @@
     if (active === "startup") renderStartupTray(tool);
     if (active === "focus-mode") renderFocusMode(tool);
     if (active === "torrents") renderTorrents(tool);
+    if (active === "browser") renderBrowser(tool);
     if (active === "sidebar") renderSidebar(tool);
     if (active === "repair-swap") renderAudioChooser(tool);
     else if (["repair-radio","repair-usb","repair-bounds","repair-wifi"].includes(active)) renderTargetRepair(tool);
@@ -488,6 +490,21 @@
     script.src = "torrent.js";
     script.onload = mount;
     script.onerror = () => { node.innerHTML = '<div class="win-empty">Torrents could not load.</div>'; };
+    document.head.appendChild(script);
+  }
+
+  // Its own file, and the routing itself belongs to the backend: links are
+  // sent to the browser their rule names whether this page has ever been
+  // opened or not. This is only the list of rules.
+  function renderBrowser(tool) {
+    host.innerHTML = header(tool, '<div data-browser-host></div>');
+    const node = host.querySelector("[data-browser-host]");
+    const mount = () => { if (node.isConnected) window.wintBrowserTool.mount(node); };
+    if (window.wintBrowserTool) return mount();
+    const script = document.createElement("script");
+    script.src = "browser.js";
+    script.onload = mount;
+    script.onerror = () => { node.innerHTML = '<div class="win-empty">Link Router could not load.</div>'; };
     document.head.appendChild(script);
   }
 

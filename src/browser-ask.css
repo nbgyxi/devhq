@@ -1,0 +1,240 @@
+/* The "which browser?" chooser. Its own sibling window, so it borrows the
+   shell's tokens from styles.css and nothing else. */
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg1);
+  color: var(--text);
+}
+.ask {
+  height: 100%;
+  display: grid;
+  grid-template-rows: 18px 58px minmax(0, 1fr) auto 34px;
+  border: 1px solid var(--line);
+  box-sizing: border-box;
+  background: var(--bg1);
+}
+.drag {
+  display: grid;
+  place-items: center;
+  background: var(--bg2);
+  border: 0;
+  cursor: move;
+}
+.drag i {
+  width: 44px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--line2);
+}
+header {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+}
+header > .ms {
+  font-size: 21px;
+  color: var(--accent);
+}
+.ask-what {
+  display: grid;
+  min-width: 0;
+}
+.ask-what strong {
+  font-size: 14.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ask-what small {
+  color: var(--dim2);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: ltr;
+}
+.ask-queue {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg3);
+  color: var(--dim);
+  font-size: 10.5px;
+}
+kbd {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg3);
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.ask-targets {
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+  display: grid;
+  gap: 5px;
+  align-content: start;
+}
+.ask-loading,
+.ask-empty {
+  padding: 26px 18px;
+  color: var(--dim2);
+  font-size: 12.5px;
+  text-align: center;
+}
+.ask-target {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 8px 11px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ask-target:hover {
+  background: var(--bg2);
+}
+.ask-target.on {
+  border-color: var(--accent);
+  background: var(--bg3);
+}
+.ask-target img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+}
+.ask-target .ms {
+  font-size: 24px;
+  color: var(--dim);
+}
+.ask-target span {
+  display: grid;
+  min-width: 0;
+}
+.ask-target strong {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ask-target small {
+  color: var(--dim2);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ask-target em {
+  color: var(--dim2);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.ask-remember {
+  display: grid;
+  grid-template-columns: 20px auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--bg2);
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.ask-remember > .ms {
+  font-size: 17px;
+  color: var(--dim2);
+}
+.ask-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.ask-scopes button {
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg1);
+  color: var(--dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ask-scopes button:hover {
+  color: var(--text);
+}
+.ask-scopes button.on {
+  border-color: var(--accent);
+  background: var(--accent-soft, var(--bg3));
+  color: var(--text);
+}
+
+footer {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 0 12px;
+  border-top: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--dim2);
+  font-size: 10.5px;
+}
+footer span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+footer button {
+  margin-left: auto;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg1);
+  color: var(--dim);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+footer button:hover {
+  color: var(--text);
+}
+
+/* Closing without choosing is a real answer, so it is a real control - one in
+   the corner where a window's close always is, and one named in the footer
+   next to the keys that do the same thing. */
+.ask-x{
+  display:grid;place-items:center;width:26px;height:26px;padding:0;
+  border:1px solid transparent;border-radius:7px;background:transparent;
+  color:var(--dim);cursor:pointer;
+}
+.ask-x:hover{border-color:var(--line);background:var(--bg3);color:var(--text)}
+.ask-x .ms{font-size:17px}
+/* The buttons sit as a group on the right. Whichever of them comes first
+   takes the gap, so hiding "Show every browser" does not leave the rest
+   drifting back to the left. */
+footer button{margin-left:0}
+footer #all:not([hidden]){margin-left:auto}
+footer #all[hidden]~#manage{margin-left:auto}
+.ask-cancel{display:inline-flex;align-items:center;gap:5px}
+.ask-cancel kbd{padding:1px 4px;font-size:9px}

@@ -21,6 +21,7 @@ use crate::off_thread;
 const SEARCH_LABEL: &str = "global-search";
 const CLIPBOARD_LABEL: &str = "clipboard-picker";
 const CHANGELOG_LABEL: &str = "version-history";
+const BROWSER_ASK_LABEL: &str = "browser-ask";
 
 #[cfg(windows)]
 static CLIPBOARD_RETURN_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -355,6 +356,60 @@ pub async fn clipboard_picker_show(
 #[tauri::command]
 pub fn clipboard_picker_hide(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(CLIPBOARD_LABEL) {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Put the "which browser?" chooser in front of the user, for a link no rule
+/// claimed.
+///
+/// Called from `browser_rules::ask`, on the thread that link is being handled
+/// on — never on the thread that draws the window. The window is kept once
+/// built and hidden rather than destroyed, because the second link of a
+/// session must not pay for a webview again.
+///
+/// The URL is queued in `PendingUrls` before this is called, so a chooser that
+/// is still building finds it on mount; the event is for the one that was
+/// already open.
+pub(crate) fn browser_ask_open(app: &AppHandle, url: &str) -> Result<(), String> {
+    if app.get_webview_window(BROWSER_ASK_LABEL).is_none() {
+        WebviewWindowBuilder::new(
+            app,
+            BROWSER_ASK_LABEL,
+            WebviewUrl::App("browser-ask.html".into()),
+        )
+        .title("Open link with")
+        .inner_size(620.0, 560.0)
+        .min_inner_size(460.0, 360.0)
+        .decorations(false)
+        .resizable(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .visible(false)
+        .center()
+        .background_color(tauri::webview::Color(12, 13, 17, 255))
+        .build()
+        .map_err(|e| format!("Could not open the browser chooser: {e}"))?;
+    }
+    let window = app
+        .get_webview_window(BROWSER_ASK_LABEL)
+        .ok_or_else(|| "The browser chooser was created without a window.".to_string())?;
+    let _ = window.emit("browser-ask:url", url.to_string());
+    #[cfg(windows)]
+    {
+        foreground_search_window(&window)
+    }
+    #[cfg(not(windows))]
+    {
+        focus_search_window(&window)
+    }
+}
+
+/// The chooser hides rather than closes: the next link reuses this webview.
+#[tauri::command]
+pub fn browser_ask_hide(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(BROWSER_ASK_LABEL) {
         window.hide().map_err(|e| e.to_string())?;
     }
     Ok(())

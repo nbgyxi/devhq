@@ -5163,3 +5163,99 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-fhead>button:hover{color:var(--text)}
 .tr-fhead>button.on{color:var(--accent)}
 .tr-fsort-arrow{font-style:normal;font-size:8px;line-height:1}
+
+/* ------------------------------------------------------------ link router */
+/* The Browser tool: Windows' default-browser state on top, the rules below.
+   Two columns, because a rule is read in the list and written in the panel -
+   and the panel is only ever rebuilt for a *different* rule, so a half-typed
+   pattern and the caret in it survive everything the list does. */
+[data-browser-host]{height:100%;min-height:0;display:flex;flex-direction:column;gap:10px}
+.br-default{flex:none}
+.br-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:10px}
+.br-list,.br-detail{min-height:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow:hidden}
+.br-list>header,.br-detail>header{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);background:var(--bg2)}
+.br-list>header strong,.br-detail>header strong{font-size:12.5px}
+.br-list>header small{color:var(--dim2);font-size:11px}
+.br-list>header .btn{margin-left:auto}
+.br-detail>header .tool-close{margin-left:auto}
+
+/* The state card. One line that says what Windows does today, and the buttons
+   that go as far towards changing it as Windows still allows. */
+.br-state{display:grid;grid-template-columns:24px minmax(0,1fr) auto;align-items:center;gap:11px;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--bg1)}
+.br-state>.ms{font-size:22px}
+.br-state.ok>.ms{color:var(--ok,#4fbf72)}
+.br-state.warn>.ms{color:var(--warn,#d8a33a)}
+.br-state span{display:grid;min-width:0}
+.br-state strong{font-size:13px}
+.br-state small{color:var(--dim2);font-size:11.5px}
+.br-state-actions{display:flex;align-items:center;gap:6px}
+.br-note{display:flex;align-items:center;gap:7px;margin:7px 2px 0;color:var(--dim2);font-size:11px}
+.br-note .ms{font-size:15px}
+
+.br-rows{flex:1;min-height:0;overflow:auto;padding:6px}
+.br-row{display:grid;grid-template-columns:22px minmax(0,1fr) auto;align-items:center;gap:9px;width:100%;padding:7px 9px;border:1px solid transparent;border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.br-row:hover{background:var(--bg2)}
+.br-row.on{border-color:var(--accent);background:var(--bg3)}
+.br-row.off{opacity:.5}
+.br-row>.ms{font-size:18px;color:var(--dim)}
+.br-row.on>.ms{color:var(--accent)}
+.br-row span{display:grid;min-width:0}
+.br-row strong{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.br-row small{color:var(--dim2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.br-row em{color:var(--dim2);font-size:10.5px;font-style:normal}
+
+.br-list>footer{flex:none;display:grid;gap:5px;padding:9px 11px;border-top:1px solid var(--line);background:var(--bg2)}
+.br-list>footer label{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;gap:7px}
+.br-list>footer label .ms{font-size:16px;color:var(--dim2)}
+.br-list>footer input{width:100%;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg1);color:var(--text);font:inherit;font-size:11.5px}
+.br-test-result{min-height:16px;padding-left:27px;color:var(--dim2);font-size:11px}
+.br-test-result .ms{font-size:14px;vertical-align:-2px;margin-right:4px}
+.br-test-result .match{color:var(--text)}
+
+.br-form{flex:1;min-height:0;overflow:auto;display:grid;gap:11px;align-content:start;padding:13px}
+.br-form>label{display:grid;gap:5px;color:var(--dim);font-size:11.5px}
+.br-form input[type="text"],.br-form select{padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg1);color:var(--text);font:inherit;font-size:12.5px}
+.br-check{display:flex!important;align-items:center;gap:8px}
+.br-check input{width:15px;height:15px}
+.br-hint{display:flex;align-items:flex-start;gap:7px;margin:0;color:var(--dim2);font-size:11.5px;line-height:1.5}
+.br-hint .ms{flex:none;font-size:15px;margin-top:1px}
+.br-form-actions{display:flex;align-items:center;gap:7px;margin-top:2px}
+
+/* Named and shimmering, like every other list in the app that is still
+   reading: it must be obvious which region is waiting on Windows. */
+.br-skeleton{display:grid;gap:7px;padding:11px}
+.br-skeleton span{height:13px;border-radius:6px;background:linear-gradient(90deg,var(--bg2) 25%,var(--bg3) 37%,var(--bg2) 63%);background-size:400% 100%;animation:shimmer 1.4s ease infinite}
+.br-skeleton span:nth-child(2){width:72%}
+.br-skeleton span:nth-child(3){width:48%}
+
+/* One column below the width where two would each be too narrow to read. */
+@media (max-width:860px){.br-body{grid-template-columns:minmax(0,1fr);grid-auto-rows:minmax(0,1fr)}}
+
+/* A rule may name more than one browser, so its browsers are a checklist and
+   not a menu: "one of these three" is a real answer for a site that genuinely
+   belongs in whichever browser you are already thinking in. The same list
+   picks the browsers the chooser offers when no rule claims a link at all. */
+.br-picks{display:grid;gap:3px;max-height:200px;overflow:auto;padding:5px;border:1px solid var(--line);border-radius:8px;background:var(--bg1)}
+.br-pick{display:flex!important;align-items:center;gap:9px;padding:5px 8px;border-radius:7px;color:var(--text);font-size:12.5px;cursor:pointer}
+.br-pick:hover{background:var(--bg2)}
+.br-pick.on{background:var(--bg3)}
+.br-pick input{flex:none;width:15px;height:15px;margin:0}
+.br-pick span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* A browser a rule still names but that is no longer installed. Kept, because
+   it may come back and dropping it would silently change where links go. */
+.br-pick.gone span{color:var(--dim2);font-style:italic}
+/* A checklist cannot sit inside a <label>: clicking one of its boxes would
+   fire the outer label too. Same look, plain caption. */
+.br-field{display:grid;gap:5px;color:var(--dim);font-size:11.5px}
+
+/* Suggestions read off the browsers that are open right now. Each one is a
+   whole rule already - the site, and the profile it is open in - so the only
+   interaction is to agree with it or not. */
+.br-suggest{display:grid;gap:3px;max-height:220px;overflow:auto;padding:5px;border:1px solid var(--line);border-radius:8px;background:var(--bg1)}
+.br-sug{display:grid;grid-template-columns:20px minmax(0,1fr) auto auto;align-items:center;gap:9px;padding:4px 7px;border-radius:7px}
+.br-sug:hover{background:var(--bg2)}
+.br-sug>.ms{font-size:17px;color:var(--dim)}
+.br-sug span{display:grid;min-width:0}
+.br-sug strong{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.br-sug small{color:var(--dim2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.br-sug .btn.small{padding:2px 6px}

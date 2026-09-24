@@ -8060,6 +8060,21 @@ async function wireToolPopoutEvents() {
     const id = event.payload;
     if (typeof id === "string") openTool(id);
   });
+  // A link Windows handed to WinT has been sent on to a browser. The routing
+  // itself shows nothing - a link must feel like a link - but the app never
+  // works silently either, so the status bar says where it went and for how
+  // long the user can plausibly still be wondering.
+  listen("browser:routed", (event) => {
+    const { browser, profile, url } = event.payload || {};
+    if (!browser) return;
+    const where = profile ? `${browser} · ${profile}` : browser;
+    let host = "";
+    try {
+      host = new URL(String(url || "")).hostname;
+    } catch { /* an unparseable link still opened somewhere */ }
+    beginWork("browser-routed", `Opened ${host || "a link"} in ${where}`);
+    setTimeout(() => endWork("browser-routed"), 2600);
+  });
   listen("tool:closed", (event) => {
     const id = event.payload?.id;
     if (!id) return;
@@ -8232,6 +8247,50 @@ async function askTorrentDefault() {
   }
 }
 
+/** The same question as `askTorrentDefault`, for links.
+ *
+ *  Only asked of somebody who has opened the Link Router at least once - that
+ *  is what registers WinT as a browser at all, and `browser_assoc_should_ask`
+ *  uses it as the proof that routing links is something this install does. An
+ *  install that never opens the tool is never asked.
+ *
+ *  Every answer is final. The setting stays available in the tool, but this
+ *  startup question is never repeated.
+ */
+async function askBrowserDefault() {
+  let ask = false;
+  try {
+    ask = await invoke("browser_assoc_should_ask");
+  } catch { return; }
+  if (!ask) return;
+
+  const answer = await (window.wintConfirm?.({
+    title: "Let WinT decide where links open?",
+    message: "Windows does not hand links to WinT yet. Make it the default browser and every link on this PC "
+      + "goes to the browser and profile you chose for that site - and anything with no rule asks you first. "
+      + "WinT never shows the page itself.",
+    confirmLabel: "Make WinT the default",
+    cancelLabel: "Keep current browser",
+    icon: "alt_route",
+  }) ?? Promise.resolve(false));
+
+  // Record the answer before doing anything that can open a Windows dialog or
+  // fail. Choosing either button settles this question permanently.
+  await invoke("browser_assoc_mark_asked").catch(() => {});
+  if (answer !== true) return;
+
+  // Windows puts its own page up over this one, and it waits for a person.
+  // The status bar says where the app has gone until it comes back.
+  beginWork("browser-default", "Asking Windows about the default browser");
+  try {
+    await invoke("browser_assoc_choose_default");
+  } catch (error) {
+    console.error("Could not set WinT as the default browser", error);
+  } finally {
+    endWork("browser-default");
+  }
+}
+
 (async function start() {
   if (PROJECTS_WINDOW) return startProjectsWindow();
   let restoreWasInterrupted = false;
@@ -8308,7 +8367,8 @@ async function askTorrentDefault() {
 
   // Last, and never awaited: the shell has been interactive for a while by
   // now, and this queues behind any first-run dialog rather than racing it.
-  askTorrentDefault();
+  await askTorrentDefault();
+  askBrowserDefault();
 })();
 
 /** The folder a terminal opened from nowhere in particular should start in. */

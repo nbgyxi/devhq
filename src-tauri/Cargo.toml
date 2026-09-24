@@ -79,7 +79,9 @@ windows = { version = "0.61", features = [
   "Win32_NetworkManagement_IpHelper",
   "Win32_NetworkManagement_WiFi",
   "Win32_NetworkManagement_Ndis",
-  "Win32_UI_WindowsAndMessaging"
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Accessibility",
+  "Win32_System_Variant"
 ] }
 webview2-com = "0.38.2"
 # `#[implement]` for the drag source handed to Windows when files are dragged out.

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="error-log.js"></script>
+    <script>
+      /* Theme before first paint. This window is opened by Rust for a link,
+         with nobody to pass a theme in, so it reads the shell's own prefs. */
+      (function () {
+        var theme = "dark";
+        try {
+          var prefs = JSON.parse(localStorage.getItem("wint.prefs.v1") || "{}");
+          if (prefs.theme === "light" || prefs.theme === "dark") theme = prefs.theme;
+        } catch (e) {}
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
+    <link rel="stylesheet" href="styles.css?v=0.87.1" />
+    <link rel="stylesheet" href="browser-ask.css?v=1" />
+  </head>
+  <body>
+    <main class="ask">
+      <button class="drag" id="drag" type="button" aria-label="Move this window"><i></i></button>
+      <header>
+        <span class="ms">open_in_new</span>
+        <span class="ask-what">
+          <strong id="ask-host">Opening a link</strong>
+          <small id="ask-url">Reading the link…</small>
+        </span>
+        <span class="ask-queue" id="ask-queue" hidden></span>
+        <button class="ask-x" id="close" type="button" title="Close without opening this link" aria-label="Close without opening this link"><span class="ms">close</span></button>
+      </header>
+      <div class="ask-targets" id="targets" role="listbox" aria-label="Browsers">
+        <div class="ask-loading">Reading the browsers on this PC…</div>
+      </div>
+      <div class="ask-remember">
+        <span class="ms">rule</span>
+        <span>Remember</span>
+        <div class="ask-scopes" id="scopes" role="radiogroup" aria-label="What to remember"></div>
+      </div>
+      <footer>
+        <span><kbd>↑</kbd><kbd>↓</kbd> choose</span>
+        <span><kbd>Enter</kbd> open</span>
+        <button id="all" type="button" hidden>Show every browser</button>
+        <button id="manage" type="button">Rules…</button>
+        <button id="cancel" type="button" class="ask-cancel">Cancel <kbd>Esc</kbd></button>
+      </footer>
+    </main>
+    <script src="browser-ask.js?v=1"></script>
+  </body>
+</html>

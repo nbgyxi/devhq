@@ -5,6 +5,9 @@ mod appbar;
 mod apps;
 mod assistant;
 mod autostart;
+mod browser_assoc;
+mod browser_rules;
+mod browser_tabs;
 #[cfg(windows)]
 mod claude;
 mod cli_registration;
@@ -54,6 +57,8 @@ mod term;
 mod time_tracker;
 pub mod todo;
 mod tool_window;
+#[cfg(windows)]
+mod reg;
 mod ui_state;
 mod torrent;
 mod torrent_assoc;
@@ -74,6 +79,17 @@ use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
+
+/// Bring the shell forward on one tool.
+///
+/// For a sibling window that has somewhere to send the user but no shell of
+/// its own — the browser chooser's "Rules…", which has to reach the Browser
+/// tool in the main window from a webview that is not part of it.
+#[tauri::command]
+fn open_tool_window(app: AppHandle, id: String) {
+    show_main_window(&app);
+    let _ = app.emit("tray:open-tool", id);
+}
 
 pub(crate) fn show_main_window(app: &AppHandle) {
     if let Some(tray) = app.tray_by_id("wint-tray") {
@@ -193,6 +209,36 @@ fn torrent_args(args: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// The web links Windows passes when WinT is the browser. Same shape as
+/// `torrent_args`: flags are skipped, and so is argv[0].
+///
+/// Only `http:` and `https:` — every other scheme WinT claims has a tool of
+/// its own to go to, and anything else on a command line is not a link at all.
+fn url_args(args: &[String]) -> Vec<String> {
+    args.iter()
+        .skip(1)
+        .filter(|arg| !arg.starts_with('-') && !arg.starts_with('/'))
+        .filter(|arg| {
+            let lower = arg.to_ascii_lowercase();
+            lower.starts_with("http://") || lower.starts_with("https://")
+        })
+        .cloned()
+        .collect()
+}
+
+/// Send every link the shell handed over to the browser it belongs in.
+/// Returns whether there was anything, so the caller knows not to go looking
+/// for a tool to open as well.
+fn route_urls(app: &AppHandle, urls: Vec<String>) -> bool {
+    if urls.is_empty() {
+        return false;
+    }
+    for url in urls {
+        browser_rules::dispatch(app, url);
+    }
+    true
+}
+
 /// Queue what the shell handed over, for the Torrents tool to collect.
 /// Returns whether there was anything, so the caller knows to open the tool.
 fn queue_torrents(app: &AppHandle, items: Vec<String>) -> bool {
@@ -228,6 +274,13 @@ fn deliver_tool_arg_for(app: &AppHandle, args: &[String], token: &str) {
     if let Some(mut request) = wt_request_arg(args) {
         request.token = token.to_string();
         let _ = app.emit("term:wt-request", request);
+        return;
+    }
+    // A link, because WinT is the browser Windows hands links to. Nothing is
+    // shown and no window is brought forward: a link that a rule already
+    // covers must feel exactly like clicking a link always did, and one that
+    // no rule covers puts up the chooser from inside `dispatch`.
+    if route_urls(app, url_args(args)) {
         return;
     }
     // A second WinT started by double-clicking a .torrent, or by a browser
@@ -2989,6 +3042,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .manage(PendingTool::default())
         .manage(PendingTorrents::default())
+        .manage(browser_rules::PendingUrls::default())
         .manage(SearchGlobalShortcut::default())
         .manage(ClipboardGlobalShortcut::default());
     let builder = if admin.is_some() {
@@ -3080,6 +3134,10 @@ pub fn run() {
             // Started by the shell to open a torrent: the tool is queued the
             // same way `--open-tool=` is, so the window comes up on Torrents
             // with the file already waiting for it.
+            // Started by the shell to open a link, because WinT is the
+            // browser. Nothing is queued for a tool: the link goes to the
+            // browser its rule names, or to the chooser if it has none.
+            let opened_link = route_urls(app.handle(), url_args(&args));
             let opened_torrents = queue_torrents(app.handle(), torrent_args(&args));
             if let Some(id) =
                 tool_arg(&args).or_else(|| opened_torrents.then(|| "torrents".to_string()))
@@ -3131,7 +3189,12 @@ pub fn run() {
             // Started by Windows at sign-in: WinT shows itself the way the
             // user picked when they turned it on (the notification area when
             // nothing was picked).
-            let start = if autostart::launched_at_startup(&args) {
+            let start = if opened_link {
+                // This WinT exists only because somebody clicked a link. The
+                // window they wanted is the browser's, not this one's, so WinT
+                // stays in the notification area it would otherwise live in.
+                autostart::Mode::Tray
+            } else if autostart::launched_at_startup(&args) {
                 app.path()
                     .app_data_dir()
                     .map(|dir| autostart::mode(&dir))
@@ -3297,6 +3360,23 @@ pub fn run() {
             torrent::torrent_file_path,
             torrent::torrent_settings,
             take_pending_torrents,
+            open_tool_window,
+            browser_assoc::browser_assoc_status,
+            browser_assoc::browser_assoc_register,
+            browser_assoc::browser_assoc_unregister,
+            browser_assoc::browser_assoc_choose_default,
+            browser_assoc::browser_assoc_should_ask,
+            browser_assoc::browser_assoc_mark_asked,
+            browser_rules::browser_list,
+            browser_rules::browser_list_all,
+            browser_rules::browser_icons,
+            browser_rules::browser_rules_load,
+            browser_rules::browser_rules_save,
+            browser_rules::browser_rules_test,
+            browser_rules::browser_pending_urls,
+            browser_rules::browser_open_url,
+            browser_tabs::browser_open_tabs,
+            tool_window::browser_ask_hide,
             torrent_assoc::torrent_assoc_status,
             torrent_assoc::torrent_assoc_register,
             torrent_assoc::torrent_assoc_unregister,

@@ -16,6 +16,23 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.158.0",
+      date: "2026-09-24",
+      title: "Every link goes where you meant it to",
+      changes: [
+        ["new", "Link Router, a new tool: make WinT the default browser and it never shows a page itself - it sends each link to the browser and the profile you chose for that site. Work links to the work profile, everything else to your own, without ever checking which window you are in first."],
+        ["new", "A link from a site with no rule yet puts up a chooser: pick a browser with the arrows or a number key, and say whether to remember it. What each choice would mean is written out rather than named - x.com + *.x.com, x.com only, or the address itself - so there is nothing to work out before answering. Cancel, the close button and Esc all leave without opening anything and without writing anything down."],
+        ["new", "A rule can name several browsers instead of one. Links for a site that genuinely belongs in whichever browser you are already thinking in put the chooser up with just those two or three on it, and one keypress settles it - or settles the rule for good."],
+        ["new", "A shortlist of the browsers and profiles worth offering, so a PC with three browsers and five profiles between them does not show all eight every time a new site comes up. The chooser keeps a way through to the rest."],
+        ["new", "Or skip the question entirely: name one browser as where anything with no rule goes, and only the sites you have written rules for are treated specially. The status bar still says where each one went, so a site that should have had a rule of its own is easy to notice."],
+        ["new", "Hold Shift while clicking a link and you are asked anyway, whatever the rules say - and the chooser then offers to settle the rule it overrode rather than writing a second one beside it. Ctrl or Alt instead, or nothing at all, if you would rather."],
+        ["new", "Set up from the browsers you already have open. WinT reads the address bar of each browser window and offers one rule per site, pointed at the profile that site is open in - add them one at a time or all at once. A site open in two profiles becomes a rule that asks between those two."],
+        ["new", "The rules list shows which rule has actually been used and how often, and a box to try an address against the rules before a real link depends on it."],
+        ["better", "Chrome, Edge, Brave, Vivaldi, Opera and Thorium profiles are listed by the name you gave them rather than by their folder, and Firefox, LibreWolf, Waterfox, Zen and Floorp profiles are read from their own profile list."],
+        ["better", "A routed link opens nothing of WinT's own - no window comes forward and nothing is stolen from the browser - but the status bar still names where the link went for a moment afterwards."],
+      ],
+    },
+    {
       version: "0.157.12",
       date: "2026-09-24",
       title: "Open a file and the app for it opens",
