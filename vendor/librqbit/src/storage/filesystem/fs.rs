@@ -137,16 +137,18 @@ impl TorrentStorage for FilesystemStorage {
                 files.push(OpenedFile::new_dummy());
                 continue;
             };
+            // Overwriting is allowed, so there is nothing to check about what
+            // is already on disk, and therefore no reason to open anything
+            // yet. Each file opens itself the first time it is read or
+            // written. Adding a torrent of several thousand files is then
+            // immediate rather than minutes of opening handles nothing has
+            // asked for - see `OpenedFile::new_lazy`.
+            if shared.options.allow_overwrite {
+                files.push(OpenedFile::new_lazy(full_path));
+                continue;
+            }
             std::fs::create_dir_all(full_path.parent().context("bug: no parent")?)?;
-            let f = if shared.options.allow_overwrite {
-                OpenOptions::new()
-                    .create(true)
-                    .truncate(false)
-                    .read(true)
-                    .write(true)
-                    .open(&full_path)
-                    .with_context(|| format!("error opening {full_path:?} in read/write mode"))?
-            } else {
+            let f = {
                 // create_new does not seem to work with read(true), so calling this twice.
                 OpenOptions::new()
                     .create_new(true)

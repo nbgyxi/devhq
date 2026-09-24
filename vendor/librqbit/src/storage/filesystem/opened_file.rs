@@ -111,6 +111,10 @@ struct OpenedFileLocked {
     #[allow(unused)]
     path: PathBuf,
     fd: Option<File>,
+    /// The file exists as far as the torrent is concerned, but has not been
+    /// opened yet: it is opened the first time a piece of it is read or
+    /// written. A padding placeholder has neither this nor a handle.
+    unopened: bool,
     #[cfg(windows)]
     tried_marking_sparse: bool,
 }
@@ -140,10 +144,58 @@ impl OpenedFile {
             file: RwLock::new(OpenedFileLocked {
                 path,
                 fd: Some(f),
+                unopened: false,
                 #[cfg(windows)]
                 tried_marking_sparse: false,
             }),
         }
+    }
+
+    /// A file that will be opened the first time it is used.
+    ///
+    /// Opening every file of a torrent up front is what adding one used to
+    /// cost, and on a large torrent on a slow disk that is not a small cost:
+    /// a torrent of 7,685 files on an external USB drive took a minute and a
+    /// half of nothing but opening files, before a single byte was read. Most
+    /// of those handles are never used at all - a torrent that is complete and
+    /// seeding touches a file only when a peer asks for a piece of it.
+    pub fn new_lazy(path: PathBuf) -> Self {
+        Self {
+            file: RwLock::new(OpenedFileLocked {
+                path,
+                fd: None,
+                unopened: true,
+                #[cfg(windows)]
+                tried_marking_sparse: false,
+            }),
+        }
+    }
+
+    /// Opens the file if it has not been opened yet. Called on every read and
+    /// write, so the already-open case takes a read lock and nothing else.
+    fn ensure_open(&self) -> crate::Result<()> {
+        if !self.file.read().unopened {
+            return Ok(());
+        }
+        let mut g = self.file.write();
+        if !g.unopened {
+            return Ok(());
+        }
+        let path = g.path.clone();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| Error::FsOpen(parent.to_owned(), e))?;
+        }
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|e| Error::FsOpen(path, e))?;
+        g.fd = Some(f);
+        g.unopened = false;
+        Ok(())
     }
 
     pub fn new_dummy() -> Self {
@@ -160,6 +212,7 @@ impl OpenedFile {
     }
 
     pub fn lock_read(&self) -> crate::Result<impl Deref<Target = File>> {
+        self.ensure_open()?;
         RwLockReadGuard::try_map(self.file.read(), |f| f.as_ref())
             .ok()
             .ok_or(Error::FsFileIsNone)
@@ -167,6 +220,7 @@ impl OpenedFile {
 
     #[allow(dead_code)]
     pub fn lock_write(&self) -> crate::Result<impl DerefMut<Target = File>> {
+        self.ensure_open()?;
         RwLockWriteGuard::try_map(self.file.write(), |f| f.as_mut())
             .ok()
             .ok_or(Error::FsFileIsNone)
@@ -174,6 +228,7 @@ impl OpenedFile {
 
     #[cfg(windows)]
     pub fn try_mark_sparse(&self) -> crate::Result<impl Deref<Target = File>> {
+        self.ensure_open()?;
         {
             let g = self.file.read();
             if g.tried_marking_sparse {

@@ -471,8 +471,9 @@ struct Row {
     info_hash: String,
     name: String,
     output_folder: String,
-    /// `initializing` (hash-checking), `live`, `paused`, `error`, or `queued`
-    /// — the last being this helper's own, for a torrent waiting its turn.
+    /// `initializing` (hash-checking), `live`, `paused`, `error`, `queued` or
+    /// `waiting` — the last two being this helper's own, for a torrent waiting
+    /// its turn and for one the session has not read back in yet.
     state: &'static str,
     error: Option<String>,
     total_bytes: u64,
@@ -495,12 +496,20 @@ struct Row {
 #[serde(rename_all = "camelCase")]
 struct Snapshot {
     torrents: Vec<Row>,
+    /// Saved torrents not yet read back in. The list is live and usable while
+    /// this is above zero; it only means more rows are still to appear.
+    resuming: usize,
     download_bps: u64,
     upload_bps: u64,
     peers: u32,
     uptime_seconds: u64,
     settings: Settings,
 }
+
+/// How often a resume that has not finished says which torrents it is still
+/// waiting for. Long enough not to fill the log of a normal start-up, short
+/// enough that a stuck one is named while someone is still looking at it.
+const RESUME_REPORT_EVERY: Duration = Duration::from_secs(10);
 
 fn build_snapshot(
     state: &mut State,
@@ -511,6 +520,11 @@ fn build_snapshot(
         .api
         .api_torrent_list_ext(ApiTorrentListOpts { with_stats: true });
     let mut torrents = Vec::with_capacity(list.torrents.len());
+    let session_hashes: HashSet<String> = list
+        .torrents
+        .iter()
+        .map(|t| t.info_hash.to_ascii_lowercase())
+        .collect();
     let mut live_ids = HashSet::with_capacity(list.torrents.len());
     let mut completions_changed = false;
     let now = std::time::Instant::now();
@@ -607,12 +621,45 @@ fn build_snapshot(
             eta_seconds,
         });
     }
+    // Everything the state folder remembers but the session has not read back
+    // yet, so the list is the whole list from the first snapshot. These rows
+    // are replaced by the real ones - same id, same place - as each torrent is
+    // resumed, and the last of them goes when the resume finishes.
+    {
+        if let Ok(saved) = saved_torrents().lock() {
+            for torrent in saved.iter() {
+                if session_hashes.contains(&torrent.info_hash) {
+                    continue;
+                }
+                torrents.push(Row {
+                    id: torrent.id,
+                    info_hash: torrent.info_hash.clone(),
+                    name: torrent.name.clone(),
+                    output_folder: torrent.output_folder.clone(),
+                    state: "waiting",
+                    error: None,
+                    total_bytes: torrent.total_bytes,
+                    progress_bytes: 0,
+                    uploaded_bytes: 0,
+                    finished: false,
+                    force_started: state.queue.force_started.contains(&torrent.info_hash),
+                    completed_at: state.completed_at.get(&torrent.info_hash).copied(),
+                    download_bps: 0,
+                    upload_bps: 0,
+                    peers: 0,
+                    peers_queued: 0,
+                    eta_seconds: None,
+                });
+            }
+        }
+    }
     if completions_changed {
         state.save_completions();
     }
     state.rates.retain(|id, _| live_ids.contains(id));
     let session = state.api.api_session_stats();
     Snapshot {
+        resuming: torrents.iter().filter(|row| row.state == "waiting").count(),
         download_bps: torrents.iter().map(|torrent| torrent.download_bps).sum(),
         upload_bps: torrents.iter().map(|torrent| torrent.upload_bps).sum(),
         torrents,
@@ -934,6 +981,8 @@ async fn handle(state: &Mutex<State>, op: &str, arg: Value) -> Result<Value> {
             Ok(json!({
                 "engine": librqbit::client_name_and_version(),
                 "pid": std::process::id(),
+                "exe": build_stamp().0,
+                "builtMs": build_stamp().1,
                 "listenPort": state.session.listen_addr().map(|a| a.port()),
                 "settings": state.settings,
             }))
@@ -1319,6 +1368,12 @@ struct Args {
     state_dir: Option<PathBuf>,
     download_folder: Option<String>,
     snapshot_ms: u64,
+    /// The DHT's UDP port. Left alone it is the saved one, which is what an
+    /// engine wants: the same port across restarts keeps the routing table
+    /// worth keeping. It is settable so a second engine can be run against a
+    /// copy of a state folder while the real one is up - the only way to time
+    /// a start-up without interrupting the transfers being diagnosed.
+    dht_port: Option<u16>,
 }
 
 fn parse_args() -> Args {
@@ -1331,6 +1386,7 @@ fn parse_args() -> Args {
         match flag.as_str() {
             "--state-dir" => args.state_dir = it.next().map(PathBuf::from),
             "--download-folder" => args.download_folder = it.next(),
+            "--dht-port" => args.dht_port = it.next().and_then(|v| v.parse().ok()),
             "--snapshot-ms" => {
                 args.snapshot_ms = it
                     .next()
@@ -1354,6 +1410,8 @@ fn parse_args() -> Args {
 /// stderr, never stdout: stdout is the protocol, and a log line written into
 /// it would be read as a malformed message.
 fn start_logging() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::{fmt, EnvFilter};
 
     // Noisy by default would cost real throughput at a thousand peers, so the
@@ -1361,11 +1419,19 @@ fn start_logging() {
     // RUST_LOG to widen it; WinT does that when diagnostics are turned on.
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("warn,wint_torrent_helper=info,librqbit=info"));
-    fmt()
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .with_target(true)
-        .with_env_filter(filter)
+    // `ResumeProgress` rides along with the printing layer rather than the
+    // stderr text being parsed back apart somewhere else: the torrent library
+    // already says when it has resumed a torrent, and that line is the only
+    // progress there is to be had while the session is being built.
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(
+            fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_ansi(false)
+                .with_target(true),
+        )
+        .with(ResumeProgress)
         .init();
 
     // A panic in a worker thread unwinds that thread alone: the process can
@@ -1390,33 +1456,205 @@ fn start_logging() {
     }));
 }
 
-/// Building the session — bootstrapping the DHT, reading every saved torrent
-/// and hash-checking what is on disk — takes minutes on a large queue, and
-/// until it returns there is no session to build a snapshot from. The app used
-/// to be told nothing at all for the whole of it: beats kept arriving, so the
-/// engine was plainly alive, but the page had no data and said updates had
-/// stopped. These two say which phase the helper is in, and how many torrents
-/// it is working through, so the heartbeat can carry it.
+/// Reading every saved torrent back in and hash-checking what is on disk takes
+/// minutes on a large queue. It no longer holds the session up — see
+/// `resume_in_background` — so the list is on screen and usable while it runs,
+/// and each row says what is happening to it. These two are what is left to
+/// say about the queue as a whole: how many saved torrents there are, and how
+/// many have made it back into the session.
 static SESSION_READY: AtomicBool = AtomicBool::new(false);
 static RESUME_TOTAL: AtomicUsize = AtomicUsize::new(0);
+static RESUME_DONE: AtomicUsize = AtomicUsize::new(0);
 
-/// How many torrents the session will resume, counted from the saved files
-/// before it is built. It is what the state folder holds, which is exactly
-/// what librqbit is about to read.
-fn saved_torrent_count(state_dir: &Path) -> usize {
-    std::fs::read_dir(state_dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|entry| {
-                    entry
-                        .path()
-                        .extension()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("torrent"))
-                })
-                .count()
-        })
-        .unwrap_or(0)
+/// The torrent the session has most recently finished resuming. A count alone
+/// says how far along a resume is; the name is what makes a long pause legible
+/// — hash-checking runs one torrent at a time per drive, so a queue that looks
+/// stuck is usually one very large torrent being read off the disk.
+fn resume_name() -> &'static StdMutex<Option<String>> {
+    static NAME: OnceLock<StdMutex<Option<String>>> = OnceLock::new();
+    NAME.get_or_init(|| StdMutex::new(None))
+}
+
+/// Counts the torrents the session has resumed, by watching the torrent
+/// library's own `added torrent` line. There is no callback to hook: building
+/// the session is one long await that reads and hash-checks everything before
+/// it returns anything at all, and this is the only thing that speaks while it
+/// runs.
+struct ResumeProgress;
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ResumeProgress {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if event.metadata().target() != "librqbit::session" {
+            return;
+        }
+        let mut visitor = AddedTorrent::default();
+        event.record(&mut visitor);
+        if !visitor.added {
+            return;
+        }
+        RESUME_DONE.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut name) = resume_name().lock() {
+            *name = visitor.name;
+        }
+    }
+}
+
+/// Picks `added torrent name="…"` apart: the message says what happened, the
+/// `name` field says which torrent it happened to.
+#[derive(Default)]
+struct AddedTorrent {
+    added: bool,
+    name: Option<String>,
+}
+
+impl tracing::field::Visit for AddedTorrent {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        match field.name() {
+            "message" => self.added = value.starts_with("added torrent"),
+            "name" => self.name = Some(value.to_owned()),
+            _ => {}
+        }
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        let text = format!("{value:?}");
+        // Debug of a name is a quoted string; the quotes are the formatting,
+        // not part of what the torrent is called.
+        self.record_str(field, text.trim_matches('"'));
+    }
+}
+
+/// A torrent the state folder remembers but the session has not read back yet.
+///
+/// Everything here comes off the disk in milliseconds — the name and the sizes
+/// out of the saved `.torrent`, the folder and the id out of the session file —
+/// which is why the list can be complete from the first snapshot. What it
+/// cannot say is how much of it is on disk: that is what the resume is for,
+/// and the row says so until the real one replaces it.
+#[derive(Clone)]
+struct SavedTorrent {
+    id: usize,
+    info_hash: String,
+    name: String,
+    output_folder: String,
+    total_bytes: u64,
+}
+
+/// Which build of the engine this is: the file it is running from and when
+/// that file was written.
+///
+/// Whether a change actually reached the running engine is otherwise a matter
+/// of inference - comparing what the log says against what the source does -
+/// and inference was wrong often enough here to be worth ending. The engine
+/// states it, WinT carries it, and the Engine tab shows it.
+fn build_stamp() -> (String, Option<u64>) {
+    let exe = std::env::current_exe().ok();
+    let built = exe
+        .as_ref()
+        .and_then(|path| std::fs::metadata(path).ok())
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|since| since.as_millis() as u64);
+    (
+        exe.map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        built,
+    )
+}
+
+fn saved_torrents() -> &'static StdMutex<Vec<SavedTorrent>> {
+    static SAVED: OnceLock<StdMutex<Vec<SavedTorrent>>> = OnceLock::new();
+    SAVED.get_or_init(|| StdMutex::new(Vec::new()))
+}
+
+/// What the session file says about each saved torrent, by info hash: the id it
+/// will be given when it is read back, and where its files are. Using the same
+/// id matters — the placeholder row and the real one are then the same row, so
+/// a torrent does not jump when it finishes resuming.
+#[derive(Deserialize)]
+struct SavedSession {
+    #[serde(default)]
+    torrents: HashMap<String, SavedSessionTorrent>,
+}
+
+#[derive(Deserialize)]
+struct SavedSessionTorrent {
+    info_hash: String,
+    #[serde(default)]
+    output_folder: String,
+}
+
+/// Read the state folder into `saved_torrents`, newest metadata first.
+///
+/// Called before the session is built. Everything it reads, librqbit is about
+/// to read again; this is only so the window can show the list while that
+/// happens instead of filling in from nothing.
+fn read_saved_torrents(state_dir: &Path) -> Vec<SavedTorrent> {
+    let session: SavedSession = std::fs::read(state_dir.join("session.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or(SavedSession {
+            torrents: HashMap::new(),
+        });
+    let mut by_hash: HashMap<String, (usize, String)> = HashMap::new();
+    for (id, torrent) in session.torrents {
+        let Ok(id) = id.parse::<usize>() else { continue };
+        by_hash.insert(
+            torrent.info_hash.to_ascii_lowercase(),
+            (id, torrent.output_folder),
+        );
+    }
+
+    let mut saved = Vec::new();
+    let Ok(entries) = std::fs::read_dir(state_dir) else {
+        return saved;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("torrent"))
+        {
+            continue;
+        }
+        let info_hash = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        // A saved torrent that will not parse is left out rather than shown as
+        // a row nothing can ever replace. The resume will report it properly.
+        let Ok(torrent) = librqbit::torrent_from_bytes(&bytes) else {
+            continue;
+        };
+        let Ok(info) = torrent.info.data.validate() else {
+            continue;
+        };
+        // Only what the session file lists: a stray .torrent the session does
+        // not know about is not going to be resumed, and a row for it would
+        // never turn into a real one. Its id is the one librqbit will give it,
+        // so the placeholder and the real torrent are the same row.
+        let Some((id, output_folder)) = by_hash.get(&info_hash).cloned() else {
+            continue;
+        };
+        saved.push(SavedTorrent {
+            id,
+            name: info
+                .name()
+                .map(|name| name.to_string())
+                .unwrap_or_else(|| info_hash.clone()),
+            total_bytes: info.iter_file_lengths().sum(),
+            output_folder,
+            info_hash,
+        });
+    }
+    saved
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -1504,8 +1742,14 @@ async fn main() -> Result<()> {
                     "heartbeat",
                     json!({
                         "pid": std::process::id(),
+                        // `resuming` now means "the session is not up yet", which is
+                        // a second or two, not the whole resume: the torrents
+                        // are read back behind a live session and each one
+                        // shows its own progress in the list.
                         "phase": if ready { "live" } else { "resuming" },
-                        "resuming": if ready { 0 } else { RESUME_TOTAL.load(Ordering::Relaxed) },
+                        "resuming": RESUME_TOTAL.load(Ordering::Relaxed),
+                        "resumed": RESUME_DONE.load(Ordering::Relaxed),
+                        "resumingName": resume_name().lock().ok().and_then(|n| n.clone()),
                     }),
                 ) {
                     // A full/disconnected queue means WinT cannot currently
@@ -1516,7 +1760,13 @@ async fn main() -> Result<()> {
             .context("cannot start the torrent heartbeat")?;
     }
 
-    RESUME_TOTAL.store(saved_torrent_count(&state_dir), Ordering::Relaxed);
+    {
+        let saved = read_saved_torrents(&state_dir);
+        RESUME_TOTAL.store(saved.len(), Ordering::Relaxed);
+        if let Ok(mut list) = saved_torrents().lock() {
+            *list = saved;
+        }
+    }
     tracing::info!("building the torrent session; this reads and resumes saved torrents");
     let session = Session::new_with_opts(
         PathBuf::from(&settings.download_folder),
@@ -1527,6 +1777,14 @@ async fn main() -> Result<()> {
             persistence: Some(SessionPersistenceConfig::Json {
                 folder: Some(state_dir.clone()),
             }),
+            // The session is handed back as soon as it can answer, and the
+            // saved torrents are resumed behind it. Reading and checking a
+            // long queue is minutes of work, and awaiting it meant the helper
+            // could not answer `hello`, send a snapshot or show a single
+            // torrent until the last one had been checked. Now every torrent
+            // appears as it is resumed, carrying its own "Checking files"
+            // state and progress, which is what the window shows.
+            resume_in_background: true,
             fastresume: true,
             // The saved piece map is the normal source of truth on restart.
             // Removing it through "Check files" still forces a full hash pass.
@@ -1543,6 +1801,10 @@ async fn main() -> Result<()> {
                 upload_bps: settings.upload_bps.and_then(NonZeroU32::new),
             },
             listen: Some(ListenerOptions::default()),
+            dht: Some(librqbit::DhtSessionConfig {
+                port: args.dht_port,
+                ..Default::default()
+            }),
             ..Default::default()
         },
     )
@@ -1572,6 +1834,8 @@ async fn main() -> Result<()> {
         json!({
             "engine": librqbit::client_name_and_version(),
             "pid": std::process::id(),
+            "exe": build_stamp().0,
+            "builtMs": build_stamp().1,
         }),
     );
 
@@ -1590,11 +1854,26 @@ async fn main() -> Result<()> {
             // A reconcile every ~2s; a snapshot every tick.
             let reconcile_every = (2000 / args.snapshot_ms).max(1) as u32;
             let mut last_missing_check = std::time::Instant::now() - MISSING_CHECK_EVERY;
+            let mut last_resume_report = std::time::Instant::now();
             loop {
                 tick.tick().await;
                 let mut guard = state.lock().await;
                 let snapshot = build_snapshot(&mut guard, &queued, &missing);
                 drop(guard);
+                if snapshot.resuming > 0 && last_resume_report.elapsed() >= RESUME_REPORT_EVERY {
+                    last_resume_report = std::time::Instant::now();
+                    let still: Vec<&str> = snapshot
+                        .torrents
+                        .iter()
+                        .filter(|row| row.state == "waiting")
+                        .map(|row| row.name.as_str())
+                        .collect();
+                    tracing::info!(
+                        waiting = snapshot.resuming,
+                        "still reading saved torrents back in: {}",
+                        still.join(", ")
+                    );
+                }
                 if let Ok(data) = serde_json::to_value(&snapshot) {
                     writer.event("snapshot", data);
                 }

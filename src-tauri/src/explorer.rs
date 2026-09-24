@@ -1434,12 +1434,12 @@ pub fn clipboard_get() -> Result<Option<Clip>, String> {
 pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
     use windows::core::{implement, BOOL, HRESULT, PCWSTR};
     use windows::Win32::Foundation::{
-        DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, S_OK,
+        DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, RPC_E_CHANGED_MODE, S_OK,
     };
     use windows::Win32::System::Com::IDataObject;
     use windows::Win32::System::Ole::{
-        DoDragDrop, IDropSource, IDropSource_Impl, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_MOVE,
-        DROPEFFECT_NONE,
+        DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, DROPEFFECT, DROPEFFECT_COPY,
+        DROPEFFECT_MOVE, DROPEFFECT_NONE,
     };
     use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
     use windows::Win32::UI::Shell::{
@@ -1464,6 +1464,21 @@ pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
     }
 
     refuse_zip(paths, "dragged out")?;
+    // DoDragDrop refuses to run on a thread that has not been put into an OLE
+    // apartment, and it says so only through its return value - which is why a
+    // missing OleInitialize looks exactly like a drag nobody completed: no
+    // cursor, no error, nothing. This is the main thread and it stays
+    // initialised for the life of the process, so it is done once.
+    static OLE: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    let ole = HRESULT(*OLE.get_or_init(|| {
+        unsafe { OleInitialize(None) }
+            .err()
+            .map(|error| error.code().0)
+            .unwrap_or(S_OK.0)
+    }));
+    if ole == RPC_E_CHANGED_MODE {
+        return Err("This thread is not in a single-threaded apartment, so Windows will not start a drag.".into());
+    }
     let mut pidls = Vec::new();
     for path in paths {
         let wide: Vec<u16> = std::ffi::OsStr::new(path.as_str())
@@ -1477,7 +1492,15 @@ pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
     }
     let result = (|| {
         if pidls.is_empty() {
-            return Err("Nothing to drag.".to_string());
+            // Windows could not turn a single one of these into an item it
+            // knows. Saying which one it choked on is the difference between
+            // a bug report and a guess.
+            return Err(format!(
+                "Windows does not recognise {} of the {} item(s) asked for. First: {:?}",
+                paths.len(),
+                paths.len(),
+                paths.first().map(String::as_str).unwrap_or("<the list was empty>")
+            ));
         }
         let items =
             unsafe { SHCreateShellItemArrayFromIDLists(&pidls) }.map_err(|e| e.to_string())?;
@@ -1485,7 +1508,10 @@ pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
             unsafe { items.BindToHandler(None, &BHID_DataObject) }.map_err(|e| e.to_string())?;
         let source: IDropSource = Source.into();
         let mut effect = DROPEFFECT_NONE;
-        let _ = unsafe {
+        // The drag either ends in a drop or is cancelled. Anything else is
+        // Windows declining to start it at all, and swallowing that is what
+        // made this fail in silence.
+        let hr = unsafe {
             DoDragDrop(
                 &data,
                 &source,
@@ -1493,6 +1519,12 @@ pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
                 &mut effect,
             )
         };
+        if hr != DRAGDROP_S_DROP && hr != DRAGDROP_S_CANCEL {
+            return Err(format!(
+                "Windows would not start the drag (0x{:08X}).",
+                hr.0 as u32
+            ));
+        }
         Ok(if effect.0 & DROPEFFECT_MOVE.0 != 0 {
             "move"
         } else if effect.0 & DROPEFFECT_COPY.0 != 0 {

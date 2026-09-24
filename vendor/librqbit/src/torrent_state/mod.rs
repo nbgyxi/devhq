@@ -54,9 +54,20 @@ use self::paused::TorrentStatePaused;
 pub use self::stats::{TorrentStats, TorrentStatsState};
 pub use self::streaming::FileStream;
 
+/// How many torrents may hash-check at once, process-wide.
+///
+/// It was a hardcoded 1, which quietly ignored `SessionOptions::concurrent_init_limit`:
+/// a caller could pass any number and still get one at a time. Checking is the
+/// disk-heaviest thing here and one at a time is still the right default, but
+/// the number a caller asks for is now the number it gets.
+pub(crate) fn set_initialization_limit(limit: usize) {
+    let _ = INITIALIZATION_SEMAPHORE.set(Arc::new(tokio::sync::Semaphore::new(limit.max(1))));
+}
+
+static INITIALIZATION_SEMAPHORE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+
 fn initialization_semaphore() -> Arc<tokio::sync::Semaphore> {
-    static SEMAPHORE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
-    SEMAPHORE
+    INITIALIZATION_SEMAPHORE
         .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1)))
         .clone()
 }

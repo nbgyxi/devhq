@@ -104,6 +104,11 @@ impl SessionDatabase {
     }
 }
 
+/// A stage of adding a torrent that takes longer than this says so while it
+/// is still running. Adding is normally milliseconds; anything on this scale
+/// is the thing someone is trying to explain.
+const SLOW_STAGE_MS: u128 = 3000;
+
 pub struct Session {
     // Core state and services
     pub(crate) db: RwLock<SessionDatabase>,
@@ -438,6 +443,19 @@ pub struct SessionOptions {
     /// all remembered torrents will continue where they left off.
     pub persistence: Option<SessionPersistenceConfig>,
 
+    /// Return the session as soon as it can be used, and go on resuming the
+    /// saved torrents behind it, instead of resuming everything before the
+    /// session exists at all.
+    ///
+    /// Resuming reads every saved torrent, opens its files and hash-checks
+    /// what is on disk. On a large queue that is minutes of work, and until it
+    /// finished there was no session to ask anything of and no torrent to
+    /// show: a client built on this could only display an empty page and hope
+    /// its user waited. With this set the torrents appear as they are resumed,
+    /// each carrying its own `Initializing` state and checked-bytes progress,
+    /// which is what a user can actually read.
+    pub resume_in_background: bool,
+
     /// The peer ID to use. If not specified, a random one will be generated.
     pub peer_id: Option<Id20>,
 
@@ -494,6 +512,7 @@ impl Default for SessionOptions {
             fastresume: false,
             trust_fastresume: false,
             persistence: None,
+            resume_in_background: false,
             peer_id: None,
             listen: None,
             connect: None,
@@ -642,6 +661,10 @@ impl Session {
                 .as_ref()
                 .and_then(|p| p.peer_opts)
                 .unwrap_or_default();
+
+            if let Some(limit) = opts.concurrent_init_limit {
+                crate::torrent_state::set_initialization_limit(limit);
+            }
 
             async fn persistence_factory(
                 opts: &SessionOptions,
@@ -861,14 +884,47 @@ impl Session {
                 }
             }
 
-            if let Some(persistence) = session.persistence.as_ref() {
-                info!("will use {persistence:?} for session persistence");
+            if session.persistence.is_some() {
+                let resume = Self::resume_saved_torrents(session.clone());
+                if opts.resume_in_background {
+                    session.spawn(
+                        debug_span!(parent: session.rs(), "resume"),
+                        "resume",
+                        async move {
+                            resume.await;
+                            Ok(())
+                        },
+                    );
+                } else {
+                    resume.await;
+                }
+            }
 
-                let mut ps = persistence.stream_all().await?;
-                let mut added_all = false;
-                let mut futs = FuturesUnordered::new();
+            session.start_speed_estimator_updater();
 
-                while !added_all || !futs.is_empty() {
+            Ok(session)
+        }
+        .boxed()
+    }
+
+    /// Read every torrent the persistence store remembers back into the
+    /// session. Adds run concurrently; each one resolves its metadata, opens
+    /// its files and starts its own hash check.
+    async fn resume_saved_torrents(session: Arc<Self>) {
+        if let Some(persistence) = session.persistence.as_ref() {
+            info!("will use {persistence:?} for session persistence");
+
+            let mut ps = match persistence.stream_all().await {
+                Ok(ps) => ps,
+                Err(e) => {
+                    error!("error reading the saved torrents: {e:#}");
+                    return;
+                }
+            };
+            let mut added_all = false;
+            let mut futs = FuturesUnordered::new();
+
+            while !added_all || !futs.is_empty() {
                     // NOTE: this closure exists purely to workaround rustfmt screwing up when inlining it.
                     let add_torrent_span = |info_hash: &Id20| -> tracing::Span {
                         debug_span!(parent: session.rs(), "add_torrent", info_hash=?info_hash)
@@ -881,27 +937,29 @@ impl Session {
                         }
                         st = ps.next(), if !added_all => {
                             match st {
-                                Some(st) => {
-                                    let (id, st) = st?;
+                                // One unreadable saved torrent is skipped with
+                                // a line about it. It used to abort the resume,
+                                // which on a background resume would silently
+                                // leave every torrent after it unloaded.
+                                Some(Err(e)) => error!("error reading a saved torrent: {e:#}"),
+                                Some(Ok((id, st))) => {
                                     let span = add_torrent_span(st.info_hash());
-                                    let (add_torrent, mut opts) = st.into_add_torrent()?;
-                                    opts.preferred_id = Some(id);
-                                    let fut = session.add_torrent(add_torrent, Some(opts));
-                                    let fut = fut.instrument(span);
-                                    futs.push(fut);
+                                    match st.into_add_torrent() {
+                                        Ok((add_torrent, mut opts)) => {
+                                            opts.preferred_id = Some(id);
+                                            let fut = session.add_torrent(add_torrent, Some(opts));
+                                            let fut = fut.instrument(span);
+                                            futs.push(fut);
+                                        }
+                                        Err(e) => error!(?id, "error resuming a saved torrent: {e:#}"),
+                                    }
                                 },
                                 None => added_all = true
                             };
                         }
                     };
-                }
             }
-
-            session.start_speed_estimator_updater();
-
-            Ok(session)
         }
-        .boxed()
     }
 
     async fn check_incoming_connection(
@@ -1324,7 +1382,29 @@ impl Session {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         };
 
-        let _permit = self.spawner.semaphore().acquire_owned().await?;
+        // Where a resume actually spends its time. Reading a saved queue back
+        // in is the slowest thing this library does on a large list, and every
+        // stage of it is either a wait for a permit, a wait for the disk or a
+        // wait for a lock - none of which leaves a trace of its own. The four
+        // numbers go on the "added torrent" line, which is what a user can
+        // copy out of the client and hand to whoever is looking into it.
+        let t_permit = std::time::Instant::now();
+        // The permit bounds the blocking work just below - opening the
+        // torrent's files - and nothing else. It used to be held for the rest
+        // of the function, across the persistence write and the start, both of
+        // which await operations that need a permit of their own: loading the
+        // saved piece map takes one. Resuming a saved queue therefore had every
+        // permit held by an add that was waiting for an operation that could
+        // not get a permit until one of those adds finished, and the whole
+        // resume crawled forward in bursts as permits happened to come free -
+        // minutes to read back a list that takes seconds of actual work.
+        let permit = self.spawner.semaphore().acquire_owned().await?;
+
+        let wait_ms = t_permit.elapsed().as_millis();
+        if wait_ms > SLOW_STAGE_MS {
+            info!(info_hash=?info_hash, wait_ms, "slow: waited for a work permit");
+        }
+        let t_open = std::time::Instant::now();
 
         let (managed_torrent, metadata) = {
             let mut g = self.db.write();
@@ -1389,13 +1469,35 @@ impl Session {
             g.add_torrent(handle.clone(), id);
             (handle, metadata)
         };
-
-        if let Some(p) = self.persistence.as_ref()
-            && let Err(e) = p.store(id, &managed_torrent).await
-        {
-            self.db.write().torrents.remove(&id);
-            return Err(e);
+        drop(permit);
+        let open_ms = t_open.elapsed().as_millis();
+        if open_ms > SLOW_STAGE_MS {
+            info!(info_hash=?info_hash, open_ms, "slow: opened the torrent's files");
         }
+        let t_store = std::time::Instant::now();
+
+        if let Some(p) = self.persistence.as_ref() {
+            let store = p.store(id, &managed_torrent);
+            tokio::pin!(store);
+            let result = loop {
+                tokio::select! {
+                    result = &mut store => break result,
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                        info!(info_hash=?info_hash, "still saving this torrent to the state folder");
+                    }
+                }
+            };
+            if let Err(e) = result {
+                self.db.write().torrents.remove(&id);
+                return Err(e);
+            }
+        }
+
+        let store_ms = t_store.elapsed().as_millis();
+        if store_ms > SLOW_STAGE_MS {
+            info!(info_hash=?info_hash, store_ms, "slow: saved the torrent to the state folder");
+        }
+        let t_start = std::time::Instant::now();
 
         let _e = managed_torrent.shared.span.clone().entered();
 
@@ -1404,7 +1506,16 @@ impl Session {
             .context("error starting torrent")?;
 
         if let Some(name) = metadata.info.name() {
-            info!(?name, "added torrent");
+            let start_ms = t_start.elapsed().as_millis();
+            info!(
+                ?name,
+                wait_ms,
+                open_ms,
+                store_ms,
+                start_ms,
+                total_ms = t_permit.elapsed().as_millis(),
+                "added torrent"
+            );
         }
 
         Ok(AddTorrentResponse::Added(id, managed_torrent))

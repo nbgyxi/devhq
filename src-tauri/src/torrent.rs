@@ -29,7 +29,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -76,8 +76,10 @@ const MEMORY_CEILING_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// More requests outstanding than this means nothing is coming back.
 const PENDING_CEILING: usize = 64;
 /// Enough recent evidence to diagnose a failure without allowing a noisy
-/// dependency to grow the supervisor forever.
-const DIAGNOSTIC_LINES: usize = 40;
+/// dependency to grow the supervisor forever. It is also the Engine tab's log,
+/// which is read while nothing is wrong at all, so it holds a whole start-up
+/// of a long queue rather than the last few lines of one.
+const DIAGNOSTIC_LINES: usize = 500;
 /// Pipe records are length-bounded before allocation. A corrupt helper must
 /// not be able to make WinT allocate an arbitrary amount of memory by writing
 /// one line without a newline.
@@ -132,6 +134,11 @@ pub struct EngineStatus {
     pub state: String,
     pub pid: Option<u32>,
     pub engine: Option<String>,
+    /// The file the running engine was started from, and when that file was
+    /// written. Together they answer "is this the build I just made?", which
+    /// nothing else in here can answer.
+    pub engine_exe: Option<String>,
+    pub engine_built_ms: Option<u64>,
     /// Milliseconds since the last heartbeat, when one has ever arrived.
     pub last_beat_ms: Option<u64>,
     /// What the helper says it is doing: `resuming` while it builds its
@@ -141,6 +148,12 @@ pub struct EngineStatus {
     pub phase: Option<String>,
     /// How many saved torrents that resume is working through.
     pub resuming: usize,
+    /// How many of them it has got through so far. With the total it is a
+    /// real `9 / 16`, which is the difference between an engine that is slow
+    /// and one that is stuck.
+    pub resumed: usize,
+    /// The torrent it resumed most recently, so a long pause has a name on it.
+    pub resuming_name: Option<String>,
     pub memory_bytes: u64,
     pub pending_requests: usize,
     pub restarts: u32,
@@ -158,6 +171,10 @@ struct Running {
     child: Child,
     pid: u32,
     engine: Option<String>,
+    /// The file this engine was started from, and when that file was written.
+    /// See the matching fields on `EngineStatus`.
+    exe: Option<String>,
+    built_ms: Option<u64>,
     started: Instant,
     #[cfg(windows)]
     _kill_job: KillJob,
@@ -265,6 +282,8 @@ struct Engine {
     /// The helper's own word for what it is doing. See `EngineStatus::phase`.
     phase: Option<String>,
     resuming: usize,
+    resumed: usize,
+    resuming_name: Option<String>,
     last_snapshot: Option<Instant>,
     memory_bytes: u64,
     restarts: u32,
@@ -402,10 +421,50 @@ fn helper_path() -> Option<PathBuf> {
         for profile in ["debug", "release"] {
             let built = target.join(profile).join(name);
             if built.is_file() {
-                return Some(built);
+                return Some(run_copy(&built).unwrap_or(built));
             }
         }
     }
+    None
+}
+
+/// In a development build, run the helper from a copy rather than from the
+/// file cargo just built.
+///
+/// A running program's file cannot be replaced on Windows, and the engine is
+/// deliberately long-lived: it outlives WinT so transfers survive a restart of
+/// the app. Together those meant `cargo build` could not write
+/// `wint-torrent-helper.exe` while an engine was up, and it failed with a bare
+/// "Access is denied" — leaving the previous engine in place, so the next run
+/// silently used the old one. Running a copy leaves the built file free to be
+/// replaced at any time, and the next engine picks up whatever was built last.
+///
+/// Only for development builds. An installed WinT runs the helper the bundle
+/// shipped, from where the bundle put it.
+#[cfg(debug_assertions)]
+fn run_copy(built: &Path) -> Option<PathBuf> {
+    // Same file name, because a stray engine is recognised by its name when
+    // one has to be cleaned up; only the folder differs.
+    let dir = std::env::temp_dir().join("wint-engine");
+    std::fs::create_dir_all(&dir).ok()?;
+    let copy = dir.join(built.file_name()?);
+    let built_at = std::fs::metadata(built).and_then(|m| m.modified()).ok()?;
+    let copy_at = std::fs::metadata(&copy).and_then(|m| m.modified()).ok();
+    // Copying 20-odd megabytes on every start would be a cost paid for
+    // nothing; the copy is only remade when the build is newer than it. A copy
+    // that cannot be replaced is one an engine is still running from, and that
+    // engine is about to be replaced by this one anyway.
+    if copy_at != Some(built_at) && std::fs::copy(built, &copy).is_err() && !copy.is_file() {
+        return None;
+    }
+    if let Ok(file) = std::fs::File::open(&copy) {
+        let _ = file.set_modified(built_at);
+    }
+    Some(copy)
+}
+
+#[cfg(not(debug_assertions))]
+fn run_copy(_built: &Path) -> Option<PathBuf> {
     None
 }
 
@@ -541,6 +600,11 @@ fn start_inner() -> EngineStatus {
             child,
             pid,
             engine: None,
+            // Filled in from the engine's own first word about itself: WinT
+            // knows the path it spawned, but only the engine can say which
+            // file it ended up running and when that file was built.
+            exe: None,
+            built_ms: None,
             started: Instant::now(),
             #[cfg(windows)]
             _kill_job: kill_job,
@@ -557,6 +621,8 @@ fn start_inner() -> EngineStatus {
         // beat. Until then nothing is claimed on its behalf.
         engine.phase = None;
         engine.resuming = 0;
+        engine.resumed = 0;
+        engine.resuming_name = None;
         engine.snapshot_dirty = false;
         engine.latest_snapshot = None;
         generation
@@ -726,6 +792,8 @@ fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>)
                     if let Ok(mut engine) = engine().lock() {
                         engine.phase = Some("live".into());
                         engine.resuming = 0;
+                        engine.resumed = 0;
+                        engine.resuming_name = None;
                         engine.latest_snapshot = Some(data);
                         engine.snapshot_dirty = true;
                         engine.last_beat = Some(Instant::now());
@@ -738,9 +806,10 @@ fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>)
                     }
                 }
                 "heartbeat" | "ready" => {
-                    // A beat is not news. A change of phase is: it is the only
-                    // thing that tells the page a long resume is under way, and
-                    // no snapshot will arrive to carry it.
+                    // A beat is not news. A change of phase is, and so is one
+                    // more torrent resumed: between them they are the only
+                    // thing that tells the page a long start-up is under way
+                    // and moving, because no snapshot will arrive to carry it.
                     let mut phase_changed = false;
                     if let Ok(mut engine) = engine().lock() {
                         engine.last_beat = Some(Instant::now());
@@ -752,6 +821,16 @@ fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>)
                             .get("resuming")
                             .and_then(Value::as_u64)
                             .unwrap_or(0) as usize;
+                        let resumed = data
+                            .get("resumed")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0) as usize;
+                        phase_changed |= resumed != engine.resumed;
+                        engine.resumed = resumed;
+                        engine.resuming_name = data
+                            .get("resumingName")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
                         if event == "ready" {
                             engine.state = "running".into();
                             engine.message = None;
@@ -760,8 +839,15 @@ fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>)
                                 .get("engine")
                                 .and_then(Value::as_str)
                                 .map(str::to_owned);
+                            let exe = data
+                                .get("exe")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned);
+                            let built = data.get("builtMs").and_then(Value::as_u64);
                             if let Some(running) = engine.running.as_mut() {
                                 running.engine = name;
+                                running.exe = exe;
+                                running.built_ms = built;
                             }
                         }
                     }
@@ -933,11 +1019,15 @@ pub fn status() -> EngineStatus {
         state: engine.state.clone(),
         pid: engine.running.as_ref().map(|r| r.pid),
         engine: engine.running.as_ref().and_then(|r| r.engine.clone()),
+        engine_exe: engine.running.as_ref().and_then(|r| r.exe.clone()),
+        engine_built_ms: engine.running.as_ref().and_then(|r| r.built_ms),
         last_beat_ms: engine
             .last_beat
             .map(|at| at.elapsed().as_millis().min(u64::MAX as u128) as u64),
         phase: engine.phase.clone(),
         resuming: engine.resuming,
+        resumed: engine.resumed,
+        resuming_name: engine.resuming_name.clone(),
         memory_bytes: engine.memory_bytes,
         pending_requests: pending().lock().map(|p| p.len()).unwrap_or(0),
         restarts: engine.restarts,
@@ -1339,9 +1429,15 @@ pub async fn torrent_start() -> Result<EngineStatus, String> {
             if status.pid.is_none() {
                 return Err(error);
             }
-            diagnose(format!(
-                "The torrent engine has not finished starting ({error}); waiting for it."
-            ));
+            // Deliberately not the timeout's own words: "did not answer
+            // within 8 seconds" reads as a fault, and this is a helper doing
+            // exactly what a large saved queue costs. The page shows the
+            // resume progress the heartbeat carries; this line only records
+            // that the first call went unanswered and was allowed to.
+            diagnose(
+                "The torrent engine is still building its session from the saved torrents;                  waiting for it."
+                    .to_string(),
+            );
             return Ok(status);
         }
         Ok(self::status())

@@ -162,6 +162,173 @@ pub async fn media_audio_mute(pid: u32, muted: bool) -> Result<(), String> {
     .unwrap_or_else(|| Err("Could not change the audio stream.".into()))
 }
 
+/// The pids holding an active render audio session, plus every ancestor of
+/// those pids.
+///
+/// A browser does not play sound from the process that owns its windows: Chrome
+/// and Edge render audio in a utility child, Firefox in a content child. The
+/// window we want belongs to the browser process those children descend from,
+/// so the ancestors are what make the set usable for matching a window.
+fn audio_owner_pids() -> std::collections::HashSet<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    let mut owners: std::collections::HashSet<u32> = audio_sessions()
+        .map(|sessions| sessions.into_iter().map(|(pid, _)| pid).collect())
+        .unwrap_or_default();
+    if owners.is_empty() {
+        return owners;
+    }
+    let mut parents: std::collections::HashMap<u32, (u32, String)> =
+        std::collections::HashMap::new();
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return owners;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                let len = entry
+                    .szExeFile
+                    .iter()
+                    .position(|c| *c == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let name = String::from_utf16_lossy(&entry.szExeFile[..len]).to_ascii_lowercase();
+                parents.insert(entry.th32ProcessID, (entry.th32ParentProcessID, name));
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+    }
+    // Walk up from every audio pid, but only while the parent runs the same
+    // executable — that is what reaches a browser's or Spotify's own process
+    // without climbing on into explorer.exe, which owns windows of its own.
+    // Only pids new to the set are followed, so a recycled parent cannot spin
+    // this forever.
+    let mut queue: Vec<u32> = owners.iter().copied().collect();
+    while let Some(pid) = queue.pop() {
+        let Some((parent, name)) = parents.get(&pid) else {
+            continue;
+        };
+        if *parent == 0 || *parent == pid {
+            continue;
+        }
+        if parents.get(parent).is_some_and(|(_, up)| up == name) && owners.insert(*parent) {
+            queue.push(*parent);
+        }
+    }
+    owners
+}
+
+fn window_pid(id: &str) -> u32 {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    let Ok(raw) = id.parse::<isize>() else {
+        return 0;
+    };
+    let mut pid = 0u32;
+    unsafe {
+        GetWindowThreadProcessId(
+            HWND(raw as *mut std::ffi::c_void),
+            Some(std::ptr::addr_of_mut!(pid)),
+        );
+    }
+    pid
+}
+
+/// Text stripped to letters, digits and single spaces, so a window title and a
+/// track title can be compared without tripping over the dashes, quotes and
+/// bullets each side decorates its own with.
+fn comparable(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if ch.is_alphanumeric() {
+            out.extend(ch.to_lowercase());
+        } else if !out.ends_with(' ') {
+            out.push(' ');
+        }
+    }
+    out.trim().to_string()
+}
+
+/// The window that is making the sound, not merely one belonging to the app.
+///
+/// A browser is why this cannot be the first match: one Chrome or Edge install
+/// has a window per profile and many windows per profile, and the enumeration
+/// hands them over in z-order, so the first match is whichever window happens
+/// to be in front. Three signals narrow it down, most telling first:
+///
+/// * the AppUserModelID the media session names, which browsers set per
+///   profile — the only signal that tells two profiles apart, since they share
+///   one browser process;
+/// * the track (or artist) appearing in the window title, which is how a
+///   browser window whose playing tab is the one on top gives itself away;
+/// * the window belonging to the process tree holding the audio session, which
+///   still works when the playing tab is a background tab.
+fn pick_source_window(
+    windows: Vec<crate::appbar::OpenWindow>,
+    source_id: &str,
+    title: &str,
+    artist: &str,
+) -> Option<crate::appbar::OpenWindow> {
+    let wanted = source_id.to_ascii_lowercase();
+    let source_file = wanted
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(&wanted)
+        .to_string();
+    let track = comparable(title);
+    let artist = comparable(artist);
+    let mut candidates: Vec<(u32, crate::appbar::OpenWindow)> = windows
+        .into_iter()
+        .filter_map(|window| {
+            let identity = if !wanted.is_empty() && window.app.to_ascii_lowercase() == wanted {
+                2
+            } else if !source_file.is_empty()
+                && window.exe.to_ascii_lowercase().ends_with(&source_file)
+            {
+                1
+            } else {
+                return None;
+            };
+            Some((identity, window))
+        })
+        .collect();
+    if candidates.len() < 2 {
+        return candidates.pop().map(|(_, window)| window);
+    }
+    // Worth a process snapshot only once more than one window is in play.
+    let owners = audio_owner_pids();
+    let mut scored: Vec<(u32, crate::appbar::OpenWindow)> = candidates
+        .into_iter()
+        .map(|(identity, window)| {
+            let seen = comparable(&window.title);
+            let named = if track.len() > 2 && seen.contains(&track) {
+                2
+            } else if artist.len() > 2 && seen.contains(&artist) {
+                1
+            } else {
+                0
+            };
+            let sounding =
+                u32::from(!owners.is_empty() && owners.contains(&window_pid(&window.id)));
+            let onscreen = u32::from(!window.minimized);
+            // Identity outranks the rest: a window of the wrong profile is the
+            // wrong window however loudly its neighbours match.
+            let score = identity * 100 + named * 20 + sounding * 4 + onscreen;
+            (score, window)
+        })
+        .collect();
+    scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    scored.into_iter().next().map(|(_, window)| window)
+}
+
 fn source_name(id: &str) -> String {
     let leaf = id.rsplit(['\\', '/']).next().unwrap_or(id);
     let stem = leaf.strip_suffix(".exe").unwrap_or(leaf);
@@ -224,22 +391,24 @@ pub async fn media_state(app: AppHandle) -> Result<MediaState, String> {
         .SourceAppUserModelId()
         .map(|value| value.to_string())
         .unwrap_or_default();
-    let wanted = source_id.to_ascii_lowercase();
-    let source_file = wanted
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(&wanted)
-        .to_string();
+    let title = properties
+        .Title()
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    let artist = properties
+        .Artist()
+        .map(|value| value.to_string())
+        .unwrap_or_default();
     let sidebar = crate::appbar::sidebar_window_handle(&app);
     let source_for_lookup = source_id.clone();
+    let (track, performer) = (title.clone(), artist.clone());
     let (launch_target, source) = crate::off_thread(move || {
-        let window = crate::appbar::list_windows(sidebar)
-            .into_iter()
-            .find_map(|window| {
-                let app = window.app.to_ascii_lowercase();
-                let exe = window.exe.to_ascii_lowercase();
-                (app == wanted || exe.ends_with(&source_file)).then_some(window)
-            });
+        let window = pick_source_window(
+            crate::appbar::list_windows(sidebar),
+            &source_for_lookup,
+            &track,
+            &performer,
+        );
         // The media API exposes an AppUserModelID, not the friendly name the
         // Start menu shows. Ask the shell first (important for packaged and
         // Tauri apps), then use the executable's product description.
@@ -260,14 +429,8 @@ pub async fn media_state(app: AppHandle) -> Result<MediaState, String> {
     .unwrap_or_else(|| (String::new(), source_name(&source_id)));
     Ok(MediaState {
         available: true,
-        title: properties
-            .Title()
-            .map(|value| value.to_string())
-            .unwrap_or_default(),
-        artist: properties
-            .Artist()
-            .map(|value| value.to_string())
-            .unwrap_or_default(),
+        title,
+        artist,
         source,
         source_id,
         launch_target,
@@ -285,23 +448,20 @@ pub async fn media_focus(
     app: AppHandle,
     source_id: String,
     launch_target: Option<String>,
+    title: Option<String>,
+    artist: Option<String>,
 ) -> Result<(), String> {
-    let wanted = source_id.to_ascii_lowercase();
-    let source_file = wanted
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(&wanted)
-        .to_string();
     let sidebar = crate::appbar::sidebar_window_handle(&app);
+    let wanted = source_id.clone();
+    let (title, artist) = (title.unwrap_or_default(), artist.unwrap_or_default());
     let found = crate::off_thread(move || {
-        crate::appbar::list_windows(sidebar)
-            .into_iter()
-            .find(|window| {
-                let app = window.app.to_ascii_lowercase();
-                let exe = window.exe.to_ascii_lowercase();
-                app == wanted || exe.ends_with(&source_file)
-            })
-            .map(|window| (window.id, window.active))
+        pick_source_window(
+            crate::appbar::list_windows(sidebar),
+            &wanted,
+            &title,
+            &artist,
+        )
+        .map(|window| (window.id, window.active))
     })
     .await
     .flatten();

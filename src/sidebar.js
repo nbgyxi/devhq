@@ -7,6 +7,50 @@
   "use strict";
   const invoke = window.__TAURI__.core.invoke;
 
+  // ---- state the rail must not lose --------------------------------------------
+  // The order of the rows, the pinned apps and the dividers are all things the
+  // user arranged by hand, so losing one of them is losing work. WebView2
+  // writes `localStorage` to disk when it gets round to it, which means a row
+  // dragged shortly before the rail went away was simply gone on the next
+  // start — the rail "forgetting the order" is mostly that. All three are kept
+  // by the backend instead, fsynced before the write answers. Whatever an
+  // older WinT left in `localStorage` is read once, handed to the backend and
+  // then never read again.
+  const ORDER_KEY = "wint.sidebar.order";
+  const PINS_KEY = "wint.sidebar.pins";
+  const DIVIDERS_KEY = "wint.sidebar.dividers";
+
+  /// The lists as last read or written, by key. Empty until `restoreRail`.
+  const savedLists = new Map([[ORDER_KEY, []], [PINS_KEY, []], [DIVIDERS_KEY, []]]);
+  /// Until the backend has answered, nothing is drawn: a row placed against an
+  /// empty order would be placed wrongly and then saved there.
+  let savedReady = false;
+
+  async function loadSavedLists() {
+    await Promise.all([...savedLists.keys()].map(async (key) => {
+      let value = await invoke("ui_state_get", { key }).catch(() => null);
+      if (!Array.isArray(value)) {
+        try { value = JSON.parse(localStorage.getItem(key) || "null"); } catch (_) { value = null; }
+        // Moved over as it is found, so the next start reads it from the file
+        // even if nothing on the rail is touched this run.
+        if (Array.isArray(value)) invoke("ui_state_set", { key, value }).catch(() => {});
+      }
+      savedLists.set(key, Array.isArray(value) ? value : []);
+    }));
+    savedReady = true;
+  }
+
+  // Rows open and close in bursts, and each save is a file written all the way
+  // to the platter, so the writes are coalesced into one per key.
+  const saveTimers = new Map();
+  function saveList(key, value) {
+    savedLists.set(key, value);
+    clearTimeout(saveTimers.get(key));
+    saveTimers.set(key, setTimeout(() => {
+      invoke("ui_state_set", { key, value }).catch(() => { /* the next save retries */ });
+    }, 200));
+  }
+
   const geometry = document.querySelector("[data-geometry]");
   let state = { docked: true, edge: "left", width: 200, taskbarAutoHidden: false };
 
@@ -226,6 +270,9 @@
       mediaSource.textContent = shown.source || "Media app";
       mediaSource.dataset.sourceId = shown.sourceId || "";
       mediaSource.dataset.launchTarget = shown.launchTarget || "";
+      // The track is how the backend tells one browser window from the next.
+      mediaSource.dataset.track = shown.title || "";
+      mediaSource.dataset.artist = shown.artist || "";
       mediaSource.hidden = !shown.sourceId;
       const toggle = mediaPlayer.querySelector('[data-media-command="toggle"]');
       if (!media.available && selectedStream) {
@@ -251,6 +298,8 @@
       mediaSource.hidden = !settings.mediaLast?.sourceId;
       mediaSource.dataset.sourceId = settings.mediaLast?.sourceId || "";
       mediaSource.dataset.launchTarget = settings.mediaLast?.launchTarget || "";
+      mediaSource.dataset.track = settings.mediaLast?.title || "";
+      mediaSource.dataset.artist = settings.mediaLast?.artist || "";
       for (const button of mediaPlayer.querySelectorAll("[data-media-command]")) button.disabled = true;
     }
   }
@@ -278,7 +327,7 @@
       return invoke("media_focus", { sourceId: target, launchTarget: target }).catch((error) => flash(openStream, error));
     }
     const source = event.target.closest("[data-media-source]");
-    if (source) return invoke("media_focus", { sourceId: source.dataset.sourceId, launchTarget: source.dataset.launchTarget || null }).catch((error) => flash(source, error));
+    if (source) return invoke("media_focus", { sourceId: source.dataset.sourceId, launchTarget: source.dataset.launchTarget || null, title: source.dataset.track || null, artist: source.dataset.artist || null }).catch((error) => flash(source, error));
     const button = event.target.closest("[data-media-command]");
     if (!button || button.disabled || mediaBusy) return;
     mediaBusy = true;
@@ -335,12 +384,9 @@
   const list = document.querySelector("[data-windows]");
   const rows = new Map();
   const REFRESH_MS = 1000;
-  const ORDER_KEY = "wint.sidebar.order";
   const ORDER_LIMIT = 200;
 
   let order = [];
-  try { order = JSON.parse(localStorage.getItem(ORDER_KEY) || "[]"); } catch (_) { order = []; }
-  if (!Array.isArray(order)) order = [];
 
   function saveOrder() {
     const shown = [...list.querySelectorAll("[data-bar]")].map((button) => button.dataset.key);
@@ -362,16 +408,62 @@
     order = [...head];
     for (const key of shown) order.push(key, ...(trailing.get(key) || []));
     order = order.slice(0, ORDER_LIMIT);
-    try { localStorage.setItem(ORDER_KEY, JSON.stringify(order)); } catch (_) { /* order lasts this run */ }
+    saveList(ORDER_KEY, order);
   }
 
-  function keyFor(win) {
-    const app = win.app.toLowerCase();
+  /** What a row is, as far as the saved order is concerned.
+   *
+   *  The first half is what the window *is*: its AppUserModelID, which Windows
+   *  gives per browser profile and per installed app, so a work Edge and a
+   *  private Edge are two different things on the rail and can sit in two
+   *  different groups. Where an app gives all its windows one ID but shows a
+   *  project in each — VS Code — the backend hands over that workspace and it
+   *  is used instead, so a window is tied to the folder open in it rather than
+   *  to the order the editor happened to start its windows in.
+   *
+   *  The second half tells that app's otherwise identical windows apart, and
+   *  it is the only part with nothing of its own to hang on to: a second Edge
+   *  window of the same profile has no lasting name. It gets a slot number,
+   *  and `freeSlot` is what makes that number stick. */
+  function keyFor(win, except) {
+    const app = String(win.app || "").toLowerCase();
     const workspace = String(win.workspace || "").trim().toLowerCase();
     if (workspace) return `${app}#workspace:${workspace}`;
-    let n = 0;
-    for (const entry of rows.values()) if (entry.app === win.app) n += 1;
-    return `${app}#${n}`;
+    return freeSlot(app, except);
+  }
+
+  /// The keys the rail is showing right now — windows and the stand-in rows of
+  /// pinned apps alike, since both take a place in the order.
+  function liveKeys(except) {
+    const keys = new Set();
+    for (const entry of rows.values()) keys.add(entry.button.dataset.key);
+    for (const ghost of ghosts.values()) keys.add(ghost.dataset.key);
+    keys.delete(except);
+    return keys;
+  }
+
+  /** The slot a new window of `app` takes: the first slot the saved order
+   *  knows about that no window is using, so a second Edge window coming back
+   *  lands where the last one was left rather than at the end of the rail.
+   *
+   *  Counting the app's open windows instead — what this did — was wrong twice
+   *  over. The count moves as windows come and go, so with two windows open
+   *  and the first closed, the next one to open was handed the key the
+   *  surviving window already had and two rows fought over one place. And even
+   *  without that, the number a window got depended on the order Windows
+   *  happened to enumerate in, so the same two windows swapped places between
+   *  runs. */
+  function freeSlot(app, except) {
+    const used = liveKeys(except);
+    const prefix = `${app}#`;
+    for (const key of order) {
+      if (!key.startsWith(prefix) || key.startsWith(`${prefix}workspace:`)) continue;
+      if (!used.has(key)) return key;
+    }
+    for (let n = 0; ; n += 1) {
+      const key = `${prefix}${n}`;
+      if (!used.has(key)) return key;
+    }
   }
 
   /** Many chat and mail apps put their unread count at the start of the native
@@ -386,28 +478,78 @@
     return null;
   }
 
-  /** Where a new row goes: before the first row that comes after it in the
-   *  saved order. A row never placed before goes at the end of the rail's
-   *  first group — above the first divider — because everything under a
-   *  divider was deliberately put there, and a window dropping in below one
-   *  would read as belonging to that group. A divider itself is exempt: a new
-   *  divider is made to end the list. */
+  function isDividerKey(key) {
+    return String(key || "").startsWith("divider#");
+  }
+
+  /** Which group of the rail a key was left in: the divider it was under the
+   *  last time the order was written, or `""` for the rows above every
+   *  divider. `null` when the order has never seen this key.
+   *
+   *  This is the part the neighbour walk on its own could not keep. A window
+   *  put under "Work" and closed for the day came back wherever the rows that
+   *  were open at that moment happened to leave a gap, which reads as it
+   *  having wandered out of its group. The group is decided first, and only
+   *  then is a place inside it looked for. */
+  function groupOf(key) {
+    const rank = order.indexOf(key);
+    if (rank === -1) return null;
+    for (let i = rank - 1; i >= 0; i -= 1) if (isDividerKey(order[i])) return order[i];
+    return "";
+  }
+
+  /** The stretch of rows belonging to one group, as it stands on the rail:
+   *  everything after that divider and before the next one. `null` if the
+   *  divider it names has since been removed. */
+  function groupSpan(divider) {
+    const bars = [...list.querySelectorAll("[data-bar]")];
+    let start = 0;
+    if (divider) {
+      const at = bars.findIndex((bar) => bar.dataset.bar === "divider" && bar.dataset.key === divider);
+      if (at === -1) return null;
+      start = at + 1;
+    }
+    let end = bars.length;
+    for (let i = start; i < bars.length; i += 1) {
+      if (bars[i].dataset.bar === "divider") { end = i; break; }
+    }
+    return { bars, start, end };
+  }
+
+  /** Where a new row goes: back in the group it was left in, and inside that
+   *  group before the first row that comes after it in the saved order.
+   *
+   *  A row never placed before goes at the end of the rail's first group —
+   *  above the first divider — because everything under a divider was
+   *  deliberately put there, and a window dropping in below one would read as
+   *  belonging to that group. A divider itself is exempt: it is placed among
+   *  all the rows, and a new one is made to end the list. */
   function placeNew(button) {
     const rank = order.indexOf(button.dataset.key);
-    let before = list.querySelector(".skeleton");
-    if (rank === -1 && button.dataset.bar !== "divider") {
-      before = list.querySelector('[data-bar="divider"]') || before;
+    const tail = list.querySelector(".skeleton");
+    // A row nothing is remembered about: the end of the first group.
+    if (rank === -1) {
+      const before = button.dataset.bar === "divider"
+        ? tail
+        : list.querySelector('[data-bar="divider"]') || tail;
+      list.insertBefore(button, before);
+      return;
     }
-    if (rank !== -1) {
-      before = null;
-      for (const other of list.querySelectorAll("[data-bar]")) {
-        const otherRank = order.indexOf(other.dataset.key);
-        // A row the order has never heard of says nothing about where this
-        // one belongs, so it is stepped over rather than stopping the walk —
-        // otherwise one unplaced row pulled every returning window up to it.
-        if (otherRank !== -1 && otherRank > rank) { before = other; break; }
-      }
-      before ??= list.querySelector(".skeleton");
+    // A divider belongs among the dividers, so it is placed against the whole
+    // rail rather than inside one of the groups it makes.
+    const group = button.dataset.bar === "divider" ? null : groupSpan(groupOf(button.dataset.key));
+    const bars = group ? group.bars : [...list.querySelectorAll("[data-bar]")];
+    const start = group ? group.start : 0;
+    const end = group ? group.end : bars.length;
+    // Where the search gives up: the divider that closes this group, or the
+    // bottom of the rail.
+    let before = group ? bars[group.end] || tail : tail;
+    for (let i = start; i < end; i += 1) {
+      const otherRank = order.indexOf(bars[i].dataset.key);
+      // A row the order has never heard of says nothing about where this one
+      // belongs, so it is stepped over rather than stopping the walk —
+      // otherwise one unplaced row pulled every returning window up to it.
+      if (otherRank !== -1 && otherRank > rank) { before = bars[i]; break; }
     }
     list.insertBefore(button, before);
   }
@@ -440,17 +582,13 @@
   //
   // The name, the icon and how to start it are all remembered here. Once the
   // window is gone there is nothing left to ask.
-  const PINS_KEY = "wint.sidebar.pins";
   let pins = [];
-  try { pins = JSON.parse(localStorage.getItem(PINS_KEY) || "[]"); } catch (_) { pins = []; }
-  if (!Array.isArray(pins)) pins = [];
-  pins = pins.filter((pin) => pin?.key && pin?.target);
 
   /// The rows standing in for pinned apps that are not running, by pin key.
   const ghosts = new Map();
 
   function savePins() {
-    try { localStorage.setItem(PINS_KEY, JSON.stringify(pins)); } catch (_) { /* pins last this run */ }
+    saveList(PINS_KEY, pins);
   }
 
   /** A pin's key and a window row's key are the same string, so a pin holds
@@ -543,17 +681,13 @@
   //
   // Its name is an <input> mounted once when the divider appears and never
   // replaced, so a refresh in the middle of typing cannot take the caret.
-  const DIVIDERS_KEY = "wint.sidebar.dividers";
   let dividers = [];
-  try { dividers = JSON.parse(localStorage.getItem(DIVIDERS_KEY) || "[]"); } catch (_) { dividers = []; }
-  if (!Array.isArray(dividers)) dividers = [];
-  dividers = dividers.filter((divider) => divider?.key);
 
   /// The rows standing for each divider, by key.
   const dividerRows = new Map();
 
   function saveDividers() {
-    try { localStorage.setItem(DIVIDERS_KEY, JSON.stringify(dividers)); } catch (_) { /* dividers last this run */ }
+    saveList(DIVIDERS_KEY, dividers);
   }
 
   function dividerRow(divider) {
@@ -685,7 +819,9 @@
       if ((entry.workspace || "") !== (win.workspace || "")) {
         const oldKey = button.dataset.key;
         entry.workspace = win.workspace || "";
-        button.dataset.key = keyFor(win);
+        // Its own key is still on the row, so it is left out of what counts as
+        // taken — otherwise the row would be moved aside for itself.
+        button.dataset.key = keyFor(win, oldKey);
         order = order.filter((key) => key !== oldKey);
         placeNew(button);
         changed = true;
@@ -713,7 +849,7 @@
 
   let refreshing = false;
   async function refreshWindows() {
-    if (refreshing || moving) return;
+    if (refreshing || moving || !savedReady) return;
     refreshing = true;
     try {
       paintWindows(await invoke("sidebar_windows"));
@@ -1818,7 +1954,15 @@
   window.__TAURI__.event.listen("sidebar:tray", () => loadTrayApps(true));
   invoke("health_note", { text: "Sidebar: the rail is up" }).catch(() => {});
   ask("sidebar_state");
-  refreshWindows();
+  // The rail the user arranged comes back first; only then is anything placed
+  // against it. Drawing the windows against an empty order and saving that
+  // would lose the arrangement rather than restore it.
+  loadSavedLists().then(() => {
+    order = savedLists.get(ORDER_KEY).filter((key) => typeof key === "string");
+    pins = savedLists.get(PINS_KEY).filter((pin) => pin?.key && pin?.target);
+    dividers = savedLists.get(DIVIDERS_KEY).filter((divider) => divider?.key);
+    refreshWindows();
+  });
   setInterval(() => {
     if (!document.hidden && !list.hidden && !menuOpen) refreshWindows();
   }, REFRESH_MS);

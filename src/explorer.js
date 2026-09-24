@@ -60,6 +60,10 @@ const fx = {
   filter: "", kinds: new Set(), exts: new Set(),
   sort: "name", desc: false, showHidden: false, typesOpen: false,
   thumbsOn: false, previewPane: false,
+  /** The address is a row of clickable crumbs until the bar itself is clicked,
+   *  which turns it into the editable path. `addressDraft` is what is typed,
+   *  `addressFresh` selects the whole path the first time it appears. */
+  addressEdit: false, addressDraft: "", addressFresh: false,
   /** Fixed widths for the tree and the preview. The browse list fills what is
    *  left. Remembered across windows the same way bookmarks are. */
   sideWidth: 268, previewWidth: 320,
@@ -185,11 +189,27 @@ function revealPath(path) {
 /** The path split into the pieces the breadcrumb can navigate to. Every piece
  *  is a real path, so clicking one is the same action as clicking a folder. */
 const segments = (path) => {
-  const parts = String(path || "").split(/[\\/]+/).filter(Boolean);
+  const text = String(path || "");
+  const parts = text.split(/[\\/]+/).filter(Boolean);
   const crumbs = [];
   let walked = "";
+  // A share is the shallowest place a UNC path can open: "\\\\server" on its
+  // own is not a folder, so the server and the share are one crumb.
+  const unc = /^[\\/]{2}/.test(text);
+  if (unc && parts.length >= 2) {
+    walked = `\\\\${parts[0]}\\${parts[1]}`;
+    crumbs.push({ name: `\\\\${parts[0]}\\${parts[1]}`, path: walked });
+    parts.splice(0, 2);
+  }
   for (const part of parts) {
-    walked = walked ? `${walked}\\${part}` : (/^[A-Za-z]:$/.test(part) ? `${part}\\` : `\\${part}`);
+    // A drive root already ends in its separator ("D:\\"), so appending
+    // another makes "D:\\\\folder". Every Windows API but the shell's own
+    // parser accepts that quietly, which means the breadcrumb and the tree
+    // navigate somewhere that cannot be dragged out, revealed or turned into
+    // a shell item.
+    walked = walked
+      ? `${walked}${walked.endsWith("\\") ? "" : "\\"}${part}`
+      : (/^[A-Za-z]:$/.test(part) ? `${part}\\` : `\\${part}`);
     crumbs.push({ name: part, path: walked });
   }
   return crumbs;
@@ -231,8 +251,28 @@ function sameListing(a, b) {
   });
 }
 
+/** Collapse repeated separators, keeping the two a UNC path opens with.
+ *
+ *  Every Windows call this tool makes accepts "D:\\folder" - it reads, lists
+ *  and watches exactly like the real path - except the shell parser, which
+ *  refuses to turn anything under it into an item. A folder reached that way
+ *  therefore looks perfectly normal while nothing in it can be dragged out or
+ *  revealed, and the path outlives the session in the saved last folder and in
+ *  bookmarks. Navigation is the one gate every path passes through, whoever it
+ *  came from - a crumb, the tree, a typed path, another tool - so it is
+ *  cleaned here rather than at each producer. Trailing spaces are left alone:
+ *  a folder is allowed to end in one. */
+const tidyPath = (value) => {
+  const text = String(value ?? "").replace(/[/]/g, "\\");
+  if (!text) return "";
+  const unc = /^\\\\/.test(text);
+  const collapsed = text.replace(/\\{2,}/g, "\\");
+  return unc ? `\\${collapsed}` : collapsed;
+};
+
 async function openFolder(path, { push = true, keepFilter = false, focusPath = null, quiet = false } = {}) {
   if (path == null) return;
+  path = tidyPath(path);
   if (push && fx.path !== path && !same(fx.path, path)) { fx.history.push(fx.path); fx.forward = []; }
   const token = ++listToken;
   const leaving = fx.path;
@@ -775,10 +815,15 @@ async function maybeDrag(event) {
   const { path } = dragFrom;
   const paths = selection().some((item) => same(item, path)) ? selection() : [path];
   dragFrom = null;
+  // A drag hands the pointer to Windows, which draws its own cursor and tells
+  // this window nothing until it is over. The line says the gesture was taken,
+  // so a drag that never starts is visibly different from one nobody accepted.
+  note(paths.length === 1 ? `Dragging ${nameOf(paths[0])}` : `Dragging ${paths.length} items`);
   try {
     // Explorer often moves without saying so, so the folder is always re-read.
-    await invoke("explorer_drag_out", { paths });
+    const effect = await invoke("explorer_drag_out", { paths });
     announce(paths.map(parentOf));
+    if (effect === "none") note("Nothing accepted the drop.");
   } catch (error) {
     note(String(error));
   } finally {
@@ -788,9 +833,9 @@ async function maybeDrag(event) {
 
 /** Rubber-band selection. Pressing on blank space - or on a row that is not
  *  part of the current selection - and dragging paints a rectangle over the
- *  list; every row it touches is selected while the pointer moves. Starting
- *  on a row that IS already selected keeps meaning "drag these files out",
- *  which is how the pointer tells the two gestures apart without a modifier.
+ *  list; every row it touches is selected while the pointer moves. Pressing on
+ *  a row never starts one - that gesture belongs to dragging the files out -
+ *  so blank space is what tells the two apart, without a modifier.
  *
  *  The list is virtualised, so which rows the rectangle covers is worked out
  *  from the row height and the scroll offset, never from the DOM - rows far
@@ -811,9 +856,11 @@ function watchMarquee(event) {
   // Anywhere in the scroller counts, including the blank space under the
   // last row - on a tall window that gap is the easiest place to start.
   if (!rows || !rows.contains(event.target)) return;
-  const row = event.target.closest("[data-fx-item]");
-  // Pressing on something already selected means "drag these out".
-  if (row && selection().some((path) => same(path, row.dataset.fxItem))) return;
+  // Pressing on a row always means "drag these out", whether or not it was
+  // selected first - that is the only way a file leaves this window, and a
+  // rectangle that started on a row would take the gesture away from it. The
+  // rectangle belongs to blank space: between the rows and under the last one.
+  if (event.target.closest("[data-fx-item]")) return;
   const rect = rows.getBoundingClientRect();
   marquee = {
     rows,
@@ -827,8 +874,8 @@ function watchMarquee(event) {
     live: false,
     box: null,
   };
-  // Whichever gesture the pointer turns into, it cannot be both: a row that
-  // is not selected yet starts a rectangle, never a file drag.
+  // Whichever gesture the pointer turns into, it cannot be both. Blank space
+  // never arms a file drag, so this only makes that certain.
   dragFrom = null;
 }
 
@@ -907,10 +954,13 @@ function endMarquee() {
   if (!marquee) return;
   const { live, box, rows, pointerId } = marquee;
   marquee = null;
+  // The capture is released even when the rectangle never went live: a pointer
+  // still captured by the scroller retargets every later press to it, and a
+  // press that cannot name its row can never start a file drag.
+  try { rows.releasePointerCapture(pointerId); } catch (_) { /* already gone */ }
   if (!live) return;
   box?.remove();
   document.body.classList.remove("fx-marqueeing");
-  try { rows.releasePointerCapture(pointerId); } catch (_) { /* already gone */ }
   // The release that ends a rectangle is not a click on the row underneath.
   dragJustEnded = Date.now();
   if (fx.previewPane) {
@@ -1287,11 +1337,47 @@ function paintVirtualRows(rows) {
   });
 }
 
+/** Turn the crumbs into the editable path, with the whole path selected so
+ *  typing replaces it - the same move as Ctrl+L. */
+function editAddress() {
+  if (fx.addressEdit) return;
+  fx.addressEdit = true;
+  fx.addressDraft = fx.path;
+  fx.addressFresh = true;
+  dirty();
+}
+
+function leaveAddress() {
+  if (!fx.addressEdit) return;
+  fx.addressEdit = false;
+  fx.addressDraft = "";
+  dirty();
+}
+
+/** The address bar. Two shapes, one box: a row of crumbs you can click to jump
+ *  to any folder on the way here, and - once the bar itself is clicked, or
+ *  Ctrl+L is pressed - the plain path, ready to be edited or pasted over. */
+function renderAddress() {
+  if (fx.addressEdit) {
+    return `<label class="fx-address editing" title="Type or paste a folder path">${icon("folder")}<input type="text" value="${esc(fx.addressDraft)}" placeholder="This PC" aria-label="Folder path" spellcheck="false"></label>`;
+  }
+  const crumbs = segments(fx.path);
+  const parts = [`<button class="fx-crumb${crumbs.length ? "" : " current"}" type="button" data-fx-crumb="${THIS_PC_KEY}" title="This PC">This PC</button>`];
+  crumbs.forEach((crumb, index) => {
+    const last = index === crumbs.length - 1;
+    parts.push(`<i class="fx-crumb-sep" aria-hidden="true">${icon("chevron_right")}</i>`);
+    parts.push(`<button class="fx-crumb${last ? " current" : ""}" type="button" data-fx-crumb="${esc(crumb.path)}" title="${esc(crumb.path)}">${esc(crumb.name)}</button>`);
+  });
+  return `<div class="fx-address crumbs" data-fx-address title="Click to type the path">${icon("folder")}<span class="fx-crumbs">${parts.join("")}</span></div>`;
+}
+
 function render() {
   if (!fx.host) return;
   const live = fx.host.querySelector(".fx-search input");
   const typing = live === document.activeElement;
   const caret = typing ? live.selectionStart ?? fx.filter.length : 0;
+  const liveAddress = fx.host.querySelector(".fx-address input");
+  const addressCaret = liveAddress === document.activeElement ? liveAddress.selectionStart : null;
   const liveRename = fx.host.querySelector(".fx-rename");
   const renameSel = liveRename === document.activeElement ? [liveRename.selectionStart, liveRename.selectionEnd] : null;
   painting = true;
@@ -1318,7 +1404,7 @@ function render() {
         <button class="fx-nav" type="button" data-fx-up title="Up one folder" aria-label="Up one folder" ${fx.path === THIS_PC ? "disabled" : ""}>${icon("arrow_upward")}</button>
         <button class="fx-nav" type="button" data-fx-refresh title="${fx.path === THIS_PC ? "Read the drives again" : "Read this folder again"}" aria-label="Refresh">${icon("refresh")}</button>
         <button class="fx-nav" type="button" data-fx-new-window title="Open this folder in a new window" aria-label="New window">${icon("tab_duplicate")}</button>
-        <label class="fx-address" title="Type or paste a folder path">${icon("folder")}<input type="text" value="${esc(fx.path)}" placeholder="This PC" aria-label="Folder path" spellcheck="false"></label>
+        ${renderAddress()}
         <button class="fx-nav${fx.thumbsOn ? " on" : ""}" type="button" data-fx-thumbs aria-pressed="${fx.thumbsOn}" title="${fx.thumbsOn ? "Back to plain rows" : "Show a picture on every image row"}" aria-label="Thumbnails">${icon("photo_library")}</button>
         <button class="fx-nav${fx.previewPane ? " on" : ""}" type="button" data-fx-preview aria-pressed="${fx.previewPane}" title="${fx.previewPane ? "Close the preview panel" : "Open a preview panel beside the list"}" aria-label="Preview panel">${icon("preview")}</button>
         <button class="fx-nav${fx.showHidden ? " on" : ""}" type="button" data-fx-hidden aria-pressed="${fx.showHidden}" title="${fx.showHidden ? "Hide hidden and system items" : "Show hidden and system items"}" aria-label="Hidden items">${icon(fx.showHidden ? "visibility" : "visibility_off")}</button>
@@ -1370,6 +1456,18 @@ function render() {
     search.value = fx.filter;
     if (typing) { search.focus(); search.setSelectionRange(caret, caret); }
   }
+  // The path box is rebuilt with the rest of the toolbar, so its focus and
+  // caret have to be put back or every keystroke would jump to the end.
+  const address = fx.host.querySelector(".fx-address input");
+  if (address) {
+    address.value = fx.addressDraft;
+    address.focus();
+    if (fx.addressFresh) { address.select(); fx.addressFresh = false; }
+    else address.setSelectionRange(addressCaret ?? fx.addressDraft.length, addressCaret ?? fx.addressDraft.length);
+  }
+  // A path longer than the bar shows its tail - the folder you are in.
+  const crumbs = fx.host.querySelector(".fx-crumbs");
+  if (crumbs) crumbs.scrollLeft = crumbs.scrollWidth;
   const renameBox = fx.host.querySelector(".fx-rename");
   if (renameBox && fx.rename) {
     renameBox.value = fx.rename.draft;
@@ -1504,6 +1602,13 @@ function mount(host) {
     if (pop) return window.wintShell?.popOutTool?.(pop.dataset.popoutTool);
     if (pin) return window.wintShell?.toggleToolPin?.(pin.dataset.pinTool);
     if (go) return window.wintShell?.openTool?.(go.dataset.openTool);
+    const crumb = event.target.closest("[data-fx-crumb]");
+    if (crumb) {
+      const path = asPath(crumb.dataset.fxCrumb);
+      if (same(path, fx.path)) return;
+      return void openFolder(path);
+    }
+    if (event.target.closest("[data-fx-address]")) return editAddress();
     const twist = event.target.closest("[data-fx-twist]");
     if (twist) return toggleBranch(asPath(twist.dataset.fxTwist));
     const unmark = event.target.closest("[data-fx-unbookmark]");
@@ -1579,11 +1684,14 @@ function mount(host) {
       if (event.key === "Enter") {
         event.preventDefault();
         const path = event.target.value.trim();
+        fx.addressEdit = false;
+        fx.addressDraft = "";
         openFolder(path || THIS_PC);
+        dirty();
       } else if (event.key === "Escape") {
         event.preventDefault();
-        event.target.value = fx.path;
-        event.target.blur();
+        event.stopPropagation();
+        leaveAddress();
       }
       return;
     }
@@ -1598,8 +1706,7 @@ function mount(host) {
     }
     if (event.ctrlKey && !event.altKey && key === "l") {
       event.preventDefault();
-      const address = fx.host.querySelector(".fx-address input");
-      address?.focus(); address?.select();
+      editAddress();
       return;
     }
     if (event.ctrlKey && !event.altKey && !typingText) {
@@ -1661,6 +1768,7 @@ function mount(host) {
   });
   host.addEventListener("input", (event) => {
     if (event.target.closest(".fx-rename")) { if (fx.rename) fx.rename.draft = event.target.value; return; }
+    if (event.target.closest(".fx-address")) { fx.addressDraft = event.target.value; return; }
     if (!event.target.closest(".fx-search")) return;
     fx.filter = event.target.value;
     dirty();
@@ -1671,6 +1779,9 @@ function mount(host) {
   // Clicking away from the rename box keeps the new name, as in Explorer.
   host.addEventListener("focusout", (event) => {
     if (!painting && event.target.closest(".fx-rename")) commitRename();
+    // Clicking away from the path box puts the crumbs back; what was typed is
+    // dropped, exactly as Escape does.
+    if (!painting && event.target.closest(".fx-address")) leaveAddress();
   });
   host.addEventListener("pointerdown", watchDrag);
   host.addEventListener("pointerdown", watchMarquee);

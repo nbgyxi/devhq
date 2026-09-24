@@ -16,6 +16,154 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.157.11",
+      date: "2026-09-24",
+      title: "Torrents come back in a second",
+      changes: [
+        ["fix", "Opening Torrents took minutes, and often never finished, because the engine opened every file of every saved torrent before it would report a single one as ready - around thirty thousand files here, on an external USB disk, one torrent at a time while everything else waited behind it. One torrent of 7,685 files cost a minute and a half on its own. Files are now opened when a piece of them is actually read or written, which for a finished torrent means when a peer asks for one. The same sixteen torrents now come back in a second."],
+        ["better", "The engine can be told which DHT port to use, so a second one can be run against a copy of the saved torrents to measure a start-up without disturbing the transfers being looked into."],
+      ],
+    },
+    {
+      version: "0.157.10",
+      date: "2026-09-24",
+      title: "The engine says which build it is",
+      changes: [
+        ["new", "The Engine tab now names the exact program the running engine was started from and when that file was built, and the same line is in what the copy button puts on the clipboard. Whether a change had actually reached the running engine was previously a matter of inference - and inferring it wrongly sends you hunting for a fault in code that is not being run."],
+      ],
+    },
+    {
+      version: "0.157.9",
+      date: "2026-09-24",
+      title: "A torrent that is back no longer says it is waiting",
+      changes: [
+        ["fix", "Torrents that had already been read back in could sit in the list saying they were waiting for the engine, while the engine's own log showed them loaded seconds earlier. The placeholder was being matched against the rows that had something to report rather than against what the engine actually holds, so a torrent that was there but had not said anything yet got a placeholder laid back on top of it. The count above the list is now taken from the same rows, so the line and the list can no longer disagree."],
+        ["better", "Development builds run the engine from a copy of the built file, so a rebuild is no longer refused while an engine is running - and can no longer leave the previous engine in place while appearing to have replaced it."],
+      ],
+    },
+    {
+      version: "0.157.8",
+      date: "2026-09-24",
+      title: "The Engine tab reads properly, and a stuck start-up names itself",
+      changes: [
+        ["better", "The Engine tab now takes the whole width of the window and its log fills the height under the panel above it, instead of being squeezed into the narrow column the settings controls use. Lines are no longer broken mid-word: the log scrolls sideways, the way a log is meant to be read."],
+        ["new", "A start-up that has not finished now says which torrents it is still waiting for, by name, every ten seconds - and any stage of reading one back that takes more than three seconds says so while it is still in it. A torrent that never arrives used to leave nothing in the log at all, because the engine only wrote a line once one had finished arriving."],
+      ],
+    },
+    {
+      version: "0.157.7",
+      date: "2026-09-24",
+      title: "An Engine tab that says what the engine is doing",
+      changes: [
+        ["new", "Torrents has a third tab, Engine: what the engine is, how long it has been up and everything it has written, as it writes it. The engine is a separate program and its own account of itself was only reachable inside a warning panel - there when something had already broken, and nowhere to be found when you simply wanted to see what it was up to."],
+        ["new", "One Copy for support button on that tab puts the whole picture on the clipboard: the engine's state, every torrent with its status and progress, and the log."],
+        ["better", "The engine keeps 500 lines of its output instead of 40, so a whole start-up fits in the log rather than the last few seconds of one."],
+        ["better", "Reading a saved torrent back in now records how long each part of it took - waiting for a work permit, opening the files, saving, starting - on the engine's own log line for that torrent. A slow start-up can be read off the log instead of guessed at."],
+      ],
+    },
+    {
+      version: "0.157.6",
+      date: "2026-09-24",
+      title: "The saved torrents come back in seconds",
+      changes: [
+        ["fix", "Opening Torrents with a list of saved torrents took minutes to get going, a couple of rows at a time, with rows stuck on Checking files at 0 per cent that were not reading anything at all. Each torrent being read back held one of the engine's few work permits while waiting for an operation - loading its saved piece map - that needed a permit of its own, so the queue could only inch forward as permits happened to come free. The permit is now held only for the work it is there to bound, and the list comes back in seconds."],
+        ["better", "The limit on how many torrents may hash-check at once is now the number the app asks for. The engine took the setting and then ignored it, checking one at a time whatever it was told."],
+      ],
+    },
+    {
+      version: "0.157.5",
+      date: "2026-09-24",
+      title: "Every saved torrent is in the list from the start",
+      changes: [
+        ["new", "The Torrents list now holds every torrent the app has saved from the moment it opens, read straight off disk - name, size and folder - instead of appearing one at a time as the engine got to them. A torrent the engine has not picked up yet sits there greyed, saying it is waiting for the engine, and turns into the real row in place."],
+        ["fix", "The list no longer warns that updates have stopped while the engine is plainly working. Reading a saved torrent back in holds the engine's thread for as long as its files take to check, so updates can be seconds apart - and the page was treating that gap as silence and offering to restart an engine that was busy."],
+      ],
+    },
+    {
+      version: "0.157.4",
+      date: "2026-09-24",
+      title: "A folder that could not be dragged from",
+      changes: [
+        ["fix", "Files could end up in a folder nothing could be dragged out of. Opening any folder also opens its parents in the tree, and the path for each of those was built by adding a separator to one that already ended in it - so a branch under a drive became D: followed by two separators. Windows reads, lists and watches such a path exactly like the real one, which is why the folder looked normal, but the shell refuses to identify anything inside it: dragging a file out did nothing at all, with no cursor and no error. Opening a folder from another tool, such as Torrents, was one way in."],
+        ["fix", "Every path is now tidied as it is opened, whoever it came from, so a folder saved from last time or kept as a bookmark cannot carry the fault forward."],
+      ],
+    },
+    {
+      version: "0.157.3",
+      date: "2026-09-24",
+      title: "The music player opens the window that is playing",
+      changes: [
+        ["fix", "Clicking the app name under the track in the sidebar now brings up the window the sound is actually coming from. With a browser it used to raise whichever of its windows happened to be in front - the wrong profile and the wrong window. It now matches the profile the track is playing in, the window whose title carries the track, and the window belonging to the process holding the audio, so a background tab in another profile is still found."],
+      ],
+    },
+    {
+      version: "0.157.2",
+      date: "2026-09-24",
+      title: "Torrents are on screen while their files are checked",
+      changes: [
+        ["new", "The Torrents list now appears straight away and fills in as your saved torrents are read back, each row saying Checking files and how far through it is. The engine used to read and hash-check every saved torrent before it would answer anything at all, so a long list meant minutes of an empty page - and no way to tell slow work from a stuck engine."],
+        ["better", "While the rest of the queue is still being read back, a quiet line above the list says how many more are coming. The torrents already listed are live throughout: they can be paused, opened or removed while the others arrive."],
+        ["better", "Building the engine during development now says when an engine from an earlier run is still holding the file, instead of failing with a bare access-denied and leaving the old engine in place - which meant a change could be built and never actually run."],
+      ],
+    },
+    {
+      version: "0.157.1",
+      date: "2026-09-24",
+      title: "The trail goes where it says",
+      changes: [
+        ["fix", "Clicking a folder in the new address trail landed on a path with a doubled separator, because the drive root already ends in one. The folder still opened - Windows forgives that everywhere except the one place it matters - but the shell could not turn anything inside it into an item, so dragging files out of that folder did nothing at all: no drag, no cursor, no error. The trail builds the path properly now."],
+        ["fix", "A network path's trail starts at the share, which is the shallowest place it can actually open. It used to offer the server on its own, which is not a folder."],
+      ],
+    },
+    {
+      version: "0.157.0",
+      date: "2026-09-24",
+      title: "A starting torrent engine says how far it has got",
+      changes: [
+        ["fix", "A torrent engine that was simply still starting no longer looks broken. The page warned that the engine had sent no torrent data and offered to restart it, which would have thrown away the checking it had already done. It is shown as work in hand now, and a restart is only offered once the start-up has genuinely stopped getting any further - after ten minutes without progress, with how long it has been stuck."],
+        ["fix", "The troubleshooting details you copy out of the Torrents tool now carry the app's version instead of \"unknown\". The tool runs in a webview of its own, which never had the version list loaded, so it had nothing to read."],
+      ],
+    },
+    {
+      version: "0.156.0",
+      date: "2026-09-24",
+      title: "The sidebar keeps the order you gave it",
+      changes: [
+        ["fix", "The order of the rows on the docked sidebar, the apps pinned to it and its dividers are now saved the way everything else you change is - written to disk before the save is called done. They were kept in the webview's own storage, which Windows writes out whenever it feels like it, so a row dragged shortly before the sidebar closed was simply gone the next time it opened. Whatever order you already had is carried over on the first start."],
+        ["fix", "A window now comes back to the group you left it in. Each row remembers which divider it was under, not just which rows it sat between, so an app closed for the day no longer turns up in a different group because the windows around it happened to be closed at the time."],
+        ["fix", "Two windows of the same app no longer fight over one place. A window was remembered by how many of that app's windows were open when it appeared, so closing one and opening another handed the new window a place another row was already using, and the same two windows swapped places between restarts."],
+        ["better", "Cursor and Windsurf windows are told apart by the project open in them, the way VS Code windows already were, so each keeps its own place on the rail. Edge and Chrome profiles were already separate - a work profile and a private one can sit in different groups."],
+      ],
+    },
+    {
+      version: "0.155.2",
+      date: "2026-09-24",
+      title: "A tool can reach the status bar again",
+      changes: [
+        ["fix", "Anything a tool reported about what it was doing - and every error it tried to show you - was being thrown away. A tool runs in a webview of its own, and its route to the status bar was three empty functions, so the bar sat on Idle while a tool was working or failing. Those lines arrive now, under the name of the tool that sent them, and a tool that is reloaded no longer leaves its last line stuck there."],
+        ["better", "When a drag out finds nothing Windows recognises, it now names how many items were asked for and the first path it choked on, instead of only saying there was nothing to drag."],
+      ],
+    },
+    {
+      version: "0.155.1",
+      date: "2026-09-24",
+      title: "Dragging files out says what happened",
+      changes: [
+        ["fix", "Dragging files out of Files could do nothing at all - no drag cursor, no error, no sign the gesture had been noticed. Windows will not start a drag from a thread that was never put into an OLE apartment, and it reports that only through a return value the app was throwing away. The apartment is entered now, and a refusal is reported instead of discarded."],
+        ["better", "A drag out now shows a line while it is in flight - the file's name, or how many items are moving - and says so when nothing accepted the drop. The pointer belongs to Windows for the length of a drag, so this is the only way the window can tell you the gesture was taken."],
+      ],
+    },
+    {
+      version: "0.155.0",
+      date: "2026-09-24",
+      title: "The path in Files is a trail you can click",
+      changes: [
+        ["new", "The address in Files is now a row of folders rather than one long string. Click any part of the path to jump straight to it - two folders up is one click, not two presses of Up."],
+        ["better", "Clicking the bar itself still turns it back into the plain path, selected and ready to be typed over or pasted into, which is what Ctrl+L has always done. Enter goes there, Escape puts the trail back."],
+        ["fix", "Dragging files and folders out of Files works again - into the browser, into Explorer, anywhere. Rubber-band selection had taken the gesture over: pressing on a row and moving started a rectangle instead of a drag, so no drag ever began and no drag cursor ever appeared. Pressing on a row is a drag again, and the rectangle starts from the blank space around the rows."],
+      ],
+    },
+    {
       version: "0.154.1",
       date: "2026-09-24",
       title: "The torrent lands where Torrents is",

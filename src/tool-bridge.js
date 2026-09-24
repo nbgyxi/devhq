@@ -133,7 +133,18 @@
     confirmQueue.push({ options, resolve });
     showNextConfirm();
   });
-  window.wintWork = { beginWork() {}, updateWork() {}, endWork() {} };
+  // A tool runs in a webview of its own, so the status bar along the bottom of
+  // the shell is not its to write to directly. These used to be empty stubs,
+  // which meant every "what is it doing" line a tool reported - and every error
+  // it tried to show - was dropped on the floor. They are forwarded now.
+  const work = (kind, key, text) => {
+    request("work", { kind, key: String(key ?? ""), text: String(text ?? "") }).catch(() => {});
+  };
+  window.wintWork = {
+    beginWork(key, label) { work("begin", key, label); },
+    updateWork(key, detail) { work("update", key, detail); },
+    endWork(key) { work("end", key); },
+  };
   document.addEventListener("keydown", (event) => {
     const target = event.target;
     const editing = target instanceof Element && (target.matches("input,textarea,select") || target.isContentEditable);

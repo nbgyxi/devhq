@@ -1001,10 +1001,18 @@ pub struct OpenWindow {
     pub minimized: bool,
 }
 
-/// VS Code gives every window the same AppUserModelID. Its default title ends
-/// in `<folder or workspace> - Visual Studio Code`, while the part before that
-/// may change whenever the active file changes. Keep only the workspace part
-/// so sidebar order follows the project rather than EnumWindows order.
+/// VS Code gives every window the same AppUserModelID, so on the rail its
+/// windows are one app with nothing to tell them apart — and a window that is
+/// only "the second one" moves the moment another is opened or closed. Its
+/// default title ends in `<folder or workspace> - Visual Studio Code`, while
+/// the part before that may change whenever the active file changes. Keep only
+/// the workspace part, so the rail's order follows the project a window holds
+/// rather than the order EnumWindows happened to return.
+///
+/// Its forks — Cursor, Windsurf, VSCodium — are the same program with the same
+/// title and the same single ID, and are treated the same way. A browser needs
+/// none of this: Edge and Chrome already give every profile an
+/// AppUserModelID of its own, which is what `window_app_id` reads.
 fn editor_workspace(exe: &str, title: &str) -> String {
     let stem = std::path::Path::new(exe)
         .file_stem()
@@ -1013,7 +1021,13 @@ fn editor_workspace(exe: &str, title: &str) -> String {
         .to_ascii_lowercase();
     if !matches!(
         stem.as_str(),
-        "code" | "code-insiders" | "code - insiders" | "codium" | "vscodium"
+        "code"
+            | "code-insiders"
+            | "code - insiders"
+            | "codium"
+            | "vscodium"
+            | "cursor"
+            | "windsurf"
     ) {
         return String::new();
     }
@@ -1242,6 +1256,18 @@ mod sidebar_order_tests {
                 "devhq - Visual Studio Code - Insiders"
             ),
             "devhq"
+        );
+    }
+
+    #[test]
+    fn vscode_forks_are_told_apart_by_project_too() {
+        assert_eq!(
+            editor_workspace(r"C:\Users\me\AppData\Local\Programs\cursor\Cursor.exe", "app.js - devhq - Cursor"),
+            "devhq"
+        );
+        assert_eq!(
+            editor_workspace(r"C:\Windsurf.exe", "showdown - Windsurf"),
+            "showdown"
         );
     }
 

@@ -239,6 +239,14 @@ function endWork(key) {
   if (work.delete(key)) markDirty("activity", "toolbar");
 }
 
+/** A tool webview that is reloaded or evicted cannot end the lines it started,
+ *  and the status bar is never empty, so they would sit there forever. */
+function clearToolWork(id) {
+  for (const key of [...work.keys()]) {
+    if (key.startsWith(`tool:${id}:`)) endWork(key);
+  }
+}
+
 /* ------------------------------------------------------- shared confirms */
 
 const confirmQueue = [];
@@ -7976,6 +7984,7 @@ async function wireToolPopoutEvents() {
         // status line have been telling the truth until exactly now.
         embeddedToolReadyId = fromId;
         embeddedToolLastBeat.set(fromId, Date.now());
+        clearToolWork(fromId);
         const failure = request.value?.error;
         // A tool that reported a failure is not worth keeping alive: leaving
         // it destroys the webview so the next visit tries again. Its own page
@@ -8027,6 +8036,15 @@ async function wireToolPopoutEvents() {
         await reply(true);
       } else if (request.action === "confirm") {
         await reply(true, await appConfirm(request.value || {}));
+      } else if (request.action === "work") {
+        // The tool names its own keys, so they are prefixed with whose they
+        // are - two tools using "loading" must not end each other's line.
+        const { kind, key, text } = request.value || {};
+        const scoped = `tool:${fromId}:${key}`;
+        if (kind === "begin") beginWork(scoped, String(text || ""));
+        else if (kind === "update") updateWork(scoped, String(text || ""));
+        else if (kind === "end") endWork(scoped);
+        await reply(true);
       } else if (request.action === "search") {
         const initialQuery = typeof request.value?.initialQuery === "string" ? request.value.initialQuery : "";
         openSearchCommands({ fresh: true, initialQuery });

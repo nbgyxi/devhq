@@ -3286,6 +3286,16 @@ html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
 .fx-address:focus-within{border-color:var(--accent);background:var(--bg1)}
 .fx-address>.ms{font-size:16px;flex:0 0 auto}
 .fx-address input{width:100%;min-width:0;border:0;background:none;color:var(--text);font:12px ui-monospace,Consolas,monospace;outline:none}
+.fx-address.crumbs{cursor:text;gap:4px;overflow:hidden}
+.fx-address.crumbs:hover{border-color:var(--accent)}
+.fx-crumbs{flex:1;min-width:0;display:flex;align-items:center;gap:2px;overflow-x:auto;scrollbar-width:none}
+.fx-crumbs::-webkit-scrollbar{display:none}
+.fx-crumb{flex:0 0 auto;display:inline-flex;align-items:center;height:22px;padding:0 6px;border:0;border-radius:5px;
+  background:none;color:var(--dim);font:12px ui-monospace,Consolas,monospace;line-height:1;cursor:pointer;white-space:nowrap}
+.fx-crumb:hover{background:var(--bg1);color:var(--text)}
+.fx-crumb.current{color:var(--text)}
+.fx-crumb-sep{flex:0 0 auto;display:inline-flex;align-items:center;color:var(--dim);opacity:.6}
+.fx-crumb-sep .ms{font-size:14px}
 
 .fx-chips{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
 .fx-chip{display:flex;align-items:center;gap:5px;height:27px;padding:0 10px;border:1px solid var(--line);border-radius:999px;background:var(--bg2);color:var(--text);font:inherit;font-size:12px;cursor:pointer}
@@ -4955,6 +4965,31 @@ body.projects-window #status-term-popout{display:none!important}
 /* Without this the bar keeps its display:flex and shows as an empty box. */
 .tr-banner[hidden]{display:none}
 .tr-banner>.ms{flex:0 0 auto;color:var(--amber)}
+/* The Engine tab. A log is read across, not down a column, so this view takes
+   the whole width the window gives it - unlike Settings, whose controls are
+   kept to a readable column - and the log takes all the height left under the
+   panel above it. */
+.tr-engineview .tr-settings{flex:1;min-width:0;max-width:none;height:100%}
+.tr-enginehead{display:flex;align-items:flex-start;gap:12px}
+.tr-enginehead>span:first-child{flex:1;min-width:0;color:var(--dim);line-height:1.7}
+.tr-enginehead small{display:block;margin-top:3px;color:var(--dim2);font-size:10.5px;word-break:break-all}
+.tr-enginebtns{display:flex;gap:6px;flex:0 0 auto}
+.tr-logpanel{min-height:0;display:flex;flex-direction:column;flex:1}
+/* The log itself scrolls; the panel around it does not, so the heading stays
+   put while a long start-up runs past underneath it. */
+.tr-logpanel>pre{flex:1;min-height:0}
+.tr-log{margin:0;padding:10px 12px;background:var(--bg);
+  font:11px/1.5 ui-monospace,"Cascadia Mono",Consolas,monospace;color:var(--dim);
+  white-space:pre;overflow:auto;user-select:text}
+
+/* Known from the saved torrents, not yet read back by the engine: named and
+   sized, but greyed, because nothing about its progress is known yet. */
+.tr-row-waiting{opacity:.62}
+.tr-row-waiting .tr-bar{opacity:.4}
+
+/* A line about work in hand, not a warning: the list below it is live. */
+.tr-banner-quiet{color:var(--dim)}
+.tr-banner-quiet>.ms{color:var(--dim)}
 .tr-banner.bad{border-color:rgba(242,84,91,.4);background:rgba(242,84,91,.08)}
 .tr-banner.bad>.ms{color:var(--red)}
 .tr-banner>span{flex:1;min-width:0}

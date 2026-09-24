@@ -132,6 +132,15 @@
     host: null,
     tab: "transfers",
     engine: { state: "stopped" },
+    /** The app's version, for the diagnostics people paste. This tool runs in
+     * a webview of its own, which does not load `changelog.js`, so the global
+     * the rest of the app reads is not there — it is asked for instead. */
+    appVersion: null,
+    /** When the engine's resume last got a torrent further. A start-up that is
+     * slow says a bigger number every so often; one that is stuck says the
+     * same number forever, and only the clock can tell them apart. */
+    resumeMovedAt: 0,
+    resumeMark: "",
     /** The newest snapshot. Replaced wholesale; never appended to. */
     snap: null,
     /** Shell-opened files shown before the engine has finished accepting them. */
@@ -267,6 +276,10 @@
     if (row.state === "error") return { text: row.error || "Error", tone: "bad" };
     if (row.state === "initializing") return { text: "Checking files", tone: "warn" };
     if (row.state === "check-queued") return { text: "Waiting to check", tone: "muted" };
+    // Known from the saved torrents, not yet read back into the engine. The
+    // row is real - name, size, folder - but nothing about its progress is
+    // known until the engine gets to it.
+    if (row.state === "waiting") return { text: "Waiting for the engine", tone: "muted" };
     if (row.state === "queued") return { text: "Waiting its turn", tone: "muted" };
     if (row.state === "paused") return { text: "Paused", tone: "muted" };
     if (row.forceStarted && !row.finished) return { text: "Force downloading", tone: "" };
@@ -306,6 +319,7 @@
         <div class="tr-tabs" role="tablist">
           <button type="button" class="tr-tab on" data-tr-tab="transfers" role="tab">Transfers</button>
           <button type="button" class="tr-tab" data-tr-tab="settings" role="tab">Settings</button>
+          <button type="button" class="tr-tab" data-tr-tab="engine" role="tab">Engine</button>
           <div class="tr-top-add">
             ${icon("add_link")}
             <input type="text" class="tr-magnet" data-tr-magnet spellcheck="false"
@@ -340,6 +354,7 @@
         </section>
 
         <section class="tr-view" data-tr-view="settings" hidden></section>
+        <section class="tr-view tr-engineview" data-tr-view="engine" hidden></section>
         <div class="tr-drop-overlay" data-tr-drop-overlay hidden>
           ${icon("download")}<strong>Drop .torrent files anywhere</strong><span>They will start right away</span>
         </div>
@@ -407,7 +422,10 @@
       if (!st.host?.isConnected) return clearInterval(st.tick);
       const running = st.engine?.state === "running" || st.engine?.state === "starting";
       const heardAt = st.lastSnapshotAt || st.engineStartedAt;
-      const resuming = st.engine?.phase === "resuming";
+      // A helper that has not finished building its session sends no
+      // snapshots at all, and "starting" covers the window before its first
+      // heartbeat has even said so. Neither is silence.
+      const resuming = st.engine?.phase === "resuming" || st.engine?.state === "starting";
       const silent = running && !resuming && heardAt > 0 && Date.now() - heardAt > 4000;
       // Anything other than a running engine is asked about again every few
       // seconds. The page can be left holding a stale or mistaken view — a
@@ -439,6 +457,7 @@
     // Bring the engine up. Until it answers, the list shows skeletons; the
     // page is interactive the whole time.
     st.engineStartedAt = Date.now();
+    if (!st.appVersion) invoke("app_version").then((v) => { st.appVersion = String(v || ""); }).catch(() => {});
     invoke("torrent_start")
       .then((engine) => { st.engine = engine; drawBanner(); })
       // Only the message. Replacing the whole status with an invented one
@@ -519,6 +538,8 @@
         drawRows();
         drawSpace();
         drawDetail();
+      } else if (st.tab === "engine") {
+        drawEngine();
       } else {
         drawSettings();
       }
@@ -633,7 +654,8 @@
       `${Number(s.pendingRequests) || 0} pending requests`,
       `${bytes(s.memoryBytes)} memory`,
       `${Number(s.restarts) || 0} restarts`,
-    ];
+      resumeProgress(s),
+    ].filter(Boolean);
   }
 
   /** Everything worth handing to whoever has to work out what went wrong, as
@@ -644,12 +666,15 @@
     const rows = st.snap?.torrents || [];
     return [
       `WinT Torrents diagnostics — ${new Date().toISOString()}`,
-      `App version: ${window.wintChangelog?.current || "unknown"}`,
+      `App version: ${st.appVersion || window.wintChangelog?.current || "unknown"}`,
       `Engine state: ${s.state || "unknown"}${s.phase ? ` (${s.phase})` : ""}`,
       s.engine ? `Engine build: ${s.engine}` : null,
+      engineBuild() ? `Engine program: ${engineBuild()}` : null,
       s.message ? `Message: ${s.message}` : null,
       diagnosticFacts().join(" · "),
       `Torrents: ${rows.length}${st.snap ? "" : " (no snapshot yet)"}`,
+      ...rows.map((row) => `  ${row.state} · ${percent(row).toFixed(0)}% · ${
+        bytes(row.totalBytes)} · ${row.name}`),
       "",
       ...(Array.isArray(s.diagnostics) ? s.diagnostics : []),
     ].filter((line) => line != null).join(String.fromCharCode(10));
@@ -662,6 +687,37 @@
    *  which drops the selection the user was making and folds the
    *  troubleshooting panel shut. Almost every redraw says exactly what the
    *  last one said, so almost every redraw can be skipped. */
+  /** How long a start-up may make no progress at all before the page stops
+   *  calling it work in hand. Resuming one very large torrent legitimately
+   *  takes many minutes, so this is far longer than any single hash check the
+   *  page should have to explain. */
+  const RESUME_STUCK_MS = 10 * 60 * 1000;
+
+  /** Is the engine coming up rather than failing? `starting` is WinT's own
+   *  word for a helper it has spawned and not yet heard `ready` from;
+   *  `resuming` is the helper's word for what it is doing while it reads the
+   *  saved torrents. Either means work in hand, and neither is an error. */
+  function isStarting(s) {
+    return s.phase === "resuming" || (s.state === "starting" && !st.lastSnapshotAt);
+  }
+
+  /** `9 of 16 saved torrents read`, while that is what is happening. */
+  function resumeProgress(s) {
+    if (!isStarting(s) || !s.resuming) return null;
+    return `${s.resumed || 0} of ${s.resuming} saved torrents read`;
+  }
+
+  /** Notices that the resume got somewhere, so a start-up that has genuinely
+   *  stopped moving can be told from one that is merely long. */
+  function trackResume(s) {
+    if (!isStarting(s)) { st.resumeMovedAt = 0; st.resumeMark = ""; return; }
+    const mark = `${s.resumed || 0}/${s.resuming || 0}`;
+    if (mark !== st.resumeMark || !st.resumeMovedAt) {
+      st.resumeMark = mark;
+      st.resumeMovedAt = Date.now();
+    }
+  }
+
   let bannerHtml = null;
   function setBanner(el, html) {
     if (bannerHtml === html) return;
@@ -673,6 +729,12 @@
     const el = st.host?.querySelector("[data-tr-banner]");
     if (!el) return;
     const s = st.engine || {};
+    trackResume(s);
+    if (st.tab === "engine") drawEngine();
+    // How many of the saved torrents the engine has still to read back in.
+    // They are already in the list as rows of their own; this is only the line
+    // that explains why some of them say nothing about their progress yet.
+    const pending = Number(st.snap?.resuming) || 0;
     const diagnostics = () => {
       const lines = Array.isArray(s.diagnostics) ? s.diagnostics : [];
       // Kept open across redraws. This panel is read while the engine is in
@@ -688,19 +750,36 @@
     // takes minutes and produces no snapshots at all. It keeps beating
     // throughout, so the page can say what the wait is for instead of warning
     // that updates have stopped.
-    if (s.phase === "resuming") {
+    if (isStarting(s)) {
       el.hidden = false;
+      const stuck = st.resumeMovedAt > 0 && Date.now() - st.resumeMovedAt > RESUME_STUCK_MS;
       el.className = "tr-banner";
-      setBanner(el, `${icon("hourglass_top")}<span>The torrent engine is starting: ${
-        s.resuming ? `reading ${s.resuming} saved torrent${s.resuming === 1 ? "" : "s"}` : "reading the saved torrents"
-      } and checking the files already on disk. This can take a few minutes; the list fills in when it finishes.</span>`);
+      const progress = s.resuming
+        ? `reading ${s.resumed || 0} of ${s.resuming} saved torrent${s.resuming === 1 ? "" : "s"}`
+        : "reading the saved torrents";
+      const at = s.resumingName ? ` Last one through: ${esc(s.resumingName)}.` : "";
+      setBanner(el, stuck
+        // Slow is normal; not having moved for this long is not, and the page
+        // says which it is rather than leaving an hourglass to be guessed at.
+        ? `${icon("warning")}<span>The torrent engine has been starting for ${
+            Math.round((Date.now() - st.resumeMovedAt) / 60000)
+          } minutes without getting any further — ${progress}.${at} Restarting it begins the same work again; the saved torrents are not lost either way.</span>
+          <button type="button" class="btn" data-tr-restart>${icon("restart_alt")}<span>Restart the engine</span></button>
+          ${diagnostics()}`
+        : `${icon("hourglass_top")}<span>The torrent engine is starting: ${progress} and checking the files already on disk. Files are hash-checked one at a time per drive, so a long queue takes minutes.${at} The list fills in when it finishes.</span>
+          ${diagnostics()}`);
       return;
     }
 
+    // Resuming outranks the silence check. Reading a saved torrent back in
+    // blocks the engine's own thread for as long as its files take to check,
+    // so snapshots can be seconds apart while it works - and warning that
+    // updates had stopped, over a list that was visibly filling in, was the
+    // page mistaking the work for its absence.
     // Gone quiet, but still nominally up: the numbers on screen have stopped
     // being true and the page says so rather than letting them sit there
     // looking live. The list stays on screen and stays clickable throughout.
-    if (st.quiet && (s.state === "running" || s.state === "starting")) {
+    if (st.quiet && !pending && (s.state === "running" || s.state === "starting")) {
       el.hidden = false;
       el.className = "tr-banner";
       setBanner(el, `${icon("warning")}<span>${st.lastSnapshotAt
@@ -708,6 +787,14 @@
         : "The torrent engine started, but it has not sent any torrent data."}</span>
         <button type="button" class="btn" data-tr-restart>${icon("restart_alt")}<span>Restart the engine</span></button>
         ${diagnostics()}`);
+      return;
+    }
+    if (pending > 0 && (s.state === "running" || s.state === "starting")) {
+      el.hidden = false;
+      el.className = "tr-banner tr-banner-quiet";
+      setBanner(el, `${icon("hourglass_top")}<span>Reading ${pending} more saved torrent${
+        pending === 1 ? "" : "s"
+      } back in - the rows waiting for the engine below. Everything already read back is live, and each shows its own progress while its files are checked.</span>`);
       return;
     }
     if (s.state === "running" || s.state === "starting") {
@@ -1001,7 +1088,12 @@
     const status = statusWords(row);
     const pct = percent(row);
     if (el.dataset.trId !== String(row.id)) el.dataset.trId = String(row.id);
-    const disabled = row.state === "adding";
+    // A row the engine has not read back in yet has nothing to act on: its
+    // name and size come from the saved torrent, but the engine does not know
+    // it exists, so pausing or removing it would go nowhere. It is greyed and
+    // left out of the keyboard order until it is real.
+    const disabled = row.state === "adding" || row.state === "waiting";
+    el.classList.toggle("tr-row-waiting", row.state === "waiting");
     el.tabIndex = disabled ? -1 : 0;
     el.setAttribute("aria-disabled", String(disabled));
     el.classList.toggle("on", st.selectedIds.has(row.id));
@@ -1015,7 +1107,12 @@
     el.querySelector(".tr-name span").title = row.name;
     setText(el.querySelector(".tr-size"), row.totalBytes ? bytes(row.totalBytes) : "—");
     el.querySelector(".tr-bar b").style.width = `${pct}%`;
-    setText(el.querySelector(".tr-done small"), `${pct.toFixed(pct >= 100 || pct === 0 ? 0 : 1)}%`);
+    setText(
+      el.querySelector(".tr-done small"),
+      // Nothing is known about how much of it is on disk until the engine has
+      // checked; "0%" would be a claim, and a wrong one for a finished torrent.
+      row.state === "waiting" ? "—" : `${pct.toFixed(pct >= 100 || pct === 0 ? 0 : 1)}%`,
+    );
     const statusEl = el.querySelector(".tr-status");
     setText(statusEl.querySelector(":scope > span"), status.text);
     statusEl.className = `tr-status ${status.tone}`;
@@ -1298,6 +1395,85 @@ Click to open in Explorer` : "";
   }
 
   // --------------------------------------------------------------- settings
+
+  /** What the engine is doing and what it has said, in one place.
+   *
+   *  Everything here was previously only reachable by opening a panel inside a
+   *  warning - which meant it was there when something had already gone wrong
+   *  and nowhere to be found when someone simply wanted to know what the engine
+   *  was up to. The engine is a separate process whose only account of itself
+   *  is what it writes to its error stream; this tab is that account, kept as
+   *  it arrives, and one button that copies the lot.
+   */
+  function drawEngine() {
+    const view = st.host.querySelector('[data-tr-view="engine"]');
+    if (!view) return;
+    if (!view.querySelector("[data-tr-log]")) {
+      view.innerHTML = `
+        <div class="tr-settings">
+          <section class="awake-panel">
+            <header>${icon("memory")}<strong>The engine</strong></header>
+            <div class="tr-setrow tr-enginehead"><span><span data-tr-enginefacts></span><small data-tr-enginebuild></small></span>
+              <span class="tr-enginebtns">
+                <button type="button" class="btn" data-tr-copy-diag title="Copy everything on this tab, ready to paste">${icon("content_copy")}<span>Copy for support</span></button>
+                <button type="button" class="btn" data-tr-restart>${icon("restart_alt")}<span>Restart</span></button>
+              </span></div>
+          </section>
+
+          <section class="awake-panel tr-logpanel">
+            <header>${icon("terminal")}<strong>Engine log</strong><small data-tr-logcount></small></header>
+            <pre class="tr-log" data-tr-log tabindex="0"></pre>
+          </section>
+        </div>`;
+    }
+    setText(view.querySelector("[data-tr-enginefacts]"), engineLine());
+    setText(view.querySelector("[data-tr-enginebuild]"), engineBuild() || "");
+    drawEngineLog();
+  }
+
+  /** Writes the log, keeping the view pinned to the newest line unless the
+   *  reader has scrolled up - which they will have done to read something, and
+   *  yanking them back to the bottom every second would make that impossible. */
+  function drawEngineLog() {
+    const pre = st.host?.querySelector("[data-tr-log]");
+    if (!pre) return;
+    const lines = Array.isArray(st.engine?.diagnostics) ? st.engine.diagnostics : [];
+    const text = lines.length ? lines.join(String.fromCharCode(10)) : "The engine has not said anything yet.";
+    if (pre.textContent !== text) {
+      const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 24;
+      pre.textContent = text;
+      if (atBottom) pre.scrollTop = pre.scrollHeight;
+    }
+    setText(
+      st.host.querySelector("[data-tr-logcount]"),
+      lines.length ? `${lines.length} line${lines.length === 1 ? "" : "s"}, newest last` : "",
+    );
+  }
+
+  /** One line of engine state, for the Engine tab's header row. */
+  function engineLine() {
+    const s = st.engine || {};
+    return [
+      `${s.state || "unknown"}${s.phase && s.phase !== "live" ? ` (${s.phase})` : ""}`,
+      s.engine || null,
+      ...diagnosticFacts(),
+    ].filter(Boolean).join(" · ");
+  }
+
+  /** The build of the engine that is actually running: the file it was started
+   *  from and when that file was written. Whether a change has reached the
+   *  running engine is otherwise guesswork, and guessing it wrong sends
+   *  everyone looking for a bug in code that is not being run. */
+  function engineBuild() {
+    const s = st.engine || {};
+    if (!s.engineExe) return null;
+    const built = s.engineBuiltMs
+      ? `built ${new Intl.DateTimeFormat(undefined, {
+          month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit",
+        }).format(new Date(s.engineBuiltMs))}`
+      : "build time unknown";
+    return `${s.engineExe} · ${built}`;
+  }
 
   function drawSettings() {
     const view = st.host.querySelector('[data-tr-view="settings"]');
