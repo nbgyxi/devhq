@@ -631,6 +631,75 @@ fn label_for(id: &str, instance: Option<&str>) -> String {
     }
 }
 
+/// The pop-out window of a tool, if that tool has one open. A tool may be
+/// popped out as a plain window (`tool-torrents`) or as a named instance
+/// (`tool-torrents-2`), and either one counts: what the caller wants to know is
+/// whether the tool already lives in a window of its own, so work the shell
+/// hands to WinT can go there instead of opening a second copy of the tool
+/// inside the main window.
+pub(crate) fn popped_out_window(app: &AppHandle, id: &str) -> Option<tauri::WebviewWindow> {
+    let exact = label_for(id, None);
+    let prefix = format!("{exact}-");
+    app.webview_windows()
+        .into_iter()
+        .find(|(label, _)| label == &exact || label.starts_with(&prefix))
+        .map(|(_, window)| window)
+}
+
+/// Where a tool window's size and place are kept. Per tool, not per instance:
+/// what is being remembered is the shape this tool wants, and a second window
+/// of the same tool wants the same shape.
+fn geometry_key(id: &str) -> String {
+    let name: String = id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    format!("tool-window.{name}")
+}
+
+/// The size, place and maximized state a tool window was last left in, as the
+/// front end wrote it. Numbers that would put the window where it could not be
+/// found again are dropped rather than trusted: a monitor that is gone takes
+/// its coordinates with it.
+#[derive(Debug, Default, Clone, serde::Deserialize)]
+struct ToolGeometry {
+    width: Option<f64>,
+    height: Option<f64>,
+    x: Option<f64>,
+    y: Option<f64>,
+    #[serde(default)]
+    maximized: bool,
+}
+
+impl ToolGeometry {
+    fn load(app: &AppHandle, id: &str) -> Self {
+        let mut geometry: Self = crate::ui_state::read(app, &geometry_key(id))
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default();
+        let sane = |value: Option<f64>, low: f64, high: f64| {
+            value.filter(|value| value.is_finite() && (low..=high).contains(value))
+        };
+        geometry.width = sane(geometry.width, 300.0, 20_000.0);
+        geometry.height = sane(geometry.height, 200.0, 20_000.0);
+        geometry.x = sane(geometry.x, -40_000.0, 40_000.0);
+        geometry.y = sane(geometry.y, -40_000.0, 40_000.0);
+        geometry
+    }
+}
+
+/// Records where a tool window was left. Called by the window itself as it
+/// settles, and once more as it closes.
+#[tauri::command]
+pub async fn tool_remember_geometry(
+    app: AppHandle,
+    id: String,
+    geometry: serde_json::Value,
+) -> Result<(), String> {
+    crate::off_thread(move || crate::ui_state::write(&app, &geometry_key(&id), &geometry))
+        .await
+        .unwrap_or_else(|| Err("That window's size could not be saved.".into()))
+}
+
 fn valid_instance(instance: Option<&str>) -> Result<Option<String>, String> {
     match instance {
         None => Ok(None),
@@ -937,6 +1006,17 @@ pub async fn tool_popout(
         r#"document.documentElement.dataset.theme="{}";"#,
         if light { "light" } else { "dark" }
     );
+    // Explorer keeps its own window size beside its column layout, from
+    // before there was a general store; everything else asks the store.
+    let saved = if id == "explorer" {
+        ToolGeometry::default()
+    } else {
+        let app = app.clone();
+        let id = id.clone();
+        crate::off_thread(move || ToolGeometry::load(&app, &id))
+            .await
+            .unwrap_or_default()
+    };
     let (window_width, window_height) = if id == "explorer" {
         let data_dir = app.path().app_data_dir().ok();
         off_thread(move || data_dir.map(|dir| crate::explorer::layout(&dir)))
@@ -945,8 +1025,18 @@ pub async fn tool_popout(
             .map(|layout| (layout.window_width as f64, layout.window_height as f64))
             .unwrap_or((960.0, 720.0))
     } else {
-        (960.0, 720.0)
+        (
+            saved.width.unwrap_or(960.0).max(480.0),
+            saved.height.unwrap_or(720.0).max(320.0),
+        )
     };
+    // A remembered place wins over the point the opener suggested: that is
+    // only where the pop-out button happened to be.
+    let (x, y) = match (saved.x, saved.y) {
+        (Some(x), Some(y)) => (Some(x), Some(y)),
+        _ => (x, y),
+    };
+    let maximized = saved.maximized;
     off_thread(move || {
         let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(page.into()))
             .title(window_title)
@@ -966,10 +1056,15 @@ pub async fn tool_popout(
                 .icon(icon)
                 .map_err(|e| format!("Could not set the window icon: {e}"))?;
         }
-        builder
-            .build()
-            .map(|_| ())
-            .map_err(|e| format!("Could not open the window: {e}"))
+        match builder.build() {
+            Ok(window) => {
+                if maximized {
+                    let _ = window.maximize();
+                }
+                Ok(())
+            }
+            Err(error) => Err(format!("Could not open the window: {error}")),
+        }
     })
     .await
     .unwrap_or_else(|| Err("Could not open the window.".to_string()))

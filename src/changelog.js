@@ -16,6 +16,64 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.154.1",
+      date: "2026-09-24",
+      title: "The torrent lands where Torrents is",
+      changes: [
+        ["fix", "Opening a .torrent file or a magnet link now brings up the Torrents window you actually have open. If Torrents is in a window of its own, that window comes forward with the new torrent in it; otherwise the main window comes forward on the Torrents tool, as before."],
+      ],
+    },
+    {
+      version: "0.154.0",
+      date: "2026-09-24",
+      title: "Sleeping is not a fault",
+      changes: [
+        ["new", "The troubleshooting panel in Torrents has a Copy button, which puts the whole picture on the clipboard: the app version, what the engine says about itself, how many torrents it has, and its recent output."],
+        ["fix", "The troubleshooting panel no longer vanishes while you are selecting text in it. The banner was rewritten from scratch on every engine update, several times a second while anything was wrong, which threw away the selection and folded the panel shut; it is now only rewritten when what it says has actually changed, and it stays unfolded once you open it."],
+        ["fix", "Torrents no longer sits behind a Restart button for an engine that is running. Opening the tool while the engine was still reading its saved torrents timed out after eight seconds and was reported as an engine that would not start - a verdict the page then kept for ever. A slow start is now left to the watchdog, and a page that thinks the engine is not running checks again every few seconds instead of believing it."],
+        ["fix", "Waking the machine no longer kills the torrent engine. Time spent asleep was counted as time the engine said nothing, so it was declared unresponsive the moment the PC came back - and the restart threw away the resume and began hash-checking every torrent again, twice in a row this morning."],
+        ["fix", "A missed heartbeat is now checked before anything is killed. The engine is asked directly, and an engine that answers is left alone - so WinT being busy for a few seconds, which can lose the beats on its way in, no longer costs you a restart."],
+        ["better", "Starting the engine says what it is doing. Reading the saved torrents and checking the files already on disk takes minutes on a long list and produces no updates at all, which used to read as \"no updates have arrived\". It now says it is starting, and how many torrents it is working through."],
+      ],
+    },
+    {
+      version: "0.153.0",
+      date: "2026-09-23",
+      title: "A word before the disk fills up",
+      changes: [
+        ["new", "Torrents warns above the table when finishing everything would need more room than a drive has, saying how much each drive is short. Counted per drive, because what matters is the one that runs out, and it counts paused and queued torrents too - they are still going to want the room."],
+      ],
+    },
+    {
+      version: "0.152.0",
+      date: "2026-09-23",
+      title: "Columns keep the width you gave them",
+      changes: [
+        ["better", "Torrents opens on a more useful table out of the box: Mark, Name, Size, Done, Status, Completed, Down, Up and Folder, sorted by completion date so everything still running sits at the bottom. Connected is still there in the column picker."],
+        ["better", "Every column in Torrents now stays exactly as wide as you made it. Name is the one that gives and takes: it uses whatever the others leave, so resizing the window or opening and closing the detail pane changes how much of a name you see and nothing else. Name has no resize handle of its own any more, because it no longer has a width of its own."],
+      ],
+    },
+    {
+      version: "0.151.0",
+      date: "2026-09-23",
+      title: "The Mark column comes back",
+      changes: [
+        ["fix", "The Mark column no longer disappears from Torrents. A saved column layout now records which columns you switched off, so a column that did not exist when you saved it is simply one you never switched off: it shows up, and unticking it still sticks."],
+        ["fix", "The Torrents table no longer draws one column out of step, with the last one dropped onto a line of its own underneath. A switched-off column was still taking a place in the row."],
+        ["fix", "Sorting Torrents by Completed puts the unfinished ones where they belong again - they have no date because they are still to come, so they sort as the newest rather than being pinned to the bottom whichever way round you sort."],
+      ],
+    },
+    {
+      version: "0.150.0",
+      date: "2026-09-23",
+      title: "Windows and columns stay where you put them",
+      changes: [
+        ["better", "Every tool window now reopens at the size and on the screen you left it, maximized if it was maximized, instead of the same default box every time."],
+        ["fix", "Torrents' column widths, order and sort are saved the moment you change them, and to disk rather than to the webview's own storage - which is why a column you had just resized came back at its old width."],
+        ["new", "Torrents has a Folder column showing where each download is being written. Click it to open that folder in Explorer."],
+      ],
+    },
+    {
       version: "0.149.0",
       date: "2026-09-23",
       title: "Draw a box around the files you want",

@@ -234,6 +234,17 @@ fn deliver_tool_arg_for(app: &AppHandle, args: &[String], token: &str) {
     // following a magnet link. Its arguments are handed to the copy already
     // running, which is the whole point of the single instance.
     if queue_torrents(app, torrent_args(args)) {
+        // The tool the torrent belongs to may already be a window of its own.
+        // Bringing that one forward is what the user means by "open it": while
+        // Torrents is popped out the main window has no Torrents tool to
+        // navigate to, and opening a second copy would run two of them.
+        if let Some(window) = tool_window::popped_out_window(app, "torrents") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+            let _ = app.emit("torrent:open", ());
+            return;
+        }
         if let Ok(mut pending) = app.state::<PendingTool>().0.lock() {
             *pending = Some("torrents".into());
         }
@@ -3277,6 +3288,7 @@ pub fn run() {
             torrent::torrent_only_files,
             torrent::torrent_details,
             torrent::torrent_peers,
+            tool_window::tool_remember_geometry,
             ui_state::ui_state_get,
             ui_state::ui_state_set,
             torrent::torrent_marks,

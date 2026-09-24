@@ -28,6 +28,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{IoSlice, Write as StdWrite};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
@@ -1389,6 +1390,35 @@ fn start_logging() {
     }));
 }
 
+/// Building the session — bootstrapping the DHT, reading every saved torrent
+/// and hash-checking what is on disk — takes minutes on a large queue, and
+/// until it returns there is no session to build a snapshot from. The app used
+/// to be told nothing at all for the whole of it: beats kept arriving, so the
+/// engine was plainly alive, but the page had no data and said updates had
+/// stopped. These two say which phase the helper is in, and how many torrents
+/// it is working through, so the heartbeat can carry it.
+static SESSION_READY: AtomicBool = AtomicBool::new(false);
+static RESUME_TOTAL: AtomicUsize = AtomicUsize::new(0);
+
+/// How many torrents the session will resume, counted from the saved files
+/// before it is built. It is what the state folder holds, which is exactly
+/// what librqbit is about to read.
+fn saved_torrent_count(state_dir: &Path) -> usize {
+    std::fs::read_dir(state_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("torrent"))
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<()> {
     start_logging();
@@ -1469,7 +1499,15 @@ async fn main() -> Result<()> {
         std::thread::Builder::new()
             .name("torrent-heartbeat".into())
             .spawn(move || loop {
-                if !writer.event("heartbeat", json!({ "pid": std::process::id() })) {
+                let ready = SESSION_READY.load(Ordering::Relaxed);
+                if !writer.event(
+                    "heartbeat",
+                    json!({
+                        "pid": std::process::id(),
+                        "phase": if ready { "live" } else { "resuming" },
+                        "resuming": if ready { 0 } else { RESUME_TOTAL.load(Ordering::Relaxed) },
+                    }),
+                ) {
                     // A full/disconnected queue means WinT cannot currently
                     // receive liveness. Its watchdog remains the authority.
                 }
@@ -1478,6 +1516,7 @@ async fn main() -> Result<()> {
             .context("cannot start the torrent heartbeat")?;
     }
 
+    RESUME_TOTAL.store(saved_torrent_count(&state_dir), Ordering::Relaxed);
     tracing::info!("building the torrent session; this reads and resumes saved torrents");
     let session = Session::new_with_opts(
         PathBuf::from(&settings.download_folder),
@@ -1510,6 +1549,7 @@ async fn main() -> Result<()> {
     .await
     .context("cannot start the torrent engine")?;
 
+    SESSION_READY.store(true, Ordering::Relaxed);
     tracing::info!("torrent session ready");
     let api = Api::new(session.clone(), None);
     let state = Arc::new(Mutex::new(State {

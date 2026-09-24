@@ -171,20 +171,66 @@
   }
   syncMaximizeButton();
   let sizeSaveTimer = 0;
+  let explorerSizeTimer = 0;
+
+  // A tool reopens the size it was left, on the screen it was left on, and
+  // maximized if it was maximized. Rust applies this while building the
+  // window; the measuring can only be done here. It goes to the backend and
+  // not to localStorage, which WebView2 flushes to disk on a schedule of its
+  // own — a window resized and closed in the same breath lost the new size.
+  //
+  // While maximized the size and place kept are the *restored* ones, so
+  // un-maximizing a reopened window lands on the box it had before rather
+  // than on a screen-sized one.
+  let lastGeometry = null;
+  const saveGeometry = async () => {
+    if (!id) return;
+    try {
+      const maximized = await win.isMaximized().catch(() => false);
+      const geometry = { ...(lastGeometry || {}), maximized };
+      if (!maximized) {
+        const scale = await win.scaleFactor();
+        const size = (await win.innerSize()).toLogical(scale);
+        const position = (await win.outerPosition()).toLogical(scale);
+        geometry.width = Math.round(size.width);
+        geometry.height = Math.round(size.height);
+        geometry.x = Math.round(position.x);
+        geometry.y = Math.round(position.y);
+      }
+      if (JSON.stringify(geometry) === JSON.stringify(lastGeometry)) return;
+      lastGeometry = geometry;
+      await invoke("tool_remember_geometry", { id, geometry });
+    } catch { /* A window that cannot be measured simply reopens at the default. */ }
+  };
+  // Windows resizes and moves in a loop of its own, so these fire constantly
+  // while a window is dragged. Only where it comes to rest matters.
+  const queueSaveGeometry = () => {
+    clearTimeout(sizeSaveTimer);
+    sizeSaveTimer = setTimeout(saveGeometry, 250);
+  };
   win.onResized(() => {
     syncMaximizeButton();
+    queueSaveGeometry();
     if (id !== "explorer") return;
-    clearTimeout(sizeSaveTimer);
-    sizeSaveTimer = setTimeout(async () => {
+    clearTimeout(explorerSizeTimer);
+    explorerSizeTimer = setTimeout(async () => {
       if (await win.isMaximized().catch(() => false)) return;
       const size = await win.innerSize().catch(() => null);
       const scale = await win.scaleFactor().catch(() => 1);
       if (size) window.wintExplorer?.rememberWindowSize?.(size.width / scale, size.height / scale);
     }, 250);
   });
+  win.onMoved(() => queueSaveGeometry()).catch(() => {});
+  // Nothing is saved on load: the window Rust just placed is still settling —
+  // a restored maximize arrives as a resize of its own — and a page that saved
+  // first would write the un-maximized state back over the one it was given.
 
   win.onCloseRequested(async (event) => {
     if (!closed && !handedOver) event.preventDefault();
+    // The last resize may still be sitting in the debounce. Measure now, while
+    // there is still a window to measure.
+    clearTimeout(sizeSaveTimer);
+    await saveGeometry();
     await finishClose();
   });
 

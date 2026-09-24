@@ -60,6 +60,17 @@ const HEARTBEAT_DEAD: Duration = Duration::from_secs(5);
 /// starting engine to the running engine's timeout killed it mid-start-up and
 /// restarted it into the same wall, forever.
 const STARTUP_GRACE: Duration = Duration::from_secs(90);
+/// A watchdog pass this much later than the one before it did not measure a
+/// quiet engine; it measured time nobody was running. The machine slept, or
+/// WinT's own main thread was stuck, and both freeze the helper's beats along
+/// with everything else. The clock is re-armed instead of the engine being
+/// killed for having been asleep.
+const RESUME_GAP: Duration = Duration::from_secs(20);
+/// How long a silent engine is given to answer a `ping` before it is declared
+/// dead. `ping` is answered without touching the session, so a helper busy
+/// hash-checking still replies at once — and an engine that answers is alive
+/// whatever its beats are doing.
+const PING_TIMEOUT: Duration = Duration::from_millis(1500);
 /// A working set past this is treated as a fault rather than a busy engine.
 const MEMORY_CEILING_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// More requests outstanding than this means nothing is coming back.
@@ -123,6 +134,13 @@ pub struct EngineStatus {
     pub engine: Option<String>,
     /// Milliseconds since the last heartbeat, when one has ever arrived.
     pub last_beat_ms: Option<u64>,
+    /// What the helper says it is doing: `resuming` while it builds its
+    /// session, `live` once there is something to take snapshots of. A
+    /// resuming engine sends no snapshots, and the page needs to know that
+    /// this is work rather than silence.
+    pub phase: Option<String>,
+    /// How many saved torrents that resume is working through.
+    pub resuming: usize,
     pub memory_bytes: u64,
     pub pending_requests: usize,
     pub restarts: u32,
@@ -244,6 +262,9 @@ struct Engine {
     state: String,
     message: Option<String>,
     last_beat: Option<Instant>,
+    /// The helper's own word for what it is doing. See `EngineStatus::phase`.
+    phase: Option<String>,
+    resuming: usize,
     last_snapshot: Option<Instant>,
     memory_bytes: u64,
     restarts: u32,
@@ -532,6 +553,10 @@ fn start_inner() -> EngineStatus {
         engine.last_snapshot = None;
         // A new helper has not proved anything yet.
         engine.healthy_since = None;
+        // It is about to rebuild its session, and says so itself on its first
+        // beat. Until then nothing is claimed on its behalf.
+        engine.phase = None;
+        engine.resuming = 0;
         engine.snapshot_dirty = false;
         engine.latest_snapshot = None;
         generation
@@ -699,6 +724,8 @@ fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>)
             match event {
                 "snapshot" => {
                     if let Ok(mut engine) = engine().lock() {
+                        engine.phase = Some("live".into());
+                        engine.resuming = 0;
                         engine.latest_snapshot = Some(data);
                         engine.snapshot_dirty = true;
                         engine.last_beat = Some(Instant::now());
@@ -711,8 +738,20 @@ fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>)
                     }
                 }
                 "heartbeat" | "ready" => {
+                    // A beat is not news. A change of phase is: it is the only
+                    // thing that tells the page a long resume is under way, and
+                    // no snapshot will arrive to carry it.
+                    let mut phase_changed = false;
                     if let Ok(mut engine) = engine().lock() {
                         engine.last_beat = Some(Instant::now());
+                        if let Some(phase) = data.get("phase").and_then(Value::as_str) {
+                            phase_changed = engine.phase.as_deref() != Some(phase);
+                            engine.phase = Some(phase.to_owned());
+                        }
+                        engine.resuming = data
+                            .get("resuming")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0) as usize;
                         if event == "ready" {
                             engine.state = "running".into();
                             engine.message = None;
@@ -726,7 +765,7 @@ fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>)
                             }
                         }
                     }
-                    if event == "ready" {
+                    if event == "ready" || phase_changed {
                         broadcast(&status());
                     }
                 }
@@ -897,6 +936,8 @@ pub fn status() -> EngineStatus {
         last_beat_ms: engine
             .last_beat
             .map(|at| at.elapsed().as_millis().min(u64::MAX as u128) as u64),
+        phase: engine.phase.clone(),
+        resuming: engine.resuming,
         memory_bytes: engine.memory_bytes,
         pending_requests: pending().lock().map(|p| p.len()).unwrap_or(0),
         restarts: engine.restarts,
@@ -973,9 +1014,33 @@ fn watchdog() {
     std::thread::Builder::new()
         .name("torrent-watchdog".into())
         .spawn(|| {
+            let mut last_pass = Instant::now();
             loop {
                 std::thread::sleep(Duration::from_secs(2));
+                // Before anything is judged: was this pass even on time? A two
+                // second sleep that took half an hour means the machine was
+                // asleep, and nothing measured across that gap says anything
+                // about the engine.
+                let slept = last_pass.elapsed() > RESUME_GAP;
+                last_pass = Instant::now();
+                if slept {
+                    if let Ok(mut engine) = engine().lock() {
+                        if engine.last_beat.is_some() {
+                            engine.last_beat = Some(Instant::now());
+                        }
+                        if let Some(running) = engine.running.as_mut() {
+                            running.started = Instant::now();
+                        }
+                    }
+                    diagnose(
+                        "The machine was asleep or WinT was stalled; the torrent engine is given                          time to answer again rather than being treated as unresponsive."
+                            .to_string(),
+                    );
+                    continue;
+                }
                 let mut fault: Option<String> = None;
+                // A fault worth a second opinion before anything is killed.
+                let mut verify = false;
                 let mut restart_after = None;
                 let mut generation = 0;
                 let mut gave_up = false;
@@ -1034,6 +1099,11 @@ fn watchdog() {
                                 fault =
                                     Some("The torrent engine stopped accepting commands.".into());
                             } else if silent {
+                                // Beats can go missing for reasons that are not
+                                // the engine's fault - WinT stalling long enough
+                                // that the helper's bounded queue drops them, for
+                                // one. Asking it directly settles it.
+                                verify = true;
                                 fault = Some(if engine.last_beat.is_some() {
                                     "The torrent engine stopped answering.".into()
                                 } else {
@@ -1070,9 +1140,40 @@ fn watchdog() {
                     }
 
                     if let Some(text) = fault.as_deref() {
-                        generation = engine.generation;
-                        restart_after = note_failure(&mut engine, text);
-                        gave_up = restart_after.is_none();
+                        if !verify {
+                            generation = engine.generation;
+                            restart_after = note_failure(&mut engine, text);
+                            gave_up = restart_after.is_none();
+                        }
+                    }
+                }
+
+                // Outside the lock, because asking the helper anything means
+                // waiting for it, and nothing else may wait on this thread
+                // holding the engine.
+                if verify && fault.is_some() {
+                    if request("ping", json!({}), PING_TIMEOUT).is_ok() {
+                        diagnose(
+                            "The torrent engine missed its heartbeats but answered when asked                              directly, so it was left alone."
+                                .to_string(),
+                        );
+                        if let Ok(mut engine) = engine().lock() {
+                            engine.last_beat = Some(Instant::now());
+                        }
+                        fault = None;
+                    } else if let Ok(mut engine) = engine().lock() {
+                        // Still the same helper? A restart may have happened
+                        // while the ping was outstanding.
+                        if STARTING.load(Ordering::SeqCst) || engine.running.is_none() {
+                            fault = None;
+                        } else {
+                            generation = engine.generation;
+                            let text = fault.clone().unwrap_or_default();
+                            restart_after = note_failure(&mut engine, &text);
+                            gave_up = restart_after.is_none();
+                        }
+                    } else {
+                        fault = None;
                     }
                 }
 
@@ -1224,8 +1325,25 @@ pub async fn torrent_start() -> Result<EngineStatus, String> {
                 .unwrap_or_else(|| "The torrent engine would not start.".into()));
         }
         // `hello` doubles as the proof that it is actually answering, not
-        // merely that a process exists.
-        let _ = request_started("hello", json!({}), REQUEST_TIMEOUT)?;
+        // merely that a process exists. A helper still building its session
+        // answers nothing for as long as that takes — minutes on a long list —
+        // and that is not a failure to report: the watchdog is what decides
+        // whether a slow start is a dead engine, with the whole startup grace
+        // to do it in. Failing here instead told the page the engine would not
+        // start, over a helper that was busy coming up and went on to run
+        // perfectly well.
+        if let Err(error) = request_started("hello", json!({}), REQUEST_TIMEOUT) {
+            let status = self::status();
+            // Nothing running at all is a real failure; a process that has not
+            // finished starting is not.
+            if status.pid.is_none() {
+                return Err(error);
+            }
+            diagnose(format!(
+                "The torrent engine has not finished starting ({error}); waiting for it."
+            ));
+            return Ok(status);
+        }
         Ok(self::status())
     })
 }

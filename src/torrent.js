@@ -28,15 +28,12 @@
   const ROW = 34;
   const FILE_ROW = 28;
   const UI_CRASH_KEY = "wint:torrent-ui-crash";
-  const COLUMN_KEY = "wint:torrent-columns";
-  const COLUMN_WIDTH_KEY = "wint:torrent-column-widths";
-  const COLUMN_SORT_KEY = "wint:torrent-column-sort";
-  /** The flag that says the tick column has already been folded into a column
-   *  order saved before the column existed. The ticks themselves are not kept
-   *  here: `localStorage` is written to disk whenever WebView2 gets round to
-   *  it, so a tick made shortly before the window closed was lost. They go to
-   *  the backend, which has them on disk before it answers. */
-  const MARK_COLUMN_KEY = "wint:torrent-marks-column";
+  /** Where the table's own shape is kept — which columns are shown, in what
+   *  order, how wide, and what it is sorted by. This goes to the backend and
+   *  not to `localStorage`: that is flushed to disk whenever WebView2 gets
+   *  round to it, so a column dragged to a new width just before the window
+   *  closed came back at the old one. */
+  const LAYOUT_KEY = "torrent-layout";
   const COLUMNS = [
     ["mark", "Mark", "48px"],
     ["name", "Name", "minmax(0,1fr)"], ["size", "Size", "80px"],
@@ -45,25 +42,73 @@
     ["up", "Up", "84px"], ["peers", "Connected", "72px"],
     ["remaining", "Remaining", "86px"], ["eta", "ETA", "82px"],
     ["uploaded", "Uploaded", "86px"], ["ratio", "Ratio", "62px"],
-    ["known", "Known peers", "82px"],
+    ["known", "Known peers", "82px"], ["folder", "Folder", "120px"],
   ];
   const ALL_COLUMN_IDS = COLUMNS.map(([id]) => id);
-  const DEFAULT_COLUMNS = ["mark", "name", "size", "done", "status", "completed", "down", "up", "peers"];
-  function savedColumns() {
-    try {
-      const saved = JSON.parse(localStorage.getItem(COLUMN_KEY) || "null");
-      const valid = Array.isArray(saved) ? saved.filter((id) => ALL_COLUMN_IDS.includes(id)) : [];
-      if (!valid.length) return DEFAULT_COLUMNS;
-      // A column order saved before the tick column existed would hide it for
-      // good. Show it once, in front, and remember that it was offered — so
-      // switching it back off afterwards sticks.
-      if (!valid.includes("mark") && !localStorage.getItem(MARK_COLUMN_KEY)) {
-        valid.unshift("mark");
-        try { localStorage.setItem(COLUMN_KEY, JSON.stringify(valid)); } catch { /* unavailable */ }
-      }
-      try { localStorage.setItem(MARK_COLUMN_KEY, "1"); } catch { /* unavailable */ }
-      return valid;
-    } catch { return DEFAULT_COLUMNS; }
+  const DEFAULT_COLUMNS = ["mark", "name", "size", "done", "status", "completed", "down", "up", "folder"];
+  /** Oldest completion first, which puts everything still running at the
+   *  bottom — an unfinished torrent has no date, so it sorts as one still to
+   *  come. See `sortedRows`. */
+  const DEFAULT_SORT = { id: "completed", direction: "asc" };
+  /** The columns to show, in the user's order. A saved layout records which
+   *  columns were switched *off*, so a column that did not exist when it was
+   *  written is simply one nobody has switched off: it shows, in the place
+   *  this list puts it. Nothing has to be migrated, and unticking it sticks. */
+  function usableColumns(saved, hidden) {
+    // A layout from before that rule says nothing about what was switched off,
+    // so there is no telling a column someone dropped from one that had not
+    // been written yet. Those start again from the defaults — a column picker
+    // is two clicks — rather than coming back with all thirteen showing.
+    if (!Array.isArray(hidden)) return DEFAULT_COLUMNS;
+    const order = Array.isArray(saved) ? saved.filter((id) => ALL_COLUMN_IDS.includes(id)) : [];
+    if (!order.length) return DEFAULT_COLUMNS;
+    const off = new Set(hidden);
+    for (const id of ALL_COLUMN_IDS) {
+      if (order.includes(id) || off.has(id)) continue;
+      // Next to the columns it sits between in COLUMNS, so a new column turns
+      // up where it was meant to rather than tacked onto the end.
+      const before = ALL_COLUMN_IDS.slice(0, ALL_COLUMN_IDS.indexOf(id))
+        .reverse().find((other) => order.includes(other));
+      order.splice(before ? order.indexOf(before) + 1 : 0, 0, id);
+    }
+    return order;
+  }
+
+  /** Reads the table's shape back from disk. Called once, on mount; the table
+   *  draws with the defaults until it answers, which is one frame's worth. */
+  function loadLayout() {
+    return invoke("ui_state_get", { key: LAYOUT_KEY })
+      .then((saved) => {
+        const layout = saved && typeof saved === "object" ? saved : {};
+        st.columns = usableColumns(layout.columns, layout.hidden);
+        st.columnWidths = layout.widths && typeof layout.widths === "object" ? layout.widths : {};
+        const sort = layout.sort
+          && ALL_COLUMN_IDS.includes(layout.sort.id)
+          && ["asc", "desc"].includes(layout.sort.direction)
+          ? layout.sort : null;
+        // Only a table nobody has arranged yet falls back to the default sort;
+        // one that was saved without a sort was sorted by nothing on purpose.
+        st.columnSort = sort || (saved ? null : DEFAULT_SORT);
+        if (!saved) saveLayout();
+        drawColumns();
+        drawRows();
+      })
+      .catch((error) => console.warn("The torrent column layout could not be read", error));
+  }
+
+  /** Writes the table's shape. Called the moment something about it changes —
+   *  a column switched on, dropped in a new place, let go after a drag, or a
+   *  heading clicked — so there is nothing left to lose at shutdown. */
+  function saveLayout() {
+    return invoke("ui_state_set", {
+      key: LAYOUT_KEY,
+      value: {
+        columns: st.columns,
+        hidden: ALL_COLUMN_IDS.filter((id) => !st.columns.includes(id)),
+        widths: st.columnWidths,
+        sort: st.columnSort,
+      },
+    }).catch((error) => note(`The column layout could not be saved: ${error}`));
   }
 
   /** Reads the ticked-off info hashes back from disk. Called once, on mount;
@@ -78,19 +123,7 @@
       })
       .catch((error) => console.warn("Torrent marks could not be read", error));
   }
-  function savedColumnWidths() {
-    try {
-      const saved = JSON.parse(localStorage.getItem(COLUMN_WIDTH_KEY) || "{}");
-      return saved && typeof saved === "object" ? saved : {};
-    } catch { return {}; }
-  }
-  function savedColumnSort() {
-    try {
-      const saved = JSON.parse(localStorage.getItem(COLUMN_SORT_KEY) || "null");
-      return saved && ALL_COLUMN_IDS.includes(saved.id) && ["asc", "desc"].includes(saved.direction)
-        ? saved : null;
-    } catch { return null; }
-  }
+
   /** Rows drawn above and below the viewport, so a fast scroll does not show
    *  blank space before the next frame. */
   const OVERSCAN = 6;
@@ -134,6 +167,16 @@
     quiet: false,
     tick: 0,
     settings: null,
+    /** Seconds since the engine's own state was last asked for. See the tick. */
+    statusPolls: 0,
+    listenRetries: 0,
+    /** Whether the troubleshooting panel is unfolded. Redraws restore it. */
+    diagOpen: false,
+    /** What the drives have left, and when it was last asked for. Null until
+     *  the first answer: with nothing to compare against, the page says
+     *  nothing rather than guessing. */
+    drives: null,
+    spaceTick: 0,
     /** What Windows makes of `.torrent` and `magnet:` — see `refreshAssoc`.
      *  Null until the first answer; the ask strip stays out of the way until
      *  then rather than flashing a question that may not apply. */
@@ -144,9 +187,9 @@
     listening: false,
     unlisten: [],
     recoveryTimer: 0,
-    columns: savedColumns(),
-    columnWidths: savedColumnWidths(),
-    columnSort: savedColumnSort(),
+    columns: DEFAULT_COLUMNS,
+    columnWidths: {},
+    columnSort: DEFAULT_SORT,
     /** Info hashes the user has ticked off in the list, and the ones unticked
      *  in this session — the latter so a slow read cannot bring one back. */
     marks: new Set(),
@@ -278,6 +321,7 @@
         </div>
 
         <section class="tr-view" data-tr-view="transfers">
+          <div class="tr-banner bad tr-space" data-tr-space hidden></div>
           <div class="tr-work">
             <div class="tr-list" data-tr-list>
               <div class="tr-head" data-tr-head></div>
@@ -325,9 +369,15 @@
       event.preventDefault();
       openFile(Number(file.dataset.trFile));
     });
+    // Unfolding the troubleshooting panel is remembered, so a redraw that has
+    // to happen does not fold it shut again while it is being read.
+    node.addEventListener("toggle", (event) => {
+      if (event.target.classList?.contains("tr-diagnostics")) st.diagOpen = event.target.open;
+    }, true);
     node.querySelector("[data-tr-scroll]").addEventListener("scroll", () => drawRows(), { passive: true });
 
     drawColumns();
+    loadLayout();
     loadMarks();
     listen();
     if (!st.assocFocusBound) {
@@ -342,6 +392,12 @@
     // torrents today. Both are one call each and neither blocks the mount.
     drainPending();
     refreshAssoc();
+    refreshDrives();
+    clearInterval(st.spaceTick);
+    st.spaceTick = setInterval(() => {
+      if (!st.host?.isConnected) return clearInterval(st.spaceTick);
+      refreshDrives();
+    }, 30000);
 
     // The page's own pulse. It exists only to notice that nothing is arriving
     // and to say so; it draws no torrent data, so it costs the same whether
@@ -351,7 +407,27 @@
       if (!st.host?.isConnected) return clearInterval(st.tick);
       const running = st.engine?.state === "running" || st.engine?.state === "starting";
       const heardAt = st.lastSnapshotAt || st.engineStartedAt;
-      const silent = running && heardAt > 0 && Date.now() - heardAt > 4000;
+      const resuming = st.engine?.phase === "resuming";
+      const silent = running && !resuming && heardAt > 0 && Date.now() - heardAt > 4000;
+      // Anything other than a running engine is asked about again every few
+      // seconds. The page can be left holding a stale or mistaken view — a
+      // start-up call that timed out while the engine was busy coming up, a
+      // broadcast that arrived before this window was listening — and without
+      // this it would sit there behind a Restart button for an engine that is
+      // running perfectly well.
+      if (st.engine?.state !== "running" && ++st.statusPolls >= 3) {
+        st.statusPolls = 0;
+        refreshStatus();
+      }
+      // No event bridge means no snapshot can ever arrive, and the page would
+      // sit empty in front of a perfectly healthy engine. Registering again
+      // costs nothing and asks the engine for nothing; a handful of attempts,
+      // because a bridge that is not there after that is not coming.
+      if (!st.unlisten.length && st.listenRetries < 5 && Date.now() - st.engineStartedAt > 10000) {
+        st.listenRetries += 1;
+        st.listening = false;
+        listen();
+      }
       if (running && silent !== st.quiet) {
         st.quiet = silent;
         drawBanner();
@@ -365,7 +441,11 @@
     st.engineStartedAt = Date.now();
     invoke("torrent_start")
       .then((engine) => { st.engine = engine; drawBanner(); })
-      .catch((error) => { st.engine = { state: "failed", message: String(error) }; drawBanner(); });
+      // Only the message. Replacing the whole status with an invented one
+      // threw away the pid, the uptime and the restart count and put
+      // "Not running · No process ID" under a banner about a call that timed
+      // out — which is not the same thing as an engine that is not there.
+      .catch((error) => { st.engine = { ...st.engine, message: String(error) }; drawBanner(); refreshStatus(); });
     invoke("torrent_status").then((engine) => { st.engine = engine; drawBanner(); }).catch(() => {});
   }
 
@@ -379,6 +459,9 @@
         st.snap = event.payload;
         st.lastSnapshotAt = Date.now();
         if (st.quiet) { st.quiet = false; drawBanner(); }
+        // Data arriving is proof the engine is up, whatever the page was last
+        // told. Ask once for the real status rather than waiting for a tick.
+        if (st.engine?.state !== "running") refreshStatus();
         if (!st.settings) st.settings = { ...st.snap.settings };
         draw();
       }).then((off) => st.unlisten.push(off)).catch(() => {});
@@ -434,6 +517,7 @@
     try {
       if (st.tab === "transfers") {
         drawRows();
+        drawSpace();
         drawDetail();
       } else {
         drawSettings();
@@ -464,50 +548,180 @@
     st.host.querySelector("[data-tr-spacer]").style.height = `${5 * ROW}px`;
   }
 
+  /** The drive a path is on, as `D:`. A UNC path is on no drive this can ask
+   *  about, so it is left out of the sum entirely rather than guessed at. */
+  function driveOf(path) {
+    return /^[A-Za-z]:/.test(path || "") ? path.slice(0, 2).toUpperCase() : null;
+  }
+
+  /** Warns when finishing everything on a drive would need more room than the
+   *  drive has. Counted per drive, because torrents can be going to several,
+   *  and it is the one that runs out that matters — not the total.
+   *
+   *  What is counted is what is still to be written: total size less what is
+   *  already on disk, for every torrent that has not finished. Paused and
+   *  queued ones count too — they are still going to want the room. */
+  function drawSpace() {
+    const el = st.host?.querySelector("[data-tr-space]");
+    if (!el) return;
+    const needed = new Map();
+    for (const row of st.snap?.torrents || []) {
+      if (row.finished) continue;
+      const remaining = Math.max(0, (row.totalBytes || 0) - (row.progressBytes || 0));
+      const drive = driveOf(row.outputFolder);
+      if (!remaining || !drive) continue;
+      needed.set(drive, (needed.get(drive) || 0) + remaining);
+    }
+    const short = (st.drives || [])
+      .map((drive) => ({
+        label: drive.label || driveOf(drive.path) || drive.path,
+        free: Number(drive.freeBytes) || 0,
+        need: needed.get(driveOf(drive.path)) || 0,
+      }))
+      .filter((drive) => drive.need > drive.free)
+      .sort((a, b) => (b.need - b.free) - (a.need - a.free));
+    el.hidden = !short.length;
+    if (!short.length) return;
+    const sentence = short
+      .map((drive) => `${drive.label} needs ${bytes(drive.need)} and has ${bytes(drive.free)} free — ${bytes(drive.need - drive.free)} short`)
+      .join("; ");
+    el.innerHTML = `${icon("warning")}<span>Not enough room to finish everything: ${esc(sentence)}. Downloads will fail as the disk fills up.</span>`;
+  }
+
+  /** How much room the drives have left. Asked for on mount and every half
+   *  minute after — it is a handful of Win32 calls, and free space moves
+   *  while downloads run. */
+  function refreshDrives() {
+    return invoke("disk_space_drives")
+      .then((drives) => { st.drives = Array.isArray(drives) ? drives : []; drawSpace(); })
+      .catch((error) => console.warn("Drive space could not be read", error));
+  }
+
+  /** ------------------------------------------------------------------
+   *  Recovering, and what recovery is allowed to cost
+   *
+   *  The page must come back on its own from every wrong or stale view it can
+   *  end up holding — a call that timed out, a broadcast that arrived before
+   *  this window was listening, an event bridge that never came up. It does
+   *  that by *asking*: `torrent_status` reads a struct WinT already has and
+   *  touches neither the disk nor the helper.
+   *
+   *  What recovery must never do is set the engine working. Restarting it or
+   *  rechecking a torrent means reading every saved torrent and hashing what
+   *  is on disk — minutes of it — so those stay behind the buttons the user
+   *  presses. A page that healed itself by kicking off that work would turn a
+   *  cosmetic error into a real one, over and over.
+   *  ------------------------------------------------------------------ */
+
+  /** Asks the backend what the engine is really doing and redraws. The page
+   *  never decides this for itself: the backend owns the engine. */
+  function refreshStatus() {
+    return invoke("torrent_status")
+      .then((engine) => { if (engine) { st.engine = engine; drawBanner(); } })
+      .catch(() => { /* asked again on the next tick */ });
+  }
+
+  /** What the engine is doing, in short phrases. Read by the panel and by the
+   *  copy button, so what is pasted is exactly what was on screen. */
+  function diagnosticFacts() {
+    const s = st.engine || {};
+    return [
+      s.pid ? `PID ${s.pid}` : "No process ID",
+      s.uptimeMs != null ? `Uptime ${Math.round(s.uptimeMs / 1000)}s` : "Not running",
+      s.lastBeatMs != null ? `Heartbeat ${Math.round(s.lastBeatMs / 1000)}s ago` : "No heartbeat",
+      s.lastSnapshotMs != null ? `Snapshot ${Math.round(s.lastSnapshotMs / 1000)}s ago` : "No snapshot",
+      `${Number(s.pendingRequests) || 0} pending requests`,
+      `${bytes(s.memoryBytes)} memory`,
+      `${Number(s.restarts) || 0} restarts`,
+    ];
+  }
+
+  /** Everything worth handing to whoever has to work out what went wrong, as
+   *  plain text: what this page is looking at, what the engine says about
+   *  itself, and the engine's own recent output. */
+  function diagnosticReport() {
+    const s = st.engine || {};
+    const rows = st.snap?.torrents || [];
+    return [
+      `WinT Torrents diagnostics — ${new Date().toISOString()}`,
+      `App version: ${window.wintChangelog?.current || "unknown"}`,
+      `Engine state: ${s.state || "unknown"}${s.phase ? ` (${s.phase})` : ""}`,
+      s.engine ? `Engine build: ${s.engine}` : null,
+      s.message ? `Message: ${s.message}` : null,
+      diagnosticFacts().join(" · "),
+      `Torrents: ${rows.length}${st.snap ? "" : " (no snapshot yet)"}`,
+      "",
+      ...(Array.isArray(s.diagnostics) ? s.diagnostics : []),
+    ].filter((line) => line != null).join(String.fromCharCode(10));
+  }
+
+  /** Writes the banner only when its contents have actually changed.
+   *
+   *  The banner is redrawn on every engine event and every status check, and
+   *  an `innerHTML` assignment destroys and rebuilds everything under it —
+   *  which drops the selection the user was making and folds the
+   *  troubleshooting panel shut. Almost every redraw says exactly what the
+   *  last one said, so almost every redraw can be skipped. */
+  let bannerHtml = null;
+  function setBanner(el, html) {
+    if (bannerHtml === html) return;
+    bannerHtml = html;
+    el.innerHTML = html;
+  }
+
   function drawBanner() {
     const el = st.host?.querySelector("[data-tr-banner]");
     if (!el) return;
     const s = st.engine || {};
     const diagnostics = () => {
       const lines = Array.isArray(s.diagnostics) ? s.diagnostics : [];
-      const facts = [
-        s.pid ? `PID ${s.pid}` : "No process ID",
-        s.uptimeMs != null ? `Uptime ${Math.round(s.uptimeMs / 1000)}s` : "Not running",
-        s.lastBeatMs != null ? `Heartbeat ${Math.round(s.lastBeatMs / 1000)}s ago` : "No heartbeat",
-        s.lastSnapshotMs != null ? `Snapshot ${Math.round(s.lastSnapshotMs / 1000)}s ago` : "No snapshot",
-        `${Number(s.pendingRequests) || 0} pending requests`,
-        `${bytes(s.memoryBytes)} memory`,
-        `${Number(s.restarts) || 0} restarts`,
-      ];
-      return `<details class="tr-diagnostics"><summary>Troubleshooting details</summary>
-        <div>${facts.map(esc).join(" · ")}</div>
+      // Kept open across redraws. This panel is read while the engine is in
+      // trouble, which is exactly when the status keeps changing underneath
+      // it — and a panel that shut itself every few seconds could not be
+      // read at all, let alone have its text selected.
+      return `<details class="tr-diagnostics"${st.diagOpen ? " open" : ""}><summary>Troubleshooting details</summary>
+        <div class="tr-diag-facts"><span>${esc(diagnosticFacts().join(" · "))}</span><button type="button" class="btn" data-tr-copy-diag title="Copy these details">${icon("content_copy")}<span>Copy</span></button></div>
         ${lines.length ? `<pre>${esc(lines.join("\n"))}</pre>` : ""}</details>`;
     };
+    // Busy, not silent. While the engine rebuilds its session it reads every
+    // saved torrent and checks what is already on disk, which on a long list
+    // takes minutes and produces no snapshots at all. It keeps beating
+    // throughout, so the page can say what the wait is for instead of warning
+    // that updates have stopped.
+    if (s.phase === "resuming") {
+      el.hidden = false;
+      el.className = "tr-banner";
+      setBanner(el, `${icon("hourglass_top")}<span>The torrent engine is starting: ${
+        s.resuming ? `reading ${s.resuming} saved torrent${s.resuming === 1 ? "" : "s"}` : "reading the saved torrents"
+      } and checking the files already on disk. This can take a few minutes; the list fills in when it finishes.</span>`);
+      return;
+    }
+
     // Gone quiet, but still nominally up: the numbers on screen have stopped
     // being true and the page says so rather than letting them sit there
     // looking live. The list stays on screen and stays clickable throughout.
     if (st.quiet && (s.state === "running" || s.state === "starting")) {
       el.hidden = false;
       el.className = "tr-banner";
-      el.innerHTML = `${icon("warning")}<span>${st.lastSnapshotAt
+      setBanner(el, `${icon("warning")}<span>${st.lastSnapshotAt
         ? "No updates have arrived from the torrent engine. The list below may be stale."
         : "The torrent engine started, but it has not sent any torrent data."}</span>
         <button type="button" class="btn" data-tr-restart>${icon("restart_alt")}<span>Restart the engine</span></button>
-        ${diagnostics()}`;
+        ${diagnostics()}`);
       return;
     }
     if (s.state === "running" || s.state === "starting") {
       el.hidden = true;
-      el.innerHTML = "";
+      setBanner(el, "");
       return;
     }
     const message = s.message
       || (s.state === "stopped" ? "The torrent engine is not running." : "The torrent engine is not responding.");
     el.hidden = false;
     el.className = `tr-banner ${s.state === "failed" || s.state === "not-responding" ? "bad" : ""}`;
-    el.innerHTML = `${icon("warning")}<span>${esc(message)}</span>
+    setBanner(el, `${icon("warning")}<span>${esc(message)}</span>
       <button type="button" class="btn" data-tr-restart>${icon("restart_alt")}<span>Restart the engine</span></button>
-      ${diagnostics()}`;
+      ${diagnostics()}`);
   }
 
   function note(text) {
@@ -530,7 +744,9 @@
       .filter(Boolean)
       .map(([id, label]) => {
         const direction = st.columnSort?.id === id ? st.columnSort.direction : "";
-        return `<span data-col="${id}" aria-sort="${direction === "asc" ? "ascending" : direction === "desc" ? "descending" : "none"}" title="Sort by ${label}; drag to reorder">${label}<em class="tr-sort-arrow">${direction === "asc" ? "▲" : direction === "desc" ? "▼" : ""}</em><i data-tr-column-resize="${id}" title="Resize ${label}"></i></span>`;
+        // Name has no handle: it is whatever the other columns leave it.
+        const handle = id === "name" ? "" : `<i data-tr-column-resize="${id}" title="Resize ${label}"></i>`;
+        return `<span data-col="${id}" aria-sort="${direction === "asc" ? "ascending" : direction === "desc" ? "descending" : "none"}" title="Sort by ${label}; drag to reorder">${label}<em class="tr-sort-arrow">${direction === "asc" ? "▲" : direction === "desc" ? "▼" : ""}</em>${handle}</span>`;
       })
       .join("");
     const picker = host.querySelector("[data-tr-column-picker]");
@@ -541,15 +757,30 @@
     for (const row of host.querySelectorAll(".tr-row")) applyRowColumnOrder(row);
   }
 
+  /** Every column is exactly the width it was given. Name is the one that is
+   *  not: it takes whatever is left, so widening the window or closing the
+   *  detail pane gives the room to the names — the column that can actually
+   *  use it — instead of stretching the numbers. It has no width of its own
+   *  and no resize handle; this is its floor. */
+  const NAME_MIN = 140;
+
+  function columnWidth(id, fallback) {
+    return Number(st.columnWidths[id]) || Number.parseInt(fallback, 10);
+  }
+
   function applyColumnWidths() {
     const list = st.host?.querySelector("[data-tr-list]");
     if (!list) return;
     const visible = st.columns.map((id) => COLUMNS.find(([key]) => key === id)).filter(Boolean);
     list.style.setProperty("--tr-columns", visible
-      .map(([id, , width]) => st.columnWidths[id] ? `${st.columnWidths[id]}px` : width)
+      .map(([id, , width]) => id === "name"
+        ? `minmax(${NAME_MIN}px,1fr)`
+        : `${columnWidth(id, width)}px`)
       .join(" "));
+    // What the table cannot be squeezed below. Past this the list scrolls
+    // sideways rather than crushing the fixed columns out of shape.
     const minimum = visible.reduce((sum, [id, , width]) =>
-      sum + (st.columnWidths[id] || (id === "name" ? 180 : Number.parseInt(width, 10))), 0)
+      sum + (id === "name" ? NAME_MIN : columnWidth(id, width)), 0)
       + Math.max(0, visible.length - 1) * 10 + 24;
     list.style.setProperty("--tr-table-min-width", `${minimum}px`);
   }
@@ -573,7 +804,7 @@
       document.removeEventListener("pointerup", end);
       document.removeEventListener("pointercancel", end);
       document.body.classList.remove("tr-resizing-column");
-      try { localStorage.setItem(COLUMN_WIDTH_KEY, JSON.stringify(st.columnWidths)); } catch { /* unavailable */ }
+      saveLayout();
     };
     document.addEventListener("pointermove", move);
     document.addEventListener("pointerup", end, { once: true });
@@ -615,7 +846,7 @@
         let index = order.indexOf(target.dataset.col) + (after ? 1 : 0);
         order.splice(Math.max(0, index), 0, source.dataset.col);
         st.columns = order;
-        try { localStorage.setItem(COLUMN_KEY, JSON.stringify(st.columns)); } catch { /* unavailable */ }
+        saveLayout();
         drawColumns();
         drawRows();
       }
@@ -638,10 +869,12 @@
   }
 
   function applyRowColumnOrder(row) {
-    const selected = new Set(st.columns);
     for (const cell of row.querySelectorAll("[data-col]")) {
-      cell.hidden = !selected.has(cell.dataset.col);
-      cell.style.order = String(st.columns.indexOf(cell.dataset.col));
+      const at = st.columns.indexOf(cell.dataset.col);
+      cell.hidden = at < 0;
+      // Behind every shown column rather than at -1, which would put a cell in
+      // front of the lot if it ever drew in spite of being hidden.
+      cell.style.order = String(at < 0 ? COLUMNS.length : at);
     }
   }
 
@@ -654,7 +887,10 @@
       if (sort.id === "size") return row.totalBytes || 0;
       if (sort.id === "done") return percent(row);
       if (sort.id === "status") return statusWords(row).text;
-      if (sort.id === "completed") return row.completedAt || null;
+      // A torrent that has not finished has no completion date, and it sorts
+      // as one still to come: newer than everything already done. Ascending
+      // therefore ends with the unfinished ones, descending starts with them.
+      if (sort.id === "completed") return row.completedAt || Number.POSITIVE_INFINITY;
       if (sort.id === "down") return row.downloadBps || 0;
       if (sort.id === "up") return row.uploadBps || 0;
       if (sort.id === "peers") return row.peers || 0;
@@ -663,19 +899,16 @@
       if (sort.id === "uploaded") return row.uploadedBytes || 0;
       if (sort.id === "ratio") return row.progressBytes ? (row.uploadedBytes || 0) / row.progressBytes : 0;
       if (sort.id === "known") return (row.peers || 0) + (row.peersQueued || 0);
+      if (sort.id === "folder") return row.outputFolder || "";
       return 0;
     };
     const direction = sort.direction === "desc" ? -1 : 1;
     return rows.map((row, index) => ({ row, index })).sort((a, b) => {
       const left = value(a.row);
       const right = value(b.row);
-      // An unfinished torrent has no completion date. Keep those rows after
-      // every actual completion instead of treating them as Unix epoch (and
-      // therefore older than everything) or as a date in the future.
-      if (sort.id === "completed" && (left == null || right == null)) {
-        if (left == null && right == null) return a.index - b.index;
-        return left == null ? 1 : -1;
-      }
+      // Two values that are equal - including two infinities, whose
+      // difference is not a number - keep the order they came in.
+      if (left === right) return a.index - b.index;
       const compared = typeof left === "string"
         ? left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })
         : left - right;
@@ -757,7 +990,8 @@
       <span data-col="eta"></span>
       <span data-col="uploaded"></span>
       <span data-col="ratio"></span>
-      <span data-col="known"></span>`;
+      <span data-col="known"></span>
+      <span class="tr-folder" data-col="folder"><span></span></span>`;
     applyRowColumnOrder(el);
     return el;
   }
@@ -798,6 +1032,14 @@
     setText(el.querySelector('[data-col="uploaded"]'), bytes(row.uploadedBytes));
     setText(el.querySelector('[data-col="ratio"]'), row.progressBytes ? (row.uploadedBytes / row.progressBytes).toFixed(2) : "—");
     setText(el.querySelector('[data-col="known"]'), row.state === "live" ? String(row.peers + row.peersQueued) : "—");
+    // The tail of the path, which is the part that tells two downloads apart;
+    // the whole thing is on the title, and a click opens it.
+    const folder = el.querySelector(".tr-folder");
+    const path = row.outputFolder || "";
+    setText(folder.querySelector("span"), path ? path.split(/[\/]/).filter(Boolean).slice(-2).join("\\") : "—");
+    folder.title = path ? `${path}
+Click to open in Explorer` : "";
+    folder.classList.toggle("empty", !path);
   }
 
   /** Ticks a torrent off, or unticks it. Shift extends the tick from the last
@@ -1374,7 +1616,7 @@
       st.columnSort = st.columnSort?.id === id
         ? { id, direction: st.columnSort.direction === "asc" ? "desc" : "asc" }
         : { id, direction: "asc" };
-      try { localStorage.setItem(COLUMN_SORT_KEY, JSON.stringify(st.columnSort)); } catch { /* unavailable */ }
+      saveLayout();
       drawColumns();
       drawRows();
       return;
@@ -1396,7 +1638,7 @@
       st.columns = column.checked
         ? [...st.columns, id]
         : st.columns.filter((key) => key !== id);
-      try { localStorage.setItem(COLUMN_KEY, JSON.stringify(st.columns)); } catch { /* unavailable */ }
+      saveLayout();
       drawColumns();
       drawRows();
       return;
@@ -1412,6 +1654,14 @@
       return draw();
     }
 
+    const copyDiag = t.closest("[data-tr-copy-diag]");
+    if (copyDiag) {
+      window.wintCopy?.copy(diagnosticReport(), copyDiag, "Diagnostics copied")
+        .then(() => note("The troubleshooting details were copied."))
+        .catch(() => note("The troubleshooting details could not be copied."));
+      return;
+    }
+
     if (t.closest("[data-tr-restart]")) {
       note("Restarting the torrent engine…");
       st.lastSnapshotAt = 0;
@@ -1420,6 +1670,19 @@
       return void invoke("torrent_restart")
         .then((engine) => { st.engine = engine; note("The torrent engine was restarted."); drawBanner(); })
         .catch((error) => note(String(error)));
+    }
+
+    const folderCell = t.closest(".tr-folder");
+    if (folderCell && !folderCell.classList.contains("empty")) {
+      const el = t.closest("[data-tr-id]");
+      const row = (st.snap?.torrents || []).find((item) => item.id === Number(el?.dataset.trId));
+      if (row?.outputFolder) {
+        note(`Opening ${row.outputFolder}…`);
+        invoke("open_in", { path: row.outputFolder, target: "explorer", context: null })
+          .then(() => note(""))
+          .catch((error) => note(String(error)));
+        return;
+      }
     }
 
     if (t.closest("[data-tr-mark]")) {
