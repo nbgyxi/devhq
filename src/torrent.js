@@ -2305,7 +2305,11 @@ Click to open in Explorer` : "";
       const file = await invoke("torrent_file_path", { id: st.selected, index });
       if (!file?.path) return note("That file's path could not be worked out.");
       if (file.exists === false) return note(`${file.name || "That file"} has not been downloaded yet.`);
-      await invoke("open_in", { path: file.path, target: "explorer", context: null });
+      // "explorer" asks Explorer to browse the path, which is right for a
+      // folder and wrong for a file: a zip is only browsable while Windows own
+      // the .zip association, so once WinRAR or 7-Zip has it, Explorer answers
+      // "access denied". "default" is the registered app for the file type.
+      await invoke("open_in", { path: file.path, target: "default", context: null });
     } catch (error) {
       note(String(error));
     }

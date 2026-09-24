@@ -16,6 +16,14 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.157.12",
+      date: "2026-09-24",
+      title: "Open a file and the app for it opens",
+      changes: [
+        ["fix", "Double-clicking a file in a torrent's contents now opens it with the app registered for that kind of file. It was asking Windows Explorer to browse the file instead, which only ever worked for a zip while Windows own the .zip association - with WinRAR or 7-Zip installed, Explorer refused it as access denied. Files opened the same way and is fixed with it; it had not shown the fault because it browses an archive itself rather than handing it to Windows."],
+      ],
+    },
+    {
       version: "0.157.11",
       date: "2026-09-24",
       title: "Torrents come back in a second",

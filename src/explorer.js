@@ -1513,7 +1513,7 @@ function activate(path, isDir) {
         window.wintWork?.endWork("explorer-open");
       }
     }
-    invoke("open_in", { path: real, target: "explorer" }).catch(() => {});
+    invoke("open_in", { path: real, target: "default" }).catch(() => {});
   };
   void open();
 }
