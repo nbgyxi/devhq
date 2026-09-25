@@ -16,8 +16,119 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.161.3",
+      title: "Giving way no longer caps you at whatever it saw first",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "fix",
+          text: "Giving way was holding downloads at the fastest speed it had happened to see, even with a much higher limit set and nothing else using the connection — so a line that was never filled stayed capped at whatever the first download reached, and could never be caught going faster. With nothing else wanting the connection the engine now gets exactly the limit you set, and the ceiling rises as the line proves itself.",
+        },
+        {
+          kind: "better",
+          text: "The speed sliders stop at what your connection can actually carry instead of offering speeds it cannot reach, and the top of the slider says roughly what No limit comes to. The live line under the switch now names which limit is doing the deciding, so a cap that is neither your setting nor your line’s speed explains itself.",
+        },
+        {
+          kind: "fix",
+          text: "The Measure button in Torrents and the Run button in Speed Test have their icons back. Each was being written over by its own label.",
+        },
+      ],
+    },
+    {
+      version: "0.161.2",
+      title: "The hidden taskbar stays hidden",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "fix",
+          text: "A taskbar hidden completely came back the first time the pointer touched the bottom of the screen, and stayed back. Windows reveals an auto-hidden taskbar by showing its window again, which undid the hiding; WinT now hears about that the instant it happens and hides it again, so the edge no longer brings it out.",
+        },
+      ],
+    },
+    {
+      version: "0.161.1",
+      title: "A taskbar that stays hidden",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "new",
+          text: "The docked sidebar can now hide the Windows taskbar completely. Auto-hiding only slid it off the edge, and Windows brought it straight back over the rail every time an app wanted attention with a notification; hidden completely, nothing reveals it. The new checkbox sits under \"Hide the Windows taskbar\" in the Docked Sidebar tool, and says how to get the taskbar back if WinT ever stops responding while it is on.",
+        },
+        {
+          kind: "fix",
+          text: "A taskbar WinT was holding hidden is put back on the next start, even if the run that hid it never got to finish — as well as after a lock, a sleep or an Explorer restart, which used to bring it back on their own.",
+        },
+      ],
+    },
+    {
+      version: "0.161.0",
+      title: "Torrents get out of the way, and a Speed Test to prove it",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "new",
+          text: "Torrents can now give way to everything else. Turn on \"Give way to other apps\" under Settings and the engine is pulled back the moment anything else wants the connection — a call, a page, an update — and takes the line back as soon as they are done. The panel says what it is doing while it does it: what the rest of the PC is using, and what the engine is being held to.",
+        },
+        {
+          kind: "new",
+          text: "The speed limits are sliders now, with a Measure button beside them that tests the line and uses the answer as the ceiling. Until you measure it, WinT learns one anyway: the fastest the connection has actually been seen to run is remembered and used.",
+        },
+        {
+          kind: "new",
+          text: "A Speed Test tool, on its own. It measures download, upload and — the number that actually decides whether a call survives a download — how much the round trip grows while the line is full. Under it, a live meter of what this PC is moving right now, straight from the adapter's own counters.",
+        },
+      ],
+    },
+    {
+      version: "0.160.0",
+      title: "The torrent engine can stay on",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "new",
+          text: "Torrents now has a Start with WinT switch, under Settings next to the engine. With it on, the engine comes up with WinT and keeps downloading and seeding whether or not the Torrents tool is open — and it is still on the next time you start, which is what the switch on Home was missing.",
+        },
+        {
+          kind: "better",
+          text: "The Torrent engine switch on Home is now that same choice. Turning it off stops the engine and keeps it off; turning it on brings it back and leaves it on. Until now it forgot every time WinT closed, so the switch was off again on the next start.",
+        },
+        {
+          kind: "fix",
+          text: "A message in a torrent's file list — such as the engine not answering in time — is readable again. It was being squeezed into the width of the tick column and came out one word per line.",
+        },
+      ],
+    },
+    {
+      version: "0.159.12",
+      title: "The link chooser opens again, and links open sooner",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "fix",
+          text: "No more black console box flashing up next to the chooser. Windows opens a link by starting a fresh WinT that hands the URL to the one already running and exits, and that short-lived copy was being given a console window of its own. It now lets go of it the moment it starts.",
+        },
+        {
+          kind: "better",
+          text: "Browsers are started with no console of their own either, and with nothing left plumbed to WinT, so a browser that logs to its output no longer keeps a handle open for as long as it runs.",
+        },
+        {
+          kind: "better",
+          text: "Picking a browser starts it straight away. Writing down an answer you asked to be remembered used to happen first, so every click paid for a read and a write of the rules file before the link began opening. The rule is still saved — it just happens behind the browser that is already coming up.",
+        },
+        {
+          kind: "fix",
+          text: "Clicking a link no longer leaves the chooser stuck on \"Reading the browsers on this PC\". The window was failing before it ever got as far as asking Windows what is installed, so it sat on its placeholder forever with no browsers, no rule choices and no way forward but Cancel. It now lists your browsers and profiles as it always meant to.",
+        },
+        {
+          kind: "fix",
+          text: "A second link that arrives while the chooser is already open is noticed again, instead of waiting behind a window that had not been allowed to hear about it.",
+        },
+      ],
+    },
+    {
       version: "0.159.9",
       title: "Torrents survive being popped out and back in",
+      buildChecksum: "4402c5da46c76faee8adb58607109c73b6bc2d37d4d4e5df04c9fc54e146791b",
       date: "2026-09-25",
       changes: [
         {

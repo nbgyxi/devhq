@@ -4838,7 +4838,7 @@ body.projects-window #status-term-popout{display:none!important}
 .dock-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.dock-row>span{flex:0 0 72px;color:var(--dim);font-size:12px}.dock-row input[type=range]{flex:1;min-width:120px;accent-color:var(--accent)}.dock-row code{min-width:52px;text-align:right;color:var(--dim);font-size:11px}
 .dock-seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}.dock-seg button{height:28px;padding:0 12px;font-size:12px;color:var(--dim);background:transparent}.dock-seg button+button{border-left:1px solid var(--line)}.dock-seg button:hover{background:var(--bg3);color:var(--text)}.dock-seg button.on{background:color-mix(in srgb,var(--accent) 22%,transparent);color:var(--text)}
 .dock-tool-picker-head{display:grid;grid-template-columns:minmax(180px,1fr) auto auto;gap:8px;align-items:center}.dock-tool-picker-head>span{font-size:11px;color:var(--dim);white-space:nowrap}.dock-tool-picker-head>span strong{color:var(--text)}.dock-tool-search{display:flex;align-items:center;gap:7px;height:32px;padding:0 9px;border:1px solid var(--line);border-radius:8px;background:var(--bg1)}.dock-tool-search:focus-within{border-color:color-mix(in srgb,var(--accent) 65%,var(--line));box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 12%,transparent)}.dock-tool-search>.ms{font-size:16px;color:var(--dim)}.dock-tool-search input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:var(--text);font:inherit}.dock-tool-choices{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:5px;max-height:252px;overflow:auto;padding:1px}.dock-tool-choice{display:grid;grid-template-columns:27px minmax(0,1fr) 18px;align-items:center;gap:7px;min-height:38px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg1);font-size:11.5px;cursor:pointer}.dock-tool-choice:hover{background:var(--bg3);border-color:color-mix(in srgb,var(--accent) 35%,var(--line))}.dock-tool-choice.on{border-color:color-mix(in srgb,var(--accent) 55%,var(--line));background:color-mix(in srgb,var(--accent) 10%,var(--bg1))}.dock-tool-choice input{position:absolute;opacity:0;pointer-events:none}.dock-tool-choice>.ms:last-child{font-size:16px;color:var(--dim)}.dock-tool-choice.on>.ms:last-child{color:var(--accent)}.dock-tool-icon{display:grid;place-items:center;width:27px;height:27px;border-radius:7px;background:var(--bg3);color:var(--dim)}.dock-tool-icon .ms{font-size:17px}.dock-tool-choice.on .dock-tool-icon{background:color-mix(in srgb,var(--accent) 15%,var(--bg3));color:var(--accent)}.dock-empty-tools,.dock-tool-loading{font-style:italic;color:var(--dim)}.dock-card select{min-width:240px}
-.dock-slots{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:4px}.dock-slot{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:7px;font-size:12px;cursor:pointer}.dock-slot:hover{background:var(--bg3)}.dock-slot input{accent-color:var(--accent);margin:0}.dock-slot .ms{font-size:18px;color:var(--dim)}
+.dock-slots{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:4px}.dock-slot{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:7px;font-size:12px;cursor:pointer}.dock-slot:hover{background:var(--bg3)}.dock-slot input{accent-color:var(--accent);margin:0}.dock-slot .ms{font-size:18px;color:var(--dim)}.dock-slot-sub{margin-left:26px}.dock-slot-sub:has(input:disabled){opacity:.45;cursor:default}.dock-slot-sub:has(input:disabled):hover{background:none}
 .dock-choice-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}.dock-choice{position:relative;cursor:pointer}.dock-choice>input{position:absolute;opacity:0;pointer-events:none}.dock-choice>span{display:grid;grid-template-columns:20px minmax(0,1fr);gap:2px 7px;align-items:center;height:100%;box-sizing:border-box;padding:10px;border:1px solid var(--line);border-radius:9px;background:var(--bg1)}.dock-choice .ms{grid-row:1/3;color:var(--dim);font-size:18px}.dock-choice strong{font-size:11.5px}.dock-choice small{color:var(--dim);font-size:10px;line-height:1.35}.dock-choice:hover>span{background:var(--bg3)}.dock-choice.on>span{border-color:color-mix(in srgb,var(--accent) 60%,var(--line));background:color-mix(in srgb,var(--accent) 11%,var(--bg1))}.dock-choice.on .ms{color:var(--accent)}
 .dock-tool-filters{display:flex;gap:4px;padding-bottom:7px;border-bottom:1px solid var(--line)}.dock-tool-filters button{padding:6px 10px;border-radius:7px;color:var(--dim);font-size:11px}.dock-tool-filters button:hover{background:var(--bg3);color:var(--text)}.dock-tool-filters button.on{background:color-mix(in srgb,var(--accent) 14%,var(--bg1));color:var(--accent)}
 .dock-size-sliders{display:grid;gap:8px;padding-top:10px;border-top:1px solid var(--line)}
@@ -5135,7 +5135,11 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-frow{height:28px;box-sizing:border-box;padding:0 12px;font-size:11px;border-bottom:1px solid var(--line)}
 .tr-frow.off{opacity:.45}
 .tr-frow.tr-skeleton{height:28px}
-.tr-fnote{color:var(--red);grid-column:1/-1}
+/* A message where the files would be. It is text, not a row of columns:
+   left as a grid it fell into the 18px tick column and came out one word per
+   line. `grid-column` could not save it either — the rows are absolutely
+   positioned, so the note is not a grid item of anything. */
+.tr-fnote{color:var(--red);display:block;height:auto;min-height:28px;padding:8px 12px;line-height:1.4;white-space:normal}
 .tr-fcheck{margin:0;cursor:pointer}
 .tr-frow.on{background:color-mix(in srgb,var(--accent) 16%,transparent)}
 .tr-frow{cursor:default;user-select:none}
@@ -5157,6 +5161,12 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-setrow>span small{color:var(--dim2);font-size:10.5px}
 .tr-setrow code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim);font-size:11px}
 .tr-setrow select{min-width:130px}
+.tr-slider{align-items:center}
+.tr-slider>span:first-child{flex:0 0 190px}
+.tr-slider em{color:var(--accent);font-style:normal;font-size:10.5px}
+.tr-slider input[type=range]{flex:1;min-width:120px;accent-color:var(--accent)}
+.tr-pacelive{padding:8px 12px;border-top:1px solid var(--line);color:var(--dim2);font-size:10.5px;line-height:1.5}
+.tr-pacelive[data-tr-yield="1"]{color:var(--accent)}
 .tr-enginepanel .tr-setrow span{color:var(--dim2);font-size:11px}
 /* The torrent right-click menu. Same shape as the one in Disk Space, with a
    destructive last item set apart from the rest. */
@@ -5343,3 +5353,34 @@ body.projects-window #status-term-popout{display:none!important}
 [data-br-suggest-page] .br-suggest{flex:1;min-height:120px;max-height:none}
 .br-try input{width:100%;padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg2);color:var(--text);font:inherit;font-size:12.5px}
 .br-saved{color:var(--dim2)}
+
+/* Speed Test. Three dials the eye can read from across the room, a progress
+   bar under them, and the live meter beneath - the test is what you came for,
+   the meter is what you stay for. */
+.spd{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(260px,.7fr);gap:12px;align-content:start;max-width:960px}
+.spd-test,.spd-live{border:1px solid var(--line);border-radius:12px;background:var(--bg1);padding:14px}
+.spd-dials{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.spd-dial{display:flex;flex-direction:column;align-items:center;gap:2px;padding:14px 8px;border:1px solid var(--line);border-radius:10px;background:var(--bg2)}
+.spd-dial-head{display:flex;align-items:center;gap:5px;color:var(--dim2);font-size:10.5px;text-transform:uppercase;letter-spacing:.04em}
+.spd-dial-head .ms{font-size:15px;color:var(--accent)}
+.spd-dial strong{font-size:26px;font-variant-numeric:tabular-nums;line-height:1.1}
+.spd-dial small{color:var(--dim2);font-size:9.5px}
+.spd-bar{height:3px;margin:12px 0 10px;border-radius:2px;background:var(--bg2);overflow:hidden}
+.spd-bar i{display:block;height:100%;background:var(--accent);transition:width .2s linear}
+.spd-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.spd-note{color:var(--dim2);font-size:10.5px}
+.spd-verdict{display:flex;flex-direction:column;gap:4px;margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg2);font-size:11.5px;line-height:1.55}
+.spd-verdict strong{font-size:12.5px}
+.spd-verdict small{color:var(--dim2);font-size:10px}
+.spd-live>header{display:flex;align-items:center;gap:7px;margin:-2px 0 10px}
+.spd-live>header>.ms{font-size:16px;color:var(--accent)}
+.spd-live>header strong{font-size:11.5px}
+.spd-live>header small{margin-left:auto;color:var(--dim2);font-size:9.5px;text-align:right;max-width:130px;line-height:1.3}
+.spd-livegrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.spd-livegrid>div{display:flex;flex-direction:column;gap:2px;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg2)}
+.spd-livegrid span{color:var(--dim2);font-size:9.5px;text-transform:uppercase}
+.spd-livegrid strong{font-size:14px;font-variant-numeric:tabular-nums}
+.spd-spark{width:100%;height:60px;margin-top:10px;color:var(--accent);opacity:.85}
+.spd-hint{margin:10px 0 0;color:var(--dim2);font-size:10.5px;line-height:1.5}
+.spd-hint strong{color:var(--dim);font-weight:600}
+@media (max-width:880px){.spd{grid-template-columns:minmax(0,1fr)}}

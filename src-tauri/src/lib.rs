@@ -60,8 +60,10 @@ mod tool_window;
 #[cfg(windows)]
 mod reg;
 mod ui_state;
+mod netmeter;
 mod torrent;
 mod torrent_assoc;
+mod torrent_pace;
 pub mod tray;
 mod util;
 #[cfg(windows)]
@@ -3027,14 +3029,26 @@ pub fn run() {
     // register as the single instance: it would hand its arguments to the
     // WinT already running - unelevated - and exit, which is the one thing it
     // exists not to do. See `term::admin_request`.
-    let admin = term::admin_request(&std::env::args().collect::<Vec<_>>());
+    let argv = std::env::args().collect::<Vec<_>>();
+    let admin = term::admin_request(&argv);
     let is_admin = admin.is_some();
+    // Windows opens a link by starting a whole new WinT with the URL on its
+    // command line; that copy hands the URL to the WinT already running and
+    // exits. In a debug build it is a console program with no console to
+    // share, so Windows gives it one - and that is the black box that flashes
+    // up next to the chooser. It is let go for the same reason as the
+    // elevated case below: this copy is never going to print anything, it is
+    // going to forward one URL and die.
+    let carries_url = argv
+        .iter()
+        .skip(1)
+        .any(|arg| arg.starts_with("http://") || arg.starts_with("https://"));
     // A debug build is a console program (see main.rs), and started through
     // `runas` it has no `npm run dev` console to share, so Windows gives it an
     // empty one of its own. The terminal is the window; that console is
     // nothing, so it is let go. A release build never had one.
     #[cfg(windows)]
-    if is_admin {
+    if is_admin || carries_url {
         unsafe {
             let _ = windows::Win32::System::Console::FreeConsole();
         }
@@ -3131,6 +3145,7 @@ pub fn run() {
             // spawned until the tool asks, so an install that never touches
             // torrents never pays for one.
             torrent::init(app.handle().clone());
+            torrent_pace::init(app.handle());
             // Started by the shell to open a torrent: the tool is queued the
             // same way `--open-tool=` is, so the window comes up on Torrents
             // with the file already waiting for it.
@@ -3344,6 +3359,7 @@ pub fn run() {
             torrent::torrent_status,
             torrent::torrent_start,
             torrent::torrent_stop,
+            torrent::torrent_autostart_set,
             torrent::torrent_restart,
             torrent::torrent_recheck,
             torrent::torrent_add,
@@ -3359,6 +3375,12 @@ pub fn run() {
             torrent::torrent_paths,
             torrent::torrent_file_path,
             torrent::torrent_settings,
+            torrent_pace::torrent_pace,
+            torrent_pace::torrent_pace_set,
+            torrent_pace::torrent_pace_measure,
+            netmeter::net_throughput,
+            netmeter::net_throughput_reset,
+            netmeter::net_speed_test,
             take_pending_torrents,
             open_tool_window,
             browser_assoc::browser_assoc_status,

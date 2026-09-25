@@ -154,6 +154,10 @@
     iconSize: 14,
     trayIconSize: 14,
     hideTaskbar: true,
+    // Auto-hide alone lets Explorer slide the taskbar back in for a button
+    // asking for attention, which is any app with a notification. This hides
+    // the taskbar's own windows as well, so nothing can.
+    hideTaskbarCompletely: false,
     // The clock is written the way Windows writes it here - 24 hours, zero
     // padded - and the seconds are off until someone asks for them.
     clockSeconds: false,
@@ -362,7 +366,7 @@
   // and saves it, so the next dock remembers the choice.
   async function toggleTaskbar() {
     const hide = !state.taskbarAutoHidden;
-    await ask("sidebar_configure", { hideTaskbar: hide });
+    await ask("sidebar_configure", { hideTaskbar: hide, hideCompletely: settings.hideTaskbarCompletely === true });
     applySettings({ ...settings, hideTaskbar: hide });
     invoke("sidebar_settings_set", { settings }).catch(() => {});
   }

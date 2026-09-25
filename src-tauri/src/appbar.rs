@@ -36,12 +36,14 @@ use windows::Win32::UI::Shell::{
     ABM_WINDOWPOSCHANGED, ABN_FULLSCREENAPP, ABN_POSCHANGED, ABN_STATECHANGE, ABN_WINDOWARRANGE,
     ABS_ALWAYSONTOP, ABS_AUTOHIDE, APPBARDATA,
 };
+use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
-    ChangeWindowMessageFilterEx, GetWindowLongW, PostMessageW, RegisterWindowMessageW,
-    SetWindowPos, GWL_EXSTYLE, HWND_BOTTOM, HWND_TOPMOST, MSGFLT_ALLOW, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, WM_APP, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
-    WM_ENTERMENULOOP, WM_EXITMENULOOP, WM_WINDOWPOSCHANGED, WM_WTSSESSION_CHANGE, WS_EX_TOPMOST,
-    WTS_SESSION_UNLOCK,
+    ChangeWindowMessageFilterEx, FindWindowExW, FindWindowW, GetWindowLongW,
+    GetWindowThreadProcessId, IsWindowVisible, PostMessageW, RegisterWindowMessageW, SetWindowPos,
+    ShowWindowAsync, EVENT_OBJECT_SHOW, GWL_EXSTYLE, HWND_BOTTOM, HWND_TOPMOST, MSGFLT_ALLOW,
+    OBJID_WINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA,
+    WINEVENT_OUTOFCONTEXT, WM_APP, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENTERMENULOOP,
+    WM_EXITMENULOOP, WM_WINDOWPOSCHANGED, WM_WTSSESSION_CHANGE, WS_EX_TOPMOST, WTS_SESSION_UNLOCK,
 };
 
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -92,6 +94,41 @@ static PLACE_DEFERRED: AtomicBool = AtomicBool::new(false);
 /// again for what the user already chose.
 static HIDE_TASKBAR: AtomicBool = AtomicBool::new(true);
 
+/// Whether hiding the taskbar means hiding its own windows as well.
+///
+/// Auto-hide leaves the taskbar on screen, only slid off the edge, and
+/// Explorer slides it straight back in for a pointer at the edge, the Windows
+/// key — and any taskbar button asking for attention. That last one is why
+/// this exists: a notification from Teams or Outlook pops the bar out over the
+/// rail, and no appbar state can tell Explorer not to. A window hidden with
+/// `SW_HIDE` cannot slide in at all.
+///
+/// The cost is that nothing reveals the bar while this is on, which is why the
+/// tool page asks for it by name and says how to get the taskbar back.
+static HIDE_COMPLETELY: AtomicBool = AtomicBool::new(false);
+
+/// True while we are the ones holding the taskbar's windows hidden, so showing
+/// them again never touches a taskbar somebody else hid.
+static TRAY_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+/// The `EVENT_OBJECT_SHOW` hook that keeps the taskbar hidden, or 0.
+///
+/// Hiding the taskbar's window once is not enough, and this is why. Auto-hide
+/// is not implemented by hiding anything: Explorer keeps the window visible and
+/// slides it off the edge, and it decides to slide it back from a mouse hook of
+/// its own that never asked whether the window was visible. The reveal is a
+/// `SetWindowPos` with `SWP_SHOWWINDOW`, which undoes our `SW_HIDE` — so the
+/// first time the pointer touched the old edge, the taskbar came back and
+/// stayed back.
+///
+/// Nothing can stop Explorer from showing it. What this hook does is hear about
+/// it the instant it happens and hide it again, which is the difference between
+/// a taskbar that is gone and one that is gone until you brush the edge.
+static TRAY_HOOK: AtomicIsize = AtomicIsize::new(0);
+
+/// True while the slow re-check behind the hook is running.
+static TRAY_WATCHDOG: AtomicBool = AtomicBool::new(false);
+
 /// `TaskbarCreated`: the message a newly started Explorer broadcasts to every
 /// top-level window. It is the only announcement that a new shell exists, and
 /// registering the string is how a window gets to recognise it.
@@ -129,8 +166,13 @@ unsafe fn reclaim(hwnd: HWND) {
         "SHAppBarMessage ABM_NEW (shell restarted)",
         &mut data,
     );
+    // The new shell's taskbar windows are new, and visible: hidden is not a
+    // state Explorer inherits, so it has to be asked for again.
     if HIDE_TASKBAR.load(Ordering::SeqCst) {
-        auto_hide_taskbar();
+        // The hook was set on the Explorer that has just died; it has to be
+        // set again, on the new one.
+        disarm_tray_watch();
+        hide_taskbar_now(hwnd);
     }
     place(hwnd);
 }
@@ -143,6 +185,9 @@ pub struct SidebarState {
     pub width: u32,
     /// True while the real taskbar is auto-hidden, whoever set it that way.
     pub taskbar_auto_hidden: bool,
+    /// True while the taskbar's own windows are hidden, so nothing — not even a
+    /// notification — can slide it back in.
+    pub taskbar_windows_hidden: bool,
 }
 
 fn state() -> SidebarState {
@@ -157,6 +202,11 @@ fn state() -> SidebarState {
         // Read from the shell, not from what we remember doing: a taskbar the
         // user (or a crashed run) had already set to auto-hide is hidden too.
         taskbar_auto_hidden: unsafe { taskbar_state() } & ABS_AUTOHIDE != 0,
+        taskbar_windows_hidden: unsafe {
+            tray_windows()
+                .first()
+                .is_some_and(|hwnd| !IsWindowVisible(*hwnd).as_bool())
+        },
     }
 }
 
@@ -388,12 +438,182 @@ unsafe fn auto_hide_taskbar() {
     set_taskbar_state(now | ABS_AUTOHIDE | ABS_ALWAYSONTOP);
 }
 
+/// Every window the shell draws a taskbar in: the primary one, then one
+/// `Shell_SecondaryTrayWnd` per additional monitor. Looked up every time
+/// rather than remembered, because Explorer destroys and recreates the lot
+/// whenever it restarts or a monitor is added.
+unsafe fn tray_windows() -> Vec<HWND> {
+    let mut found = Vec::new();
+    if let Ok(primary) = FindWindowW(windows::core::w!("Shell_TrayWnd"), None) {
+        found.push(primary);
+    }
+    let mut previous = None;
+    while let Ok(next) = FindWindowExW(
+        None,
+        previous,
+        windows::core::w!("Shell_SecondaryTrayWnd"),
+        None,
+    ) {
+        found.push(next);
+        previous = Some(next);
+    }
+    found
+}
+
+/// Hide the taskbar's own windows, so no notification can slide it back in.
+///
+/// `ShowWindowAsync`, never `ShowWindow`: these windows belong to Explorer,
+/// and showing another process's window sends it messages and waits — the one
+/// thing this file exists to keep off the drawing thread. The async form only
+/// posts.
+unsafe fn hide_tray_windows() {
+    if !TRAY_HIDDEN.swap(true, Ordering::SeqCst) {
+        remember_tray_hidden(true);
+    }
+    for hwnd in tray_windows() {
+        if IsWindowVisible(hwnd).as_bool() {
+            let _ = ShowWindowAsync(hwnd, SW_HIDE);
+        }
+    }
+}
+
+/// Hear about the taskbar being shown, and hide it again.
+///
+/// Out-of-context, so this runs on the thread that set the hook as an ordinary
+/// dispatched message, and `ShowWindowAsync` only posts: nothing here waits on
+/// Explorer. The event is filtered to Explorer's process, so this is not woken
+/// by every window on the desktop.
+unsafe extern "system" fn tray_shown(
+    _hook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    id_object: i32,
+    id_child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    if event != EVENT_OBJECT_SHOW || id_object != OBJID_WINDOW.0 || id_child != 0 {
+        return;
+    }
+    if !HIDE_COMPLETELY.load(Ordering::SeqCst) || HOST.load(Ordering::SeqCst) == 0 {
+        return;
+    }
+    if tray_windows().contains(&hwnd) {
+        let _ = ShowWindowAsync(hwnd, SW_HIDE);
+    }
+}
+
+/// Start listening, from the thread that owns the window and therefore the
+/// message loop the hook is delivered through.
+unsafe fn arm_tray_watch(hwnd: HWND) {
+    if TRAY_HOOK.load(Ordering::SeqCst) != 0 {
+        return;
+    }
+    let mut explorer = 0;
+    let Some(tray) = tray_windows().first().copied() else {
+        return;
+    };
+    GetWindowThreadProcessId(tray, Some(&mut explorer));
+    if explorer == 0 {
+        return;
+    }
+    let hook = SetWinEventHook(
+        EVENT_OBJECT_SHOW,
+        EVENT_OBJECT_SHOW,
+        None,
+        Some(tray_shown),
+        explorer,
+        0,
+        WINEVENT_OUTOFCONTEXT,
+    );
+    TRAY_HOOK.store(hook.0 as isize, Ordering::SeqCst);
+    start_tray_watchdog(hwnd);
+}
+
+/// Stop listening. Must run on the thread that armed it.
+unsafe fn disarm_tray_watch() {
+    let hook = TRAY_HOOK.swap(0, Ordering::SeqCst);
+    if hook != 0 {
+        let _ = UnhookWinEvent(HWINEVENTHOOK(hook as *mut c_void));
+    }
+}
+
+/// The belt to the hook's braces: a slow re-check, in case a show event is
+/// missed or Explorer was replaced between the restart and the re-arm. It only
+/// posts `RECHECK_TASKBAR` — every decision stays on the window thread, and
+/// the thread ends as soon as the taskbar is no longer ours to hide.
+fn start_tray_watchdog(hwnd: HWND) {
+    if TRAY_WATCHDOG.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let raw = hwnd.0 as isize;
+    std::thread::Builder::new()
+        .name("wint-taskbar-watch".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                if !HIDE_COMPLETELY.load(Ordering::SeqCst) || HOST.load(Ordering::SeqCst) != raw {
+                    break;
+                }
+                unsafe {
+                    let _ = PostMessageW(
+                        Some(HWND(raw as *mut c_void)),
+                        RECHECK_TASKBAR,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
+                }
+            }
+            TRAY_WATCHDOG.store(false, Ordering::SeqCst);
+        })
+        .ok();
+}
+
+/// Give the taskbar's windows back, if they are hidden because we hid them.
+/// `SW_SHOWNA` rather than `SW_SHOW`: the taskbar coming back must not take
+/// the focus away from whatever the user is typing into.
+unsafe fn show_tray_windows() {
+    disarm_tray_watch();
+    if !TRAY_HIDDEN.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    for hwnd in tray_windows() {
+        let _ = ShowWindowAsync(hwnd, SW_SHOWNA);
+    }
+    remember_tray_hidden(false);
+}
+
+/// Hide the taskbar the way the current setting asks. Auto-hide always, so the
+/// work area is ours either way — hiding the window alone would leave the
+/// strip it used to occupy reserved and empty — and the windows themselves
+/// when the user asked for the complete hide.
+unsafe fn hide_taskbar_now(hwnd: HWND) {
+    auto_hide_taskbar();
+    if HIDE_COMPLETELY.load(Ordering::SeqCst) {
+        hide_tray_windows();
+        // After hiding, not before: the hook would otherwise hear our own
+        // window being shown by whatever came before it.
+        arm_tray_watch(hwnd);
+    } else {
+        show_tray_windows();
+    }
+}
+
 /// Windows can clear auto-hide while restoring Explorer after lock or sleep.
 /// Reassert only the state WinT owns; otherwise the user's taskbar preference
 /// remains untouched.
-unsafe fn ensure_taskbar_hidden() {
-    if HIDE_TASKBAR.load(Ordering::SeqCst) && taskbar_state() & ABS_AUTOHIDE == 0 {
+unsafe fn ensure_taskbar_hidden(hwnd: HWND) {
+    if !HIDE_TASKBAR.load(Ordering::SeqCst) {
+        return;
+    }
+    if taskbar_state() & ABS_AUTOHIDE == 0 {
         auto_hide_taskbar();
+    }
+    // Explorer shows its taskbar windows again after an unlock even when
+    // nothing cleared auto-hide, so this is checked on its own.
+    if HIDE_COMPLETELY.load(Ordering::SeqCst) {
+        hide_tray_windows();
+        arm_tray_watch(hwnd);
     }
 }
 
@@ -417,6 +637,7 @@ fn recheck_taskbar_after_unlock(hwnd: HWND) {
 /// Bring the real taskbar back now, even if it was auto-hidden before we came
 /// along. What it was is remembered, so undocking still puts it back.
 unsafe fn show_taskbar() {
+    show_tray_windows();
     let now = taskbar_state();
     if now & ABS_AUTOHIDE == 0 {
         return;
@@ -436,6 +657,7 @@ fn remember_original(now: u32) {
 }
 
 unsafe fn restore_taskbar() {
+    show_tray_windows();
     let was = TASKBAR_WAS.swap(u32::MAX, Ordering::SeqCst);
     if was != u32::MAX {
         set_taskbar_state(was);
@@ -477,9 +699,48 @@ fn remember_taskbar(was: Option<u32>) {
     });
 }
 
+/// Where the note that we hid the taskbar's windows is written down.
+///
+/// The state note above exists because auto-hide outlives the process. This one
+/// exists for the opposite reason: hidden windows do *not* outlive a shell
+/// restart or a sign-out, so a user whose WinT died with the taskbar hidden can
+/// always get it back with Ctrl+Shift+Esc → restart Windows Explorer, or a
+/// reboot. This note closes the gap in between — a crash the user answers by
+/// starting WinT again, which then puts the taskbar back before anything else.
+fn tray_note() -> Option<std::path::PathBuf> {
+    let local = std::env::var_os("LOCALAPPDATA")?;
+    Some(
+        std::path::PathBuf::from(local)
+            .join("WinT")
+            .join("runtime")
+            .join("sidebar-taskbar-hidden"),
+    )
+}
+
+/// Write or clear the note, off the window thread like its sibling.
+fn remember_tray_hidden(hidden: bool) {
+    std::thread::spawn(move || {
+        let Some(note) = tray_note() else { return };
+        if hidden {
+            if let Some(dir) = note.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&note, "1");
+        } else {
+            let _ = std::fs::remove_file(&note);
+        }
+    });
+}
+
 /// Run once at startup, off the main thread: if a previous run hid the taskbar
-/// and never got to put it back, put it back now.
+/// and never got to put it back, put it back now — both the auto-hide state it
+/// changed and any taskbar window it left hidden.
 pub(crate) fn recover_taskbar() {
+    recover_taskbar_state();
+    recover_tray_windows();
+}
+
+fn recover_taskbar_state() {
     let Some(note) = taskbar_note() else { return };
     let Ok(text) = std::fs::read_to_string(&note) else {
         return;
@@ -487,6 +748,24 @@ pub(crate) fn recover_taskbar() {
     if let Ok(was) = text.trim().parse::<u32>() {
         if HOST.load(Ordering::SeqCst) == 0 && TASKBAR_WAS.load(Ordering::SeqCst) == u32::MAX {
             unsafe { set_taskbar_state(was) };
+        }
+    }
+    let _ = std::fs::remove_file(&note);
+}
+
+/// A taskbar left hidden by a run that crashed. Shown unconditionally: the note
+/// is only ever written while WinT holds it hidden, and this run does not hold
+/// it yet.
+fn recover_tray_windows() {
+    let Some(note) = tray_note() else { return };
+    if !note.exists() {
+        return;
+    }
+    if HOST.load(Ordering::SeqCst) == 0 && !TRAY_HIDDEN.load(Ordering::SeqCst) {
+        unsafe {
+            for hwnd in tray_windows() {
+                let _ = ShowWindowAsync(hwnd, SW_SHOWNA);
+            }
         }
     }
     let _ = std::fs::remove_file(&note);
@@ -537,7 +816,14 @@ pub(crate) fn dock_at_start(app: AppHandle) {
             return;
         }
         let hide = settings["hideTaskbar"].as_bool().unwrap_or(true);
-        let _ = tauri::async_runtime::block_on(sidebar_open(app, None, None, Some(hide)));
+        let completely = settings["hideTaskbarCompletely"].as_bool().unwrap_or(false);
+        let _ = tauri::async_runtime::block_on(sidebar_open(
+            app,
+            None,
+            None,
+            Some(hide),
+            Some(completely),
+        ));
     });
 }
 
@@ -627,7 +913,7 @@ unsafe extern "system" fn sidebar_proc(
                 // something to do anyway.
                 ABN_POSCHANGED | ABN_WINDOWARRANGE | ABN_STATECHANGE => {
                     if wparam.0 as u32 == ABN_STATECHANGE {
-                        ensure_taskbar_hidden();
+                        ensure_taskbar_hidden(hwnd);
                     }
                     if IN_MENU.load(Ordering::SeqCst) {
                         PLACE_DEFERRED.store(true, Ordering::SeqCst);
@@ -669,7 +955,7 @@ unsafe extern "system" fn sidebar_proc(
         WM_WTSSESSION_CHANGE if wparam.0 as u32 == WTS_SESSION_UNLOCK => {
             recheck_taskbar_after_unlock(hwnd);
         }
-        RECHECK_TASKBAR => ensure_taskbar_hidden(),
+        RECHECK_TASKBAR => ensure_taskbar_hidden(hwnd),
         WM_WINDOWPOSCHANGED => notify_pos_changed(hwnd),
         // A menu is opening. Every menu on the rail goes through here,
         // including the one a right-click on a tray icon opens, which is
@@ -702,9 +988,10 @@ unsafe fn undock(hwnd: HWND) {
 
 /// Register as an appbar (once) and take the edge. Must run on the main thread:
 /// the subclass belongs to the thread that owns the window.
-unsafe fn dock(hwnd: HWND, hide_taskbar: bool) {
+unsafe fn dock(hwnd: HWND, hide_taskbar: bool, hide_completely: bool) {
     MAIN_THREAD.store(GetCurrentThreadId(), Ordering::SeqCst);
     HIDE_TASKBAR.store(hide_taskbar, Ordering::SeqCst);
+    HIDE_COMPLETELY.store(hide_completely, Ordering::SeqCst);
     let raw = hwnd.0 as isize;
     if HOST.swap(raw, Ordering::SeqCst) != raw {
         let mut data = appbar_data(hwnd);
@@ -714,7 +1001,7 @@ unsafe fn dock(hwnd: HWND, hide_taskbar: bool) {
         allow_taskbar_created(hwnd);
     }
     if hide_taskbar {
-        auto_hide_taskbar();
+        hide_taskbar_now(hwnd);
     } else {
         restore_taskbar();
     }
@@ -846,9 +1133,11 @@ pub async fn sidebar_open(
     edge: Option<String>,
     width: Option<u32>,
     hide_taskbar: Option<bool>,
+    hide_completely: Option<bool>,
 ) -> Result<SidebarState, String> {
     apply(edge, width);
     let hide_taskbar = hide_taskbar.unwrap_or(true);
+    let hide_completely = hide_completely.unwrap_or(false);
 
     let window = match app.get_webview_window(SIDEBAR_LABEL) {
         Some(window) => window,
@@ -884,36 +1173,43 @@ pub async fn sidebar_open(
     let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
     // Dock before showing: a window that appears centred and then jumps to the
     // edge is the flash this ordering exists to avoid.
-    on_window_thread(&app, hwnd, move |hwnd| unsafe { dock(hwnd, hide_taskbar) }).await?;
+    on_window_thread(&app, hwnd, move |hwnd| unsafe {
+        dock(hwnd, hide_taskbar, hide_completely)
+    })
+    .await?;
     window.show().map_err(|e| e.to_string())?;
     Ok(changed(&app))
 }
 
 /// Change the edge, the width or the taskbar setting of a sidebar that is
 /// already docked. `hide_taskbar` hides the real taskbar, or puts it back the
-/// way it was, straight away.
+/// way it was, straight away; `hide_completely` chooses whether hiding it means
+/// hiding the taskbar's own windows too. Either one may be sent on its own.
 #[tauri::command]
 pub async fn sidebar_configure(
     app: AppHandle,
     edge: Option<String>,
     width: Option<u32>,
     hide_taskbar: Option<bool>,
+    hide_completely: Option<bool>,
 ) -> Result<SidebarState, String> {
     apply(edge, width);
     if let Some(window) = app.get_webview_window(SIDEBAR_LABEL) {
         if HOST.load(Ordering::SeqCst) != 0 {
             let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
             on_window_thread(&app, hwnd, move |hwnd| unsafe {
-                match hide_taskbar {
-                    Some(true) => {
-                        HIDE_TASKBAR.store(true, Ordering::SeqCst);
-                        auto_hide_taskbar()
+                if hide_taskbar.is_some() || hide_completely.is_some() {
+                    if let Some(hide) = hide_taskbar {
+                        HIDE_TASKBAR.store(hide, Ordering::SeqCst);
                     }
-                    Some(false) => {
-                        HIDE_TASKBAR.store(false, Ordering::SeqCst);
-                        show_taskbar()
+                    if let Some(completely) = hide_completely {
+                        HIDE_COMPLETELY.store(completely, Ordering::SeqCst);
                     }
-                    None => {}
+                    if HIDE_TASKBAR.load(Ordering::SeqCst) {
+                        hide_taskbar_now(hwnd);
+                    } else {
+                        show_taskbar();
+                    }
                 }
                 place(hwnd)
             })

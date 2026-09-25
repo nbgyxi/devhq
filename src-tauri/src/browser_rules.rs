@@ -450,8 +450,22 @@ pub fn launch(exe: &str, profile: Option<&str>, url: &str) -> Result<(), String>
         use std::os::windows::process::CommandExt;
         // The browser is its own window from here on; WinT must not be left
         // holding a console or waiting on it.
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        command.creation_flags(DETACHED_PROCESS);
+        //
+        // `CREATE_NO_WINDOW`, not `DETACHED_PROCESS`. Detaching only takes
+        // WinT's console away from the child — a launcher stub built as a
+        // console program then allocates one of its own, which is the black
+        // box that flashes up for a moment before the browser appears. This
+        // flag says there is to be no console at all, so there is nothing to
+        // flash. It is a window flag, not a subsystem one: the browser's own
+        // windows are unaffected.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+        // Nothing here reads the browser's output, and a pipe nobody drains
+        // is a handle WinT would keep holding for as long as the browser runs.
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
     }
     command
         .spawn()
@@ -970,6 +984,28 @@ pub async fn browser_open_url(
     rule_id: Option<String>,
 ) -> Result<(), String> {
     off_thread(move || {
+        // The browser goes first. Remembering the answer means reading the
+        // rules file, rewriting it and flushing it to disk, and every
+        // millisecond of that was a millisecond the link sat there not
+        // opening. Nothing below needs the browser to have started, so the
+        // click now costs one `CreateProcess` and the bookkeeping happens
+        // behind the browser that is already coming up.
+        let launched = launch(&target.exe, target.profile.as_deref(), &url);
+        if launched.is_ok() {
+            let _ = app.emit(
+                "browser:routed",
+                serde_json::json!({
+                    "url": url,
+                    "browser": target.browser,
+                    "profile": target.profile_name.clone().or_else(|| target.profile.clone()),
+                    "pattern": "",
+                }),
+            );
+        }
+        // Written even when the browser would not start, so a browser that
+        // has been moved or uninstalled does not also cost the answer and
+        // make WinT ask the same question again next time.
+        let remembered = (|| -> Result<(), String> {
         match remember.as_deref().filter(|scope| !scope.is_empty()) {
             // "Always this one": the rule that shortlisted this link had
             // several browsers on it and the user has just settled it. The
@@ -1015,22 +1051,17 @@ pub async fn browser_open_url(
             }
             None => {}
         }
+        Ok(())
+        })();
         // A link that came through a shortlist still went through that rule,
         // whichever branch of it the user took.
         if let Some(id) = rule_id.as_deref() {
             count_use(&app, id);
         }
-        launch(&target.exe, target.profile.as_deref(), &url)?;
-        let _ = app.emit(
-            "browser:routed",
-            serde_json::json!({
-                "url": url,
-                "browser": target.browser,
-                "profile": target.profile_name.or(target.profile),
-                "pattern": "",
-            }),
-        );
-        Ok(())
+        // A browser that would not start is the more useful thing to say, so
+        // it is the error that survives.
+        launched?;
+        remembered
     })
     .await
     .unwrap_or_else(|| Err("Opening that link timed out.".into()))

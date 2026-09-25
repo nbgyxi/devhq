@@ -148,7 +148,8 @@
 
   const drawScopes = () => {
     const link = current();
-    const host = hostOf(currentUrl());
+    const url = currentUrl();
+    const host = hostOf(url);
     const domain = registrable(host);
     // A link that came through a shortlist has a rule already. The useful
     // answer there is not a fourth way to write a new rule, it is whether to

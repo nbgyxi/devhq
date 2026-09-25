@@ -164,6 +164,13 @@
      *  indices, and the row a Shift-click measures from. */
     fileSelection: new Set(),
     fileAnchor: null,
+    /** How much of the line the engine may take, and what the pacer is doing
+     *  with that right now. WinT's own, not the engine's: the engine is only
+     *  ever told the number these two produce. */
+    pace: null,
+    paceState: null,
+    /** Set while the connection is being measured, with how far along it is. */
+    measuring: null,
     /** Set while a command is in flight, so the buttons can say so. */
     busy: "",
     notice: "",
@@ -395,6 +402,7 @@
     drawColumns();
     loadLayout();
     loadMarks();
+    loadPace();
     listen();
     if (!st.assocFocusBound) {
       st.assocFocusBound = true;
@@ -491,6 +499,13 @@
       events.listen("torrent:open", () => {
         if (!st.host?.isConnected) return;
         drainPending();
+      }).then((off) => st.unlisten.push(off)).catch(() => {});
+      // The pacer decides every two seconds. Showing the decision is the only
+      // way a switch whose whole effect is invisible can be trusted.
+      events.listen("torrent:pace", (event) => {
+        if (!st.host?.isConnected) return;
+        st.paceState = event.payload;
+        if (st.tab === "settings") drawPaceLive();
       }).then((off) => st.unlisten.push(off)).catch(() => {});
       events.listen("torrent:engine", (event) => {
         if (!st.host?.isConnected) return;
@@ -1525,11 +1540,20 @@ Click to open in Explorer` : "";
           </section>
 
           <section class="awake-panel">
-            <header>${icon("speed")}<strong>How much load</strong></header>
-            <label class="tr-setrow"><span>Download speed</span>
-              <select data-tr-dlimit></select></label>
-            <label class="tr-setrow"><span>Upload speed</span>
-              <select data-tr-ulimit></select></label>
+            <header>${icon("speed")}<strong>How much of the line</strong></header>
+            <label class="tr-setrow"><span>Give way to other apps<small>The cap drops the moment anything else needs the connection, and climbs back when it goes quiet.</small></span>
+              <input type="checkbox" data-tr-adaptive /></label>
+            <div class="tr-pacelive" data-tr-pacelive hidden></div>
+            <label class="tr-setrow tr-slider"><span>Download at most<em data-tr-dmax></em></span>
+              <input type="range" data-tr-dlimit min="0" max="0" step="1" /></label>
+            <label class="tr-setrow tr-slider"><span>Upload at most<em data-tr-umax></em></span>
+              <input type="range" data-tr-ulimit min="0" max="0" step="1" /></label>
+            <div class="tr-setrow"><span>Your connection<small data-tr-ceiling></small></span>
+              <button type="button" class="btn" data-tr-measure>${icon("network_check")}<span data-tr-measurelabel>Measure</span></button></div>
+          </section>
+
+          <section class="awake-panel">
+            <header>${icon("tune")}<strong>How much work</strong></header>
             <label class="tr-setrow"><span>Download at most</span>
               <select data-tr-active></select></label>
             <label class="tr-setrow"><span>Peers per torrent</span>
@@ -1549,20 +1573,23 @@ Click to open in Explorer` : "";
 
           <section class="awake-panel tr-enginepanel">
             <header>${icon("memory")}<strong>The engine</strong></header>
+            <label class="tr-setrow"><span>Start with WinT<small>Keep downloading and seeding whether or not this tool is open. Off, the engine runs only while the tool is.</small></span>
+              <input type="checkbox" data-tr-autostart /></label>
             <div class="tr-setrow"><span data-tr-enginestat></span>
               <button type="button" class="btn" data-tr-restart>${icon("restart_alt")}<span>Restart</span></button></div>
           </section>
         </div>`;
-      fillOptions(view.querySelector("[data-tr-dlimit]"), speedOptions());
-      fillOptions(view.querySelector("[data-tr-ulimit]"), speedOptions());
+      // A slider reports every pixel it is dragged through. The label follows
+      // each of those; only letting go sends anything to the engine.
+      view.addEventListener("input", sliderMoved);
+      view.addEventListener("click", settingsClicked);
       fillOptions(view.querySelector("[data-tr-active]"), [1, 2, 3, 4, 6, 8, 12, 16].map((n) => [n, String(n)]));
       fillOptions(view.querySelector("[data-tr-peers]"), [16, 32, 64, 128, 256, 512].map((n) => [n, String(n)]));
       view.addEventListener("change", settingChanged);
     }
 
     setText(view.querySelector("[data-tr-folder]"), s.downloadFolder || "");
-    setValue(view.querySelector("[data-tr-dlimit]"), String(s.downloadBps ?? 0));
-    setValue(view.querySelector("[data-tr-ulimit]"), String(s.uploadBps ?? 0));
+    drawPace(view);
     setValue(view.querySelector("[data-tr-active]"), String(s.maxActive));
     setValue(view.querySelector("[data-tr-peers]"), String(s.peerLimit));
     const seed = view.querySelector("[data-tr-seed]");
@@ -1571,15 +1598,201 @@ Click to open in Explorer` : "";
     drawAssocPanel();
 
     const e = st.engine || {};
+    const autostart = view.querySelector("[data-tr-autostart]");
+    // Only when it differs, and never while it is being changed: writing to a
+    // checkbox the pointer is on takes the tick back from under the user.
+    if (autostart && autostart !== document.activeElement && autostart.checked !== !!e.autostart) {
+      autostart.checked = !!e.autostart;
+    }
     setText(view.querySelector("[data-tr-enginestat]"),
       e.state === "running"
         ? `${e.engine || "Running"} · pid ${e.pid} · ${bytes(e.memoryBytes)}${e.restarts ? ` · restarted ${e.restarts}×` : ""}`
         : e.message || e.state || "Not running");
   }
 
-  function speedOptions() {
-    const steps = [0, 128, 256, 512, 1024, 2048, 5120, 10240, 20480, 51200];
-    return steps.map((kb) => [kb * 1024, kb === 0 ? "No limit" : `${kb >= 1024 ? `${kb / 1024} MB` : `${kb} KB`}/s`]);
+  // ------------------------------------------------------- how much of the line
+
+  function loadPace() {
+    invoke("torrent_pace")
+      .then((view) => { st.pace = view.pace; st.paceState = view.state; drawSettings(); })
+      .catch(() => {});
+  }
+
+  /** Sends part of the pacing settings and keeps what comes back. Shown as
+   *  chosen straight away, like every other setting here: the backend's answer
+   *  is what is kept, but the switch must move under the finger. */
+  function savePace(patch) {
+    st.pace = { ...st.pace, ...patch };
+    invoke("torrent_pace_set", { patch })
+      .then((view) => { st.pace = view.pace; st.paceState = view.state; drawSettings(); })
+      .catch((error) => { note(String(error)); loadPace(); });
+  }
+
+  function drawPace(view) {
+    const pace = st.pace;
+    if (!pace) return;
+    const adaptive = view.querySelector("[data-tr-adaptive]");
+    if (adaptive && adaptive !== document.activeElement && adaptive.checked !== !!pace.adaptive) {
+      adaptive.checked = !!pace.adaptive;
+    }
+    // Never while it is being dragged: writing to a slider under the pointer
+    // takes the handle out of the hand holding it.
+    const down = view.querySelector("[data-tr-dlimit]");
+    const up = view.querySelector("[data-tr-ulimit]");
+    // The scale itself follows the ceiling, so measuring the line reshapes
+    // the sliders rather than leaving them promising speeds it cannot reach.
+    const top = String(speedSteps().length - 1);
+    for (const slider of [down, up]) {
+      if (slider && slider.max !== top) slider.max = top;
+    }
+    if (down && down !== document.activeElement) down.value = String(bpsStep(pace.maxDownBps));
+    if (up && up !== document.activeElement) up.value = String(bpsStep(pace.maxUpBps));
+    setText(view.querySelector("[data-tr-dmax]"), stepLabel(down ? down.value : 0));
+    setText(view.querySelector("[data-tr-umax]"), stepLabel(up ? up.value : 0));
+    setText(view.querySelector("[data-tr-ceiling]"), ceilingLine());
+    const measure = view.querySelector("[data-tr-measure]");
+    if (measure) {
+      measure.disabled = !!st.measuring;
+      // Not `querySelector("span")`: the icon is a span, and it comes first.
+      setText(measure.querySelector("[data-tr-measurelabel]"), st.measuring ? "Measuring…" : "Measure");
+    }
+    drawPaceLive();
+  }
+
+  /** What the ceiling is, and — just as important — where it came from. A cap
+   *  worked out from a guess has to say that it is a guess. */
+  function ceilingLine() {
+    const pace = st.pace;
+    if (!pace) return "";
+    if (st.measuring) return st.measuring;
+    if (!pace.ceilingDownBps) {
+      // Not a dead end: the first time a download genuinely fills the line,
+      // that becomes the ceiling by itself. Measuring only gets there sooner,
+      // and gets the upload side too.
+      return "Not measured yet — the ceiling is learned from the fastest this PC is seen to go. Measure to set it now.";
+    }
+    const stamp = new Intl.DateTimeFormat(undefined, {
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+    });
+    const when = pace.ceilingSource === "measured" && pace.measuredAtMs
+      ? "measured " + stamp.format(new Date(pace.measuredAtMs))
+      : "the fastest this PC has been seen to go";
+    const up = pace.ceilingUpBps ? ` · ${speed(pace.ceilingUpBps)} up` : "";
+    return `${speed(pace.ceilingDownBps)} down${up} — ${when}`;
+  }
+
+  /** The decision, as it is being made. Redrawn on its own every two seconds,
+   *  so the rest of the panel is not rebuilt for a number that always moves. */
+  function drawPaceLive() {
+    const line = st.host?.querySelector("[data-tr-pacelive]");
+    if (!line) return;
+    const pace = st.pace;
+    const live = st.paceState;
+    line.hidden = !pace?.adaptive;
+    if (line.hidden || !live) return;
+    const busy = live.otherDownBps + live.otherUpBps > 0;
+    const cap = live.capDownBps ? speed(live.capDownBps) : "everything it can get";
+    line.dataset.trYield = live.yielding ? "1" : "";
+    // Which limit is doing the deciding, by name. A cap that is neither what
+    // the slider says nor what the line can do is the one thing here that
+    // looks like a bug when it is not.
+    const why = busy && pace.ceilingDownBps
+      ? ` (${speed(pace.ceilingDownBps)} ${pace.ceilingSource === "measured" ? "measured" : "seen so far"}, less what they are using and a tenth held back)`
+      : "";
+    setText(line, busy
+      ? `Other apps are using ${speed(live.otherDownBps)} down, ${speed(live.otherUpBps)} up — the engine is held to ${cap}${why}.`
+      : `Nothing else is using the connection. The engine may take ${cap}.`);
+  }
+
+  /** The slider label follows the drag; the value is only sent on release,
+   *  which is the `change` the settings handler already listens for. */
+  function sliderMoved(event) {
+    const target = event.target;
+    if (target.matches("[data-tr-dlimit]")) setText(st.host.querySelector("[data-tr-dmax]"), stepLabel(target.value));
+    else if (target.matches("[data-tr-ulimit]")) setText(st.host.querySelector("[data-tr-umax]"), stepLabel(target.value));
+  }
+
+  /** Measuring the line. It is the one thing in this tool that reaches a
+   *  server of its own, so it happens on a press and never on a timer. */
+  function settingsClicked(event) {
+    if (!event.target.closest("[data-tr-measure]") || st.measuring) return;
+    st.measuring = "Starting the test…";
+    drawSettings();
+    window.wintWork?.beginWork("torrent-measure", "Measuring the connection");
+    const events = window.__TAURI__.event;
+    let stop = null;
+    events?.listen("speedtest:progress", (progress) => {
+      const phase = progress.payload;
+      st.measuring = phase.bps ? `${phase.label} — ${speed(phase.bps)}` : `${phase.label}…`;
+      setText(st.host?.querySelector("[data-tr-ceiling]"), st.measuring);
+    }).then((off) => { stop = off; }).catch(() => {});
+    invoke("torrent_pace_measure")
+      .then((view) => { st.pace = view.pace; st.paceState = view.state; })
+      .catch((error) => note(String(error)))
+      .finally(() => {
+        stop?.();
+        st.measuring = null;
+        window.wintWork?.endWork("torrent-measure");
+        drawSettings();
+      });
+  }
+
+  // The slider positions, in KB/s. Not linear: the difference between 128 and
+  // 512 KB/s is what somebody on a slow line is actually choosing between, and
+  // a linear scale would bury all of it in the first two pixels. Position 0 is
+  // "no limit", at the top rather than the bottom, so dragging right always
+  // means more.
+  const SPEED_STEPS = [64, 128, 256, 512, 1024, 2048, 3072, 5120, 8192, 12288, 20480, 30720, 51200, 81920, 131072, 0];
+
+  /** The scale the sliders actually use.
+   *
+   *  Once the line's capacity is known, the steps above it are dropped: a
+   *  slider whose right-hand half is speeds this connection cannot reach is a
+   *  slider that lies about what moving it does, and it is what made a cap of
+   *  "20 MB/s" sit at 7 while the ceiling was the thing deciding. The top
+   *  position stays No limit rather than the ceiling itself, because a ceiling
+   *  that was learned rather than measured is only the fastest this PC has
+   *  been *seen* to go — a floor under the truth, never a lid on it. */
+  function speedSteps() {
+    const ceiling = st.pace?.ceilingDownBps || 0;
+    if (!ceiling) return SPEED_STEPS;
+    // One step past the ceiling is kept, so the last real position is a cap
+    // slightly above capacity rather than a little under it.
+    const kb = ceiling / 1024;
+    const under = SPEED_STEPS.filter((step) => step > 0 && step <= kb * 1.25);
+    return under.length ? [...under, 0] : SPEED_STEPS;
+  }
+
+  /** Bytes per second for a slider position; 0 is no limit. */
+  function stepBps(index) {
+    return (speedSteps()[Number(index)] || 0) * 1024;
+  }
+
+  /** The position that best represents a cap in bytes per second. Anything
+   *  between two steps rounds to the nearer, so a value measured rather than
+   *  chosen still lands the handle somewhere sensible. */
+  function bpsStep(bps) {
+    const steps = speedSteps();
+    if (!bps) return steps.length - 1;
+    const kb = bps / 1024;
+    // A cap set before the scale shrank can be higher than anything left on
+    // it. That is No limit now in every sense that matters: it is above the
+    // whole range the slider can express.
+    if (kb > steps[steps.length - 2]) return steps.length - 1;
+    let best = 0;
+    for (let i = 0; i < steps.length - 1; i += 1) {
+      if (Math.abs(steps[i] - kb) < Math.abs(steps[best] - kb)) best = i;
+    }
+    return best;
+  }
+
+  function stepLabel(index) {
+    const bps = stepBps(index);
+    if (bps) return speed(bps);
+    // What "no limit" actually comes to, when that is known — otherwise the
+    // top of the slider is the one position that says nothing.
+    const ceiling = st.pace?.ceilingDownBps;
+    return ceiling ? `No limit (about ${speed(ceiling)})` : "No limit";
   }
 
   function fillOptions(select, pairs) {
@@ -1595,9 +1808,24 @@ Click to open in Explorer` : "";
     const view = st.host.querySelector('[data-tr-view="settings"]');
     const target = event.target;
     const patch = {};
-    if (target.matches("[data-tr-dlimit]")) patch.downloadBps = Number(target.value) || null;
-    else if (target.matches("[data-tr-ulimit]")) patch.uploadBps = Number(target.value) || null;
-    else if (target.matches("[data-tr-active]")) patch.maxActive = Number(target.value);
+    // Not an engine setting: this one is WinT's own, and it starts or stops
+    // the engine rather than being sent to it.
+    if (target.matches("[data-tr-autostart]")) {
+      const enabled = target.checked;
+      window.wintWork?.beginWork("torrent-autostart", enabled ? "Keeping the torrent engine running" : "Letting the torrent engine stop with the tool");
+      invoke("torrent_autostart_set", { enabled })
+        .then((engine) => { st.engine = engine; drawBanner(); drawSettings(); })
+        .catch((error) => { st.engine = { ...st.engine, message: String(error) }; target.checked = !enabled; drawBanner(); })
+        .finally(() => window.wintWork?.endWork("torrent-autostart"));
+      return;
+    }
+    // The two speed sliders are not the engine's settings: the pacer owns the
+    // caps, because it is the thing that moves them, and it is the one that
+    // must have the last word on what the engine is told.
+    if (target.matches("[data-tr-adaptive]")) return savePace({ adaptive: target.checked });
+    if (target.matches("[data-tr-dlimit]")) return savePace({ maxDownBps: stepBps(target.value) });
+    if (target.matches("[data-tr-ulimit]")) return savePace({ maxUpBps: stepBps(target.value) });
+    if (target.matches("[data-tr-active]")) patch.maxActive = Number(target.value);
     else if (target.matches("[data-tr-peers]")) patch.peerLimit = Number(target.value);
     else if (target.matches("[data-tr-seed]")) patch.seedWhenFinished = target.checked;
     else return;

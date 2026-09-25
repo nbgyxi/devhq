@@ -356,7 +356,7 @@ window.wintHome = (() => {
       torrent ? {
         key: "torrent", icon: "download", label: "Torrent engine", on: ["running", "starting", "not-responding"].includes(torrent.value?.state), records: false, tool: "torrents",
         detail: torrent.error ? "Could not be read" : torrent.value?.state === "running"
-          ? `Running${torrent.value.engine ? ` · ${torrent.value.engine}` : ""}${torrent.value.pid ? ` · PID ${torrent.value.pid}` : ""}`
+          ? `Running${torrent.value.engine ? ` · ${torrent.value.engine}` : ""}${torrent.value.pid ? ` · PID ${torrent.value.pid}` : ""}${torrent.value.autostart ? "" : " · only while the tool is open"}`
           : torrent.value?.state === "starting" ? "Starting…"
             : torrent.value?.state === "not-responding" ? "Not responding · waiting for recovery"
               : torrent.value?.state === "failed" ? `Failed${torrent.value.message ? ` · ${torrent.value.message}` : ""}`
@@ -423,7 +423,9 @@ window.wintHome = (() => {
           reason: on ? "Turned on from Home" : "",
         }) });
       } else if (key === "torrent") {
-        home.readings.set("torrent", { value: await invoke(on ? "torrent_start" : "torrent_stop") });
+        // Not plain start/stop: this switch is the standing choice, so it has
+        // to still be on after a restart. The engine follows it either way.
+        home.readings.set("torrent", { value: await invoke("torrent_autostart_set", { enabled: on }) });
       }
     } catch (error) {
       if (key === "torrent") home.readings.set("torrent", { value: { state: "failed", message: String(error) } });

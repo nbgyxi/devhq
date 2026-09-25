@@ -114,6 +114,10 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+/// What the engine itself reported moving, from the newest snapshot. Read by
+/// the pacer, which subtracts it from the adapter's total.
+static ENGINE_DOWN_BPS: AtomicU64 = AtomicU64::new(0);
+static ENGINE_UP_BPS: AtomicU64 = AtomicU64::new(0);
 /// Set while `start` is putting a helper up, so the watchdog and a second
 /// caller do not both try at once.
 static STARTING: AtomicBool = AtomicBool::new(false);
@@ -123,6 +127,16 @@ static STARTING: AtomicBool = AtomicBool::new(false);
 /// deadlock. A flag costs no lock, and the watchdog is already the one place
 /// that turns a fault into a restart.
 static PIPE_BROKEN: AtomicBool = AtomicBool::new(false);
+
+/// The user's standing choice: bring the engine up with WinT and leave it up,
+/// rather than only while the Torrents tool happens to be open. Read from the
+/// durable store once at start-up and kept here, because `status()` runs on
+/// threads that have no `AppHandle` and must never touch the disk.
+static AUTOSTART: AtomicBool = AtomicBool::new(false);
+
+/// Where that choice is written down. `ui_state`, not `localStorage`: a tick
+/// made a moment before the window closed has to still be there next time.
+const AUTOSTART_KEY: &str = "torrent-autostart";
 
 // ---------------------------------------------------------------------------
 
@@ -165,6 +179,11 @@ pub struct EngineStatus {
     pub diagnostics: Vec<String>,
     /// Why it is not running, when it is not.
     pub message: Option<String>,
+    /// Whether the engine is meant to be up whether or not the tool is open.
+    /// Opening the tool starts it either way; this is the user's standing
+    /// answer to "keep it running", and the only part of it that survives
+    /// WinT closing.
+    pub autostart: bool,
 }
 
 struct Running {
@@ -477,7 +496,26 @@ fn state_dir() -> Option<PathBuf> {
 }
 
 pub fn init(app: AppHandle) {
-    let _ = APP.set(app);
+    let _ = APP.set(app.clone());
+    // The saved choice, and nothing else, decides whether a helper comes up
+    // now. Reading one small file is the whole cost for anyone who has never
+    // turned this on, and it happens on a thread of its own so the window is
+    // drawn while it happens.
+    std::thread::Builder::new()
+        .name("torrent-autostart".into())
+        .spawn(move || {
+            let on = crate::ui_state::read(&app, AUTOSTART_KEY)
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            AUTOSTART.store(on, Ordering::SeqCst);
+            if !on {
+                return;
+            }
+            diagnose("The torrent engine is set to start with WinT.".to_string());
+            let status = start();
+            broadcast(&status);
+        })
+        .ok();
 }
 
 /// Put a helper up. Safe to call when one is already running — it returns the
@@ -627,6 +665,12 @@ fn start_inner() -> EngineStatus {
         engine.latest_snapshot = None;
         generation
     };
+    // A fresh helper reads its own saved settings, so whatever cap this side
+    // last sent is no longer necessarily in force. The pacer must decide from
+    // scratch rather than skip a tick because it "already sent" this number.
+    ENGINE_DOWN_BPS.store(0, Ordering::Relaxed);
+    ENGINE_UP_BPS.store(0, Ordering::Relaxed);
+    crate::torrent_pace::forget_sent();
 
     diagnose(format!(
         "Started torrent engine PID {pid} (generation {generation})."
@@ -794,6 +838,17 @@ fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>)
                         engine.resuming = 0;
                         engine.resumed = 0;
                         engine.resuming_name = None;
+                        // The pacer needs the engine's own throughput to work
+                        // out what the *rest* of the PC is using, and the snapshot
+                        // is where that number already arrives.
+                        ENGINE_DOWN_BPS.store(
+                            data.get("downloadBps").and_then(Value::as_u64).unwrap_or(0),
+                            Ordering::Relaxed,
+                        );
+                        ENGINE_UP_BPS.store(
+                            data.get("uploadBps").and_then(Value::as_u64).unwrap_or(0),
+                            Ordering::Relaxed,
+                        );
                         engine.latest_snapshot = Some(data);
                         engine.snapshot_dirty = true;
                         engine.last_beat = Some(Instant::now());
@@ -1040,6 +1095,7 @@ pub fn status() -> EngineStatus {
             .map(|at| at.elapsed().as_millis().min(u64::MAX as u128) as u64),
         diagnostics: engine.diagnostics.iter().cloned().collect(),
         message: engine.message.clone(),
+        autostart: AUTOSTART.load(Ordering::SeqCst),
     }
 }
 
@@ -1444,6 +1500,35 @@ pub async fn torrent_start() -> Result<EngineStatus, String> {
     })
 }
 
+/// The standing choice to keep the engine running. Turning it on starts the
+/// engine now as well, and turning it off stops it: the switch on Home is the
+/// engine's on/off switch, and it has to mean the same thing after a restart
+/// as it did when it was clicked.
+#[tauri::command]
+pub async fn torrent_autostart_set(app: AppHandle, enabled: bool) -> Result<EngineStatus, String> {
+    off!({
+        // Written before anything is started or stopped, so a WinT that dies
+        // in the middle still comes back to the choice the user made.
+        crate::ui_state::write(&app, AUTOSTART_KEY, &json!(enabled))?;
+        AUTOSTART.store(enabled, Ordering::SeqCst);
+        if enabled {
+            let status = start();
+            broadcast(&status);
+            if status.state == "failed" {
+                return Err(status
+                    .message
+                    .unwrap_or_else(|| "The torrent engine would not start.".into()));
+            }
+            Ok(status)
+        } else {
+            stop_inner("stopped");
+            let status = self::status();
+            broadcast(&status);
+            Ok(status)
+        }
+    })
+}
+
 /// Stop the engine without removing its persisted torrents. Starting it again
 /// resumes the same queue.
 #[tauri::command]
@@ -1641,4 +1726,42 @@ pub async fn torrent_peers(id: u64) -> Result<Value, String> {
 #[tauri::command]
 pub async fn torrent_settings(patch: Value) -> Result<Value, String> {
     off!(request_started("settings", patch, REQUEST_TIMEOUT))
+}
+
+// ---------------------------------------------------------------------------
+// What the pacer needs
+// ---------------------------------------------------------------------------
+
+/// Whether there is a helper up and answering. The pacer samples the adapter
+/// only while there is something to pace.
+pub fn is_running() -> bool {
+    engine()
+        .lock()
+        .map(|engine| engine.running.is_some() && engine.state == "running")
+        .unwrap_or(false)
+}
+
+/// The engine's own throughput, from the newest snapshot. Stale by at most one
+/// snapshot, which is a third of a second — well inside the pacer's tick.
+pub fn last_rates() -> (u64, u64) {
+    (
+        ENGINE_DOWN_BPS.load(Ordering::Relaxed),
+        ENGINE_UP_BPS.load(Ordering::Relaxed),
+    )
+}
+
+/// Applies a rate cap, in bytes per second; zero is no limit.
+///
+/// Blocking, and deliberately not a command: this is the pacer's own path in,
+/// called from its thread. A failure is dropped on purpose — the pacer decides
+/// again in two seconds, and an engine that is down or restarting will be
+/// given the current cap by the next tick anyway.
+pub fn set_rate_caps(down_bps: u64, up_bps: u64) {
+    let patch = json!({
+        "downloadBps": if down_bps == 0 { Value::Null } else { json!(down_bps) },
+        "uploadBps": if up_bps == 0 { Value::Null } else { json!(up_bps) },
+    });
+    if let Err(error) = request("settings", patch, REQUEST_TIMEOUT) {
+        diagnose(format!("Could not apply the speed limit: {error}"));
+    }
 }
