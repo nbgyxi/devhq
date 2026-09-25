@@ -390,6 +390,7 @@
       if (event.target.classList?.contains("tr-diagnostics")) st.diagOpen = event.target.open;
     }, true);
     node.querySelector("[data-tr-scroll]").addEventListener("scroll", () => drawRows(), { passive: true });
+    watchSize(node.querySelector("[data-tr-scroll]"), drawRows);
 
     drawColumns();
     loadLayout();
@@ -1042,6 +1043,32 @@
     for (let i = 0; i < wanted; i++) fillRow(box.children[i], rows[first + i]);
   }
 
+  /** Redraws a virtual list whenever its viewport changes size.
+   *
+   *  A virtualized list is only correct for the size and scroll position it was
+   *  last drawn at. Popping the tool out into its own window, or back into the
+   *  dock, hands the same rows a different viewport: the browser clamps the
+   *  scroll position to the new height, but nothing tells the list, so the rows
+   *  stay parked at the offset the old window had and the table looks empty
+   *  with a few rows stranded at the bottom. Watching the scroll box covers
+   *  every one of those — pop out, pop in, window resize, sidebar drag, and the
+   *  first frame after a pane goes from hidden (height 0) to shown.
+   *
+   *  The redraw waits for the next frame so a resize arriving while the layout
+   *  is still settling cannot re-enter the observer. */
+  function watchSize(el, draw) {
+    if (!el || typeof ResizeObserver !== "function") return;
+    let queued = false;
+    new ResizeObserver(() => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        draw();
+      });
+    }).observe(el);
+  }
+
   /** Makes `box` hold exactly `wanted` rows, reusing the ones already there.
    *
    *  Anything in the box that this pool did not build is replaced rather than
@@ -1251,6 +1278,7 @@ Click to open in Explorer` : "";
           </div>
         </div>`;
       pane.querySelector("[data-tr-fscroll]").addEventListener("scroll", drawFiles, { passive: true });
+      watchSize(pane.querySelector("[data-tr-fscroll]"), drawFiles);
     }
 
     const title = pane.querySelector(".tr-dtitle strong");

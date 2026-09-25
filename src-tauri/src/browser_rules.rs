@@ -12,10 +12,17 @@
 //!   genuinely ambiguous, and the honest answer to "which browser for x.com?"
 //!   is sometimes "one of these three". The chooser goes up with those three
 //!   on it, so what is left to answer is one keypress wide.
-//! * **No rule** and the link is unknown, so WinT asks — with the browsers
-//!   the user shortlisted in `Rules::shortlist`, or all of them if they never
-//!   did. The chooser window is a sibling window of its own, opened with the
-//!   URL already in it, and the answer can be remembered as a new rule.
+//! * **No rule** and the link is unknown, so WinT either asks or sends it to
+//!   the browser named in `Rules::unmatched` — one browser taking everything
+//!   nobody has thought about is what a settled setup looks like. The chooser
+//!   window is a sibling window of its own, opened with the URL already in
+//!   it, and the answer can be remembered as a new rule.
+//! * Whatever the route, only the browsers in `installed_browsers_visible`
+//!   are ever *offered*. A PC accumulates browsers nobody intends to open a
+//!   link in again, and `Rules::hidden` is how they stop being suggested.
+//!
+//! Held down at the moment the link arrives, `Rules::ask_key` beats all of
+//! it and puts the chooser up anyway.
 //!
 //! Nothing here ever opens a link the user did not answer for. Closing the
 //! chooser drops the link, which is a real answer and the only one that
@@ -170,6 +177,17 @@ pub struct Rules {
     /// only for the sites that are exceptions to it.
     #[serde(default)]
     pub unmatched: Option<Target>,
+    /// Where a link no rule matches goes, as a shortlist.
+    ///
+    /// The same shape as a rule's `targets`, because "everything else" is a
+    /// rule like the others - the last one consulted. Empty asks between
+    /// every browser, one opens there without a word, and several put the
+    /// chooser up with those on it and nothing else.
+    ///
+    /// `unmatched` above is the single-browser shape this replaced. It is
+    /// read once, on the next save, and then cleared.
+    #[serde(default)]
+    pub unmatched_targets: Vec<Target>,
     /// Browsers and profiles WinT should behave as though this PC does not
     /// have.
     ///
@@ -216,6 +234,7 @@ impl Default for Rules {
         Self {
             rules: Vec::new(),
             unmatched: None,
+            unmatched_targets: Vec::new(),
             hidden: Vec::new(),
             ask_key: default_ask_key(),
         }
@@ -360,7 +379,7 @@ pub fn resolve<'a>(rules: &'a Rules, url: &str) -> Option<&'a Rule> {
 // ---- launching ---------------------------------------------------------------
 
 /// How a browser is told which profile to use.
-fn kind_of(exe: &str) -> String {
+pub(crate) fn kind_of(exe: &str) -> String {
     let stem = Path::new(exe)
         .file_stem()
         .unwrap_or_default()
@@ -655,10 +674,13 @@ pub fn dispatch(app: &AppHandle, url: String) {
             // case it goes there without a word — or they have not, and the
             // question is worth putting, with the browsers they shortlisted
             // or all of them if they never shortlisted any.
-            if let Some(target) = rules.unmatched.clone() {
-                return open_unmatched(&app, &url, &target);
+            let choices = unmatched_choices(&rules);
+            // Several browsers is the same answer a rule gives when it
+            // shortlists: the question is not settled, only made small.
+            if choices.len() == 1 {
+                return open_unmatched(&app, &url, &choices[0]);
             }
-            return ask(&app, url, Vec::new(), None);
+            return ask(&app, url, choices, None);
         };
         let choices = rule.choices();
         // A rule that shortlists several browsers has not decided anything —
@@ -744,8 +766,8 @@ fn ask(app: &AppHandle, url: String, choices: Vec<Target>, rule: Option<&Rule>) 
     let rules = load(app);
     let guess = rule
         .and_then(|rule| rule.choices().into_iter().next())
-        .or(rules.unmatched)
-        .or_else(|| installed_browsers_visible(&rules).into_iter().next());
+        .or_else(|| unmatched_choices(&rules).into_iter().next())
+        .or_else(|| first_visible_target(&rules));
     if let Some(guess) = guess {
         let _ = launch(&guess.exe, guess.profile.as_deref(), &url);
         let _ = app.emit(
@@ -808,6 +830,34 @@ pub(crate) fn installed_browsers_visible(rules: &Rules) -> Vec<Browser> {
     browsers
 }
 
+/// Where a link no rule matches goes.
+///
+/// Reads the shortlist, falling back to the single browser a version
+/// before this one saved. Nothing else looks at `unmatched` directly, so
+/// this is the only place the two shapes have to be told apart.
+fn unmatched_choices(rules: &Rules) -> Vec<Target> {
+    if !rules.unmatched_targets.is_empty() {
+        return rules.unmatched_targets.clone();
+    }
+    rules.unmatched.clone().into_iter().collect()
+}
+
+/// The first browser and profile WinT would offer, as a target.
+///
+/// The last resort when a link has to open somewhere and nothing has said
+/// where: better the first browser this user has not hidden than a link that
+/// silently goes nowhere.
+fn first_visible_target(rules: &Rules) -> Option<Target> {
+    let browser = installed_browsers_visible(rules).into_iter().next()?;
+    let profile = browser.profiles.first();
+    Some(Target {
+        exe: browser.exe,
+        browser: browser.name,
+        profile: profile.map(|profile| profile.dir.clone()),
+        profile_name: profile.and_then(|profile| profile.name.clone()),
+    })
+}
+
 /// Whether every profile this browser had is on the hidden list — the case
 /// where the profiles are gone but the browser was never named directly.
 fn hides_whole_browser(rules: &Rules, exe: &str) -> bool {
@@ -865,6 +915,16 @@ pub async fn browser_rules_save(app: AppHandle, rules: Rules) -> Result<(), Stri
             rule.targets
                 .dedup_by(|a, b| a.exe.eq_ignore_ascii_case(&b.exe) && a.profile == b.profile);
         }
+        // "Everything else" written in the old single-browser shape becomes
+        // a shortlist of one, the same way a rule does, and stops being
+        // written in two places that could disagree.
+        if rules.unmatched_targets.is_empty() {
+            rules.unmatched_targets.extend(rules.unmatched.take());
+        }
+        rules.unmatched = None;
+        rules
+            .unmatched_targets
+            .dedup_by(|a, b| a.exe.eq_ignore_ascii_case(&b.exe) && a.profile == b.profile);
         rules
             .hidden
             .dedup_by(|a, b| a.exe.eq_ignore_ascii_case(&b.exe) && a.profile == b.profile);
@@ -1041,6 +1101,7 @@ mod tests {
         let rules = Rules {
             rules: vec![rule("example.com", "domain")],
             unmatched: None,
+            unmatched_targets: Vec::new(),
             ask_key: "shift".into(),
             hidden: Vec::new(),
         };
@@ -1058,6 +1119,7 @@ mod tests {
                 rule("https://example.com/admin", "url"),
             ],
             unmatched: None,
+            unmatched_targets: Vec::new(),
             ask_key: "shift".into(),
             hidden: Vec::new(),
         };
@@ -1084,6 +1146,7 @@ mod tests {
         let rules = Rules {
             rules: vec![off],
             unmatched: None,
+            unmatched_targets: Vec::new(),
             ask_key: "shift".into(),
             hidden: Vec::new(),
         };
@@ -1124,6 +1187,7 @@ mod tests {
         let rules = Rules {
             rules: vec![many],
             unmatched: None,
+            unmatched_targets: Vec::new(),
             ask_key: "shift".into(),
             hidden: Vec::new(),
         };

@@ -42,8 +42,25 @@
   const activeScope = () => (current()?.ruleId ? ruleScope : scope);
   let browsersLoaded = false;
 
-  const LAST_KEY = "wint.browser-ask.last";
-  const SCOPE_KEY = "wint.browser-ask.scope";
+  /** Both of the chooser's memories live in one file Rust owns, not in
+   *  `localStorage`. WebView2 flushes its storage when it gets round to it,
+   *  and this window is closed the instant a link is answered - which is
+   *  exactly the moment the last answer was written. A store that can lose
+   *  the most recent write is no memory at all.
+   *
+   *  Reading it is one round trip the first frame does not wait for: the
+   *  window draws with its defaults and moves the highlight when the answer
+   *  arrives, which is well before a key can reach it. */
+  const STATE_KEY = "browser-ask";
+  /** The last browser answered with, as `{ exe, profile }`. */
+  let lastTarget = null;
+
+  const saveState = () => {
+    invoke("ui_state_set", {
+      key: STATE_KEY,
+      value: { last: lastTarget, scope },
+    }).catch(() => { /* a forgotten answer costs one keypress */ });
+  };
 
   const current = () => queue[0] || null;
   const currentUrl = () => queue[0]?.url || "";
@@ -203,19 +220,15 @@
   const rememberSelection = () => {
     const target = targets[selected];
     if (!target) return;
-    try {
-      localStorage.setItem(LAST_KEY, `${target.exe}\u0000${target.profile || ""}`);
-    } catch { /* a forgotten last choice costs one keypress */ }
+    lastTarget = { exe: target.exe, profile: target.profile || "" };
+    saveState();
   };
 
   const restoreSelection = () => {
-    let last = "";
-    try {
-      last = localStorage.getItem(LAST_KEY) || "";
-    } catch { /* nothing remembered */ }
-    if (!last) return;
-    const [exe, profile] = last.split("\u0000");
-    const index = targets.findIndex((target) => target.exe === exe && (target.profile || "") === profile);
+    if (!lastTarget) return;
+    const index = targets.findIndex(
+      (target) => target.exe === lastTarget.exe && (target.profile || "") === (lastTarget.profile || ""),
+    );
     if (index >= 0) selected = index;
   };
 
@@ -328,9 +341,7 @@
       ruleScope = button.dataset.scope;
     } else {
       scope = button.dataset.scope;
-      try {
-        localStorage.setItem(SCOPE_KEY, scope);
-      } catch { /* the default is fine */ }
+      saveState();
     }
     drawScopes();
   });
@@ -387,10 +398,22 @@
 
   listen("browser-ask:url", () => take());
 
-  try {
-    const saved = localStorage.getItem(SCOPE_KEY);
-    if (["domain", "host", "url", ""].includes(saved)) scope = saved;
-  } catch { /* the default is fine */ }
+  invoke("ui_state_get", { key: STATE_KEY })
+    .then((saved) => {
+      if (!saved || typeof saved !== "object") return;
+      if (["domain", "host", "url", ""].includes(saved.scope)) {
+        scope = saved.scope;
+        drawScopes();
+      }
+      if (saved.last && typeof saved.last.exe === "string") {
+        lastTarget = { exe: saved.last.exe, profile: saved.last.profile || "" };
+        // The browsers may already be on screen with the first row
+        // highlighted; move it now that there is something to move it to.
+        restoreSelection();
+        drawTargets();
+      }
+    })
+    .catch(() => { /* the defaults are fine */ });
 
   drawScopes();
   loadBrowsers();

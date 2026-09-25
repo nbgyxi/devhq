@@ -16,6 +16,197 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.159.9",
+      title: "Torrents survive being popped out and back in",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "fix",
+          text: "Popping the Torrents window out, or back into the dock, no longer leaves the transfer list looking almost empty with a few rows stranded at the bottom. The list now redraws whenever its viewport changes size, so a resized or re-docked window shows the torrents that belong where you are scrolled to. The file list inside a torrent behaves the same way.",
+        },
+      ],
+    },
+    {
+      version: "0.159.8",
+      title: "Back returns to the spot you left",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "better",
+          text: "Going back - or up, or through a crumb - now returns a folder to where you had scrolled to, instead of to the first file. Every folder visited keeps its place for as long as the window is open, so stepping into a folder halfway down a long list and back out again costs nothing.",
+        },
+        {
+          kind: "fix",
+          text: "The folder you came from is selected and brought into view again even in a folder of thousands of files, where the row had not been drawn yet and so was never found. When it has to be scrolled to, it now lands in the middle of the list rather than at the very edge.",
+        },
+      ],
+    },
+    {
+      version: "0.159.7",
+      title: "The keyboard works in a folder as soon as it opens",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "fix",
+          text: "Ctrl+A now selects everything in a folder you have just opened, instead of doing nothing until you click a file first. The list only takes the keyboard when nothing else is using it, so a name being typed in the filter box or a folder picked in the tree still keeps it.",
+        },
+        {
+          kind: "fix",
+          text: "Ctrl+V pastes into the folder you just navigated to, without having to click an empty spot in it first. The same goes for Ctrl+C, Ctrl+X, Ctrl+Shift+N and the arrow keys.",
+        },
+      ],
+    },
+    {
+      version: "0.159.6",
+      title: "Shift+Page Down selects a round hundred",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "fix",
+          text: "Shift+Page Down now selects exactly a hundred rows counting the one you clicked, not a hundred and one. The jump moved a hundred rows and then took both ends of the range, so every press came out one over; it now lands wherever the count needs it to.",
+        },
+        {
+          kind: "better",
+          text: "Pressing it again takes the count to two hundred, three hundred and so on, and Shift+Page Up gives a hundred back at a time, stopping at the row you started from instead of running past it into the other direction.",
+        },
+      ],
+    },
+    {
+      version: "0.159.5",
+      title: "Files stays where you were looking",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "fix",
+          text: "Dragging files out of Files no longer throws the list back to the top. The folder is re-read the moment something leaves it, and that re-read blanked the rows to skeletons for an instant - long enough for the view to lose its place, while the selection stayed behind on rows now far below.",
+        },
+        {
+          kind: "better",
+          text: "A folder that changes underneath you - something dropped in, moved out, renamed by another program - is now re-read in place, without the rows flickering away and back.",
+        },
+        {
+          kind: "better",
+          text: "Files remembers how far down it is scrolled, so popping a folder out into its own window opens it where you were looking rather than at the first file.",
+        },
+      ],
+    },
+    {
+      version: "0.159.4",
+      title: "Holding Shift+Page Down keeps selecting",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "fix",
+          text: "Holding Shift+Page Down, or pressing it again, now keeps taking the next hundred rows. Redrawing the list as it scrolled took the focused row out from under the keyboard, so every press after the first went nowhere and the selection stopped growing.",
+        },
+        {
+          kind: "fix",
+          text: "Shift+Page Down in a folder nothing has been clicked in yet now selects the block it promises instead of a single row.",
+        },
+      ],
+    },
+    {
+      version: "0.159.3",
+      title: "Grab a hundred files at a time in Files",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "new",
+          text: "Shift+Page Down now extends the selection by a hundred rows at a time, so picking a known block out of a folder of thousands takes a few presses instead of a long drag. Press it again for the next hundred; Shift+Page Up gives them back. Plain Page Up and Page Down still move by what fits on screen.",
+        },
+        {
+          kind: "new",
+          text: "Ctrl+Shift+Page Down and Ctrl+Shift+Page Up take the next hundred without dropping what was already selected, so blocks from different parts of a folder can be collected in one go.",
+        },
+        {
+          kind: "better",
+          text: "Arrow keys, Home, End and Page Up/Down also work when the list itself has the focus - after clicking the empty space under the last row - starting from whatever is selected instead of doing nothing.",
+        },
+        {
+          kind: "fix",
+          text: "Jumping a long way down a folder of thousands of files no longer loses the keyboard. The row being jumped to had not been drawn yet, so the focus fell back to the page and the next key press went nowhere.",
+        },
+      ],
+    },
+    {
+      version: "0.159.2",
+      title: "Files scrolls smoothly through folders of thousands of items",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "better",
+          text: "Scrolling a folder with thousands of files is smooth again. The list was re-filtering and re-sorting every item on every frame of the scroll, so a folder of 6,500 files stuttered the whole way down; the order is now worked out once and reused until the folder, the filter or the sort actually changes.",
+        },
+        {
+          kind: "better",
+          text: "The rows on screen are only rebuilt when the scroll actually reaches a new row, instead of on every pixel of movement.",
+        },
+        {
+          kind: "better",
+          text: "With thumbnails on, scrolling no longer restarts the preview queue on every frame - it picks up once the scroll comes to rest, so the pictures fill in while the list keeps moving.",
+        },
+      ],
+    },
+    {
+      version: "0.159.1",
+      title: "Torrents stop getting stuck waiting to check",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "fix",
+          text: "Torrents no longer sit on \"Waiting to check\" forever. Pausing one while it was hash-checking left it in a state the queue could never start again, so it waited out the whole session without downloading; those torrents now get put back in line for the checker.",
+        },
+        {
+          kind: "fix",
+          text: "A torrent that is still being checked no longer takes a download slot from the queue before anyone knows whether it is already finished.",
+        },
+        {
+          kind: "better",
+          text: "A torrent you paused while it was checking now says \"Paused\" instead of claiming it is waiting to check.",
+        },
+      ],
+    },
+    {
+      version: "0.159.0",
+      title: "Suggestions get a page, rules save themselves",
+      date: "2026-09-24",
+      changes: [
+        ["new", "Sites worth a rule has a page of its own, next to Rules and Settings, with the box for trying a link on it. It was a panel inside the Everything else rule, which is not what either of them is about."],
+        ["new", "A suggestion now shows the profiles it read off the machine as ticks. Untick one before adding and the rule is made without it — and the row stays on the page once it has been added, so a rule that guessed four profiles can be cut to three where it was made."],
+        ["new", "Everything else is a rule like any other: it takes several browsers, not one. Tick none and links ask between every browser, tick one and they open there, tick a few and the chooser offers those and nothing else."],
+        ["better", "Rules save themselves. There is no Save button and no Cancel: what you type and tick is the rule, written as you make it, and the list beside it keeps up."],
+        ["fix", "Ticking or unticking a single profile under a browser in Settings now saves. Only the browser heading, which takes every profile at once, was being acted on; a tick on one profile went nowhere and came back off."],
+        ["fix", "Choosing which browsers a rule may send a link to works again for the same reason."],
+        ["fix", "Ticking a browser in Settings no longer throws the page back to the top. Only the list itself is redrawn, so the row you just ticked stays under the pointer."],
+        ["better", "The link chooser remembers the browser you last answered with, and whether you were making rules by domain or by page, in a file WinT writes and flushes itself. It kept them in the webview's own storage, which is written when the webview gets round to it — and the chooser closes the instant a link is answered, so the answer it had just been given was the one most likely to be lost."],
+      ],
+    },
+    {
+      version: "0.158.3",
+      title: "Checking files stops accusing the wrong torrent",
+      date: "2026-09-24",
+      changes: [
+        ["fix", "Checking one torrent's files no longer leaves another one reporting File state changed. An unfinished download is read from end to end during a check, and the parts that have not arrived yet were being read as files that had gone missing."],
+      ],
+    },
+    {
+      version: "0.158.2",
+      title: "The search box says how to get to it",
+      date: "2026-09-24",
+      changes: [
+        ["better", "Ctrl+F is written in the search field itself, so the way to land the caret there is visible rather than something to know. It steps aside as soon as you are typing."],
+        ["better", "The search field is a little wider than in the last version."],
+      ],
+    },
+    {
+      version: "0.158.1",
+      title: "A narrower search box",
+      date: "2026-09-24",
+      changes: [
+        ["better", "The search field in the title bar is half the width it was, leaving more of the bar to grab the window by."],
+      ],
+    },
+    {
       version: "0.158.0",
       date: "2026-09-24",
       title: "Every link goes where you meant it to",
@@ -23,10 +214,12 @@ window.wintChangelog = (() => {
         ["new", "Link Router, a new tool: make WinT the default browser and it never shows a page itself - it sends each link to the browser and the profile you chose for that site. Work links to the work profile, everything else to your own, without ever checking which window you are in first."],
         ["new", "A link from a site with no rule yet puts up a chooser: pick a browser with the arrows or a number key, and say whether to remember it. What each choice would mean is written out rather than named - x.com + *.x.com, x.com only, or the address itself - so there is nothing to work out before answering. Cancel, the close button and Esc all leave without opening anything and without writing anything down."],
         ["new", "A rule can name several browsers instead of one. Links for a site that genuinely belongs in whichever browser you are already thinking in put the chooser up with just those two or three on it, and one keypress settles it - or settles the rule for good."],
-        ["new", "A shortlist of the browsers and profiles worth offering, so a PC with three browsers and five profiles between them does not show all eight every time a new site comes up. The chooser keeps a way through to the rest."],
+        ["new", "Settings for which browsers WinT may use at all. Untick a whole browser - or one profile of one - and it stops being offered anywhere: not in the chooser, not when writing a rule, not in the suggestions. A PC that has collected four browsers and eight profiles stops showing all eight every time a new site comes up."],
         ["new", "Or skip the question entirely: name one browser as where anything with no rule goes, and only the sites you have written rules for are treated specially. The status bar still says where each one went, so a site that should have had a rule of its own is easy to notice."],
         ["new", "Hold Shift while clicking a link and you are asked anyway, whatever the rules say - and the chooser then offers to settle the rule it overrode rather than writing a second one beside it. Ctrl or Alt instead, or nothing at all, if you would rather."],
-        ["new", "Set up from the browsers you already have open. WinT reads the address bar of each browser window and offers one rule per site, pointed at the profile that site is open in - add them one at a time or all at once. A site open in two profiles becomes a rule that asks between those two."],
+        ["new", "\"Everything else\" sits at the top of the rules as a rule in its own right - because that is what it is, the one every link falls through to. Selecting it opens the settings, and its line says what it currently does without opening anything."],
+        ["new", "Set up from the browsers you already have. WinT offers one rule per site, pointed at the profile that site belongs to, from three things it can see: the tab in front of you in each window, the tabs each Chrome or Edge profile has open, and the sites each profile has actually been used for over the last two months. Add them one at a time or all at once, and each row says why it is being offered - open now, or 40 visits."],
+        ["new", "Settings is its own page now, next to the rules rather than buried in one of them: whether Windows opens links with WinT at all, which browsers and profiles WinT may use, and the override key."],
         ["new", "The rules list shows which rule has actually been used and how often, and a box to try an address against the rules before a real link depends on it."],
         ["better", "Chrome, Edge, Brave, Vivaldi, Opera and Thorium profiles are listed by the name you gave them rather than by their folder, and Firefox, LibreWolf, Waterfox, Zen and Floorp profiles are read from their own profile list."],
         ["better", "A routed link opens nothing of WinT's own - no window comes forward and nothing is stolen from the browser - but the status bar still names where the link went for a moment afterwards."],

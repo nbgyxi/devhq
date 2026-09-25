@@ -1,45 +1,47 @@
-//! What is open in the browsers on this PC, right now.
+//! Which sites each browser profile is actually for.
 //!
-//! Writing a routing rule from nothing means remembering which sites you use
-//! and which profile you use them in. Reading them off the screen instead is
+//! Writing routing rules from nothing means remembering which sites you use
+//! and which profile you use them in. Reading that off the machine instead is
 //! the difference between a feature somebody configures once and a feature
-//! they actually finish setting up: the browsers are already open, already
-//! sorted into profiles, and already showing exactly the sites worth having a
-//! rule for.
+//! they actually finish setting up: the browsers already know.
 //!
-//! ## What this can and cannot see
+//! ## Three sources, weakest claim last
 //!
-//! **The active tab of each browser window, and nothing else.** There is no
-//! way to read a Chromium window's background tabs from outside the process
-//! without turning on its remote debugging port, which is not something an
-//! app should do to somebody's browser. So a window with twelve tabs
-//! contributes the one that is showing.
+//! * **The address bar of each window**, through UI Automation — the same
+//!   accessibility API a screen reader uses. Certainly open and certainly
+//!   current, but only the tab in front: a window's background tabs are not
+//!   in the accessibility tree as URLs at all.
+//! * **Chromium's session file**, `User Data<Profile>SessionsSession_<n>`,
+//!   which is what it restores from after a crash and therefore holds every
+//!   tab. Undocumented, so the parser is timid: anything it cannot read
+//!   confidently it skips. It also lags a few seconds behind reality.
+//! * **The profile's history**, which both Chromium and Firefox keep in
+//!   SQLite. Not open at all — but the best answer to what a profile is *for*,
+//!   which is the question a routing rule actually asks. A site visited forty
+//!   times in the work profile belongs there whether a tab is open or not.
 //!
-//! That is a real limit and the UI says so rather than implying a full list.
-//! It is also enough: the tab somebody is looking at is a fair sample of what
-//! that profile is for.
+//! They are merged rather than chosen between, because each covers what the
+//! others miss, and every suggestion says which of them it came from.
 //!
-//! ## How it reads them
+//! Nothing is injected, no memory is read and no browser is modified. The
+//! history file is locked while the browser runs, so it is copied, read once
+//! and deleted.
 //!
-//! UI Automation, the same accessibility API a screen reader uses. Each
-//! browser window's address bar is an Edit control with a Value pattern, and
-//! the value is the URL. Nothing is injected, no memory is read and no
-//! browser is modified — this is the supported way to ask a window what it is
-//! showing.
-//!
-//! The profile a window belongs to comes from its AppUserModelID, which is
-//! how the docked sidebar already tells two Chrome profiles apart.
+//! The profile a *window* belongs to comes from its AppUserModelID, which is
+//! how the docked sidebar already tells two Chrome profiles apart. A session
+//! file and a history file belong to their profile folder directly.
 //!
 //! ## The window must never block
 //!
 //! A UI Automation call crosses into another process and waits for it to
-//! answer. A hung browser would therefore hang whatever thread asked. Every
-//! call here is made from `off_thread`, and the whole sweep is bounded: it
-//! only looks at visible top-level windows belonging to a known browser.
+//! answer, and a history database is a file copy. A hung browser would
+//! therefore hang whatever thread asked. Every one of these runs inside
+//! `off_thread`, and the window sweep is bounded: only visible top-level
+//! windows belonging to a known browser.
 
 use serde::Serialize;
 
-/// One browser window's active tab.
+/// One site, and the browser profile it belongs to.
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenTab {
@@ -57,6 +59,14 @@ pub struct OpenTab {
     pub browser: String,
     pub profile: Option<String>,
     pub profile_name: Option<String>,
+    /// True when this really is a tab that is open right now, false when it
+    /// came out of the profile's history. The suggestions say which, because
+    /// "you have this open" and "you go here a lot" are different reasons to
+    /// agree with a rule.
+    pub open: bool,
+    /// How often this profile has visited the site. Zero for an open tab
+    /// that history has nothing to say about.
+    pub visits: u32,
 }
 
 /// Every browser window's active tab, one entry per window.
@@ -253,19 +263,48 @@ fn read_tabs() -> Vec<OpenTab> {
             browser: browser_name.clone(),
             profile,
             profile_name,
+            open: true,
+            visits: 0,
         });
     }
-    // Grouped by where they are open, which is the order the suggestions read
-    // best in: everything one profile is being used for, together.
-    tabs.sort_by(|a, b| {
-        a.browser
-            .to_ascii_lowercase()
-            .cmp(&b.browser.to_ascii_lowercase())
-            .then_with(|| a.profile_name.cmp(&b.profile_name))
+    // Three readings of the same machine, weakest claim last:
+    //
+    //  * the address bar of each window - certainly open, certainly current;
+    //  * Chromium's session file - every tab, including the ones behind the
+    //    one showing, though it lags a few seconds behind reality;
+    //  * the profile's history - not open at all, but the best answer to
+    //    what a profile is actually *for*, which is the question a routing
+    //    rule asks.
+    //
+    // Merged rather than chosen between, because each covers what the others
+    // miss. A URL seen by more than one keeps the strongest claim: open beats
+    // history, and a visit count is kept wherever it was found.
+    let mut all = tabs;
+    for tab in session_tabs(&known).into_iter().chain(history_tabs(&known)) {
+        match all.iter_mut().find(|known| {
+            known.host == tab.host
+                && known.exe.eq_ignore_ascii_case(&tab.exe)
+                && known.profile == tab.profile
+        }) {
+            Some(found) => {
+                found.open = found.open || tab.open;
+                found.visits = found.visits.max(tab.visits);
+                if found.title.is_empty() {
+                    found.title = tab.title;
+                }
+            }
+            None => all.push(tab),
+        }
+    }
+    // Open first, then by how much the profile uses the site: the order the
+    // suggestions are worth agreeing with.
+    all.sort_by(|a, b| {
+        b.open
+            .cmp(&a.open)
+            .then_with(|| b.visits.cmp(&a.visits))
             .then_with(|| a.host.cmp(&b.host))
     });
-
-    tabs
+    all
 }
 
 /// The URL out of one browser window's address bar.
@@ -306,6 +345,421 @@ fn read_url(
         }
     }
     None
+}
+
+
+// ---- every tab, not just the one showing ------------------------------------
+//
+// UI Automation can only reach the address bar, which holds the tab in front.
+// The rest of a window's tabs are not in the accessibility tree as URLs at all
+// — the tab strip exposes their titles and nothing more.
+//
+// Chromium does write them down, though: `User Data\<Profile>\Sessions\
+// Session_<n>` is the file it restores from after a crash, and it holds a
+// navigation record per tab. It is an undocumented format and this parser is
+// deliberately timid about it — anything it cannot read confidently it skips,
+// and a file it cannot make sense of at all yields nothing rather than
+// guesses. The address-bar read stays regardless, so a browser whose session
+// file is unreadable still contributes the tab in front of the user.
+//
+// The file also lags: Chromium flushes session updates every few seconds, so a
+// tab opened a moment ago may not be in it yet.
+
+/// `SNSS`, the magic every session file starts with.
+const SNSS_MAGIC: &[u8; 4] = b"SNSS";
+/// The command that records where a tab has navigated to. Its payload is a
+/// pickle: the tab's id, the entry index, then the URL.
+const COMMAND_UPDATE_TAB_NAVIGATION: u8 = 6;
+/// The command that records a tab being closed. Without honouring it, every
+/// tab closed since the browser started would be suggested as though it were
+/// still open.
+const COMMAND_TAB_CLOSED: u8 = 16;
+
+/// A reader over the little-endian, 4-byte-aligned encoding Chromium's
+/// `Pickle` uses. Every read is checked; running off the end is an ordinary
+/// outcome for a file being written while it is read.
+struct Pickle<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Pickle<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, at: 0 }
+    }
+
+    fn u32(&mut self) -> Option<u32> {
+        let end = self.at.checked_add(4)?;
+        let value = u32::from_le_bytes(self.bytes.get(self.at..end)?.try_into().ok()?);
+        self.at = end;
+        Some(value)
+    }
+
+    /// A pickled string: a length, the bytes, then padding to the next
+    /// four-byte boundary.
+    fn string(&mut self) -> Option<String> {
+        let len = self.u32()? as usize;
+        // A session file holds URLs, not documents. A length beyond this is a
+        // misread rather than a very long address.
+        if len > 64 * 1024 {
+            return None;
+        }
+        let end = self.at.checked_add(len)?;
+        let text = String::from_utf8_lossy(self.bytes.get(self.at..end)?).into_owned();
+        self.at = end + (4 - (len % 4)) % 4;
+        Some(text)
+    }
+}
+
+/// Every URL Chromium's session file says this profile has open, newest
+/// navigation per tab.
+fn session_urls(profile_dir: &std::path::Path) -> Vec<String> {
+    let Some(file) = newest_session_file(profile_dir) else {
+        return Vec::new();
+    };
+    let Ok(bytes) = std::fs::read(&file) else {
+        return Vec::new();
+    };
+    // Magic, then a version this does not otherwise care about.
+    if bytes.len() < 8 || &bytes[..4] != SNSS_MAGIC {
+        return Vec::new();
+    }
+    let mut at = 8usize;
+    // Latest navigation per tab, and the tabs that have since been closed.
+    let mut latest: Vec<(u32, u32, String)> = Vec::new();
+    let mut closed: Vec<u32> = Vec::new();
+    while at + 2 <= bytes.len() {
+        let size = u16::from_le_bytes([bytes[at], bytes[at + 1]]) as usize;
+        at += 2;
+        if size == 0 || at + size > bytes.len() {
+            break;
+        }
+        let command = &bytes[at..at + size];
+        at += size;
+        let Some((id, payload)) = command.split_first() else {
+            continue;
+        };
+        match *id {
+            COMMAND_UPDATE_TAB_NAVIGATION => {
+                let mut pickle = Pickle::new(payload);
+                // The pickle's own length header, then the fields.
+                if pickle.u32().is_none() {
+                    continue;
+                }
+                let Some(tab) = pickle.u32() else { continue };
+                let Some(index) = pickle.u32() else { continue };
+                let Some(url) = pickle.string() else { continue };
+                if !url.starts_with("http://") && !url.starts_with("https://") {
+                    continue;
+                }
+                // One entry per tab: a tab that has been navigated five times
+                // is one tab showing the fifth page, not five suggestions.
+                match latest.iter_mut().find(|(known, _, _)| *known == tab) {
+                    Some(entry) if entry.1 <= index => *entry = (tab, index, url),
+                    Some(_) => {}
+                    None => latest.push((tab, index, url)),
+                }
+            }
+            COMMAND_TAB_CLOSED => {
+                let mut pickle = Pickle::new(payload);
+                if pickle.u32().is_none() {
+                    continue;
+                }
+                if let Some(tab) = pickle.u32() {
+                    closed.push(tab);
+                }
+            }
+            _ => {}
+        }
+    }
+    latest
+        .into_iter()
+        .filter(|(tab, _, _)| !closed.contains(tab))
+        .map(|(_, _, url)| url)
+        .collect()
+}
+
+/// The session file Chromium is currently writing: the newest `Session_*` in
+/// the profile's `Sessions` folder.
+fn newest_session_file(profile_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    for entry in std::fs::read_dir(profile_dir.join("Sessions")).ok()?.flatten() {
+        let path = entry.path();
+        if !path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("Session_"))
+        {
+            continue;
+        }
+        let Ok(when) = entry.metadata().and_then(|meta| meta.modified()) else {
+            continue;
+        };
+        if best.as_ref().map_or(true, |(known, _)| when > *known) {
+            best = Some((when, path));
+        }
+    }
+    best.map(|(_, path)| path)
+}
+
+/// Every tab of every Chromium profile on this PC, from the session files.
+///
+/// Attributed by profile folder rather than by window, because a session file
+/// belongs to a profile and says nothing about which window a tab is in —
+/// which is exactly the attribution a routing rule needs anyway.
+#[cfg(windows)]
+fn session_tabs(known: &[(String, String, String)]) -> Vec<OpenTab> {
+    let mut found = Vec::new();
+    for (_, exe, name) in known {
+        if crate::browser_rules::kind_of(exe) != "chromium" {
+            continue;
+        }
+        for data in crate::appbar::user_data_dirs(exe) {
+            let Ok(entries) = std::fs::read_dir(&data) else {
+                continue;
+            };
+            let before = found.len();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let dir = entry.file_name().to_string_lossy().into_owned();
+                if dir != "Default" && !dir.starts_with("Profile ") {
+                    continue;
+                }
+                let profile_name = crate::appbar::profile_name(&data, &dir);
+                for url in session_urls(&path) {
+                    let Some(host) = crate::browser_rules::host_of(&url) else {
+                        continue;
+                    };
+                    found.push(OpenTab {
+                        url,
+                        host,
+                        title: String::new(),
+                        exe: exe.clone(),
+                        browser: name.clone(),
+                        profile: Some(dir.clone()),
+                        profile_name: profile_name.clone(),
+                        open: true,
+                        visits: 0,
+                    });
+                }
+            }
+            // The first user-data folder that really had profiles in it is
+            // this install's; the rest of the candidates are other browsers.
+            if found.len() > before {
+                break;
+            }
+        }
+    }
+    found
+}
+
+// ---- what this profile is actually used for ---------------------------------
+//
+// The session file says what is open now. History says what a profile is *for*,
+// which is the better question when the job is proposing routing rules: a site
+// visited forty times in the work profile belongs there whether or not a tab
+// happens to be open on it this minute.
+//
+// Both browsers keep it in SQLite, which this app already links. The file is
+// locked while the browser runs, so it is copied first — a few megabytes, read
+// once, off-thread, and deleted straight after.
+
+/// How far back to look. Long enough to cover a working week off, short enough
+/// that a site somebody stopped using is not still shaping their routing.
+const HISTORY_DAYS: i64 = 60;
+/// Per profile. Enough to cover what anyone actually uses; the rows are
+/// grouped by host afterwards, so this is far more than the suggestions shown.
+const HISTORY_ROWS: usize = 600;
+
+/// Chromium counts microseconds from 1601; Unix counts seconds from 1970.
+const EPOCH_OFFSET_MICROS: i64 = 11_644_473_600_000_000;
+
+fn unix_micros_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_micros() as i64)
+        .unwrap_or_default()
+}
+
+/// Read one history database, whatever shape it is in.
+///
+/// `since` is in the units that database uses, and the query names its own
+/// columns, because Chromium and Firefox agree on nothing but SQLite.
+fn read_history(db: &std::path::Path, query: &str, since: i64) -> Vec<(String, String, u32)> {
+    if !db.is_file() {
+        return Vec::new();
+    }
+    // The browser holds the file open and locked. Copying it is the supported
+    // way to read one, and it is what every history viewer does.
+    let Ok(temp) = tempfile::Builder::new().prefix("wint-history").tempdir() else {
+        return Vec::new();
+    };
+    let copy = temp.path().join("history.db");
+    if std::fs::copy(db, &copy).is_err() {
+        return Vec::new();
+    }
+    // A WAL means the newest visits are in a side file; without it they are
+    // simply missing, which is a smaller problem than failing to open.
+    for side in ["-wal", "-shm"] {
+        let mut from = db.as_os_str().to_os_string();
+        from.push(side);
+        let mut to = copy.as_os_str().to_os_string();
+        to.push(side);
+        let _ = std::fs::copy(from, to);
+    }
+    let Ok(connection) = rusqlite::Connection::open(&copy) else {
+        return Vec::new();
+    };
+    let Ok(mut statement) = connection.prepare(query) else {
+        return Vec::new();
+    };
+    let Ok(rows) = statement.query_map([since, HISTORY_ROWS as i64], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            row.get::<_, i64>(2)?.clamp(0, i64::from(u32::MAX)) as u32,
+        ))
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
+/// Every Chromium and Firefox profile's history, as tabs.
+///
+/// `visits` carries how often the site was opened, which is what makes one
+/// suggestion more worth agreeing with than another.
+fn history_tabs(known: &[(String, String, String)]) -> Vec<OpenTab> {
+    const CHROMIUM_QUERY: &str = "SELECT url, title, visit_count FROM urls \
+         WHERE last_visit_time > ?1 AND visit_count > 0 \
+         ORDER BY visit_count DESC LIMIT ?2";
+    const FIREFOX_QUERY: &str = "SELECT url, title, visit_count FROM moz_places \
+         WHERE last_visit_date > ?1 AND visit_count > 0 \
+         ORDER BY visit_count DESC LIMIT ?2";
+
+    let cutoff_unix = unix_micros_now() - HISTORY_DAYS * 24 * 60 * 60 * 1_000_000;
+    let mut found = Vec::new();
+    for (_, exe, name) in known {
+        let kind = crate::browser_rules::kind_of(exe);
+        let profiles: Vec<(std::path::PathBuf, String, Option<String>)> = match kind.as_str() {
+            "chromium" => chromium_profile_dirs(exe),
+            "firefox" => firefox_profile_dirs(exe),
+            _ => Vec::new(),
+        };
+        for (dir, profile, profile_name) in profiles {
+            let (db, query, since) = match kind.as_str() {
+                "chromium" => (
+                    dir.join("History"),
+                    CHROMIUM_QUERY,
+                    cutoff_unix + EPOCH_OFFSET_MICROS,
+                ),
+                _ => (dir.join("places.sqlite"), FIREFOX_QUERY, cutoff_unix),
+            };
+            for (url, title, visits) in read_history(&db, query, since) {
+                let Some(host) = crate::browser_rules::host_of(&url) else {
+                    continue;
+                };
+                found.push(OpenTab {
+                    url,
+                    host,
+                    title,
+                    exe: exe.clone(),
+                    browser: name.clone(),
+                    profile: Some(profile.clone()),
+                    profile_name: profile_name.clone(),
+                    open: false,
+                    visits,
+                });
+            }
+        }
+    }
+    found
+}
+
+/// Every Chromium profile folder of one install, with the names to call them.
+fn chromium_profile_dirs(exe: &str) -> Vec<(std::path::PathBuf, String, Option<String>)> {
+    #[cfg(not(windows))]
+    {
+        let _ = exe;
+        return Vec::new();
+    }
+    #[cfg(windows)]
+    {
+        let mut found = Vec::new();
+        for data in crate::appbar::user_data_dirs(exe) {
+            let Ok(entries) = std::fs::read_dir(&data) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let dir = entry.file_name().to_string_lossy().into_owned();
+                if dir != "Default" && !dir.starts_with("Profile ") {
+                    continue;
+                }
+                let name = crate::appbar::profile_name(&data, &dir);
+                found.push((path, dir, name));
+            }
+            if !found.is_empty() {
+                break;
+            }
+        }
+        found
+    }
+}
+
+/// The same for Firefox, whose profiles are named in an ini file and live in
+/// folders whose names nobody would recognise.
+fn firefox_profile_dirs(exe: &str) -> Vec<(std::path::PathBuf, String, Option<String>)> {
+    let Some(appdata) = std::env::var_os("APPDATA") else {
+        return Vec::new();
+    };
+    let stem = std::path::Path::new(exe)
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let vendor: &str = match stem.as_str() {
+        "librewolf" => "librewolf",
+        "waterfox" => "Waterfox",
+        "zen" => "zen",
+        "floorp" => "Floorp",
+        _ => r"Mozilla\Firefox",
+    };
+    let root = std::path::PathBuf::from(&appdata).join(vendor);
+    let Ok(text) = std::fs::read_to_string(root.join("profiles.ini")) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for block in text.split('[') {
+        if !block.starts_with("Profile") {
+            continue;
+        }
+        let value = |key: &str| {
+            block
+                .lines()
+                .find_map(|line| line.strip_prefix(key).map(|value| value.trim().to_string()))
+        };
+        let (Some(name), Some(path)) = (value("Name="), value("Path=")) else {
+            continue;
+        };
+        // `IsRelative=0` means an absolute path; anything else is under the
+        // profiles root.
+        let dir = if value("IsRelative=").as_deref() == Some("0") {
+            std::path::PathBuf::from(&path)
+        } else {
+            root.join(path.replace('/', "\\"))
+        };
+        if dir.is_dir() {
+            found.push((dir, name.clone(), Some(name)));
+        }
+    }
+    found
 }
 
 #[cfg(test)]

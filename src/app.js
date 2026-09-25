@@ -5393,6 +5393,7 @@ function mountShell() {
       <div class="field search" id="search-box">${icon("search")}
         <input id="search-input" spellcheck="false"
                placeholder="Search projects, tools and commands..." />
+        <kbd class="search-kbd" aria-hidden="true">Ctrl+F</kbd>
         <div class="search-menu" id="search-menu" hidden></div>
       </div>
       <div class="drag drag-fill"></div>

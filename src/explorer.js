@@ -84,6 +84,24 @@ const fx = {
   rename: null,
   /** Paths cut to the clipboard from this window, drawn faded until pasted. */
   cut: [],
+  /** Set when a folder has just been listed: the list takes the keyboard once
+   *  it has painted, so Ctrl+A, the arrow keys and Shift+Page Down work on the
+   *  folder you just opened without having to click a file first. */
+  focusList: false,
+  /** path -> how far down that folder was scrolled when it was left. Back, Up
+   *  and a crumb all return to a folder the user has already read part of, and
+   *  landing at the first file throws away the place they had got to. Kept for
+   *  the session only, and only for the folders actually visited. */
+  scrollMemory: new Map(),
+  /** Set while a remembered offset is on its way onto the scroller, so the
+   *  paint takes it from here rather than reading back the folder that is
+   *  still on screen. */
+  scrollRestore: false,
+  /** How far down the list is scrolled. Kept here rather than read back off
+   *  the scroller at paint time: a re-read of the folder paints skeletons
+   *  first, and a short list clamps the scroller to the top, so by the time
+   *  the rows come back there is nothing left to put the view back to. */
+  scrollTop: 0,
 };
 
 const SIDE_MIN = 64;
@@ -112,6 +130,30 @@ const PREVIEW_PX = 1024;
 const ROW_PX = 31;
 const THUMB_ROW_PX = 84;
 const VIRTUAL_AFTER = 1000;
+/** How far Page Up and Page Down jump while they are extending a selection.
+ *  A page of rows is whatever happens to fit the window - a number nobody can
+ *  count on when the point is to grab a known block of files - so the
+ *  selecting form of the gesture steps a fixed hundred instead, and pressing
+ *  it again takes the next hundred. Plain Page Up and Page Down still move by
+ *  what is on screen, the way every list does. */
+const BLOCK_ROWS = 100;
+
+/** Where Shift+Page has to land for the block to come out round. The selection
+ *  runs from the anchor to the focused row and takes both ends with it, so
+ *  stepping a hundred rows would select a hundred and one. The count is what
+ *  the gesture promises, so it is the count that is worked out here: the first
+ *  press takes a hundred counting the row already selected, the next takes two
+ *  hundred, and the same press in the other direction gives a block back,
+ *  stopping at the anchor rather than running past it. */
+function blockTarget(anchorIndex, at, dir) {
+  const offset = at - anchorIndex;
+  if (offset && Math.sign(offset) !== dir) {
+    const back = offset + dir * BLOCK_ROWS;
+    return anchorIndex + (Math.sign(back) === Math.sign(offset) ? back : 0);
+  }
+  const blocks = Math.floor((Math.abs(offset) + 1) / BLOCK_ROWS) + 1;
+  return anchorIndex + dir * (blocks * BLOCK_ROWS - 1);
+}
 const VIRTUAL_OVERSCAN = 12;
 
 const TRANSFER_KEY = "wint.explorer.popout.v1";
@@ -214,6 +256,7 @@ const segments = (path) => {
   }
   return crumbs;
 };
+const normal = (path) => String(path || "").toLowerCase().replace(/\\+$/, "");
 const same = (a, b) => String(a || "").toLowerCase().replace(/\\+$/, "") === String(b || "").toLowerCase().replace(/\\+$/, "");
 
 // ------------------------------------------------------------------- data
@@ -281,6 +324,14 @@ async function openFolder(path, { push = true, keepFilter = false, focusPath = n
   // next folder would show an empty folder that is not empty.
   if (!keepFilter) { fx.filter = ""; fx.kinds.clear(); fx.exts.clear(); fx.typesOpen = false; }
   if (!same(leaving, path)) {
+    // Leave a mark in the folder being left, and pick up the one left in the
+    // folder being entered - a folder never visited starts at the top.
+    if (leaving && leaving !== THIS_PC) {
+      if (fx.scrollMemory.size > 200) fx.scrollMemory.clear();
+      fx.scrollMemory.set(normal(leaving), fx.scrollTop);
+    }
+    fx.scrollTop = fx.scrollMemory.get(normal(path)) || 0;
+    fx.scrollRestore = true;
     fx.selected = ""; fx.selectedPaths.clear(); fx.selectionAnchor = "";
     fx.previewUrl = ""; previewToken += 1;
   }
@@ -288,6 +339,9 @@ async function openFolder(path, { push = true, keepFilter = false, focusPath = n
   // that row is selected and scrolled into view - a pixel scroll would be wrong
   // if the window was resized while you were away.
   fx.pendingFocus = focusPath || "";
+  // A folder opened by hand is one the user is about to work in. A quiet
+  // re-read is not: nothing was asked for, so nothing takes the keyboard.
+  if (!quiet) fx.focusList = true;
   // This PC is drawn from the drive list the tool already holds. There is no
   // folder to read, so it must not go through a listing that would blank the
   // pane and start work the status bar would then have to end.
@@ -420,7 +474,36 @@ function facets(entries) {
   return { kinds, exts };
 }
 
+// A folder of several thousand files is filtered and sorted on every call, and
+// every scroll frame asks for the list again. The answer only changes when the
+// listing or one of the knobs above it changes, so it is worked out once and
+// handed back until then - otherwise a long folder re-sorts itself sixty times
+// a second and the scroll stutters.
+let visibleCache = null;
+let visibleKey = "";
+
+function visibleCacheKey() {
+  return [
+    fx.filter.trim().toLowerCase(),
+    fx.sort,
+    fx.desc ? "d" : "a",
+    fx.showHidden ? "h" : "",
+    [...fx.kinds].sort().join(","),
+    [...fx.exts].sort().join(","),
+  ].join("|");
+}
+
 function visible() {
+  const key = visibleCacheKey();
+  if (visibleCache && visibleCache.listing === fx.listing && visibleKey === key) return visibleCache.value;
+  visibleCache = { listing: fx.listing, value: computeVisible() };
+  visibleKey = key;
+  // A different list means the rows on screen are stale whatever the scroll says.
+  virtualStart = -1;
+  return visibleCache.value;
+}
+
+function computeVisible() {
   const all = (fx.listing?.entries || []).filter((entry) => fx.showHidden || !entry.hidden);
   const needle = fx.filter.trim().toLowerCase();
   const named = needle ? all.filter((entry) => entry.name.toLowerCase().includes(needle)) : all;
@@ -660,7 +743,10 @@ function announce(dirs) {
 function changed(dirs) {
   for (const dir of dirs) fx.tree.delete(dir);
   if (fx.path !== THIS_PC && dirs.some((dir) => same(dir, fx.path))) {
-    openFolder(fx.path, { push: false, keepFilter: true, focusPath: fx.pendingFocus || null });
+    // Quietly: this folder is already on screen, and something moving in or
+    // out of it is no reason to blank the list back to skeletons - the rows
+    // that did not change must not move under the pointer that just dropped.
+    openFolder(fx.path, { push: false, keepFilter: true, quiet: true, focusPath: fx.pendingFocus || null });
   } else dirty();
 }
 
@@ -977,8 +1063,13 @@ function selection() { return [...fx.selectedPaths]; }
 
 function select(path, { add = false, range = false } = {}) {
   const shown = visible().shown;
-  if (range && fx.selectionAnchor) {
-    const from = shown.findIndex((entry) => same(entry.path, fx.selectionAnchor));
+  // Shift extends from the anchor, and the anchor is wherever the selection
+  // last started. Keyboard selection in a folder nobody has clicked in yet has
+  // no anchor at all, so the current row stands in for one - otherwise the
+  // first Shift+Page Down would pick a single row instead of a block.
+  const anchor = fx.selectionAnchor || fx.selected;
+  if (range && anchor) {
+    const from = shown.findIndex((entry) => same(entry.path, anchor));
     const to = shown.findIndex((entry) => same(entry.path, path));
     if (from >= 0 && to >= 0) {
       if (!add) fx.selectedPaths.clear();
@@ -1017,6 +1108,12 @@ function focusRowAt(index, { range = false, keep = false } = {}) {
   const top = shown.indexOf(target) * rowHeight;
   if (top < rows.scrollTop) rows.scrollTop = top;
   else if (top + rowHeight > rows.scrollTop + rows.clientHeight) rows.scrollTop = top + rowHeight - rows.clientHeight;
+  // A jump of a hundred rows in a long folder lands outside the rows the
+  // virtual window is holding, and focusing a row that is not there yet drops
+  // the keyboard back to the page - the next key press would go nowhere. So
+  // the window is repainted for the new scroll position first, and only then
+  // is the row focused.
+  paintVirtualRows(rows, { now: true });
   requestAnimationFrame(() => fx.host?.querySelector(`[data-fx-item="${CSS.escape(target.path)}"]`)?.focus());
 }
 
@@ -1045,8 +1142,9 @@ async function loadPreview() {
 
 function paintSelection() {
   if (!fx.host) return;
+  const picks = new Set(selection().map(normal));
   for (const row of fx.host.querySelectorAll(".fx-row[data-fx-item]")) {
-    const picked = selection().some((path) => same(row.dataset.fxItem, path));
+    const picked = picks.has(normal(row.dataset.fxItem));
     row.classList.toggle("picked", picked);
     row.setAttribute("aria-selected", String(picked));
     row.tabIndex = same(row.dataset.fxItem, fx.selected) ? 0 : -1;
@@ -1063,15 +1161,29 @@ function paintSelection() {
 function applyPendingFocus() {
   if (!fx.pendingFocus || !fx.host || fx.loading) return;
   const path = fx.pendingFocus;
-  const row = [...fx.host.querySelectorAll(".fx-row[data-fx-item]")]
-    .find((el) => same(el.dataset.fxItem, path));
+  const shown = visible().shown;
+  // By index, not by element: in a long folder the row is very likely one of
+  // the thousands the virtual window is not holding, and looking for it in the
+  // DOM would simply not find it.
+  const index = shown.findIndex((entry) => same(entry.path, path));
   fx.pendingFocus = "";
-  if (!row) return;
+  if (index < 0) return;
   fx.selected = path;
   fx.selectedPaths = new Set([path]);
   fx.selectionAnchor = path;
+  const rows = fx.host.querySelector(".fx-rows");
+  const rowHeight = fx.thumbsOn ? THUMB_ROW_PX : ROW_PX;
+  const top = index * rowHeight;
+  // The remembered offset has usually put the folder back where it was, and
+  // the child is on screen already - then nothing moves. Only when it is not
+  // does the list go and find it, and then it lands in the middle rather than
+  // just inside the edge, so what was around it comes back with it.
+  if (rows && (top < rows.scrollTop || top + rowHeight > rows.scrollTop + rows.clientHeight)) {
+    rows.scrollTop = Math.max(0, top - Math.max(0, Math.floor((rows.clientHeight - rowHeight) / 2)));
+    fx.scrollTop = rows.scrollTop;
+    paintVirtualRows(rows, { now: true });
+  }
   paintSelection();
-  row.scrollIntoView({ block: "nearest" });
 }
 
 function paintPreview() {
@@ -1295,6 +1407,10 @@ function renderRows(shown, scrollTop = 0, viewport = 700) {
     ? Math.min(Math.max(0, Math.floor(scrollTop / rowHeight) - VIRTUAL_OVERSCAN), Math.max(0, shown.length - count))
     : 0;
   const end = Math.min(shown.length, start + count);
+  // Both of these are the same for every row in the slice, and both used to be
+  // rebuilt inside the loop - a whole-list scan per row, per frame.
+  const picks = new Set(selection().map(normal));
+  const cuts = new Set(fx.cut.map(normal));
   const rows = shown.slice(start, end).map((entry, offset) => {
     const kind = kindOf(entry);
     const thumb = fx.thumbs.get(entry.path);
@@ -1306,8 +1422,8 @@ function renderRows(shown, scrollTop = 0, viewport = 700) {
     const name = renaming
       ? `<input class="fx-rename" type="text" spellcheck="false" aria-label="New name for ${esc(entry.name)}">`
       : `<strong>${esc(entry.name)}</strong>`;
-    const picked = selection().some((path) => same(path, entry.path));
-    return `<div class="fx-row${entry.isDir ? " dir" : ""}${entry.hidden || fx.cut.some((path) => same(path, entry.path)) ? " dim" : ""}${picked ? " picked" : ""}${canDelete ? " has-del" : ""}" tabindex="${same(fx.selected, entry.path) ? "0" : "-1"}" role="row" aria-selected="${picked}" data-fx-index="${start + offset}" data-fx-item="${esc(entry.path)}" data-fx-dir="${entry.isDir}" title="${esc(entry.path)}">
+    const picked = picks.has(normal(entry.path));
+    return `<div class="fx-row${entry.isDir ? " dir" : ""}${entry.hidden || cuts.has(normal(entry.path)) ? " dim" : ""}${picked ? " picked" : ""}${canDelete ? " has-del" : ""}" tabindex="${same(fx.selected, entry.path) ? "0" : "-1"}" role="row" aria-selected="${picked}" data-fx-index="${start + offset}" data-fx-item="${esc(entry.path)}" data-fx-dir="${entry.isDir}" title="${esc(entry.path)}">
     <span class="fx-cell name">${slot}${name}</span>
     <span class="fx-cell type">${esc(typeLabel(entry))}</span>
     <span class="fx-cell size">${entry.isDir && !entry.isArchive ? "" : bytes(entry.bytes)}</span>
@@ -1324,17 +1440,47 @@ function renderRows(shown, scrollTop = 0, viewport = 700) {
  *  is not mistaken for the user clicking away from it. */
 let painting = false;
 let virtualFrame = 0;
+/** The first row the virtual window last painted. A scroll of a few pixels
+ *  usually lands on the same row, and rebuilding the same forty rows is the
+ *  one thing a scroll cannot afford to do. */
+let virtualStart = -1;
+/** Pictures are fetched from Rust, so a scroll must not restart that queue on
+ *  every frame - it is kicked once the scroll comes to rest. */
+let thumbTimer = 0;
 
-function paintVirtualRows(rows) {
-  if (!rows || fx.path === THIS_PC || fx.loading || fx.rename || visible().shown.length <= VIRTUAL_AFTER) return;
+function virtualStartFor(shown, scrollTop) {
+  const rowHeight = fx.thumbsOn ? THUMB_ROW_PX : ROW_PX;
+  const count = Math.ceil((fx.host?.querySelector(".fx-rows")?.clientHeight || 700) / rowHeight) + VIRTUAL_OVERSCAN * 2;
+  return Math.min(Math.max(0, Math.floor(scrollTop / rowHeight) - VIRTUAL_OVERSCAN), Math.max(0, shown.length - count));
+}
+
+function paintVirtualRows(rows, { now = false } = {}) {
+  if (!rows || fx.path === THIS_PC || fx.loading || fx.rename) return;
+  const shown = visible().shown;
+  if (shown.length <= VIRTUAL_AFTER) return;
   cancelAnimationFrame(virtualFrame);
-  virtualFrame = requestAnimationFrame(() => {
+  const paint = () => {
     const body = rows.querySelector(".fx-row-body");
     if (!body) return;
-    body.innerHTML = renderRows(visible().shown, rows.scrollTop, rows.clientHeight);
-    paintSelection();
-    loadThumbs();
-  });
+    const start = virtualStartFor(shown, rows.scrollTop);
+    if (start === virtualStart) return;
+    virtualStart = start;
+    // Rewriting the rows throws away the element the keyboard was on. If that
+    // was one of ours, the focus goes back to the selected row once it is
+    // redrawn, so a held Shift+Page Down keeps arriving here.
+    const hadFocus = body.contains(document.activeElement);
+    body.innerHTML = renderRows(shown, rows.scrollTop, rows.clientHeight);
+    if (hadFocus) {
+      const again = fx.selected && body.querySelector(`[data-fx-item="${CSS.escape(fx.selected)}"]`);
+      (again || rows).focus({ preventScroll: true });
+    }
+    if (fx.thumbsOn) {
+      clearTimeout(thumbTimer);
+      thumbTimer = setTimeout(loadThumbs, 120);
+    }
+  };
+  if (now) paint();
+  else virtualFrame = requestAnimationFrame(paint);
 }
 
 /** Turn the crumbs into the editable path, with the whole path selected so
@@ -1383,12 +1529,16 @@ function render() {
   painting = true;
   // Keep the list and tree where the user left them across a rebuild.
   const oldRows = fx.host.querySelector(".fx-rows");
-  const rowsScroll = oldRows?.scrollTop ?? 0;
+  // While a remembered offset is being put back, the scroller still holds the
+  // folder being left, so reading it would overwrite the place we are going to.
+  const rowsScroll = fx.scrollRestore || fx.loading || !oldRows ? fx.scrollTop : (fx.scrollTop = oldRows.scrollTop);
   const rowsViewport = oldRows?.clientHeight || 700;
   const treeScroll = fx.host.querySelector(".fx-tree")?.scrollTop ?? 0;
   const marksScroll = fx.host.querySelector(".fx-marks")?.scrollTop ?? 0;
   const { named, shown, total } = visible();
   const counts = facets(named);
+  // The rows below are written fresh, so the virtual window starts over.
+  virtualStart = -1;
   const filtering = fx.filter || fx.kinds.size || fx.exts.size;
   fx.host.innerHTML = `<header class="tool-head"><button class="btn back tool-back" type="button" data-open-tool="overview">${icon("arrow_back")}Back</button><span class="tool-plate">${icon("folder_open")}</span><span class="tool-title"><strong>Files</strong><small>browse a folder and filter it by type in one click</small></span><button class="tool-popout" type="button" data-popout-tool="explorer"></button><button class="tool-pin" type="button" data-pin-tool="explorer"></button><button class="tool-close" type="button" data-open-tool="overview">${icon("close")}</button></header>
   <div class="fx-body${fx.previewPane ? " with-preview" : ""}">
@@ -1487,7 +1637,29 @@ function render() {
   if (tree) tree.scrollTop = treeScroll;
   const marks = fx.host.querySelector(".fx-marks");
   if (marks) marks.scrollTop = marksScroll;
+  if (!fx.loading) fx.scrollRestore = false;
   applyPendingFocus();
+  giveListFocus();
+}
+
+/** Put the keyboard on the list after a folder has been opened, so the keys
+ *  that work on a folder work on it straight away. It never takes the focus
+ *  off anything the user is using: a box being typed in, a row already
+ *  focused, or another tool's window entirely - only the page itself having
+ *  nothing focused, or the focus sitting on something Files has just
+ *  rewritten, counts as free. */
+function giveListFocus() {
+  if (!fx.focusList || !fx.host || fx.loading) return;
+  const rows = fx.host.querySelector(".fx-rows");
+  if (!rows) return;
+  fx.focusList = false;
+  const active = document.activeElement;
+  if (active && active !== document.body) {
+    // Someone else has the keyboard - another tool, or a box being typed in.
+    if (!fx.host.contains(active)) return;
+    if (active.closest("input, textarea, .fx-tree, .fx-marks")) return;
+  }
+  rows.focus({ preventScroll: true });
 }
 
 // ----------------------------------------------------------------- wiring
@@ -1743,15 +1915,31 @@ function mount(host) {
       select(row.dataset.fxItem, { add: event.ctrlKey, range: event.shiftKey });
       return;
     }
-    if (row && ["ArrowDown", "ArrowUp", "Home", "End", "PageDown", "PageUp"].includes(event.key)) {
+    // The list itself is focusable, so these keys also work straight after
+    // clicking the empty space under the rows - there the walk starts from
+    // whatever is selected, or from the end the key is heading away from.
+    // The list itself is focusable, and a repaint of the virtual window can
+    // take the focused row out from under the keyboard mid-gesture - holding
+    // Shift+Page Down does exactly that. As long as the press did not come
+    // from a text box, a selected row is enough to keep walking the list.
+    const grid = row
+      || (event.target.classList?.contains("fx-rows") ? event.target : null)
+      || (!typingText && fx.selected && fx.path !== THIS_PC ? fx.host.querySelector(".fx-rows") : null);
+    if (grid && ["ArrowDown", "ArrowUp", "Home", "End", "PageDown", "PageUp"].includes(event.key)) {
       event.preventDefault();
       const shown = visible().shown;
-      const at = shown.findIndex((entry) => same(entry.path, current));
+      const found = shown.findIndex((entry) => same(entry.path, current));
+      const down = event.key === "ArrowDown" || event.key === "PageDown";
+      const at = found >= 0 ? found : (down ? -1 : shown.length);
       const page = Math.max(1, Math.floor((fx.host.querySelector(".fx-rows")?.clientHeight || 300) / (fx.thumbsOn ? THUMB_ROW_PX : ROW_PX)));
+      const anchorIndex = event.shiftKey
+        ? shown.findIndex((entry) => same(entry.path, fx.selectionAnchor || fx.selected))
+        : -1;
+      const paged = (dir) => (anchorIndex >= 0 ? blockTarget(anchorIndex, at, dir) : at + dir * (event.shiftKey ? BLOCK_ROWS : page));
       const next = event.key === "Home" ? 0
         : event.key === "End" ? shown.length - 1
-        : event.key === "PageDown" ? at + page
-        : event.key === "PageUp" ? at - page
+        : event.key === "PageDown" ? (event.shiftKey ? paged(1) : at + page)
+        : event.key === "PageUp" ? (event.shiftKey ? paged(-1) : at - page)
         : event.key === "ArrowDown" ? at + 1 : at - 1;
       focusRowAt(next, { range: event.shiftKey, keep: event.ctrlKey });
       return;
@@ -1774,7 +1962,11 @@ function mount(host) {
     dirty();
   });
   host.addEventListener("scroll", (event) => {
-    if (event.target.classList?.contains("fx-rows")) paintVirtualRows(event.target);
+    if (!event.target.classList?.contains("fx-rows")) return;
+    // A paint of its own, or the clamp a shorter list forces, is not the user
+    // scrolling - remembering either would throw away where they were.
+    if (!painting && !fx.loading) fx.scrollTop = event.target.scrollTop;
+    paintVirtualRows(event.target);
   }, true);
   // Clicking away from the rename box keeps the new name, as in Explorer.
   host.addEventListener("focusout", (event) => {
@@ -1987,6 +2179,7 @@ function exportState() {
     sort: fx.sort, desc: fx.desc, showHidden: fx.showHidden, typesOpen: fx.typesOpen,
     thumbsOn: fx.thumbsOn, previewPane: fx.previewPane,
     sideWidth: fx.sideWidth, previewWidth: fx.previewWidth,
+    scrollTop: fx.scrollTop, scrollMemory: [...fx.scrollMemory],
   };
 }
 
@@ -2008,6 +2201,9 @@ function importState(state) {
   fx.path = state.path || THIS_PC;
   fx.listing = state.listing || null;
   fx.error = state.error || "";
+  // A window handed on mid-folder opens where the last one was looking.
+  fx.scrollTop = Number(state.scrollTop) || 0;
+  fx.scrollMemory = new Map(Array.isArray(state.scrollMemory) ? state.scrollMemory : []);
   fx.open = new Set(state.open || []);
   fx.history = state.history || [];
   fx.forward = state.forward || [];

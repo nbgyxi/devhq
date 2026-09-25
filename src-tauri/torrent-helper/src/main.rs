@@ -81,19 +81,23 @@ fn authorized_checks() -> &'static StdMutex<HashSet<String>> {
     ALLOWED.get_or_init(|| StdMutex::new(HashSet::new()))
 }
 
-/// Torrents added during this helper run. Missing files are expected while
-/// their initial piece scan runs: the download has not created them yet.
-fn new_torrents_initializing() -> &'static StdMutex<HashSet<String>> {
-    static INITIALIZING: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
-    INITIALIZING.get_or_init(|| StdMutex::new(HashSet::new()))
+/// Torrents whose piece scan has not finished yet, whether they were just
+/// added or are being read back at startup. A read that fails while a torrent
+/// is being checked says nothing about the user's files: the check walks every
+/// piece, including the parts of an unfinished download that were never
+/// written. Only once a torrent has been seen out of that state does a failed
+/// read mean its files changed underneath the engine.
+fn torrents_being_checked() -> &'static StdMutex<HashSet<String>> {
+    static CHECKING: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
+    CHECKING.get_or_init(|| StdMutex::new(HashSet::new()))
 }
 
 fn note_recovery_read_failure(info_hash: &str) {
-    let is_new = new_torrents_initializing()
+    let is_checking = torrents_being_checked()
         .lock()
         .map(|hashes| hashes.contains(info_hash))
         .unwrap_or(false);
-    if !is_new {
+    if !is_checking {
         if let Ok(mut found) = recovery_mismatches().lock() {
             found.insert(info_hash.to_owned());
         }
@@ -312,9 +316,9 @@ mod rate_tests {
     use super::*;
 
     #[test]
-    fn missing_files_are_expected_while_a_new_torrent_initializes() {
+    fn missing_files_are_expected_while_a_torrent_is_checked() {
         let hash = "fresh-torrent-test".to_string();
-        new_torrents_initializing()
+        torrents_being_checked()
             .lock()
             .unwrap()
             .insert(hash.clone());
@@ -322,7 +326,7 @@ mod rate_tests {
         note_recovery_read_failure(&hash);
 
         assert!(!recovery_mismatches().lock().unwrap().contains(&hash));
-        new_torrents_initializing().lock().unwrap().remove(&hash);
+        torrents_being_checked().lock().unwrap().remove(&hash);
     }
 
     #[test]
@@ -556,11 +560,15 @@ fn build_snapshot(
                 completions_changed = true;
             }
         }
-        if !matches!(
-            &stats.state,
-            librqbit::TorrentStatsState::Initializing { .. }
-        ) {
-            if let Ok(mut hashes) = new_torrents_initializing().lock() {
+        // A torrent goes back into the checking set whenever the engine puts
+        // it back into a scan - a recheck the user asked for does exactly that.
+        if let Ok(mut hashes) = torrents_being_checked().lock() {
+            if matches!(
+                &stats.state,
+                librqbit::TorrentStatsState::Initializing { .. }
+            ) {
+                hashes.insert(t.info_hash.clone());
+            } else {
                 hashes.remove(&t.info_hash);
             }
         }
@@ -587,6 +595,13 @@ fn build_snapshot(
             "needs-check"
         } else if missing.contains(&id) {
             "missing"
+        } else if state.queue.paused.contains(&t.info_hash)
+            && matches!(stats.state, librqbit::TorrentStatsState::Initializing { .. })
+        {
+            // A pause asked for while a torrent was checking leaves the engine
+            // in `Initializing` until the check is picked up again, which for a
+            // paused torrent is never. Say what the user asked for.
+            "paused"
         } else {
             match &stats.state {
                 librqbit::TorrentStatsState::Initializing { queued: true, .. } => "check-queued",
@@ -814,6 +829,17 @@ async fn reconcile(state: &State, missing: &HashSet<usize>) -> HashSet<usize> {
 
     for (id, hash, stats) in items {
         let is_paused = matches!(stats.state, librqbit::TorrentStatsState::Paused);
+        // A torrent that is hash-checking, or waiting its turn to, is not
+        // `Paused` yet and must not be left to the `is_paused` arms below. The
+        // engine answers a pause during initialization by setting a flag the
+        // check reads when it eventually runs, and the state stays
+        // `Initializing` either way. Such a torrent reports neither paused nor
+        // live, so without this it is never started again - the "Waiting to
+        // check" row that never moves.
+        let is_initializing = matches!(
+            stats.state,
+            librqbit::TorrentStatsState::Initializing { .. }
+        );
         let errored = matches!(stats.state, librqbit::TorrentStatsState::Error);
         if errored {
             continue;
@@ -835,6 +861,12 @@ async fn reconcile(state: &State, missing: &HashSet<usize>) -> HashSet<usize> {
             // Forced downloads are deliberately additional to `max_active`;
             // they neither need nor consume a normal queue slot.
             true
+        } else if is_initializing {
+            // Whether this one is finished is exactly what the check is about
+            // to answer, so it cannot be judged against the queue yet. Let it
+            // check - the engine hashes one torrent at a time regardless - and
+            // queue it on the next pass, once its progress is known.
+            true
         } else if stats.finished {
             // A finished torrent seeds without taking a download slot.
             state.settings.seed_when_finished
@@ -846,7 +878,10 @@ async fn reconcile(state: &State, missing: &HashSet<usize>) -> HashSet<usize> {
             false
         };
 
-        if should_run && is_paused {
+        if should_run && (is_paused || is_initializing) {
+            // Starting a torrent that is already checking is a no-op; starting
+            // one whose check a previous pass cancelled is what puts it back in
+            // the queue for the hasher.
             let _ = state
                 .api
                 .api_torrent_action_start(TorrentIdOrHash::Id(id))
@@ -1079,7 +1114,7 @@ async fn handle(state: &Mutex<State>, op: &str, arg: Value) -> Result<Value> {
                 ..Default::default()
             };
 
-            if let Ok(mut hashes) = new_torrents_initializing().lock() {
+            if let Ok(mut hashes) = torrents_being_checked().lock() {
                 hashes.insert(info_hash.clone());
             }
             let added = state
@@ -1087,7 +1122,7 @@ async fn handle(state: &Mutex<State>, op: &str, arg: Value) -> Result<Value> {
                 .api_add_torrent(AddTorrent::from_bytes(torrent_bytes), Some(opts))
                 .await;
             if added.is_err() {
-                if let Ok(mut hashes) = new_torrents_initializing().lock() {
+                if let Ok(mut hashes) = torrents_being_checked().lock() {
                     hashes.remove(&info_hash);
                 }
             }
@@ -1763,6 +1798,13 @@ async fn main() -> Result<()> {
     {
         let saved = read_saved_torrents(&state_dir);
         RESUME_TOTAL.store(saved.len(), Ordering::Relaxed);
+        // Every resumed torrent is about to be read back, and some of them
+        // will be hashed from end to end. Until each one reports a state of
+        // its own, a failed read is the scan reaching a part of the download
+        // that was never written, not a file the user moved away.
+        if let Ok(mut hashes) = torrents_being_checked().lock() {
+            hashes.extend(saved.iter().map(|torrent| torrent.info_hash.clone()));
+        }
         if let Ok(mut list) = saved_torrents().lock() {
             *list = saved;
         }
