@@ -180,7 +180,7 @@ pub async fn search_prepare(app: AppHandle) -> Result<(), String> {
         .visible(false)
         .center()
         .background_color(tauri::webview::Color(12, 13, 17, 255))
-        .initialization_script(r#"document.documentElement.dataset.theme="dark";"#)
+        .initialization_script(theme_script("dark"))
         .build()
         .map(|_| ())
         .map_err(|e| format!("Could not prepare Search: {e}"))
@@ -191,6 +191,27 @@ pub async fn search_prepare(app: AppHandle) -> Result<(), String> {
         return Err("Search was prepared without a window.".into());
     }
     Ok(())
+}
+
+/// JavaScript that sets the theme on the document, safely.
+///
+/// `document.documentElement` is null at document-creation time — which is
+/// precisely when an initialization script runs — and again for a moment
+/// while a page is being torn down and replaced on a reload. Reading
+/// `.dataset` off it there throws `Cannot read properties of null`, and a
+/// throw inside an initialization script can take the rest of that document's
+/// bootstrap down with it, Tauri's own IPC included. What is left then looks
+/// almost right and is the worst kind of broken: the page loads, draws, and
+/// highlights under the pointer, but every tool script died on
+/// `window.__TAURI__` being undefined, so nothing answers a click.
+///
+/// So the write is attempted, and if there is no document yet it is deferred
+/// to the moment there is one.
+pub fn theme_script(theme: &str) -> String {
+    let theme = if theme == "light" { "light" } else { "dark" };
+    format!(
+        r#"(function(){{var t="{theme}";function s(){{var e=document.documentElement;if(!e){{return false}}e.dataset.theme=t;return true}}if(!s()){{document.addEventListener("DOMContentLoaded",s,{{once:true}})}}}})();"#
+    )
 }
 
 /// Open the shell-owned command palette in its own native window. It is a
@@ -206,10 +227,7 @@ pub async fn search_show(
     if let Some(window) = app.get_webview_window(SEARCH_LABEL) {
         let light = theme.as_deref() == Some("light");
         window
-            .eval(format!(
-                r#"document.documentElement.dataset.theme="{}";"#,
-                if light { "light" } else { "dark" }
-            ))
+            .eval(theme_script(if light { "light" } else { "dark" }))
             .map_err(|e| e.to_string())?;
         if let (Some(x), Some(y)) = (x, y) {
             window
@@ -228,10 +246,7 @@ pub async fn search_show(
         tauri::webview::Color(12, 13, 17, 255)
     };
     let page = format!("search.html?theme={}", if light { "light" } else { "dark" });
-    let init_theme = format!(
-        r#"document.documentElement.dataset.theme="{}";"#,
-        if light { "light" } else { "dark" }
-    );
+    let init_theme = theme_script(if light { "light" } else { "dark" });
     let build_app = app.clone();
     off_thread(move || {
         let mut builder =
@@ -330,10 +345,7 @@ pub async fn clipboard_picker_show(
     let binding = serde_json::to_string(&binding.unwrap_or_else(|| "Ctrl+Shift+V".into()))
         .map_err(|e| e.to_string())?;
     window
-        .eval(format!(
-            r#"document.documentElement.dataset.theme="{}";"#,
-            if light { "light" } else { "dark" }
-        ))
+        .eval(theme_script(if light { "light" } else { "dark" }))
         .map_err(|e| e.to_string())?;
     window
         .eval(format!("window.wintClipboardBinding={binding};"))
@@ -477,10 +489,7 @@ pub async fn changelog_show(app: AppHandle, theme: Option<String>) -> Result<(),
     if let Some(window) = app.get_webview_window(CHANGELOG_LABEL) {
         let light = theme.as_deref() == Some("light");
         window
-            .eval(format!(
-                r#"document.documentElement.dataset.theme="{}";"#,
-                if light { "light" } else { "dark" }
-            ))
+            .eval(theme_script(if light { "light" } else { "dark" }))
             .map_err(|e| e.to_string())?;
         focus_search_window(&window)?;
         return Ok(());
@@ -545,8 +554,8 @@ pub async fn maturity_show(
     if let Some(window) = app.get_webview_window(MATURITY_LABEL) {
         window
             .eval(format!(
-                r#"document.documentElement.dataset.theme="{}";window.wintMaturityNote?.show("{}");"#,
-                if light { "light" } else { "dark" },
+                r#"{}window.wintMaturityNote?.show("{}");"#,
+                theme_script(if light { "light" } else { "dark" }),
                 stage
             ))
             .map_err(|e| e.to_string())?;
@@ -614,8 +623,8 @@ pub async fn calendar_show(
     if let Some(window) = app.get_webview_window(CALENDAR_LABEL) {
         window
             .eval(format!(
-                r#"document.documentElement.dataset.theme="{}";window.wintCalendar?.show();"#,
-                if light { "light" } else { "dark" }
+                "{}window.wintCalendar?.show();",
+                theme_script(if light { "light" } else { "dark" })
             ))
             .map_err(|e| e.to_string())?;
         window.set_position(position).map_err(|e| e.to_string())?;
@@ -866,10 +875,7 @@ pub async fn tool_embedded_show(
     }
     if let Some(webview) = app.get_webview(&label) {
         webview
-            .eval(format!(
-                r#"document.documentElement.dataset.theme="{}";"#,
-                if light { "light" } else { "dark" }
-            ))
+            .eval(theme_script(if light { "light" } else { "dark" }))
             .map_err(|e| e.to_string())?;
         webview
             .set_background_color(Some(background))
@@ -902,10 +908,7 @@ pub async fn tool_embedded_show(
         if pinned { "1" } else { "0" },
         urlencoding_lite(&session)
     );
-    let init_theme = format!(
-        r#"document.documentElement.dataset.theme="{}";"#,
-        if light { "light" } else { "dark" }
-    );
+    let init_theme = theme_script(if light { "light" } else { "dark" });
     let make_builder = || {
         WebviewBuilder::new(&label, WebviewUrl::App(page.clone().into()))
             .data_directory(data_directory.clone())
@@ -1057,10 +1060,7 @@ pub async fn tool_popout(
     };
     // Stamp the theme onto <html> before any stylesheet paints — otherwise the
     // bundled dark default shows for a frame even when the opener asked for light.
-    let init_theme = format!(
-        r#"document.documentElement.dataset.theme="{}";"#,
-        if light { "light" } else { "dark" }
-    );
+    let init_theme = theme_script(if light { "light" } else { "dark" });
     // Explorer keeps its own window size beside its column layout, from
     // before there was a general store; everything else asks the store.
     let saved = if id == "explorer" {

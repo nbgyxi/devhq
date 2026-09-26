@@ -323,6 +323,61 @@ struct Engine {
     diagnostics: VecDeque<String>,
 }
 
+/// Whether an engine line is one this has just seen far too much of.
+///
+/// The engine can produce the same warning hundreds of times a second — a
+/// peer that will not take another connection is the usual one — and each
+/// line costs a lock, a push into the diagnostics ring and a write to the
+/// health log. Left alone, a few seconds of that empties the ring of
+/// everything worth reading and buries the log, which is the exact moment
+/// somebody is most likely to go looking at either.
+///
+/// So identical lines are counted rather than kept, and one summary goes out
+/// per window instead. The first of any line always passes: the point is to
+/// stop a flood, not to hide a fault.
+fn repetitive(line: &str) -> bool {
+    const WINDOW: Duration = Duration::from_secs(10);
+    /// Below this a repeat is not a flood, and collapsing it would make a
+    /// log harder to follow rather than easier.
+    const ALLOWED: u32 = 3;
+
+    static RECENT: Mutex<Option<(String, u32, Instant)>> = Mutex::new(None);
+    // Everything after the timestamp and before the peer address: the same
+    // warning about two different peers is still one kind of noise.
+    let key: String = line.chars().rev().take(160).collect();
+    let Ok(mut recent) = RECENT.lock() else {
+        return false;
+    };
+    match recent.as_mut() {
+        Some((seen, count, since)) if *seen == key && since.elapsed() < WINDOW => {
+            *count += 1;
+            if *count == ALLOWED {
+                // Said once, as the flood starts, so the log records that it
+                // was cut rather than appearing to simply stop.
+                drop(recent);
+                diagnose("(repeats of the line above are being collapsed)");
+                return true;
+            }
+            *count > ALLOWED
+        }
+        Some((seen, count, since)) if *seen == key => {
+            let repeated = *count;
+            *seen = key;
+            *count = 1;
+            *since = Instant::now();
+            if repeated > ALLOWED {
+                drop(recent);
+                diagnose(format!("(the line above repeated {repeated} times)"));
+            }
+            false
+        }
+        _ => {
+            *recent = Some((key, 1, Instant::now()));
+            false
+        }
+    }
+}
+
 fn diagnose(message: impl Into<String>) {
     let message = message.into();
     if let Ok(mut engine) = engine().lock() {
@@ -686,7 +741,7 @@ fn start_inner() -> EngineStatus {
                         return;
                     }
                     let line = line.trim();
-                    if !line.is_empty() {
+                    if !line.is_empty() && !repetitive(line) {
                         diagnose(format!(
                             "Engine stderr: {line}{}",
                             if truncated { " [line truncated]" } else { "" }
@@ -1720,6 +1775,18 @@ pub async fn torrent_marks_save(app: AppHandle, hashes: Vec<String>) -> Result<(
 #[tauri::command]
 pub async fn torrent_peers(id: u64) -> Result<Value, String> {
     off!(request("peers", json!({ "id": id }), REQUEST_TIMEOUT))
+}
+
+/// What has been transferred, by hour, and the per-torrent totals behind it.
+/// Read straight from the engine, which owns the ledger because it is the
+/// only thing that sees every byte.
+#[tauri::command]
+pub async fn torrent_history(hours: Option<u64>) -> Result<Value, String> {
+    off!(request(
+        "history",
+        json!({ "hours": hours.unwrap_or(24) }),
+        REQUEST_TIMEOUT
+    ))
 }
 
 /// Change settings. Only the keys given are touched.

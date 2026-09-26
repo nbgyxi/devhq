@@ -570,6 +570,33 @@ impl<C: RecursiveRequestCallbacks> RecursiveRequest<C> {
     }
 }
 
+/// Whether an address is one the outside world could reach us on.
+///
+/// WinT patch. A DHT node behind the same router as us reports the address it
+/// sees, which is our private one; taking that as our external address would
+/// have us treat the whole LAN as ourselves.
+fn is_globally_routable(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                // 100.64.0.0/10, carrier-grade NAT.
+                || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1])))
+        }
+        std::net::IpAddr::V6(v6) => {
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                // fe80::/10 link-local and fc00::/7 unique-local.
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+                || (v6.segments()[0] & 0xfe00) == 0xfc00)
+        }
+    }
+}
+
 pub struct DhtState {
     id: Id20,
     next_transaction_id: AtomicU16,
@@ -588,6 +615,20 @@ pub struct DhtState {
     worker_sender: UnboundedSender<WorkerSendRequest>,
 
     cancellation_token: CancellationToken,
+
+    /// Our own address, as the rest of the world sees it.
+    ///
+    /// WinT patch. Every DHT reply may carry the querier's address back to it
+    /// (BEP 42), which makes the DHT the cheapest external-address discovery
+    /// there is: no third-party service, no extra traffic, just a field that
+    /// was already arriving and being thrown away.
+    ///
+    /// It is wanted because trackers and the DHT hand our own address back as
+    /// though it were a peer, and the engine then spends its connection slots
+    /// dialling itself. Detecting that from the handshake works only when a
+    /// handshake happens — a uTP attempt that fails at the socket never gets
+    /// that far, and retries for ever.
+    external_addr: RwLock<Option<SocketAddr>>,
 
     pub(crate) peer_store: PeerStore,
 }
@@ -614,6 +655,7 @@ impl DhtState {
             listen_addr,
             rate_limiter: make_rate_limiter(),
             peer_store,
+            external_addr: RwLock::new(None),
             cancellation_token,
         }
     }
@@ -1217,10 +1259,25 @@ impl DhtWorker {
                     }
                 };
                 match bprotocol::deserialize_message::<ByteBufOwned>(&buf[..size]) {
-                    Ok(msg) => match output_tx.send((msg, addr)).await {
-                        Ok(_) => {}
-                        Err(_) => return Err(Error::DhtDead),
-                    },
+                    Ok(msg) => {
+                        // WinT patch: keep what the other end says our address
+                        // is. Only a global one — a node behind the same NAT
+                        // reporting a private address says nothing about how
+                        // the world reaches us.
+                        if let Some(mine) = msg.ip {
+                            if is_globally_routable(&mine.ip()) {
+                                let mut known = self.dht.external_addr.write();
+                                if *known != Some(mine) {
+                                    debug!(addr = %mine, "the DHT says this is our address");
+                                    *known = Some(mine);
+                                }
+                            }
+                        }
+                        match output_tx.send((msg, addr)).await {
+                            Ok(_) => {}
+                            Err(_) => return Err(Error::DhtDead),
+                        }
+                    }
                     Err(e) => debug!("{}: error deserializing incoming message: {}", addr, e),
                 }
             }
@@ -1388,6 +1445,12 @@ impl DhtState {
         announce_port: Option<u16>,
     ) -> RequestPeersStream {
         RequestPeersStream::new(self.clone(), info_hash, announce_port)
+    }
+
+    /// Our address as the outside world reports it, once any DHT node has
+    /// told us. WinT patch; see the field.
+    pub fn external_addr(&self) -> Option<SocketAddr> {
+        *self.external_addr.read()
     }
 
     pub fn listen_addr(&self) -> SocketAddr {

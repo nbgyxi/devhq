@@ -1332,6 +1332,47 @@ fn with_clipboard<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, Stri
     result
 }
 
+/// Puts plain text on the Windows clipboard.
+///
+/// The webview has a clipboard of its own, and it is the right one to use
+/// when it works. It frequently does not: `navigator.clipboard` needs a
+/// secure context and refuses outright, with NotAllowedError, whenever the
+/// document is not focused — which is the ordinary condition of a page hosted
+/// inside another window. The old `execCommand` path is refused in the same
+/// circumstances. Neither failure is recoverable from inside the page, so
+/// there has to be a way out through the process that owns the window.
+#[cfg(windows)]
+pub fn clipboard_set_text(text: &str) -> Result<(), String> {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::DataExchange::{EmptyClipboard, SetClipboardData};
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+
+    // UTF-16 with a terminator, which is what CF_UNICODETEXT is.
+    let wide: Vec<u16> = std::ffi::OsStr::new(text).encode_wide().chain([0]).collect();
+    let bytes = std::mem::size_of_val(wide.as_slice());
+    // SAFETY: the handle is allocated movable and filled exactly to its own
+    // size; ownership passes to the clipboard on a successful SetClipboardData
+    // and it is not touched afterwards.
+    let handle = unsafe {
+        let handle = GlobalAlloc(GMEM_MOVEABLE, bytes).map_err(|e| e.to_string())?;
+        let target = GlobalLock(handle) as *mut u8;
+        std::ptr::copy_nonoverlapping(wide.as_ptr().cast::<u8>(), target, bytes);
+        let _ = GlobalUnlock(handle);
+        handle
+    };
+    with_clipboard(|| unsafe {
+        EmptyClipboard().map_err(|e| e.to_string())?;
+        // CF_UNICODETEXT
+        SetClipboardData(13, Some(HANDLE(handle.0))).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+#[cfg(not(windows))]
+pub fn clipboard_set_text(_text: &str) -> Result<(), String> {
+    Err("The clipboard is only available on Windows.".into())
+}
+
 /// Puts files on the Windows clipboard the way Explorer does - a file list
 /// plus "cut" or "copy" - so they paste into Explorer, another Files window or
 /// anything else that takes files.

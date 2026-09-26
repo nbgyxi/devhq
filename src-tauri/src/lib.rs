@@ -2266,6 +2266,15 @@ async fn explorer_transfer(paths: Vec<String>, dest: String, copy: bool) -> Resu
         .unwrap_or_else(|| Err("The copy did not finish.".into()))
 }
 
+/// The clipboard, via the process that owns the window, for when the page's
+/// own clipboard is refused. See `explorer::clipboard_set_text`.
+#[tauri::command]
+async fn clipboard_copy_text(text: String) -> Result<(), String> {
+    off_thread(move || explorer::clipboard_set_text(&text))
+        .await
+        .unwrap_or_else(|| Err("The text could not be copied.".into()))
+}
+
 #[tauri::command]
 async fn explorer_clipboard_set(paths: Vec<String>, cut: bool) -> Result<(), String> {
     off_thread(move || explorer::clipboard_set(paths, cut))
@@ -3283,6 +3292,7 @@ pub fn run() {
             explorer_transfer,
             explorer_drag_out,
             explorer_clipboard_set,
+            clipboard_copy_text,
             explorer_clipboard_get,
             disk_space_drives,
             disk_space_scan,
@@ -3376,6 +3386,7 @@ pub fn run() {
             torrent::torrent_paths,
             torrent::torrent_file_path,
             torrent::torrent_settings,
+            torrent::torrent_history,
             torrent_pace::torrent_pace,
             torrent_pace::torrent_pace_set,
             torrent_pace::torrent_pace_measure,

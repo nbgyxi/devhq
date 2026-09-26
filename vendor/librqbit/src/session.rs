@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     io::Read,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::{Component, Path, PathBuf},
     sync::{
         Arc,
@@ -125,6 +125,19 @@ pub struct Session {
     reqwest_client: reqwest::Client,
     udp_tracker_client: UdpTrackerClient,
     disable_trackers: bool,
+    /// Addresses that turned out to be this very session.
+    ///
+    /// Trackers and the DHT hand our own address back to us, so the engine
+    /// dials itself. That is already noticed once the handshake arrives and
+    /// the peer id comes back as our own — but nothing remembered it, so the
+    /// same address was tried again on the next announce, for ever. Each
+    /// attempt costs a connection slot and a line in the log, and with uTP
+    /// retrying hard it produced hundreds of warnings a second.
+    ///
+    /// Held by IP rather than by socket address on purpose: the address comes
+    /// back with whichever port was announced at the time, including ports
+    /// from previous runs, and they are all equally us.
+    self_addrs: RwLock<HashSet<IpAddr>>,
 
     // Lifecycle management
     cancellation_token: CancellationToken,
@@ -830,6 +843,7 @@ impl Session {
                 ipv4_only: opts.ipv4_only,
                 trackers: opts.trackers,
                 disable_trackers: opts.disable_trackers,
+                self_addrs: RwLock::new(HashSet::new()),
                 peer_limit: opts.peer_limit,
                 client_name_and_version,
 
@@ -1740,6 +1754,31 @@ impl Session {
 
     pub fn listen_addr(&self) -> Option<SocketAddr> {
         self.listen_addr
+    }
+
+    /// Records that an address turned out to be ourselves, so it is not
+    /// dialled again. Called when a handshake comes back bearing our own peer
+    /// id, which is the only thing that says so for certain.
+    pub(crate) fn note_self_addr(&self, ip: IpAddr) {
+        if self.self_addrs.write().insert(ip) {
+            debug!(%ip, "this address is us; it will not be connected to again");
+        }
+    }
+
+    /// Whether this address is known to be ourselves.
+    pub(crate) fn is_self_addr(&self, ip: IpAddr) -> bool {
+        self.self_addrs.read().contains(&ip)
+    }
+
+    /// Whether this is the address the outside world reaches us on, as the
+    /// DHT reports it. Known without connecting to anything, which is what
+    /// makes it useful: a peer that never completes a handshake can still be
+    /// recognised as ourselves and left alone.
+    pub(crate) fn is_our_external_ip(&self, ip: IpAddr) -> bool {
+        self.dht
+            .as_ref()
+            .and_then(|dht| dht.external_addr())
+            .is_some_and(|mine| mine.ip() == ip)
     }
 
     /// Whether incoming peers can arrive over UDP as well as TCP. False means

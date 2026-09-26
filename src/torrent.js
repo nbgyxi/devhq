@@ -171,6 +171,14 @@
     paceState: null,
     /** Set while the connection is being measured, with how far along it is. */
     measuring: null,
+    /** The transfer history behind the Stats tab, and how far back it covers.
+     *  Fetched when the tab is opened and refreshed while it is, rather than
+     *  riding on the snapshot: it is tens of kilobytes and nobody needs it
+     *  three times a second. */
+    history: null,
+    historyHours: 24,
+    historyAt: 0,
+    historyBusy: false,
     /** Set while a command is in flight, so the buttons can say so. */
     busy: "",
     notice: "",
@@ -326,6 +334,7 @@
         <div class="tr-tabs" role="tablist">
           <button type="button" class="tr-tab on" data-tr-tab="transfers" role="tab">Transfers</button>
           <button type="button" class="tr-tab" data-tr-tab="settings" role="tab">Settings</button>
+          <button type="button" class="tr-tab" data-tr-tab="stats" role="tab">Stats</button>
           <button type="button" class="tr-tab" data-tr-tab="engine" role="tab">Engine</button>
           <div class="tr-top-add">
             ${icon("add_link")}
@@ -361,6 +370,7 @@
         </section>
 
         <section class="tr-view" data-tr-view="settings" hidden></section>
+        <section class="tr-view" data-tr-view="stats" hidden></section>
         <section class="tr-view tr-engineview" data-tr-view="engine" hidden></section>
         <div class="tr-drop-overlay" data-tr-drop-overlay hidden>
           ${icon("download")}<strong>Drop .torrent files anywhere</strong><span>They will start right away</span>
@@ -556,6 +566,8 @@
         drawDetail();
       } else if (st.tab === "engine") {
         drawEngine();
+      } else if (st.tab === "stats") {
+        drawStats();
       } else {
         drawSettings();
       }
@@ -999,8 +1011,8 @@
       if (sort.id === "peers") return row.peers || 0;
       if (sort.id === "remaining") return Math.max(0, (row.totalBytes || 0) - (row.progressBytes || 0));
       if (sort.id === "eta") return row.etaSeconds ?? Number.MAX_SAFE_INTEGER;
-      if (sort.id === "uploaded") return row.uploadedBytes || 0;
-      if (sort.id === "ratio") return row.progressBytes ? (row.uploadedBytes || 0) / row.progressBytes : 0;
+      if (sort.id === "uploaded") return row.uploadedTotal || 0;
+      if (sort.id === "ratio") return row.downloadedTotal ? (row.uploadedTotal || 0) / row.downloadedTotal : 0;
       if (sort.id === "known") return (row.peers || 0) + (row.peersQueued || 0);
       if (sort.id === "folder") return row.outputFolder || "";
       return 0;
@@ -1168,8 +1180,12 @@
     peersEl.title = "Peers currently connected to WinT; tracker seeder totals may be higher";
     setText(el.querySelector('[data-col="remaining"]'), bytes(Math.max(0, row.totalBytes - row.progressBytes)));
     setText(el.querySelector('[data-col="eta"]'), eta(row.etaSeconds) || "—");
-    setText(el.querySelector('[data-col="uploaded"]'), bytes(row.uploadedBytes));
-    setText(el.querySelector('[data-col="ratio"]'), row.progressBytes ? (row.uploadedBytes / row.progressBytes).toFixed(2) : "—");
+    // The lifetime figures, not this run's: the engine's own counters start
+    // again from zero every time it restarts, which made both of these
+    // columns read nought however long a torrent had been seeding.
+    setText(el.querySelector('[data-col="uploaded"]'), bytes(row.uploadedTotal));
+    setText(el.querySelector('[data-col="ratio"]'),
+      row.downloadedTotal ? (row.uploadedTotal / row.downloadedTotal).toFixed(2) : "—");
     setText(el.querySelector('[data-col="known"]'), row.state === "live" ? String(row.peers + row.peersQueued) : "—");
     // The tail of the path, which is the part that tells two downloads apart;
     // the whole thing is on the title, and a click opens it.
@@ -1663,6 +1679,160 @@ Click to open in Explorer` : "";
     return "Forward this port on your router if uploads stay at zero.";
   }
 
+  // ------------------------------------------------------------------- stats
+
+  /** How far back each range looks, in hours. Ninety days is what the engine
+   *  keeps; past that there is nothing to draw. */
+  const RANGES = [
+    ["24 hours", 24],
+    ["7 days", 24 * 7],
+    ["30 days", 24 * 30],
+    ["90 days", 24 * 90],
+  ];
+
+  /** Refetched at most this often while the tab is open. The engine books
+   *  transfers by the hour, so a faster poll would redraw the same bars. */
+  const HISTORY_REFRESH = 20000;
+
+  function loadHistory(force) {
+    if (st.historyBusy) return;
+    if (!force && Date.now() - st.historyAt < HISTORY_REFRESH) return;
+    st.historyBusy = true;
+    invoke("torrent_history", { hours: st.historyHours })
+      .then((history) => {
+        st.history = history;
+        st.historyAt = Date.now();
+        if (st.tab === "stats") drawStats();
+      })
+      .catch((error) => note(String(error)))
+      .finally(() => { st.historyBusy = false; });
+  }
+
+  function drawStats() {
+    const view = st.host?.querySelector('[data-tr-view="stats"]');
+    if (!view) return;
+    loadHistory(false);
+    if (!view.querySelector("[data-tr-statsbody]")) {
+      view.innerHTML = `
+        <div class="tr-stats">
+          <div class="tr-statshead">
+            <div class="tr-seg" data-tr-range></div>
+            <span class="tr-statsnote" data-tr-statsnote></span>
+          </div>
+          <div data-tr-statsbody></div>
+        </div>`;
+      const seg = view.querySelector("[data-tr-range]");
+      seg.innerHTML = RANGES.map(([label, hours]) =>
+        `<button type="button" data-tr-hours="${hours}">${esc(label)}</button>`).join("");
+      // Its own listener rather than the page's: the range is the only thing
+      // in here that is clicked, and it must keep working even if the main
+      // click handler is busy with the list.
+      seg.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-tr-hours]");
+        if (!button) return;
+        st.historyHours = Number(button.dataset.trHours);
+        st.history = null;
+        drawStats();
+        loadHistory(true);
+      });
+    }
+    for (const button of view.querySelectorAll("[data-tr-hours]")) {
+      button.classList.toggle("on", Number(button.dataset.trHours) === st.historyHours);
+    }
+    const body = view.querySelector("[data-tr-statsbody]");
+    const history = st.history;
+    if (!history) {
+      body.innerHTML = '<div class="tr-skeleton" style="height:220px"></div>';
+      setText(view.querySelector("[data-tr-statsnote]"), "Reading what has been transferred");
+      return;
+    }
+    const buckets = fillHours(history.hours || [], st.historyHours);
+    const up = buckets.reduce((sum, b) => sum + b.uploaded, 0);
+    const down = buckets.reduce((sum, b) => sum + b.downloaded, 0);
+    setText(view.querySelector("[data-tr-statsnote]"),
+      `${bytes(up)} up · ${bytes(down)} down${down ? ` · ratio ${(up / down).toFixed(2)}` : ""}`);
+    body.innerHTML = `${chart(buckets)}${topTorrents(history.torrents || [])}`;
+  }
+
+  /** One entry per hour in the range, including the empty ones.
+   *
+   *  The engine only sends hours that saw traffic, because most of them see
+   *  none. Drawing only those would space them evenly and quietly lie: a
+   *  gap of three idle days would look like the hour next to it. */
+  function fillHours(sent, hours) {
+    const byHour = new Map(sent.map((b) => [b.hour, b]));
+    const nowHour = Math.floor(Date.now() / 3600000);
+    const out = [];
+    for (let hour = nowHour - hours + 1; hour <= nowHour; hour += 1) {
+      const found = byHour.get(hour);
+      out.push({
+        hour,
+        startMs: hour * 3600000,
+        uploaded: found?.uploaded || 0,
+        downloaded: found?.downloaded || 0,
+      });
+    }
+    return out;
+  }
+
+  /** Up above the line, down below it. One bar per hour for a day; for longer
+   *  ranges the hours are grouped so the bars stay wide enough to see. */
+  function chart(buckets) {
+    const group = buckets.length <= 48 ? 1 : buckets.length <= 24 * 14 ? 24 : 24 * 7;
+    const bars = [];
+    for (let i = 0; i < buckets.length; i += group) {
+      const slice = buckets.slice(i, i + group);
+      bars.push({
+        startMs: slice[0].startMs,
+        uploaded: slice.reduce((sum, b) => sum + b.uploaded, 0),
+        downloaded: slice.reduce((sum, b) => sum + b.downloaded, 0),
+      });
+    }
+    const peak = Math.max(1, ...bars.map((b) => Math.max(b.uploaded, b.downloaded)));
+    const when = new Intl.DateTimeFormat(undefined,
+      group === 1 ? { hour: "2-digit", minute: "2-digit" } : { month: "short", day: "numeric" });
+    const columns = bars.map((bar) => {
+      const u = Math.round((bar.uploaded / peak) * 100);
+      const d = Math.round((bar.downloaded / peak) * 100);
+      const label = `${when.format(new Date(bar.startMs))} — ${bytes(bar.uploaded)} up, ${bytes(bar.downloaded)} down`;
+      return `<div class="tr-bar" title="${esc(label)}">
+        <div class="tr-bar-up"><i style="height:${u}%"></i></div>
+        <div class="tr-bar-down"><i style="height:${d}%"></i></div>
+      </div>`;
+    }).join("");
+    const first = bars.length ? when.format(new Date(bars[0].startMs)) : "";
+    const last = bars.length ? when.format(new Date(bars[bars.length - 1].startMs)) : "";
+    return `<section class="awake-panel tr-chartpanel">
+      <header>${icon("bar_chart")}<strong>Transferred</strong>
+        <small>Peak ${bytes(peak)} per ${group === 1 ? "hour" : group === 24 ? "day" : "week"}</small></header>
+      <div class="tr-chart">${columns || '<div class="tr-empty">Nothing yet.</div>'}</div>
+      <div class="tr-chartaxis"><span>${esc(first)}</span>
+        <span class="tr-legend"><i class="up"></i>Up<i class="down"></i>Down</span>
+        <span>${esc(last)}</span></div>
+    </section>`;
+  }
+
+  /** Lifetime totals, biggest uploader first. This is the answer to "is any
+   *  of this actually being shared", which is what the tab is for. */
+  function topTorrents(rows) {
+    const shown = rows.filter((row) => row.uploaded || row.downloaded).slice(0, 12);
+    if (!shown.length) {
+      return `<section class="awake-panel"><header>${icon("swap_vert")}<strong>By torrent</strong></header>
+        <div class="tr-empty">Nothing has been transferred yet.</div></section>`;
+    }
+    const peak = Math.max(1, ...shown.map((row) => row.uploaded));
+    return `<section class="awake-panel">
+      <header>${icon("swap_vert")}<strong>By torrent</strong><small>All time</small></header>
+      <div class="tr-toplist">${shown.map((row) => `
+        <div class="tr-toprow${row.present ? "" : " gone"}">
+          <span class="tr-topname" title="${esc(row.name || row.infoHash)}">${esc(row.name || row.infoHash.slice(0, 16))}</span>
+          <span class="tr-topbar"><i style="width:${Math.round((row.uploaded / peak) * 100)}%"></i></span>
+          <span class="tr-topup">${bytes(row.uploaded)}</span>
+          <span class="tr-topratio">${row.downloaded ? (row.uploaded / row.downloaded).toFixed(2) : "—"}</span>
+        </div>`).join("")}</div>
+    </section>`;
+  }
+
   // ------------------------------------------------------- how much of the line
 
   function loadPace() {
@@ -2141,7 +2311,16 @@ Click to open in Explorer` : "";
 
     const copyDiag = t.closest("[data-tr-copy-diag]");
     if (copyDiag) {
-      window.wintCopy?.copy(diagnosticReport(), copyDiag, "Diagnostics copied")
+      // `?.` guards the call and nothing else: with no helper loaded the
+      // expression is `undefined`, and `.then` on that throws inside the
+      // click handler — which took the whole view down through recoverView
+      // rather than failing to copy one block of text.
+      const copying = window.wintCopy?.copy(diagnosticReport(), copyDiag, "Diagnostics copied");
+      if (!copying) {
+        note("The troubleshooting details could not be copied.");
+        return;
+      }
+      copying
         .then(() => note("The troubleshooting details were copied."))
         .catch(() => note("The troubleshooting details could not be copied."));
       return;
@@ -2624,5 +2803,19 @@ Click to open in Explorer` : "";
     }
   }
 
-  window.wintTorrent = { mount };
+  // Mounting is the one path that was never guarded, and it is the one whose
+  // failure is invisible: everything after the markup is written attaches the
+  // listeners, so a throw part-way leaves a page that draws, highlights under
+  // the pointer and answers nothing. Routed through the same recovery as
+  // every other failure, it says so instead.
+  window.wintTorrent = {
+    mount: (node) => {
+      try {
+        mount(node);
+      } catch (error) {
+        st.host = node;
+        recoverView(error);
+      }
+    },
+  };
 })();

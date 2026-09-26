@@ -988,13 +988,39 @@ function shortRemote(url) {
  * group and path is replaced by a made-up but plausible one, the toolbar shows
  * a fake scan root, and the git remote is left out of the detail pane.
  *
- *   DEMO_MODE = true   aliases everything below
- *   DEMO_MODE = false  the app behaves exactly as it did before this block
+ * The switch is a box in Settings, kept by the backend so every tool window
+ * follows it as well (`demo-mode.js`). Here it only decides whether the
+ * aliases below are used:
+ *
+ *   demoOn() true   aliases everything below
+ *   demoOn() false  the app behaves exactly as it did before this block
  *
  * Only what is drawn changes. The real `path` is still what every action,
  * terminal and git read uses, and the folder editor still holds the real
  * roots, so the app works the same with the switch either way. */
-const DEMO_MODE = false;
+/** Read on every draw rather than captured: the box can be ticked while the
+ *  window is up, and every row has to change with it. */
+const demoOn = () => window.wintDemo?.on() === true;
+
+/** The switch is read from disk a moment after the window starts drawing, and
+ *  can be flipped in another window, so both are followed rather than assumed.
+ *  Called once the shell is mounted, because it draws. */
+function followDemoMode() {
+  const redraw = () => {
+    // The names live on the project objects, so the list already in hand is
+    // renamed in place. Nothing is rescanned: the real strings never left.
+    for (const project of state.projects) aliasProject(project);
+    markDirty("grid");
+    markDirty("toolbar");
+    if (state.selectedPath) markDirty("detail");
+    if (state.activeView === "settings") {
+      const check = el["settings-host"]?.querySelector("#setting-demo-mode");
+      if (check) check.checked = demoOn();
+    }
+  };
+  window.wintDemo?.ready.then((on) => { if (on) redraw(); }).catch(() => {});
+  window.wintDemo?.onChange(redraw);
+}
 
 const DEMO_ROOT = "C:\\Projects";
 const DEMO_NAMES = [
@@ -1022,25 +1048,43 @@ function demoPick(map, pool, real) {
 }
 const demoNames = new Map();
 const demoGroups = new Map();
-const demoName = (real) => (DEMO_MODE && real ? demoPick(demoNames, DEMO_NAMES, real) : real);
-const demoGroup = (real) => (DEMO_MODE && real ? demoPick(demoGroups, DEMO_GROUPS, real) : real);
+const demoName = (real) => (demoOn() && real ? demoPick(demoNames, DEMO_NAMES, real) : real);
+const demoGroup = (real) => (demoOn() && real ? demoPick(demoGroups, DEMO_GROUPS, real) : real);
 
 /** The whole displayed path, rebuilt from the aliases: real roots, drives and
  *  intermediate folders never reach the screen. With the switch off this is
  *  the project's real path, which is what every call site drew before. */
 function demoPath(p) {
   if (!p) return "";
-  if (!DEMO_MODE) return p.path;
+  if (!demoOn()) return p.path;
   const group = p.group ? `\\${p.group}` : "";
   return `${DEMO_ROOT}${group}\\${p.name}`;
 }
 
 /** The toolbar's folder chip: the real roots are never drawn in demo mode. */
 function demoRootsLabel(roots) {
-  if (!DEMO_MODE) return null;
+  if (!demoOn()) return null;
   return roots.length === 1 ? DEMO_ROOT : `${DEMO_ROOT} +${roots.length - 1}`;
 }
 /* ============================ END SCREENSHOT MODE =========================== */
+
+/** Writes a project's displayed name and group.
+ *
+ *  The alias is put on the object rather than applied at every draw, because
+ *  the cards, the table, the sorting, the search and the detail pane all read
+ *  `name` and one place to write it is what keeps them saying the same thing.
+ *  The real strings are kept beside them, so demo mode can be turned off again
+ *  without rescanning — and so the scan cache is never written with made-up
+ *  names in it. */
+function aliasProject(project) {
+  if (project.realName === undefined) {
+    project.realName = project.name;
+    project.realGroup = project.group;
+  }
+  project.name = demoName(project.realName);
+  project.group = demoGroup(project.realGroup);
+  return project;
+}
 
 /* -------------------------------------------------------------- derived */
 
@@ -1048,10 +1092,10 @@ function demoRootsLabel(roots) {
  *  of the app reads is present, so nothing has to special-case a half project
  *  beyond the `pending` flag itself. */
 function stubProject(stub) {
-  return {
-    name: demoName(stub.name), // aliased in screenshot mode, real otherwise
+  return aliasProject({
+    name: stub.name,
     path: stub.path,
-    group: demoGroup(stub.group), // aliased in screenshot mode, real otherwise
+    group: stub.group,
     description: "",
     version: "",
     packageManager: "",
@@ -1066,7 +1110,7 @@ function stubProject(stub) {
     runCmd: "",
     touchedMs: 0,
     pending: true,
-  };
+  });
 }
 
 function changeCount(p) {
@@ -1427,9 +1471,11 @@ function sameScanRoots(a, b) {
 /** Drop live process fields — they go stale the moment the window closes. */
 function projectForCache(project) {
   return {
-    name: project.name,
+    // The real name, never the demo stand-in: a cache written while demo mode
+    // was on would put made-up names on screen after it was turned off.
+    name: project.realName ?? project.name,
     path: project.path,
-    group: project.group,
+    group: project.realGroup ?? project.group,
     description: project.description || "",
     version: project.version || "",
     packageManager: project.packageManager || "",
@@ -1493,10 +1539,8 @@ function restoreScanCache(cache) {
   state.durationMs = cache.durationMs || 0;
   state.total = cache.projects.length;
   state.settled = cache.projects.length;
-  state.projects = cache.projects.map((project) => ({
+  state.projects = cache.projects.map((project) => aliasProject({
     ...projectForCache(project),
-    name: demoName(project.name),
-    group: demoGroup(project.group),
     pending: false,
   }));
   state.byPath = new Map(state.projects.map((project) => [project.path, project]));
@@ -1509,9 +1553,7 @@ function restoreScanCache(cache) {
 
 /** Swaps a stub for the real thing, in the list and in the index. */
 function replaceProject(project, previous) {
-  // Aliased in screenshot mode, the real strings otherwise.
-  project.name = demoName(project.name);
-  project.group = demoGroup(project.group);
+  aliasProject(project); // aliased in demo mode, the real strings otherwise
   const index = previous ? state.projects.indexOf(previous) : -1;
   if (index >= 0) state.projects[index] = project;
   else state.projects.push(project);
@@ -3120,6 +3162,8 @@ function changelogDate(iso) {
 
 function releaseHtml(release) {
   const changes = release.changes
+    // Tolerate a line written as { kind, text } rather than a pair.
+    .map((c) => (Array.isArray(c) ? c : [c?.kind, c?.text]))
     .map(([kind, text]) => `<li class="chg ${esc(kind)}">
         <span class="chg-kind">${esc(CHANGE_KINDS[kind] || kind)}</span>
         <span class="chg-text">${changelogText(text)}</span>
@@ -5173,7 +5217,7 @@ function detailView(p, replayEntrance = true) {
     if (g.upstream) kv.push(["Upstream", `<span class="mono">${esc(g.upstream)}</span>`]);
     // The remote is the one thing an alias cannot cover, so screenshot mode
     // leaves the row out entirely rather than showing a made-up URL.
-    if (!DEMO_MODE)
+    if (!demoOn())
       kv.push(["Remote", g.remote ? `<span class="mono">${esc(g.remote)}</span>` : "none"]);
     kv.push(["Ahead / behind", `${g.ahead} / ${g.behind}`]);
     kv.push(["Branches", String(g.branches.length)]);
@@ -6532,6 +6576,10 @@ function renderSettings() {
             <span><strong>Track active-window usage</strong><small>Record which application and window you are in, for as long as WinT is running - the tool does not have to be open. Kept on this PC for 90 days and sent nowhere.</small></span>
             <input class="setting-check" id="setting-time-tracker" type="checkbox" />
           </label>
+          <label class="settings-row" for="setting-demo-mode">
+            <span><strong>Demo mode</strong><small>Make every window safe to photograph: project names, folders and scan roots, and Link Router's sites and browser profiles, are replaced by made-up ones, and a project's git remote is left out. Only what is drawn changes - every action still works on the real folder, profile and address.</small></span>
+            <input class="setting-check" id="setting-demo-mode" type="checkbox" />
+          </label>
           <div class="settings-row">
             <span><strong>WinT command-line interface</strong><small id="setting-cli-status">Checking whether <code>wint</code> is available in new terminals…</small></span>
             <button class="btn setting-control" id="setting-cli-toggle" type="button" disabled>Checking…</button>
@@ -6666,6 +6714,9 @@ function renderSettings() {
   host.querySelector("#setting-pins-panel").checked = state.pinsPanel;
   host.querySelector("#setting-git-wording").checked = state.gitWording;
   host.querySelector("#setting-search-apps").checked = state.searchApps;
+  // Kept by the backend rather than in this window's prefs, so every tool
+  // window reads the same answer; the box follows whatever it says now.
+  host.querySelector("#setting-demo-mode").checked = demoOn();
   host.querySelector("#setting-minimize-to-tray").checked = state.minimizeToTrayButton;
   syncCloseActionSetting(host);
   host.querySelector("#setting-native-decorations").checked = state.nativeDecorations;
@@ -7730,6 +7781,11 @@ function wireShell() {
       state.compactTechOverview = e.target.checked;
       savePrefs();
       markDirty("grid");
+    } else if (e.target.id === "setting-demo-mode") {
+      // `set` writes it through the backend and tells every other window. The
+      // redraw comes back through the same watcher a tool window gets, so
+      // there is one path for the switch changing however it changed.
+      window.wintDemo?.set(e.target.checked);
     } else if (e.target.id === "setting-git-wording") {
       state.gitWording = e.target.checked;
       savePrefs();
@@ -8152,6 +8208,7 @@ async function startProjectsWindow() {
   state.activeView = "projects";
   document.body.classList.add("projects-window");
   mountShell();
+  followDemoMode();
   const titlebar = document.querySelector(".titlebar");
   titlebar.querySelector(".brand span").textContent = "Projects";
   // The title bar here closes and docks this window only. Its own handler is
@@ -8329,6 +8386,7 @@ async function askBrowserDefault() {
   // The window is drawn and interactive before anything is asked of the disk.
   mountShell();
   applyDecorations();
+  followDemoMode();
   await wireToolPopoutEvents();
   await listenScan();
   syncRecentTrayTools();

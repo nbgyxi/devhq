@@ -589,6 +589,15 @@ impl TorrentStateLive {
                 handler.on_peer_died(None)?;
             }
             Err(e) => {
+                // Our own address, handed back to us by a tracker or the DHT.
+                // A handshake carrying our own peer id is the only proof of
+                // it, and it costs a whole connection to obtain — so it is
+                // written down, and this address is not dialled again.
+                if matches!(e, Error::ConnectingToOurselves)
+                    && let Some(session) = state.shared.session.upgrade()
+                {
+                    session.note_self_addr(addr.ip());
+                }
                 debug!("error managing peer: {:#}", e);
                 handler.on_peer_died(Some(e))?;
             }
@@ -618,6 +627,23 @@ impl TorrentStateLive {
 
             if session.ipv4_only && addr.is_ipv6() {
                 debug!(?addr, "skipping ipv6 peer (ipv4_only=true)");
+                continue;
+            }
+
+            // Ourselves. Trackers and the DHT hand our own address back as
+            // though it were somebody else, and dialling it wastes a
+            // connection slot per torrent per announce — with uTP retrying
+            // hard behind that, it was hundreds of warnings a second.
+            //
+            // Two ways of knowing, because one is not enough. A handshake
+            // bearing our own peer id is proof, but it costs a completed
+            // connection to get, and a uTP attempt that dies at the socket
+            // never provides one — which is exactly the case that flooded.
+            // The DHT is told our address by every node that answers us, so
+            // it knows without any connection at all.
+            if session.is_self_addr(addr.ip()) || session.is_our_external_ip(addr.ip()) {
+                debug!(?addr, "skipping peer: it is this session");
+                state.peers.mark_peer_not_needed(addr);
                 continue;
             }
 

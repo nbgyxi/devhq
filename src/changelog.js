@@ -16,18 +16,87 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.166.0",
+      title: "A switch that makes the window safe to photograph",
+      date: "2026-09-26",
+      changes: [
+        ["new", "Demo mode, in Settings → General. With it on, every project name, group and folder on screen is replaced by a made-up but plausible one, the folder chip shows a stand-in scan root and a project's git remote is left out. It was a line in the source that had to be edited and the app rebuilt; now it is a tick box, kept where the app keeps things that must survive a restart."],
+        ["new", "Link Router follows demo mode too. The sites your rules name and the browser profiles they send links to — which on a real PC are usually somebody's name or address — are drawn as stand-ins, on the rules, the suggestions, the browser list and the link you try. The rule you have open for editing still shows its real pattern, because what you type there is what is saved."],
+        ["better", "Turning demo mode on or off takes effect at once, in every window that is open, without a rescan. The real names never leave the app — only what is drawn changes, so every button still acts on the real folder, profile and address — and the remembered scan is never written with made-up names in it."],
+      ],
+    },
+    {
+      version: "0.165.3",
+      title: "What's new opens again",
+      date: "2026-09-26",
+      changes: [
+        ["fix", "What's new comes up again. The last handful of releases were written down in a shape the list could not read, so clicking the version did nothing but leave an error behind the scenes. Those entries have been rewritten, and a line in the wrong shape can no longer take the whole window down with it."],
+      ],
+    },
+    {
+      version: "0.165.2",
+      title: "It knows its own address now",
+      buildChecksum: "ba2b354a03d0e2b16fa9617f62927397bf9c078434a278b3b544c8b9dee46997",
+      date: "2026-09-26",
+      changes: [
+        ["fix", "The engine has stopped trying to connect to this PC. It could already tell it had reached itself, but only once a connection had been made and the greeting came back in its own name — and the attempts that flooded the log never got that far, because they failed at the socket first. The DHT is told our address by every node that answers it, so the engine now simply knows it, and skips those peers without dialling them at all."],
+        ["fix", "Copy for support works. Tools opened inside the main window run on a page that never loaded the copying code at all, so the button had nothing behind it however the clipboard was reached."],
+      ],
+    },
+    {
+      version: "0.165.1",
+      title: "The engine stops phoning itself",
+      date: "2026-09-26",
+      changes: [
+        ["fix", "The torrent engine kept trying to connect to this very PC. Trackers and the DHT hand your own address back to you, and while the engine did notice on arrival that it had reached itself, it never wrote the address down — so it tried again on every announce, on every port it had ever used, burning a connection slot each time and filling the log with hundreds of warnings a second. An address that turns out to be us is now remembered and skipped."],
+        ["fix", "Copy buttons work even when the window is not focused. The clipboard the page is given refuses outright unless the document has focus — the normal state for a tool hosted inside another window — so copying now falls back to WinT itself, which owns the window and cannot be refused."],
+      ],
+    },
+    {
+      version: "0.165.0",
+      title: "What was actually transferred, and a Stats tab to see it",
+      date: "2026-09-26",
+      changes: [
+        ["fix", "Uploaded and Ratio meant nothing and now mean something. The engine counts what it has sent on the running torrent, so every one of those figures went back to zero whenever the engine restarted — which is why a queue of torrents that had been seeding for days all read exactly nought. WinT now keeps its own ledger of what each torrent has really sent and received, and that is what those two columns show."],
+        ["new", "A Stats tab in Torrents. It charts what was transferred by the hour over the last 24 hours, 7, 30 or 90 days — uploads above the line, downloads below — and lists which torrents have actually been shared, biggest first, with their ratios. Torrents you have since removed stay in the totals, because what they sent still happened."],
+        ["better", "The engine log no longer drowns itself. A peer refusing further connections could produce the same warning hundreds of times a second, which emptied the troubleshooting panel of everything worth reading and buried the health log. Runs of an identical line are now counted and reported once."],
+        ["fix", "Copy for support works again, and copying no longer depends on the window having focus — which, for a tool hosted inside another window, it often does not. A copy button that cannot reach the clipboard the modern way now falls back instead of failing silently, and a missing copy helper no longer takes the whole Torrents view down with it."],
+      ],
+    },
+    {
+      version: "0.164.3",
+      title: "A calmer list of who is using the line",
+      date: "2026-09-26",
+      changes: [
+        ["better", "Each app's download and upload in Which apps are using it is now an average over the last five seconds instead of whatever the most recent second happened to hold. Traffic at that scale is all bursts and gaps — a program steadily pulling a video reads nothing on the tick between two chunks — so the figures were jumping about far more than the traffic was."],
+        ["better", "An app that has done something recently stays on the list through its quiet seconds, for eight seconds after its last burst, instead of dropping out and reappearing. Whether it belongs on the list is judged on its busiest second in the window, so nothing is lost to the averaging."],
+      ],
+    },
+    {
+      version: "0.164.2",
+      title: "The app list can be ranked by download or by upload",
+      date: "2026-09-26",
+      changes: [
+        ["new", "Which apps are using it can now be ordered by download or by upload instead of by both together. The choice also decides which apps appear at all, so \"Upload\" is a list of what is actually uploading — a saturated upload is usually one program syncing or seeding, and it is rarely near the top of the busiest list. The ranked side is drawn brightest, and the choice is remembered for next time."],
+      ],
+    },
+    {
+      version: "0.164.1",
+      title: "Pages that draw but answer nothing",
+      date: "2026-09-26",
+      changes: [
+        ["fix", "A tool page could come up looking perfectly normal — buttons lighting up under the pointer — while every click did nothing. The theme was being applied to the page with a line that reads the document before there is one, which is exactly what an opening window and a reload both do, and the error it threw took the rest of that page's start-up with it, including the bridge every tool needs to reach WinT. The theme is now set the moment there is a document to set it on, whenever that is."],
+        ["fix", "Opening a tool twice in quick succession no longer loads it twice. Switching back to a tool before it had finished loading fetched and ran its whole file a second time, leaving two copies of it running against one window, and could leave the copy on screen with nothing listening to it at all."],
+        ["better", "A tool that fails while starting up now says so where it would have drawn, instead of leaving an empty panel that looks like it is still loading."],
+      ],
+    },
+    {
       version: "0.164.0",
       title: "Speed Test says which apps are using the line",
       date: "2026-09-26",
       changes: [
-        {
-          kind: "new",
-          text: "Speed Test now names the programs behind the live meter. Every process holding a connection to somewhere off this PC is listed with what it is moving down and up, how many connections it has and a few of the addresses it is talking to, busiest first and updated every second — so a line that is mysteriously full stops being a mystery.",
-        },
-        {
-          kind: "new",
-          text: "Windows only counts bytes per process for an administrator, so each app's figures start as its share of the adapter's real total, worked out from how much it read and wrote, and every row says \"estimate\" while that is what it is. \"Measure exactly\" asks for administrator rights once, for a small helper that reads the TCP stack's own per-connection counters; those rows then say \"measured\". WinT itself still never runs elevated, and the helper stops when the tool is closed or after thirty minutes.",
-        },
+        ["new", "Speed Test now names the programs behind the live meter. Every process holding a connection to somewhere off this PC is listed with what it is moving down and up, how many connections it has and a few of the addresses it is talking to, busiest first and updated every second — so a line that is mysteriously full stops being a mystery."],
+        ["new", "Windows only counts bytes per process for an administrator, so each app's figures start as its share of the adapter's real total, worked out from how much it read and wrote, and every row says \"estimate\" while that is what it is. \"Measure exactly\" asks for administrator rights once, for a small helper that reads the TCP stack's own per-connection counters; those rows then say \"measured\". WinT itself still never runs elevated, and the helper stops when the tool is closed or after thirty minutes."],
       ],
     },
     {
@@ -35,14 +104,8 @@ window.wintChangelog = (() => {
       title: "The peer port moves off the ports Windows keeps for itself",
       date: "2026-09-26",
       changes: [
-        {
-          kind: "fix",
-          text: "Seeding still did not work, because the port the engine settled on was one Windows had reserved. Windows keeps separate lists of reserved ports for TCP and UDP, and Hyper-V and WSL reserve wide blocks of the high range in one but not the other — so the port took a TCP listener and refused a UDP one, the engine carried on with TCP alone, and peers behind a router had no way in. The port is now chosen from the band below that range, and it is tested for both TCP and UDP before it is kept. A port that becomes reserved later — the reservations move when the machine reboots — is noticed at start-up and replaced.",
-        },
-        {
-          kind: "new",
-          text: "Incoming connections says which way peers can actually arrive. It reads \"TCP+UDP\" when all is well, and when UDP could not be opened it says so plainly instead of leaving a queue of seeding torrents sitting at zero with no explanation — which is how the fault above went unnoticed for a day.",
-        },
+        ["fix", "Seeding still did not work, because the port the engine settled on was one Windows had reserved. Windows keeps separate lists of reserved ports for TCP and UDP, and Hyper-V and WSL reserve wide blocks of the high range in one but not the other — so the port took a TCP listener and refused a UDP one, the engine carried on with TCP alone, and peers behind a router had no way in. The port is now chosen from the band below that range, and it is tested for both TCP and UDP before it is kept. A port that becomes reserved later — the reservations move when the machine reboots — is noticed at start-up and replaced."],
+        ["new", "Incoming connections says which way peers can actually arrive. It reads \"TCP+UDP\" when all is well, and when UDP could not be opened it says so plainly instead of leaving a queue of seeding torrents sitting at zero with no explanation — which is how the fault above went unnoticed for a day."],
       ],
     },
     {
@@ -50,14 +113,8 @@ window.wintChangelog = (() => {
       title: "Seeding works behind a router, the way other clients do",
       date: "2026-09-26",
       changes: [
-        {
-          kind: "fix",
-          text: "Torrents can be seeded from behind a home router again. The engine was speaking only TCP, and a router will not carry an unsolicited incoming TCP connection to a PC that never asked for one — so finished torrents sat at zero upload however many peers were in the swarm. It now also speaks uTP, which is BitTorrent over UDP: the same announces the engine already sends open the way back in, and peers arrive without a thing being configured. It is how uTorrent and qBittorrent manage it on the same connection.",
-        },
-        {
-          kind: "better",
-          text: "The Incoming connections panel no longer sends you to your router first. Uploads starting on their own is now the expected case, so it says to give it a few minutes, and only suggests forwarding the port if it really does stay at zero.",
-        },
+        ["fix", "Torrents can be seeded from behind a home router again. The engine was speaking only TCP, and a router will not carry an unsolicited incoming TCP connection to a PC that never asked for one — so finished torrents sat at zero upload however many peers were in the swarm. It now also speaks uTP, which is BitTorrent over UDP: the same announces the engine already sends open the way back in, and peers arrive without a thing being configured. It is how uTorrent and qBittorrent manage it on the same connection."],
+        ["better", "The Incoming connections panel no longer sends you to your router first. Uploads starting on their own is now the expected case, so it says to give it a few minutes, and only suggests forwarding the port if it really does stay at zero."],
       ],
     },
     {
@@ -65,26 +122,11 @@ window.wintChangelog = (() => {
       title: "The sidebar stops losing the order you put it in",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "fix",
-          text: "Rows wandered out of the group they were put in. A row keeps its place by what the window is, and reading that identity from Windows can quietly fail — when it did, the row was a stranger to the rail, so it was dropped at the top, above every divider, and saved there. An app filed under a divider and closed to the tray, WhatsApp among them, came back above it. An identity once read is now kept for as long as the window is open, so a failed read costs nothing.",
-        },
-        {
-          kind: "fix",
-          text: "Popped-out WinT tools came back in a different order every time. All of them are one app as far as Windows is concerned, so each was only \"the first\" or \"the second\" WinT window and they traded places. A tool now holds its place by its own title.",
-        },
-        {
-          kind: "fix",
-          text: "Two windows of the same app — browser profiles above all — swapped places whenever the rail was reloaded, because which of them was \"the first\" followed the order the windows had last been used in. It now follows the windows themselves.",
-        },
-        {
-          kind: "fix",
-          text: "A window of an app the rail already knows now opens beside that app's other windows instead of at the top of the list.",
-        },
-        {
-          kind: "fix",
-          text: "A drag, a new divider and a rename are written to disk the moment they happen, and anything still waiting is written before the rail closes or hides — a drag made a second before the rail went away was simply gone.",
-        },
+        ["fix", "Rows wandered out of the group they were put in. A row keeps its place by what the window is, and reading that identity from Windows can quietly fail — when it did, the row was a stranger to the rail, so it was dropped at the top, above every divider, and saved there. An app filed under a divider and closed to the tray, WhatsApp among them, came back above it. An identity once read is now kept for as long as the window is open, so a failed read costs nothing."],
+        ["fix", "Popped-out WinT tools came back in a different order every time. All of them are one app as far as Windows is concerned, so each was only \"the first\" or \"the second\" WinT window and they traded places. A tool now holds its place by its own title."],
+        ["fix", "Two windows of the same app — browser profiles above all — swapped places whenever the rail was reloaded, because which of them was \"the first\" followed the order the windows had last been used in. It now follows the windows themselves."],
+        ["fix", "A window of an app the rail already knows now opens beside that app's other windows instead of at the top of the list."],
+        ["fix", "A drag, a new divider and a rename are written to disk the moment they happen, and anything still waiting is written before the rail closes or hides — a drag made a second before the rail went away was simply gone."],
       ],
     },
     {
@@ -92,14 +134,8 @@ window.wintChangelog = (() => {
       title: "Seeding torrents can finally be reached",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "fix",
-          text: "Finished torrents seeded to nobody. The engine let Windows pick whichever port happened to be free each time it started, so the port peers were told to connect back on was a different one on every run — no router forward and no firewall rule could follow it, and nothing outside could ever open a connection. A seeding torrent never dials out, so every one of them sat at zero upload looking perfectly healthy. The engine now keeps one peer port for good, and asks the router to open it.",
-        },
-        {
-          kind: "new",
-          text: "Settings has an Incoming connections panel showing that port. It says when several torrents are seeding and none are uploading — which means nothing outside can reach you and the port needs forwarding — and it says when the port the engine wanted was taken by something else, so you forward the one it actually got.",
-        },
+        ["fix", "Finished torrents seeded to nobody. The engine let Windows pick whichever port happened to be free each time it started, so the port peers were told to connect back on was a different one on every run — no router forward and no firewall rule could follow it, and nothing outside could ever open a connection. A seeding torrent never dials out, so every one of them sat at zero upload looking perfectly healthy. The engine now keeps one peer port for good, and asks the router to open it."],
+        ["new", "Settings has an Incoming connections panel showing that port. It says when several torrents are seeding and none are uploading — which means nothing outside can reach you and the port needs forwarding — and it says when the port the engine wanted was taken by something else, so you forward the one it actually got."],
       ],
     },
     {
@@ -107,18 +143,9 @@ window.wintChangelog = (() => {
       title: "Giving way no longer caps you at whatever it saw first",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "fix",
-          text: "Giving way was holding downloads at the fastest speed it had happened to see, even with a much higher limit set and nothing else using the connection — so a line that was never filled stayed capped at whatever the first download reached, and could never be caught going faster. With nothing else wanting the connection the engine now gets exactly the limit you set, and the ceiling rises as the line proves itself.",
-        },
-        {
-          kind: "better",
-          text: "The speed sliders stop at what your connection can actually carry instead of offering speeds it cannot reach, and the top of the slider says roughly what No limit comes to. The live line under the switch now names which limit is doing the deciding, so a cap that is neither your setting nor your line’s speed explains itself.",
-        },
-        {
-          kind: "fix",
-          text: "The Measure button in Torrents and the Run button in Speed Test have their icons back. Each was being written over by its own label.",
-        },
+        ["fix", "Giving way was holding downloads at the fastest speed it had happened to see, even with a much higher limit set and nothing else using the connection — so a line that was never filled stayed capped at whatever the first download reached, and could never be caught going faster. With nothing else wanting the connection the engine now gets exactly the limit you set, and the ceiling rises as the line proves itself."],
+        ["better", "The speed sliders stop at what your connection can actually carry instead of offering speeds it cannot reach, and the top of the slider says roughly what No limit comes to. The live line under the switch now names which limit is doing the deciding, so a cap that is neither your setting nor your line’s speed explains itself."],
+        ["fix", "The Measure button in Torrents and the Run button in Speed Test have their icons back. Each was being written over by its own label."],
       ],
     },
     {
@@ -126,10 +153,7 @@ window.wintChangelog = (() => {
       title: "The hidden taskbar stays hidden",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "fix",
-          text: "A taskbar hidden completely came back the first time the pointer touched the bottom of the screen, and stayed back. Windows reveals an auto-hidden taskbar by showing its window again, which undid the hiding; WinT now hears about that the instant it happens and hides it again, so the edge no longer brings it out.",
-        },
+        ["fix", "A taskbar hidden completely came back the first time the pointer touched the bottom of the screen, and stayed back. Windows reveals an auto-hidden taskbar by showing its window again, which undid the hiding; WinT now hears about that the instant it happens and hides it again, so the edge no longer brings it out."],
       ],
     },
     {
@@ -137,14 +161,8 @@ window.wintChangelog = (() => {
       title: "A taskbar that stays hidden",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "new",
-          text: "The docked sidebar can now hide the Windows taskbar completely. Auto-hiding only slid it off the edge, and Windows brought it straight back over the rail every time an app wanted attention with a notification; hidden completely, nothing reveals it. The new checkbox sits under \"Hide the Windows taskbar\" in the Docked Sidebar tool, and says how to get the taskbar back if WinT ever stops responding while it is on.",
-        },
-        {
-          kind: "fix",
-          text: "A taskbar WinT was holding hidden is put back on the next start, even if the run that hid it never got to finish — as well as after a lock, a sleep or an Explorer restart, which used to bring it back on their own.",
-        },
+        ["new", "The docked sidebar can now hide the Windows taskbar completely. Auto-hiding only slid it off the edge, and Windows brought it straight back over the rail every time an app wanted attention with a notification; hidden completely, nothing reveals it. The new checkbox sits under \"Hide the Windows taskbar\" in the Docked Sidebar tool, and says how to get the taskbar back if WinT ever stops responding while it is on."],
+        ["fix", "A taskbar WinT was holding hidden is put back on the next start, even if the run that hid it never got to finish — as well as after a lock, a sleep or an Explorer restart, which used to bring it back on their own."],
       ],
     },
     {
@@ -152,18 +170,9 @@ window.wintChangelog = (() => {
       title: "Torrents get out of the way, and a Speed Test to prove it",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "new",
-          text: "Torrents can now give way to everything else. Turn on \"Give way to other apps\" under Settings and the engine is pulled back the moment anything else wants the connection — a call, a page, an update — and takes the line back as soon as they are done. The panel says what it is doing while it does it: what the rest of the PC is using, and what the engine is being held to.",
-        },
-        {
-          kind: "new",
-          text: "The speed limits are sliders now, with a Measure button beside them that tests the line and uses the answer as the ceiling. Until you measure it, WinT learns one anyway: the fastest the connection has actually been seen to run is remembered and used.",
-        },
-        {
-          kind: "new",
-          text: "A Speed Test tool, on its own. It measures download, upload and — the number that actually decides whether a call survives a download — how much the round trip grows while the line is full. Under it, a live meter of what this PC is moving right now, straight from the adapter's own counters.",
-        },
+        ["new", "Torrents can now give way to everything else. Turn on \"Give way to other apps\" under Settings and the engine is pulled back the moment anything else wants the connection — a call, a page, an update — and takes the line back as soon as they are done. The panel says what it is doing while it does it: what the rest of the PC is using, and what the engine is being held to."],
+        ["new", "The speed limits are sliders now, with a Measure button beside them that tests the line and uses the answer as the ceiling. Until you measure it, WinT learns one anyway: the fastest the connection has actually been seen to run is remembered and used."],
+        ["new", "A Speed Test tool, on its own. It measures download, upload and — the number that actually decides whether a call survives a download — how much the round trip grows while the line is full. Under it, a live meter of what this PC is moving right now, straight from the adapter's own counters."],
       ],
     },
     {
@@ -171,18 +180,9 @@ window.wintChangelog = (() => {
       title: "The torrent engine can stay on",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "new",
-          text: "Torrents now has a Start with WinT switch, under Settings next to the engine. With it on, the engine comes up with WinT and keeps downloading and seeding whether or not the Torrents tool is open — and it is still on the next time you start, which is what the switch on Home was missing.",
-        },
-        {
-          kind: "better",
-          text: "The Torrent engine switch on Home is now that same choice. Turning it off stops the engine and keeps it off; turning it on brings it back and leaves it on. Until now it forgot every time WinT closed, so the switch was off again on the next start.",
-        },
-        {
-          kind: "fix",
-          text: "A message in a torrent's file list — such as the engine not answering in time — is readable again. It was being squeezed into the width of the tick column and came out one word per line.",
-        },
+        ["new", "Torrents now has a Start with WinT switch, under Settings next to the engine. With it on, the engine comes up with WinT and keeps downloading and seeding whether or not the Torrents tool is open — and it is still on the next time you start, which is what the switch on Home was missing."],
+        ["better", "The Torrent engine switch on Home is now that same choice. Turning it off stops the engine and keeps it off; turning it on brings it back and leaves it on. Until now it forgot every time WinT closed, so the switch was off again on the next start."],
+        ["fix", "A message in a torrent's file list — such as the engine not answering in time — is readable again. It was being squeezed into the width of the tick column and came out one word per line."],
       ],
     },
     {
@@ -190,26 +190,11 @@ window.wintChangelog = (() => {
       title: "The link chooser opens again, and links open sooner",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "fix",
-          text: "No more black console box flashing up next to the chooser. Windows opens a link by starting a fresh WinT that hands the URL to the one already running and exits, and that short-lived copy was being given a console window of its own. It now lets go of it the moment it starts.",
-        },
-        {
-          kind: "better",
-          text: "Browsers are started with no console of their own either, and with nothing left plumbed to WinT, so a browser that logs to its output no longer keeps a handle open for as long as it runs.",
-        },
-        {
-          kind: "better",
-          text: "Picking a browser starts it straight away. Writing down an answer you asked to be remembered used to happen first, so every click paid for a read and a write of the rules file before the link began opening. The rule is still saved — it just happens behind the browser that is already coming up.",
-        },
-        {
-          kind: "fix",
-          text: "Clicking a link no longer leaves the chooser stuck on \"Reading the browsers on this PC\". The window was failing before it ever got as far as asking Windows what is installed, so it sat on its placeholder forever with no browsers, no rule choices and no way forward but Cancel. It now lists your browsers and profiles as it always meant to.",
-        },
-        {
-          kind: "fix",
-          text: "A second link that arrives while the chooser is already open is noticed again, instead of waiting behind a window that had not been allowed to hear about it.",
-        },
+        ["fix", "No more black console box flashing up next to the chooser. Windows opens a link by starting a fresh WinT that hands the URL to the one already running and exits, and that short-lived copy was being given a console window of its own. It now lets go of it the moment it starts."],
+        ["better", "Browsers are started with no console of their own either, and with nothing left plumbed to WinT, so a browser that logs to its output no longer keeps a handle open for as long as it runs."],
+        ["better", "Picking a browser starts it straight away. Writing down an answer you asked to be remembered used to happen first, so every click paid for a read and a write of the rules file before the link began opening. The rule is still saved — it just happens behind the browser that is already coming up."],
+        ["fix", "Clicking a link no longer leaves the chooser stuck on \"Reading the browsers on this PC\". The window was failing before it ever got as far as asking Windows what is installed, so it sat on its placeholder forever with no browsers, no rule choices and no way forward but Cancel. It now lists your browsers and profiles as it always meant to."],
+        ["fix", "A second link that arrives while the chooser is already open is noticed again, instead of waiting behind a window that had not been allowed to hear about it."],
       ],
     },
     {
@@ -218,10 +203,7 @@ window.wintChangelog = (() => {
       buildChecksum: "4402c5da46c76faee8adb58607109c73b6bc2d37d4d4e5df04c9fc54e146791b",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "fix",
-          text: "Popping the Torrents window out, or back into the dock, no longer leaves the transfer list looking almost empty with a few rows stranded at the bottom. The list now redraws whenever its viewport changes size, so a resized or re-docked window shows the torrents that belong where you are scrolled to. The file list inside a torrent behaves the same way.",
-        },
+        ["fix", "Popping the Torrents window out, or back into the dock, no longer leaves the transfer list looking almost empty with a few rows stranded at the bottom. The list now redraws whenever its viewport changes size, so a resized or re-docked window shows the torrents that belong where you are scrolled to. The file list inside a torrent behaves the same way."],
       ],
     },
     {
@@ -229,14 +211,8 @@ window.wintChangelog = (() => {
       title: "Back returns to the spot you left",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "better",
-          text: "Going back - or up, or through a crumb - now returns a folder to where you had scrolled to, instead of to the first file. Every folder visited keeps its place for as long as the window is open, so stepping into a folder halfway down a long list and back out again costs nothing.",
-        },
-        {
-          kind: "fix",
-          text: "The folder you came from is selected and brought into view again even in a folder of thousands of files, where the row had not been drawn yet and so was never found. When it has to be scrolled to, it now lands in the middle of the list rather than at the very edge.",
-        },
+        ["better", "Going back - or up, or through a crumb - now returns a folder to where you had scrolled to, instead of to the first file. Every folder visited keeps its place for as long as the window is open, so stepping into a folder halfway down a long list and back out again costs nothing."],
+        ["fix", "The folder you came from is selected and brought into view again even in a folder of thousands of files, where the row had not been drawn yet and so was never found. When it has to be scrolled to, it now lands in the middle of the list rather than at the very edge."],
       ],
     },
     {
@@ -244,14 +220,8 @@ window.wintChangelog = (() => {
       title: "The keyboard works in a folder as soon as it opens",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "fix",
-          text: "Ctrl+A now selects everything in a folder you have just opened, instead of doing nothing until you click a file first. The list only takes the keyboard when nothing else is using it, so a name being typed in the filter box or a folder picked in the tree still keeps it.",
-        },
-        {
-          kind: "fix",
-          text: "Ctrl+V pastes into the folder you just navigated to, without having to click an empty spot in it first. The same goes for Ctrl+C, Ctrl+X, Ctrl+Shift+N and the arrow keys.",
-        },
+        ["fix", "Ctrl+A now selects everything in a folder you have just opened, instead of doing nothing until you click a file first. The list only takes the keyboard when nothing else is using it, so a name being typed in the filter box or a folder picked in the tree still keeps it."],
+        ["fix", "Ctrl+V pastes into the folder you just navigated to, without having to click an empty spot in it first. The same goes for Ctrl+C, Ctrl+X, Ctrl+Shift+N and the arrow keys."],
       ],
     },
     {
@@ -259,14 +229,8 @@ window.wintChangelog = (() => {
       title: "Shift+Page Down selects a round hundred",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "fix",
-          text: "Shift+Page Down now selects exactly a hundred rows counting the one you clicked, not a hundred and one. The jump moved a hundred rows and then took both ends of the range, so every press came out one over; it now lands wherever the count needs it to.",
-        },
-        {
-          kind: "better",
-          text: "Pressing it again takes the count to two hundred, three hundred and so on, and Shift+Page Up gives a hundred back at a time, stopping at the row you started from instead of running past it into the other direction.",
-        },
+        ["fix", "Shift+Page Down now selects exactly a hundred rows counting the one you clicked, not a hundred and one. The jump moved a hundred rows and then took both ends of the range, so every press came out one over; it now lands wherever the count needs it to."],
+        ["better", "Pressing it again takes the count to two hundred, three hundred and so on, and Shift+Page Up gives a hundred back at a time, stopping at the row you started from instead of running past it into the other direction."],
       ],
     },
     {
@@ -274,18 +238,9 @@ window.wintChangelog = (() => {
       title: "Files stays where you were looking",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "fix",
-          text: "Dragging files out of Files no longer throws the list back to the top. The folder is re-read the moment something leaves it, and that re-read blanked the rows to skeletons for an instant - long enough for the view to lose its place, while the selection stayed behind on rows now far below.",
-        },
-        {
-          kind: "better",
-          text: "A folder that changes underneath you - something dropped in, moved out, renamed by another program - is now re-read in place, without the rows flickering away and back.",
-        },
-        {
-          kind: "better",
-          text: "Files remembers how far down it is scrolled, so popping a folder out into its own window opens it where you were looking rather than at the first file.",
-        },
+        ["fix", "Dragging files out of Files no longer throws the list back to the top. The folder is re-read the moment something leaves it, and that re-read blanked the rows to skeletons for an instant - long enough for the view to lose its place, while the selection stayed behind on rows now far below."],
+        ["better", "A folder that changes underneath you - something dropped in, moved out, renamed by another program - is now re-read in place, without the rows flickering away and back."],
+        ["better", "Files remembers how far down it is scrolled, so popping a folder out into its own window opens it where you were looking rather than at the first file."],
       ],
     },
     {
@@ -293,14 +248,8 @@ window.wintChangelog = (() => {
       title: "Holding Shift+Page Down keeps selecting",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "fix",
-          text: "Holding Shift+Page Down, or pressing it again, now keeps taking the next hundred rows. Redrawing the list as it scrolled took the focused row out from under the keyboard, so every press after the first went nowhere and the selection stopped growing.",
-        },
-        {
-          kind: "fix",
-          text: "Shift+Page Down in a folder nothing has been clicked in yet now selects the block it promises instead of a single row.",
-        },
+        ["fix", "Holding Shift+Page Down, or pressing it again, now keeps taking the next hundred rows. Redrawing the list as it scrolled took the focused row out from under the keyboard, so every press after the first went nowhere and the selection stopped growing."],
+        ["fix", "Shift+Page Down in a folder nothing has been clicked in yet now selects the block it promises instead of a single row."],
       ],
     },
     {
@@ -308,22 +257,10 @@ window.wintChangelog = (() => {
       title: "Grab a hundred files at a time in Files",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "new",
-          text: "Shift+Page Down now extends the selection by a hundred rows at a time, so picking a known block out of a folder of thousands takes a few presses instead of a long drag. Press it again for the next hundred; Shift+Page Up gives them back. Plain Page Up and Page Down still move by what fits on screen.",
-        },
-        {
-          kind: "new",
-          text: "Ctrl+Shift+Page Down and Ctrl+Shift+Page Up take the next hundred without dropping what was already selected, so blocks from different parts of a folder can be collected in one go.",
-        },
-        {
-          kind: "better",
-          text: "Arrow keys, Home, End and Page Up/Down also work when the list itself has the focus - after clicking the empty space under the last row - starting from whatever is selected instead of doing nothing.",
-        },
-        {
-          kind: "fix",
-          text: "Jumping a long way down a folder of thousands of files no longer loses the keyboard. The row being jumped to had not been drawn yet, so the focus fell back to the page and the next key press went nowhere.",
-        },
+        ["new", "Shift+Page Down now extends the selection by a hundred rows at a time, so picking a known block out of a folder of thousands takes a few presses instead of a long drag. Press it again for the next hundred; Shift+Page Up gives them back. Plain Page Up and Page Down still move by what fits on screen."],
+        ["new", "Ctrl+Shift+Page Down and Ctrl+Shift+Page Up take the next hundred without dropping what was already selected, so blocks from different parts of a folder can be collected in one go."],
+        ["better", "Arrow keys, Home, End and Page Up/Down also work when the list itself has the focus - after clicking the empty space under the last row - starting from whatever is selected instead of doing nothing."],
+        ["fix", "Jumping a long way down a folder of thousands of files no longer loses the keyboard. The row being jumped to had not been drawn yet, so the focus fell back to the page and the next key press went nowhere."],
       ],
     },
     {
@@ -331,18 +268,9 @@ window.wintChangelog = (() => {
       title: "Files scrolls smoothly through folders of thousands of items",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "better",
-          text: "Scrolling a folder with thousands of files is smooth again. The list was re-filtering and re-sorting every item on every frame of the scroll, so a folder of 6,500 files stuttered the whole way down; the order is now worked out once and reused until the folder, the filter or the sort actually changes.",
-        },
-        {
-          kind: "better",
-          text: "The rows on screen are only rebuilt when the scroll actually reaches a new row, instead of on every pixel of movement.",
-        },
-        {
-          kind: "better",
-          text: "With thumbnails on, scrolling no longer restarts the preview queue on every frame - it picks up once the scroll comes to rest, so the pictures fill in while the list keeps moving.",
-        },
+        ["better", "Scrolling a folder with thousands of files is smooth again. The list was re-filtering and re-sorting every item on every frame of the scroll, so a folder of 6,500 files stuttered the whole way down; the order is now worked out once and reused until the folder, the filter or the sort actually changes."],
+        ["better", "The rows on screen are only rebuilt when the scroll actually reaches a new row, instead of on every pixel of movement."],
+        ["better", "With thumbnails on, scrolling no longer restarts the preview queue on every frame - it picks up once the scroll comes to rest, so the pictures fill in while the list keeps moving."],
       ],
     },
     {
@@ -350,18 +278,9 @@ window.wintChangelog = (() => {
       title: "Torrents stop getting stuck waiting to check",
       date: "2026-09-25",
       changes: [
-        {
-          kind: "fix",
-          text: "Torrents no longer sit on \"Waiting to check\" forever. Pausing one while it was hash-checking left it in a state the queue could never start again, so it waited out the whole session without downloading; those torrents now get put back in line for the checker.",
-        },
-        {
-          kind: "fix",
-          text: "A torrent that is still being checked no longer takes a download slot from the queue before anyone knows whether it is already finished.",
-        },
-        {
-          kind: "better",
-          text: "A torrent you paused while it was checking now says \"Paused\" instead of claiming it is waiting to check.",
-        },
+        ["fix", "Torrents no longer sit on \"Waiting to check\" forever. Pausing one while it was hash-checking left it in a state the queue could never start again, so it waited out the whole session without downloading; those torrents now get put back in line for the checker."],
+        ["fix", "A torrent that is still being checked no longer takes a download slot from the queue before anyone knows whether it is already finished."],
+        ["better", "A torrent you paused while it was checking now says \"Paused\" instead of claiming it is waiting to check."],
       ],
     },
     {

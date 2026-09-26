@@ -88,10 +88,7 @@ pub async fn workspace_open(
     // Stamp the theme onto <html> before any stylesheet paints, same as a
     // popped-out tool window - the terminal panel keeps its own fixed palette
     // regardless, so this only affects the workspace chrome.
-    let init_theme = format!(
-        r#"document.documentElement.dataset.theme="{}";"#,
-        if light { "light" } else { "dark" }
-    );
+    let init_theme = crate::tool_window::theme_script(if light { "light" } else { "dark" });
     let opened = label.clone();
     let geometry = geometry.filter(WindowGeometry::is_usable);
     // Building a webview pumps the event loop, so it cannot happen on the

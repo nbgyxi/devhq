@@ -24,7 +24,7 @@
 //! ever-growing backlog.
 
 use std::any::TypeId;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{IoSlice, Write as StdWrite};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -373,6 +373,110 @@ struct State {
     completed_at: HashMap<String, u64>,
     completion_candidates: HashSet<String>,
     rates: HashMap<usize, RateWindow>,
+    /// What has been transferred, for good. See `Ledger`.
+    ledger: Ledger,
+}
+
+// ---------------------------------------------------------------------------
+// What was actually transferred, kept across restarts
+// ---------------------------------------------------------------------------
+
+/// How long the hourly history is kept. Ninety days is small enough to hold
+/// in memory and write whole (an hour is two integers), and long enough for
+/// "what has this been doing lately" to have an answer over a quiet month.
+const HISTORY_HOURS: u64 = 90 * 24;
+/// How often the ledger is written out. Every snapshot would be three writes
+/// a second for numbers nobody reads that often; a lost half-minute after a
+/// hard kill is a fair price.
+const LEDGER_SAVE_EVERY: Duration = Duration::from_secs(30);
+
+/// Lifetime totals for one torrent.
+#[derive(Default, Clone, Copy, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct Totals {
+    uploaded: u64,
+    downloaded: u64,
+}
+
+/// What moved in one hour, across everything.
+#[derive(Default, Clone, Copy, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct Bucket {
+    uploaded: u64,
+    downloaded: u64,
+}
+
+/// The transfer ledger: what each torrent has moved in total, and what moved
+/// in each hour.
+///
+/// The engine's own counters live on the running torrent and start again from
+/// zero every time the engine does — which is why a queue of healthy seeds
+/// could show exactly nought uploaded across the board, and why the Uploaded
+/// and Ratio columns meant nothing. What the engine reports is therefore
+/// treated as a reading off a trip meter: the difference since it was last
+/// looked at is what gets added here, and this is what survives.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct Ledger {
+    /// Info hash to lifetime totals.
+    totals: HashMap<String, Totals>,
+    /// Hours since the epoch, to what moved during them.
+    hours: BTreeMap<u64, Bucket>,
+    /// Not saved: the last reading taken from each torrent this run, so only
+    /// the increment is counted.
+    #[serde(skip)]
+    seen: HashMap<String, Totals>,
+    #[serde(skip)]
+    dirty: bool,
+    #[serde(skip)]
+    saved_at: Option<std::time::Instant>,
+}
+
+fn unix_hour(now_ms: u64) -> u64 {
+    now_ms / 1000 / 3600
+}
+
+impl Ledger {
+    /// Takes a reading for one torrent and books the difference.
+    fn observe(&mut self, info_hash: &str, uploaded: u64, downloaded: u64, now_ms: u64) {
+        let last = self.seen.get(info_hash).copied().unwrap_or_default();
+        // A counter that went backwards is a torrent that was restarted or
+        // re-added, so what it reads now is all of it and none of it is a
+        // repeat of what was already booked.
+        let up = if uploaded >= last.uploaded { uploaded - last.uploaded } else { uploaded };
+        let down = if downloaded >= last.downloaded { downloaded - last.downloaded } else { downloaded };
+        self.seen.insert(
+            info_hash.to_owned(),
+            Totals { uploaded, downloaded },
+        );
+        if up == 0 && down == 0 {
+            return;
+        }
+        let total = self.totals.entry(info_hash.to_owned()).or_default();
+        total.uploaded += up;
+        total.downloaded += down;
+        let bucket = self.hours.entry(unix_hour(now_ms)).or_default();
+        bucket.uploaded += up;
+        bucket.downloaded += down;
+        self.dirty = true;
+    }
+
+    fn totals_for(&self, info_hash: &str) -> Totals {
+        self.totals.get(info_hash).copied().unwrap_or_default()
+    }
+
+    /// Drops hours past the retention window. Cheap: the map is ordered, so
+    /// this is a walk off the front.
+    fn prune(&mut self, now_ms: u64) {
+        let cutoff = unix_hour(now_ms).saturating_sub(HISTORY_HOURS);
+        while let Some((&oldest, _)) = self.hours.iter().next() {
+            if oldest >= cutoff {
+                break;
+            }
+            self.hours.remove(&oldest);
+            self.dirty = true;
+        }
+    }
 }
 
 #[derive(Default)]
@@ -500,6 +604,37 @@ impl State {
         self.state_dir.join("completions.json")
     }
 
+    fn ledger_path(&self) -> PathBuf {
+        self.state_dir.join("transfers.json")
+    }
+
+    /// Written on a timer rather than on every change, and always through a
+    /// temporary file: a ledger half-written when the power goes is worse
+    /// than one half an hour old.
+    fn save_ledger(&mut self, force: bool) {
+        if !self.ledger.dirty {
+            return;
+        }
+        let due = self
+            .ledger
+            .saved_at
+            .is_none_or(|at| at.elapsed() >= LEDGER_SAVE_EVERY);
+        if !force && !due {
+            return;
+        }
+        let path = self.ledger_path();
+        let temporary = path.with_extension("json.tmp");
+        if serde_json::to_vec(&self.ledger)
+            .ok()
+            .and_then(|bytes| std::fs::write(&temporary, bytes).ok())
+            .and_then(|_| std::fs::rename(&temporary, &path).ok())
+            .is_some()
+        {
+            self.ledger.dirty = false;
+            self.ledger.saved_at = Some(std::time::Instant::now());
+        }
+    }
+
     fn save_settings(&self) {
         let _ = std::fs::write(
             self.settings_path(),
@@ -593,7 +728,13 @@ struct Row {
     error: Option<String>,
     total_bytes: u64,
     progress_bytes: u64,
+    /// This run only: the engine's own counter, which starts again at zero
+    /// every time the engine does.
     uploaded_bytes: u64,
+    /// Every run: what this torrent has really sent and received, from the
+    /// ledger. This is what the Uploaded and Ratio columns mean.
+    uploaded_total: u64,
+    downloaded_total: u64,
     finished: bool,
     force_started: bool,
     /// Unix time in milliseconds. Absent for torrents completed before WinT
@@ -651,6 +792,12 @@ fn build_snapshot(
     let mut live_ids = HashSet::with_capacity(list.torrents.len());
     let mut completions_changed = false;
     let now = std::time::Instant::now();
+    // Wall-clock too: the ledger files transfers into hours of the day, and a
+    // monotonic instant has no idea what hour it is.
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_millis() as u64)
+        .unwrap_or(0);
     for t in list.torrents {
         let id = t.id.unwrap_or(0);
         live_ids.insert(id);
@@ -691,6 +838,13 @@ fn build_snapshot(
                 hashes.remove(&t.info_hash);
             }
         }
+        // Booked before the rate is worked out, so the ledger sees every
+        // reading even for a torrent that is not Live and whose rate is
+        // deliberately reported as nothing.
+        state
+            .ledger
+            .observe(&t.info_hash, stats.uploaded_bytes, stats.progress_bytes, now_ms);
+        let booked = state.ledger.totals_for(&t.info_hash);
         let rate = state.rates.entry(id).or_default();
         let (download_bps, upload_bps) = if matches!(stats.state, librqbit::TorrentStatsState::Live)
         {
@@ -743,6 +897,8 @@ fn build_snapshot(
             total_bytes: stats.total_bytes,
             progress_bytes: stats.progress_bytes,
             uploaded_bytes: stats.uploaded_bytes,
+            uploaded_total: booked.uploaded,
+            downloaded_total: booked.downloaded,
             finished: stats.finished,
             force_started: state.queue.force_started.contains(&t.info_hash),
             completed_at: state.completed_at.get(&t.info_hash).copied(),
@@ -775,6 +931,8 @@ fn build_snapshot(
                     total_bytes: torrent.total_bytes,
                     progress_bytes: 0,
                     uploaded_bytes: 0,
+                    uploaded_total: 0,
+                    downloaded_total: 0,
                     finished: false,
                     force_started: state.queue.force_started.contains(&torrent.info_hash),
                     completed_at: state.completed_at.get(&torrent.info_hash).copied(),
@@ -791,6 +949,8 @@ fn build_snapshot(
         state.save_completions();
     }
     state.rates.retain(|id, _| live_ids.contains(id));
+    state.ledger.prune(now_ms);
+    state.save_ledger(false);
     let session = state.api.api_session_stats();
     Snapshot {
         resuming: torrents.iter().filter(|row| row.state == "waiting").count(),
@@ -1516,6 +1676,83 @@ async fn handle(state: &Mutex<State>, op: &str, arg: Value) -> Result<Value> {
             Ok(serde_json::to_value(&state.settings)?)
         }
 
+        // What has been transferred, by hour, plus the per-torrent totals
+        // behind it. `hours` is how far back to look; the answer is one entry
+        // per hour that had traffic, so a quiet fortnight costs nothing to
+        // send and the page fills the gaps itself.
+        "history" => {
+            let mut state = state.lock().await;
+            let hours = arg
+                .get("hours")
+                .and_then(Value::as_u64)
+                .unwrap_or(24)
+                .clamp(1, HISTORY_HOURS);
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| since.as_millis() as u64)
+                .unwrap_or(0);
+            let first = unix_hour(now_ms).saturating_sub(hours - 1);
+            let buckets: Vec<Value> = state
+                .ledger
+                .hours
+                .range(first..)
+                .map(|(hour, moved)| {
+                    json!({
+                        "hour": hour,
+                        "startMs": hour * 3600 * 1000,
+                        "uploaded": moved.uploaded,
+                        "downloaded": moved.downloaded,
+                    })
+                })
+                .collect();
+            // Names come from the session, because the ledger only keeps
+            // hashes — it has to outlive the torrent being removed.
+            let names: HashMap<String, String> = state
+                .session
+                .with_torrents(|torrents| {
+                    torrents
+                        .map(|(_, t)| {
+                            (
+                                t.info_hash().as_string(),
+                                t.metadata
+                                    .load()
+                                    .as_ref()
+                                    .map(|m| m.info.name().unwrap_or_default().to_string())
+                                    .unwrap_or_default(),
+                            )
+                        })
+                        .collect()
+                });
+            let mut totals: Vec<Value> = state
+                .ledger
+                .totals
+                .iter()
+                .map(|(hash, moved)| {
+                    json!({
+                        "infoHash": hash,
+                        "name": names.get(hash).cloned().unwrap_or_default(),
+                        "uploaded": moved.uploaded,
+                        "downloaded": moved.downloaded,
+                        // A torrent still in the session can be pointed at
+                        // from the list; one only in the ledger cannot.
+                        "present": names.contains_key(hash),
+                    })
+                })
+                .collect();
+            totals.sort_by_key(|row| {
+                std::cmp::Reverse(row.get("uploaded").and_then(Value::as_u64).unwrap_or(0))
+            });
+            // Written now rather than at the next tick: someone looking at
+            // the numbers is the likeliest moment for the engine to be
+            // stopped right afterwards.
+            state.save_ledger(false);
+            Ok(json!({
+                "hours": buckets,
+                "torrents": totals,
+                "retainedHours": HISTORY_HOURS,
+            }))
+        }
+
         // Answered without touching the session, so it stays true even while
         // the engine is busy: this is what the app's heartbeat leans on.
         "ping" => Ok(json!({ "pid": std::process::id() })),
@@ -1857,6 +2094,13 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
+    // What everything has transferred over its life. A missing or unreadable
+    // file is an empty ledger rather than a refusal to start: losing the
+    // history is a pity, not a reason to stop downloading.
+    let ledger: Ledger = std::fs::read(state_dir.join("transfers.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
     // Settled before the session is built, and written down straight away so
     // the very first run keeps the port it is about to announce to trackers.
     if ensure_listen_port(&mut settings) {
@@ -2028,6 +2272,7 @@ async fn main() -> Result<()> {
         completed_at,
         completion_candidates: HashSet::new(),
         rates: HashMap::new(),
+        ledger,
     }));
 
     {
@@ -2150,6 +2395,12 @@ async fn main() -> Result<()> {
         });
     }
 
+    {
+        // The timer that normally paces these writes is exactly what would
+        // throw away the last half-minute on the way out.
+        let mut state = state.lock().await;
+        state.save_ledger(true);
+    }
     let session = { state.lock().await.session.clone() };
     session.stop().await;
     Ok(())

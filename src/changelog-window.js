@@ -39,7 +39,9 @@
   const releaseBody = (release, appVersion, currentChecksum) => {
     const checksum = release.version === appVersion && currentChecksum ? currentChecksum : (release.buildChecksum || "");
     const build = checksum ? `<p class="release-build">Version ${esc(release.version)} was built with checksum <code>${esc(checksum)}</code></p>` : "";
-    const changes = release.changes.map(([kind, value]) => `<li class="chg ${esc(kind)}"><span class="chg-kind">${esc(kinds[kind] || kind)}</span><span class="chg-text">${text(value)}</span></li>`).join("");
+    // Tolerate a line written as { kind, text }: one entry in the wrong shape
+    // used to throw and leave the whole window blank.
+    const changes = release.changes.map((c) => (Array.isArray(c) ? c : [c?.kind, c?.text])).map(([kind, value]) => `<li class="chg ${esc(kind)}"><span class="chg-kind">${esc(kinds[kind] || kind)}</span><span class="chg-text">${text(value)}</span></li>`).join("");
     return `<section class="release"><div class="release-head"><span class="release-ver">${esc(release.version)}</span><span class="release-title">${esc(release.title)}</span><time class="release-date" datetime="${esc(release.date)}">${esc(date(release.date))}</time></div>${build}<ul class="release-changes">${changes}</ul></section>`;
   };
   async function render() {

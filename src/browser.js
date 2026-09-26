@@ -28,6 +28,16 @@
     return promise.finally(() => window.wintWork?.endWork(key));
   };
 
+  /** Demo mode (`demo-mode.js`): with it on, the sites a rule names and the
+   *  browser profiles it sends them to are drawn as stand-ins, because on a
+   *  real PC a profile is usually named after its owner and the rules are a
+   *  list of the places they go. Nothing this page saves or routes changes:
+   *  the aliases are applied where a string is drawn and nowhere else, and the
+   *  rule being edited shows its real pattern — what is typed there is what is
+   *  written to the rule. */
+  const demoHost = (value) => window.wintDemo?.host(value) ?? value;
+  const demoProfile = (value) => window.wintDemo?.profile(value) ?? value;
+
   let host = null;
   /** What Windows thinks WinT is. Null until the first answer comes back, so
    *  the card can draw a skeleton rather than a wrong reading. */
@@ -145,7 +155,7 @@
   };
 
   const oneName = (target) => {
-    const profile = target.profileName || target.profile;
+    const profile = demoProfile(target.profileName || target.profile);
     return profile ? `${target.browser} · ${profile}` : target.browser || "No browser";
   };
 
@@ -492,7 +502,7 @@
     if (!testUrl.trim()) return `<small>Type an address to see which rule would take it.</small>`;
     if (testResult === null) return `<small>Checking…</small>`;
     if (!testResult) return `<small>${icon("help")}No rule matches — this one would ask.</small>`;
-    return `<small class="match">${icon("check_circle")}${esc(testResult.pattern)} → ${esc(targetName(testResult))}</small>`;
+    return `<small class="match">${icon("check_circle")}${esc(demoHost(testResult.pattern))} → ${esc(targetName(testResult))}</small>`;
   }
 
   function ruleRow(rule) {
@@ -503,7 +513,7 @@
     const glyph = !rule.enabled ? "radio_button_unchecked" : missing ? "warning" : list.length > 1 ? "alt_route" : "check_circle";
     return `<button class="br-row${selected === rule.id ? " on" : ""}${rule.enabled ? "" : " off"}" data-br-rule="${esc(rule.id)}">
       ${icon(glyph)}
-      <span><strong>${esc(scopeLabel(rule.scope, rule.pattern))}</strong><small>${esc(targetName(rule))}${missing ? ` · ${missing} not installed` : ""}</small></span>
+      <span><strong>${esc(scopeLabel(rule.scope, demoHost(rule.pattern)))}</strong><small>${esc(targetName(rule))}${missing ? ` · ${missing} not installed` : ""}</small></span>
       <em>${rule.uses ? `${rule.uses}×` : ""}</em>
     </button>`;
   }
@@ -521,7 +531,7 @@
       .map((target) => {
         const key = targetKey(target.exe, target.profile);
         const on = chosen.some((pick) => isTarget(pick, target));
-        const label = target.profileName ? `${target.browser} · ${target.profileName}` : target.browser;
+        const label = target.profileName ? `${target.browser} · ${demoProfile(target.profileName)}` : target.browser;
         return `<label class="br-pick${on ? " on" : ""}"><input type="checkbox" ${attr}="${esc(key)}"${on ? " checked" : ""} /><span>${esc(label)}</span></label>`;
       })
       .join("");
@@ -610,7 +620,7 @@
     return `<div class="br-sug${isAdded ? " added" : ""}" data-br-sug-host="${esc(item.host)}">
       <div class="br-sug-top">
         ${icon(isAdded ? "check_circle" : item.targets.length > 1 ? "alt_route" : "public")}
-        <span><strong>${esc(item.host)}</strong><small>${esc(where)} · ${esc(isAdded ? "added — adjust it here" : why(item))}</small></span>
+        <span><strong>${esc(demoHost(item.host))}</strong><small>${esc(where)} · ${esc(isAdded ? "added — adjust it here" : why(item))}</small></span>
         ${isAdded
           ? `<button class="btn small" data-br-sug-open="${esc(item.host)}" title="Open this rule">${icon("rule")}</button>`
           : `<button class="btn small" data-br-sug-add="${esc(item.host)}" title="Add this rule"${chosen.length ? "" : " disabled"}>${icon("add")}</button>`}
@@ -629,7 +639,7 @@
     const byBrowser = new Map();
     for (const target of list) {
       if (!byBrowser.has(target.browser)) byBrowser.set(target.browser, []);
-      const profile = target.profileName || target.profile;
+      const profile = demoProfile(target.profileName || target.profile);
       if (profile) byBrowser.get(target.browser).push(profile);
     }
     return [...byBrowser.entries()]
@@ -790,7 +800,7 @@
                 .map((target) => {
                   const tkey = targetKey(target.exe, target.profile);
                   const on = !isHidden(target);
-                  return `<label class="br-pick br-pick-child${on ? " on" : ""}"><input type="checkbox" data-br-visible="${esc(tkey)}"${on ? " checked" : ""} /><span>${esc(target.profileName || target.profile || "Default profile")}</span></label>`;
+                  return `<label class="br-pick br-pick-child${on ? " on" : ""}"><input type="checkbox" data-br-visible="${esc(tkey)}"${on ? " checked" : ""} /><span>${esc(demoProfile(target.profileName || target.profile) || "Default profile")}</span></label>`;
                 })
                 .join("")
             : ""}`;
@@ -1385,6 +1395,10 @@
       .catch(() => {});
   }
 
+  /** Dropped when the page is mounted again, so a tool opened and closed a
+   *  dozen times does not leave a dozen redraws behind. */
+  let stopFollowingDemo = null;
+
   window.wintBrowserTool = {
     mount(node) {
       host = node;
@@ -1399,6 +1413,9 @@
       tabsLoaded = false;
       dismissed = new Set();
       draw();
+      // Ticking demo mode in Settings redraws this page wherever it is open.
+      stopFollowingDemo?.();
+      stopFollowingDemo = window.wintDemo?.onChange(() => { if (host?.isConnected) redraw(); }) || null;
       // Four independent reads, all off-thread in Rust: each fills its own
       // region the moment it answers rather than waiting for the others.
       loadAssoc();

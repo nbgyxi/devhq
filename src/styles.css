@@ -5389,6 +5389,12 @@ body.projects-window #status-term-popout{display:none!important}
 .spd-apps>header>.ms{font-size:16px;color:var(--accent)}
 .spd-apps>header strong{font-size:11.5px}
 .spd-apps>header small{margin-left:auto;color:var(--dim2);font-size:9.5px}
+.spd-apps .seg{display:inline-flex;height:24px;margin-left:10px;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:var(--bg)}
+.spd-apps .seg button{display:inline-flex;align-items:center;gap:4px;padding:0 9px;font-size:10.5px;font-weight:600;color:var(--dim2);border-left:1px solid var(--line)}
+.spd-apps .seg button:first-child{border-left:0}
+.spd-apps .seg button .ms{font-size:13px}
+.spd-apps .seg button:hover{color:var(--text)}
+.spd-apps .seg button.on{background:rgba(109,139,255,.2);color:var(--text)}
 .spd-applist{display:flex;flex-direction:column;gap:4px}
 .spd-app{display:grid;grid-template-columns:minmax(0,1fr) 92px 92px 92px;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg2)}
 .spd-app-name{display:flex;flex-direction:column;gap:2px;min-width:0}
@@ -5396,6 +5402,10 @@ body.projects-window #status-term-popout{display:none!important}
 .spd-app-name em{color:var(--dim2);font-size:9.5px;font-style:normal;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .spd-app-rate{display:flex;align-items:center;gap:5px;color:var(--dim);font-size:11px;font-variant-numeric:tabular-nums}
 .spd-app-rate .ms{font-size:14px;color:var(--dim2)}
+.spd-applist[data-rank="down"] .spd-app-rate[data-dir="up"],
+.spd-applist[data-rank="up"] .spd-app-rate[data-dir="down"]{opacity:.5}
+.spd-applist[data-rank="down"] .spd-app-rate[data-dir="down"] b,
+.spd-applist[data-rank="up"] .spd-app-rate[data-dir="up"] b{color:var(--text)}
 .spd-app-tag{justify-self:end;padding:2px 7px;border-radius:999px;background:var(--bg1);border:1px solid var(--line);color:var(--dim2);font-size:9px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
 .spd-app-tag[data-kind="measured"]{color:var(--accent);border-color:var(--accent)}
 .spd-appsfoot{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
@@ -5403,3 +5413,35 @@ body.projects-window #status-term-popout{display:none!important}
 @media (max-width:880px){.spd{grid-template-columns:minmax(0,1fr)}
 .spd-app{grid-template-columns:minmax(0,1fr) 80px 80px}
 .spd-app-tag{display:none}}
+
+/* Stats: what was actually transferred, by hour and by torrent. Up above the
+   line and down below it, so a seeding run and a downloading one are told
+   apart at a glance rather than by reading a legend. */
+.tr-stats{display:flex;flex-direction:column;gap:12px;max-width:760px;padding-bottom:12px}
+.tr-statshead{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.tr-seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.tr-seg>button{padding:5px 11px;font-size:11px;color:var(--dim2);background:var(--bg1);border-right:1px solid var(--line)}
+.tr-seg>button:last-child{border-right:0}
+.tr-seg>button:hover{background:var(--bg2);color:var(--text)}
+.tr-seg>button.on{background:var(--accent);color:#fff}
+.tr-statsnote{color:var(--dim2);font-size:11px;font-variant-numeric:tabular-nums}
+.tr-chartpanel .tr-chart{display:flex;align-items:stretch;gap:2px;height:180px;padding:12px}
+.tr-bar{flex:1;min-width:2px;display:flex;flex-direction:column;justify-content:center}
+.tr-bar-up,.tr-bar-down{flex:1;display:flex}
+.tr-bar-up{align-items:flex-end}
+.tr-bar-up>i{width:100%;background:var(--accent);border-radius:2px 2px 0 0;min-height:1px}
+.tr-bar-down>i{width:100%;background:var(--dim2);border-radius:0 0 2px 2px;min-height:1px;opacity:.55}
+.tr-bar:hover .tr-bar-up>i{filter:brightness(1.25)}
+.tr-chartaxis{display:flex;align-items:center;justify-content:space-between;padding:0 12px 10px;color:var(--dim2);font-size:9.5px}
+.tr-legend{display:inline-flex;align-items:center;gap:5px}
+.tr-legend>i{width:8px;height:8px;border-radius:2px;display:inline-block}
+.tr-legend>i.up{background:var(--accent)}
+.tr-legend>i.down{background:var(--dim2);opacity:.55}
+.tr-toplist{display:flex;flex-direction:column}
+.tr-toprow{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(60px,1fr) 78px 48px;align-items:center;gap:10px;padding:7px 12px;border-top:1px solid var(--line);font-size:11px}
+.tr-toprow:first-child{border-top:0}
+.tr-toprow.gone .tr-topname{color:var(--dim2);font-style:italic}
+.tr-topname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tr-topbar{height:5px;border-radius:3px;background:var(--bg2);overflow:hidden}
+.tr-topbar>i{display:block;height:100%;background:var(--accent)}
+.tr-topup,.tr-topratio{text-align:right;font-variant-numeric:tabular-nums;color:var(--dim)}

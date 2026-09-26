@@ -486,32 +486,66 @@
     document.head.appendChild(script);
   }
 
+  /** Loads a tool that lives in its own file and mounts it into its host.
+   *
+   *  Every one of these was written out inline, and they shared two faults.
+   *  A second render before the first load finished appended a second
+   *  <script> for the same file, so the file ran twice — and a file whose
+   *  body is an IIFE then has two copies of its state and two sets of Tauri
+   *  event listeners, only one reachable through the global. And the mount
+   *  was skipped outright when the node it had captured was replaced while
+   *  the file was loading, which left the worst kind of broken page: the
+   *  markup is there, so it draws and highlights under the pointer, but the
+   *  listeners that make it work were never attached to the node on screen.
+   *
+   *  So: one load per file however many ask for it, and the mount always
+   *  goes to the host that is on screen when the file becomes available. */
+  const loadingTools = new Map();
+  function mountTool(selector, src, globalName, failure) {
+    const attach = () => {
+      const live = host?.querySelector(selector);
+      const api = window[globalName];
+      if (!api || !live?.isConnected) return;
+      try {
+        api.mount(live);
+      } catch (error) {
+        // A tool that throws on the way up must say so where it would have
+        // drawn. Left silent it is indistinguishable from one that works.
+        window.wintErrorLog?.report(`${globalName} failed to mount`, error);
+        live.innerHTML = `<div class="win-empty">${esc(failure)}</div>`;
+      }
+    };
+    if (window[globalName]) return attach();
+    const waiting = loadingTools.get(src);
+    if (waiting) return waiting.push(attach);
+    loadingTools.set(src, [attach]);
+    const finish = (run) => {
+      const queued = loadingTools.get(src) || [];
+      loadingTools.delete(src);
+      for (const one of queued) run(one);
+    };
+    const script = document.createElement("script");
+    script.src = src;
+    script.onload = () => finish((one) => one());
+    script.onerror = () => finish(() => {
+      const live = host?.querySelector(selector);
+      if (live) live.innerHTML = `<div class="win-empty">${esc(failure)}</div>`;
+    });
+    document.head.appendChild(script);
+  }
+
   // Its own file, and its engine is a separate process entirely: opening this
   // page neither starts nor stops a download, it only looks at one.
   function renderTorrents(tool) {
     host.innerHTML = header(tool, '<div data-torrent-host></div>');
-    const node = host.querySelector("[data-torrent-host]");
-    const mount = () => { if (node.isConnected) window.wintTorrent.mount(node); };
-    if (window.wintTorrent) return mount();
-    const script = document.createElement("script");
-    script.src = "torrent.js";
-    script.onload = mount;
-    script.onerror = () => { node.innerHTML = '<div class="win-empty">Torrents could not load.</div>'; };
-    document.head.appendChild(script);
+    mountTool("[data-torrent-host]", "torrent.js", "wintTorrent", "Torrents could not load.");
   }
 
   // Its own file: it samples the adapter on a timer and, on a press, fills the
   // line to measure it, and neither belongs in this one.
   function renderSpeedTest(tool) {
     host.innerHTML = header(tool, '<div data-speedtest-host></div>');
-    const node = host.querySelector("[data-speedtest-host]");
-    const mount = () => { if (node.isConnected) window.wintSpeedTest.mount(node); };
-    if (window.wintSpeedTest) return mount();
-    const script = document.createElement("script");
-    script.src = "speedtest.js";
-    script.onload = mount;
-    script.onerror = () => { node.innerHTML = '<div class="win-empty">The speed test could not load.</div>'; };
-    document.head.appendChild(script);
+    mountTool("[data-speedtest-host]", "speedtest.js", "wintSpeedTest", "The speed test could not load.");
   }
 
   // Its own file, and the routing itself belongs to the backend: links are

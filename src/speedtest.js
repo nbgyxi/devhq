@@ -34,6 +34,15 @@
   /** Rows quieter than this are left out: every idle browser tab holds a socket
    *  open, and a list of forty processes moving nothing answers nothing. */
   const APP_FLOOR = 2048;
+  /** How long each app's rate is averaged over. Traffic at the one-second scale
+   *  is all bursts and gaps, and a number that jumps between 4 MB/s and nothing
+   *  cannot be read; five seconds is steady enough to read and short enough to
+   *  still be about now. */
+  const WINDOW_MS = 5000;
+  /** How long a program stays on the list after its last burst. Without this a
+   *  row disappears on the first idle second and comes back on the next, which
+   *  is the opposite of calm. */
+  const LINGER_MS = 8000;
   /** How many rows the panel shows at once. */
   const APPS_SHOWN = 8;
   /** Where the last result is kept. Through the backend rather than
@@ -41,6 +50,8 @@
    *  exactly the kind of state that must not be lost to a webview flush that
    *  never happened. */
   const KEY = "speedtest-last";
+  /** Where the chosen order is kept, so the panel opens the way it was left. */
+  const SORT_KEY = "speedtest-app-sort";
 
   const st = {
     host: null,
@@ -59,8 +70,16 @@
     apps: null,
     appsTimer: 0,
     appRows: new Map(),
+    /** Per program: the last few seconds of samples, the newest grouped reading
+     *  and when it was last busy. This is what makes the list calm. */
+    appSeen: new Map(),
     /** What the last press of "Measure exactly" had to say. */
     measureNote: "",
+    /** Which way the app list is ordered: `total`, `down` or `up`. Down and up
+     *  are not the same question — a PC whose upload is saturated is a PC
+     *  somebody is seeding or syncing from, and that culprit is often nowhere
+     *  near the top of the busiest list. */
+    sort: "total",
   };
 
   function bytes(n) {
@@ -127,6 +146,11 @@
 
         <section class="spd-apps">
           <header>${icon("apps")}<strong>Which apps are using it</strong>
+            <div class="seg" data-spd-sort>
+              <button type="button" data-sort="total">Busiest</button>
+              <button type="button" data-sort="down">${icon("download")}Download</button>
+              <button type="button" data-sort="up">${icon("upload")}Upload</button>
+            </div>
             <small data-spd-appsnote>Every process holding a connection off this PC</small></header>
           <div class="spd-applist" data-spd-applist>
             <p class="spd-hint" data-spd-appsempty>Reading the socket table…</p>
@@ -142,6 +166,8 @@
     node.addEventListener("click", (event) => {
       if (event.target.closest("[data-spd-run]")) run();
       if (event.target.closest("[data-spd-measure]")) measure();
+      const sort = event.target.closest("[data-spd-sort] button");
+      if (sort) setSort(sort.dataset.sort);
     });
 
     loadLast();
@@ -156,6 +182,7 @@
     st.timer = 0;
     st.appsTimer = 0;
     st.appRows.clear();
+    st.appSeen.clear();
     for (const off of st.unlisten.splice(0)) { try { off(); } catch { /* already gone */ } }
     invoke("net_throughput_reset").catch(() => {});
     invoke("net_app_usage_reset").catch(() => {});
@@ -194,6 +221,7 @@
       invoke("net_app_usage").then((report) => {
         if (!report) return;
         st.apps = report;
+        accumulate(grouped(report.apps));
         drawApps();
       }).catch(() => {});
     };
@@ -224,6 +252,12 @@
   function loadLast() {
     invoke("ui_state_get", { key: KEY }).then((saved) => {
       if (saved && !st.result && !st.running) { st.result = saved; drawResult(); }
+    }).catch(() => {});
+    invoke("ui_state_get", { key: SORT_KEY }).then((saved) => {
+      if (saved === "down" || saved === "up" || saved === "total") {
+        st.sort = saved;
+        drawApps();
+      }
     }).catch(() => {});
   }
 
@@ -337,8 +371,83 @@
       }
       byName.set(app.name, row);
     }
-    return [...byName.values()].sort((a, b) =>
-      (b.downBps + b.upBps) - (a.downBps + a.upBps) || a.name.localeCompare(b.name));
+    return byName;
+  }
+
+  /** What is actually drawn: the last few seconds of each program, averaged.
+   *
+   *  Traffic is bursty at the one-second scale — a browser that is steadily
+   *  pulling a video still reads zero on the tick between two chunks — so the
+   *  raw numbers jump and rows drop out and come back. Averaging over a rolling
+   *  window steadies the figures, and a program is kept in the list for a few
+   *  seconds after it last did something, so a quiet second cannot make a row
+   *  vanish and reappear. */
+  /** Whichever direction is being ranked decides the order *and* which rows are
+   *  listed, so "Upload" is a list of what is uploading rather than the busiest
+   *  apps with their upload printed beside them. */
+  function weigh(down, up) {
+    if (st.sort === "down") return down;
+    if (st.sort === "up") return up;
+    return down + up;
+  }
+
+  /** Takes one reading into the window. Called once per poll and nowhere else —
+   *  a redraw must never add a sample, or a click would weight the average. */
+  function accumulate(byName) {
+    const now = Date.now();
+    for (const [name, app] of byName) {
+      const seen = st.appSeen.get(name) || { samples: [] };
+      seen.samples.push({ at: now, downBps: app.downBps, upBps: app.upBps });
+      seen.last = app;
+      st.appSeen.set(name, seen);
+    }
+    for (const [name, seen] of st.appSeen) {
+      // A program absent from this reading is sampled as a zero: an average
+      // that skips the idle seconds is not an average.
+      if (!byName.has(name)) seen.samples.push({ at: now, downBps: 0, upBps: 0 });
+      seen.samples = seen.samples.filter((sample) => now - sample.at < WINDOW_MS);
+      // Busy is judged on the busiest second in the window rather than on the
+      // average: a program that moved a megabyte four seconds ago belongs on
+      // the list, even though the average has thinned it out since.
+      const peak = seen.samples.reduce((most, s) => Math.max(most, weigh(s.downBps, s.upBps)), 0);
+      if (peak >= APP_FLOOR) seen.busyAt = now;
+      // Once nothing is left in the window and the linger is past, the program
+      // is forgotten entirely.
+      if (!seen.samples.length || (!byName.has(name) && peak === 0
+        && (!seen.busyAt || now - seen.busyAt > LINGER_MS))) {
+        st.appSeen.delete(name);
+      }
+    }
+  }
+
+  /** What the panel draws: each program's rate averaged over the window, in the
+   *  chosen order. A program stays listed for a few seconds after its last
+   *  burst, so a quiet second cannot make a row vanish and reappear. */
+  function ranked() {
+    const now = Date.now();
+    const rows = [];
+    for (const [name, seen] of st.appSeen) {
+      if (!seen.samples.length || !seen.busyAt || now - seen.busyAt > LINGER_MS) continue;
+      const count = seen.samples.length;
+      const downBps = seen.samples.reduce((sum, s) => sum + s.downBps, 0) / count;
+      const upBps = seen.samples.reduce((sum, s) => sum + s.upBps, 0) / count;
+      const peak = seen.samples.reduce((most, s) => Math.max(most, weigh(s.downBps, s.upBps)), 0);
+      rows.push({ ...seen.last, name, downBps, upBps, rank: weigh(downBps, upBps), peak });
+    }
+    return rows.sort((a, b) => b.rank - a.rank || b.peak - a.peak || a.name.localeCompare(b.name));
+  }
+
+  /** Changes the order, and remembers it. Through the backend, because the
+   *  webview's own storage is not something a saved choice may depend on. */
+  function setSort(sort) {
+    if (!sort || sort === st.sort) return;
+    st.sort = sort;
+    // The rows are ranked on a different number now, so the ones that survive
+    // the floor change too: the list is rebuilt rather than reordered.
+    for (const [, row] of st.appRows) row.remove();
+    st.appRows.clear();
+    drawApps();
+    invoke("ui_state_set", { key: SORT_KEY, value: sort }).catch(() => {});
   }
 
   /** The apps panel. Rows are kept per program and updated in place: one that
@@ -349,12 +458,21 @@
     const list = host.querySelector("[data-spd-applist]");
     if (!list) return;
     const report = st.apps || { apps: [] };
-    const busy = grouped(report.apps).filter((app) => app.downBps + app.upBps >= APP_FLOOR).slice(0, APPS_SHOWN);
+    const busy = ranked().slice(0, APPS_SHOWN);
+
+    // The direction the list is ranked on is the one drawn brightest, so the
+    // column the order is about is obvious without reading the buttons.
+    list.dataset.rank = st.sort;
+    for (const button of host.querySelectorAll("[data-spd-sort] button")) {
+      button.classList.toggle("on", button.dataset.sort === st.sort);
+    }
 
     const placeholder = list.querySelector("[data-spd-appsempty]");
     if (placeholder) {
+      const moving = st.sort === "down" ? "is downloading" : st.sort === "up" ? "is uploading" : "is moving";
       const idle = report.known
-        ? `Nothing is moving more than ${bytes(APP_FLOOR)}/s. ${report.apps.length} process${report.apps.length === 1 ? "" : "es"} hold a connection open.`
+        ? `Nothing ${moving} more than ${bytes(APP_FLOOR)}/s. ${report.apps.length} process${report.apps.length === 1 ? "" : "es"} hold a connection open.`
+          + ` Anything that moves something stays listed for ${LINGER_MS / 1000}s after it stops.`
         : "Reading the socket table…";
       placeholder.hidden = busy.length > 0;
       setText(placeholder, idle);
@@ -372,8 +490,8 @@
         row = document.createElement("div");
         row.className = "spd-app";
         row.innerHTML = `<span class="spd-app-name"><strong></strong><em></em></span>
-          <span class="spd-app-rate">${icon("download")}<b data-down></b></span>
-          <span class="spd-app-rate">${icon("upload")}<b data-up></b></span>
+          <span class="spd-app-rate" data-dir="down">${icon("download")}<b data-down></b></span>
+          <span class="spd-app-rate" data-dir="up">${icon("upload")}<b data-up></b></span>
           <span class="spd-app-tag" data-tag></span>`;
         st.appRows.set(app.name, row);
         list.appendChild(row);
@@ -396,8 +514,8 @@
     }
 
     setText(host.querySelector("[data-spd-appsnote]"), report.measured
-      ? "Measured per connection by the TCP stack"
-      : "Estimated share of the adapter total");
+      ? `Measured per connection by the TCP stack · ${WINDOW_MS / 1000}s average`
+      : `Estimated share of the adapter total · ${WINDOW_MS / 1000}s average`);
     const button = host.querySelector("[data-spd-measure]");
     const exact = report.elevated || report.helperRunning;
     // Once the numbers are actually arriving, the line about asking for them
