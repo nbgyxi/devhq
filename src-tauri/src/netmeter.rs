@@ -77,6 +77,19 @@ fn last() -> &'static Mutex<Option<Counters>> {
 /// driving the sampler itself.
 static LAST_DOWN: AtomicU64 = AtomicU64::new(0);
 static LAST_UP: AtomicU64 = AtomicU64::new(0);
+static LAST_KNOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The newest rate anything measured, and whether there has been one at all.
+/// `net_usage` divides this total between the processes that are connected, so
+/// it reads the same number the meter is drawing rather than sampling the
+/// counters a second time on a different interval.
+pub fn latest() -> (u64, u64, bool) {
+    (
+        LAST_DOWN.load(Ordering::Relaxed),
+        LAST_UP.load(Ordering::Relaxed),
+        LAST_KNOWN.load(Ordering::Relaxed),
+    )
+}
 
 /// Samples the counters and returns the rate since the previous call.
 ///
@@ -112,6 +125,7 @@ pub fn sample() -> Throughput {
     };
     LAST_DOWN.store(out.down_bps, Ordering::Relaxed);
     LAST_UP.store(out.up_bps, Ordering::Relaxed);
+    LAST_KNOWN.store(true, Ordering::Relaxed);
     out
 }
 

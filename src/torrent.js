@@ -1571,6 +1571,12 @@ Click to open in Explorer` : "";
             <div data-tr-assocbody></div>
           </section>
 
+          <section class="awake-panel">
+            <header>${icon("lan")}<strong>Incoming connections</strong></header>
+            <div class="tr-setrow"><span>Peer port<small data-tr-portnote></small></span>
+              <code data-tr-port></code></div>
+          </section>
+
           <section class="awake-panel tr-enginepanel">
             <header>${icon("memory")}<strong>The engine</strong></header>
             <label class="tr-setrow"><span>Start with WinT<small>Keep downloading and seeding whether or not this tool is open. Off, the engine runs only while the tool is.</small></span>
@@ -1604,10 +1610,57 @@ Click to open in Explorer` : "";
     if (autostart && autostart !== document.activeElement && autostart.checked !== !!e.autostart) {
       autostart.checked = !!e.autostart;
     }
+    drawPort(view);
     setText(view.querySelector("[data-tr-enginestat]"),
       e.state === "running"
         ? `${e.engine || "Running"} · pid ${e.pid} · ${bytes(e.memoryBytes)}${e.restarts ? ` · restarted ${e.restarts}×` : ""}`
         : e.message || e.state || "Not running");
+  }
+
+  /** The port peers reach this PC on, and whether anything ever does.
+   *
+   *  A seeder opens no connections of its own — it has nothing to ask anyone
+   *  for — so every byte it uploads goes out through a connection somebody
+   *  else opened to this port. Seeds sitting at zero upload with peers
+   *  connected is the signature of a port nothing outside can reach, and it is
+   *  indistinguishable from no demand unless the port is put on screen. */
+  function drawPort(view) {
+    const snap = st.snap;
+    const wanted = snap?.settings?.listenPort || 0;
+    const bound = snap?.listenPort || 0;
+    const seeding = (snap?.torrents || []).filter((row) => row.finished && row.state === "live");
+    const uploading = seeding.filter((row) => row.uploadBps > 0).length;
+    const utp = !!snap?.utp;
+    setText(view.querySelector("[data-tr-port]"), bound ? `${bound}${utp ? " TCP+UDP" : " TCP only"}` : "—");
+    const note = view.querySelector("[data-tr-portnote]");
+    setText(note, portNote(wanted, bound, utp, seeding.length, uploading));
+    // The one state worth colouring: peers cannot get in, and no amount of
+    // waiting will change it.
+    if (note) note.dataset.trAlarm = bound && !utp ? "1" : "";
+  }
+
+  function portNote(wanted, bound, utp, seeding, uploading) {
+    if (!bound) return "The engine is not listening yet.";
+    // TCP alone cannot be reached through a home router without a forward, so
+    // this is the whole difference between seeding and not. It is shown as the
+    // fault it is rather than left to be inferred from an upload rate of zero,
+    // which is exactly how it went unnoticed for a day.
+    if (!utp) {
+      return `Peers can only arrive over TCP, which a router will not carry unasked — so seeding cannot work. The engine could not open UDP ${bound}: Windows reserves ranges of ports for itself and this is inside one. Restart the engine and it will move to a port it can use.`;
+    }
+    // Something else already held the port, so the one that was forwarded is
+    // not the one peers would arrive at.
+    if (wanted && bound !== wanted) {
+      return `Set to ${wanted}, but ${bound} is what it could take — forward ${bound}, or free ${wanted} and restart.`;
+    }
+    if (seeding >= 3 && uploading === 0) {
+      // Peers reach this port over UDP as well as TCP, and the UDP half
+      // usually gets through a home router on its own. Forwarding is what to
+      // do when it has not, not the first thing to go and try.
+      return `${seeding} torrents are seeding and none are uploading. Give it a few minutes — peers also arrive here over UDP, which usually crosses a router by itself. If it stays at zero, forward ${bound} to this PC.`;
+    }
+    if (seeding && uploading) return `${uploading} of ${seeding} seeding torrents are uploading.`;
+    return "Forward this port on your router if uploads stay at zero.";
   }
 
   // ------------------------------------------------------- how much of the line

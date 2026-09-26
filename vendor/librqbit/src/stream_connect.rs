@@ -136,6 +136,17 @@ pub(crate) struct StreamConnector {
 }
 
 impl StreamConnector {
+    /// Whether uTP — BitTorrent over UDP — actually came up.
+    ///
+    /// A uTP socket that fails to bind is not fatal while TCP is listening,
+    /// so the session carries on without it. That is the right call, but it
+    /// leaves the engine in the one state where a seeder behind a home router
+    /// can never be reached, and until this accessor existed there was no way
+    /// to tell from outside that it had happened.
+    pub fn utp_enabled(&self) -> bool {
+        self.utp_socket.is_some()
+    }
+
     pub async fn new(config: StreamConnectorArgs) -> anyhow::Result<Self> {
         #[allow(clippy::single_match)]
         match (

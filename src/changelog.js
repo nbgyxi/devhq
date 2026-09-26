@@ -16,6 +16,93 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.164.0",
+      title: "Speed Test says which apps are using the line",
+      date: "2026-09-26",
+      changes: [
+        {
+          kind: "new",
+          text: "Speed Test now names the programs behind the live meter. Every process holding a connection to somewhere off this PC is listed with what it is moving down and up, how many connections it has and a few of the addresses it is talking to, busiest first and updated every second — so a line that is mysteriously full stops being a mystery.",
+        },
+        {
+          kind: "new",
+          text: "Windows only counts bytes per process for an administrator, so each app's figures start as its share of the adapter's real total, worked out from how much it read and wrote, and every row says \"estimate\" while that is what it is. \"Measure exactly\" asks for administrator rights once, for a small helper that reads the TCP stack's own per-connection counters; those rows then say \"measured\". WinT itself still never runs elevated, and the helper stops when the tool is closed or after thirty minutes.",
+        },
+      ],
+    },
+    {
+      version: "0.163.1",
+      title: "The peer port moves off the ports Windows keeps for itself",
+      date: "2026-09-26",
+      changes: [
+        {
+          kind: "fix",
+          text: "Seeding still did not work, because the port the engine settled on was one Windows had reserved. Windows keeps separate lists of reserved ports for TCP and UDP, and Hyper-V and WSL reserve wide blocks of the high range in one but not the other — so the port took a TCP listener and refused a UDP one, the engine carried on with TCP alone, and peers behind a router had no way in. The port is now chosen from the band below that range, and it is tested for both TCP and UDP before it is kept. A port that becomes reserved later — the reservations move when the machine reboots — is noticed at start-up and replaced.",
+        },
+        {
+          kind: "new",
+          text: "Incoming connections says which way peers can actually arrive. It reads \"TCP+UDP\" when all is well, and when UDP could not be opened it says so plainly instead of leaving a queue of seeding torrents sitting at zero with no explanation — which is how the fault above went unnoticed for a day.",
+        },
+      ],
+    },
+    {
+      version: "0.163.0",
+      title: "Seeding works behind a router, the way other clients do",
+      date: "2026-09-26",
+      changes: [
+        {
+          kind: "fix",
+          text: "Torrents can be seeded from behind a home router again. The engine was speaking only TCP, and a router will not carry an unsolicited incoming TCP connection to a PC that never asked for one — so finished torrents sat at zero upload however many peers were in the swarm. It now also speaks uTP, which is BitTorrent over UDP: the same announces the engine already sends open the way back in, and peers arrive without a thing being configured. It is how uTorrent and qBittorrent manage it on the same connection.",
+        },
+        {
+          kind: "better",
+          text: "The Incoming connections panel no longer sends you to your router first. Uploads starting on their own is now the expected case, so it says to give it a few minutes, and only suggests forwarding the port if it really does stay at zero.",
+        },
+      ],
+    },
+    {
+      version: "0.162.1",
+      title: "The sidebar stops losing the order you put it in",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "fix",
+          text: "Rows wandered out of the group they were put in. A row keeps its place by what the window is, and reading that identity from Windows can quietly fail — when it did, the row was a stranger to the rail, so it was dropped at the top, above every divider, and saved there. An app filed under a divider and closed to the tray, WhatsApp among them, came back above it. An identity once read is now kept for as long as the window is open, so a failed read costs nothing.",
+        },
+        {
+          kind: "fix",
+          text: "Popped-out WinT tools came back in a different order every time. All of them are one app as far as Windows is concerned, so each was only \"the first\" or \"the second\" WinT window and they traded places. A tool now holds its place by its own title.",
+        },
+        {
+          kind: "fix",
+          text: "Two windows of the same app — browser profiles above all — swapped places whenever the rail was reloaded, because which of them was \"the first\" followed the order the windows had last been used in. It now follows the windows themselves.",
+        },
+        {
+          kind: "fix",
+          text: "A window of an app the rail already knows now opens beside that app's other windows instead of at the top of the list.",
+        },
+        {
+          kind: "fix",
+          text: "A drag, a new divider and a rename are written to disk the moment they happen, and anything still waiting is written before the rail closes or hides — a drag made a second before the rail went away was simply gone.",
+        },
+      ],
+    },
+    {
+      version: "0.162.0",
+      title: "Seeding torrents can finally be reached",
+      date: "2026-09-25",
+      changes: [
+        {
+          kind: "fix",
+          text: "Finished torrents seeded to nobody. The engine let Windows pick whichever port happened to be free each time it started, so the port peers were told to connect back on was a different one on every run — no router forward and no firewall rule could follow it, and nothing outside could ever open a connection. A seeding torrent never dials out, so every one of them sat at zero upload looking perfectly healthy. The engine now keeps one peer port for good, and asks the router to open it.",
+        },
+        {
+          kind: "new",
+          text: "Settings has an Incoming connections panel showing that port. It says when several torrents are seeding and none are uploading — which means nothing outside can reach you and the port needs forwarding — and it says when the port the engine wanted was taken by something else, so you forward the one it actually got.",
+        },
+      ],
+    },
+    {
       version: "0.161.3",
       title: "Giving way no longer caps you at whatever it saw first",
       date: "2026-09-25",

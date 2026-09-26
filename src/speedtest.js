@@ -29,6 +29,13 @@
    *  is long enough to see a download start and short enough to stay legible
    *  at this width. */
   const HISTORY = 70;
+  /** How often the per-app panel is read. */
+  const APPS_MS = 1000;
+  /** Rows quieter than this are left out: every idle browser tab holds a socket
+   *  open, and a list of forty processes moving nothing answers nothing. */
+  const APP_FLOOR = 2048;
+  /** How many rows the panel shows at once. */
+  const APPS_SHOWN = 8;
   /** Where the last result is kept. Through the backend rather than
    *  `localStorage`, because a measurement nobody can reproduce on demand is
    *  exactly the kind of state that must not be lost to a webview flush that
@@ -48,6 +55,12 @@
     /** Set while a test is running: the phase, in words, and how far along. */
     running: null,
     error: "",
+    /** The apps panel: the last report, and the row per pid it is drawn into. */
+    apps: null,
+    appsTimer: 0,
+    appRows: new Map(),
+    /** What the last press of "Measure exactly" had to say. */
+    measureNote: "",
   };
 
   function bytes(n) {
@@ -111,10 +124,24 @@
           <p class="spd-hint">A reading here that stays high while nothing is obviously running is worth
             following up in <strong>Startup and tray</strong> or <strong>PC Detective</strong>.</p>
         </section>
+
+        <section class="spd-apps">
+          <header>${icon("apps")}<strong>Which apps are using it</strong>
+            <small data-spd-appsnote>Every process holding a connection off this PC</small></header>
+          <div class="spd-applist" data-spd-applist>
+            <p class="spd-hint" data-spd-appsempty>Reading the socket table…</p>
+          </div>
+          <div class="spd-appsfoot">
+            <button type="button" class="btn" data-spd-measure>${icon("admin_panel_settings")}<span data-spd-measurelabel>Measure exactly…</span></button>
+            <span class="spd-note" data-spd-measurenote>Windows only counts bytes per process for an administrator. Without that, each app's
+              figures are its share of the adapter total, worked out from how much it read and wrote.</span>
+          </div>
+        </section>
       </div>`;
 
     node.addEventListener("click", (event) => {
       if (event.target.closest("[data-spd-run]")) run();
+      if (event.target.closest("[data-spd-measure]")) measure();
     });
 
     loadLast();
@@ -125,9 +152,17 @@
    *  a page nobody is looking at is not sampling anything. */
   function unmount() {
     clearInterval(st.timer);
+    clearInterval(st.appsTimer);
     st.timer = 0;
+    st.appsTimer = 0;
+    st.appRows.clear();
     for (const off of st.unlisten.splice(0)) { try { off(); } catch { /* already gone */ } }
     invoke("net_throughput_reset").catch(() => {});
+    invoke("net_app_usage_reset").catch(() => {});
+    // The elevated helper is told to stop as the tool is left: it exists for
+    // this panel, and nothing should be sampling the TCP stack for a window
+    // nobody has open.
+    invoke("net_app_usage_measure_stop").catch(() => {});
   }
 
   function startMeter() {
@@ -145,6 +180,40 @@
         drawLive();
       }).catch(() => {});
     }, METER_MS);
+    startApps();
+  }
+
+  /** The per-app panel samples a second at a time. It is slower than the meter
+   *  on purpose: the reading opens a handle per connected process, and a list
+   *  that reorders itself twice a second cannot be read. */
+  function startApps() {
+    clearInterval(st.appsTimer);
+    invoke("net_app_usage_reset").catch(() => {});
+    const tick = () => {
+      if (!st.host?.isConnected) return;
+      invoke("net_app_usage").then((report) => {
+        if (!report) return;
+        st.apps = report;
+        drawApps();
+      }).catch(() => {});
+    };
+    st.appsTimer = setInterval(tick, APPS_MS);
+    tick();
+  }
+
+  /** Asks for the measured numbers. One `runas` prompt, one small elevated
+   *  helper; the estimate stays on screen either way. */
+  function measure() {
+    st.measureNote = "Asking Windows for administrator rights…";
+    drawApps();
+    window.wintWork?.beginWork("netusage", "Asking for administrator rights");
+    invoke("net_app_usage_measure")
+      .then((message) => { st.measureNote = String(message || ""); })
+      .catch((error) => { st.measureNote = String(error); })
+      .finally(() => {
+        window.wintWork?.endWork("netusage");
+        drawApps();
+      });
   }
 
   function push(list, value) {
@@ -244,6 +313,103 @@
     verdict.innerHTML = `<strong>${speed(result.downBps)} down · ${speed(result.upBps)} up</strong>
       <span>${bufferbloat}</span>
       ${when ? `<small>Measured ${when}</small>` : ""}`;
+  }
+
+  /** One row per program, not per process. A browser is thirty processes and an
+   *  Electron app is five; the question is which *app* is using the line, so
+   *  the processes sharing an executable are added together. The count of them
+   *  is kept, because "chrome.exe × 31" is itself worth seeing. */
+  function grouped(apps) {
+    const byName = new Map();
+    for (const app of apps) {
+      const row = byName.get(app.name) || {
+        name: app.name, downBps: 0, upBps: 0, connections: 0, processes: 0,
+        measured: false, udpOnly: true, peers: [],
+      };
+      row.downBps += app.downBps;
+      row.upBps += app.upBps;
+      row.connections += app.connections;
+      row.processes += 1;
+      row.measured = row.measured || app.measured;
+      row.udpOnly = row.udpOnly && app.udpOnly;
+      for (const peer of app.peers) {
+        if (row.peers.length < 3 && !row.peers.includes(peer)) row.peers.push(peer);
+      }
+      byName.set(app.name, row);
+    }
+    return [...byName.values()].sort((a, b) =>
+      (b.downBps + b.upBps) - (a.downBps + a.upBps) || a.name.localeCompare(b.name));
+  }
+
+  /** The apps panel. Rows are kept per program and updated in place: one that
+   *  is still there keeps its row, so only the numbers move. */
+  function drawApps() {
+    const host = st.host;
+    if (!host?.isConnected) return;
+    const list = host.querySelector("[data-spd-applist]");
+    if (!list) return;
+    const report = st.apps || { apps: [] };
+    const busy = grouped(report.apps).filter((app) => app.downBps + app.upBps >= APP_FLOOR).slice(0, APPS_SHOWN);
+
+    const placeholder = list.querySelector("[data-spd-appsempty]");
+    if (placeholder) {
+      const idle = report.known
+        ? `Nothing is moving more than ${bytes(APP_FLOOR)}/s. ${report.apps.length} process${report.apps.length === 1 ? "" : "es"} hold a connection open.`
+        : "Reading the socket table…";
+      placeholder.hidden = busy.length > 0;
+      setText(placeholder, idle);
+    }
+
+    // Rows whose process has gone, or gone quiet, leave.
+    const wanted = new Set(busy.map((app) => app.name));
+    for (const [name, row] of st.appRows) {
+      if (!wanted.has(name)) { row.remove(); st.appRows.delete(name); }
+    }
+    let after = placeholder;
+    for (const app of busy) {
+      let row = st.appRows.get(app.name);
+      if (!row) {
+        row = document.createElement("div");
+        row.className = "spd-app";
+        row.innerHTML = `<span class="spd-app-name"><strong></strong><em></em></span>
+          <span class="spd-app-rate">${icon("download")}<b data-down></b></span>
+          <span class="spd-app-rate">${icon("upload")}<b data-up></b></span>
+          <span class="spd-app-tag" data-tag></span>`;
+        st.appRows.set(app.name, row);
+        list.appendChild(row);
+      }
+      // Kept in order without rebuilding: a node is only moved when the row
+      // above it is not the one that should be.
+      if (after ? after.nextElementSibling !== row : list.firstElementChild !== row) {
+        list.insertBefore(row, after ? after.nextElementSibling : list.firstElementChild);
+      }
+      after = row;
+      setText(row.querySelector(".spd-app-name strong"), app.name);
+      const shape = `${app.connections} conn${app.processes > 1 ? ` · ${app.processes} processes` : ""}`;
+      setText(row.querySelector(".spd-app-name em"),
+        app.peers.length ? `${shape} · ${app.peers.join("  ")}` : shape);
+      setText(row.querySelector("[data-down]"), speed(app.downBps));
+      setText(row.querySelector("[data-up]"), speed(app.upBps));
+      const tag = app.measured ? "measured" : app.udpOnly ? "UDP · estimate" : "estimate";
+      setText(row.querySelector("[data-tag]"), tag);
+      row.querySelector("[data-tag]").dataset.kind = app.measured ? "measured" : "estimate";
+    }
+
+    setText(host.querySelector("[data-spd-appsnote]"), report.measured
+      ? "Measured per connection by the TCP stack"
+      : "Estimated share of the adapter total");
+    const button = host.querySelector("[data-spd-measure]");
+    const exact = report.elevated || report.helperRunning;
+    // Once the numbers are actually arriving, the line about asking for them
+    // has been overtaken by events.
+    if (report.helperRunning && st.measureNote) st.measureNote = "";
+    if (button) button.disabled = exact;
+    setText(host.querySelector("[data-spd-measurelabel]"), exact ? "Measuring exactly" : "Measure exactly…");
+    setText(host.querySelector("[data-spd-measurenote]"), st.measureNote || (report.elevated
+      ? "WinT is an administrator, so these are the stack's own per-connection counters."
+      : report.helperRunning
+        ? "An elevated helper is counting TCP bytes per connection. UDP and QUIC are still estimated."
+        : "Windows only counts bytes per process for an administrator. Without that, each app's figures are its share of the adapter total, worked out from how much it read and wrote."));
   }
 
   function drawLive() {

@@ -151,6 +151,8 @@ Network and DNS
   net backlog [LIMIT]                 Read captured frames
   net stop|clear                      Control the current capture
   net export [PATH]                   Export captured frames to pcapng
+  netusage sample                      Which processes are using the line
+  netusage watch [MINUTES]             Measure per-app TCP bytes (needs admin)
 
 GitHub and app
   github status                       Check gh authentication
@@ -422,6 +424,19 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
             }
             "export" => emit(wint_lib::network::export(args.get(2).cloned())?, pretty),
             other => Err(format!("Unknown network action: {other}")),
+        },
+        // The elevated half of the Speed Test tool's per-app panel. `watch`
+        // blocks for as long as it samples and is started hidden through
+        // `runas`; `sample` is here so the same numbers can be looked at from
+        // a shell without the app.
+        "netusage" => match need(&args, 1, "net usage action")?.as_str() {
+            "watch" => {
+                let minutes = args.get(2).cloned().unwrap_or_else(|| "30".into());
+                wint_lib::net_usage::watch(number(minutes, "minutes")?)?;
+                emit(json!({"ok": true}), pretty)
+            }
+            "sample" => emit(wint_lib::net_usage::report(), pretty),
+            other => Err(format!("Unknown net usage action: {other}")),
         },
         "github" => match need(&args, 1, "GitHub action")?.as_str() {
             "status" => emit(wint_lib::github::github_status(), pretty),

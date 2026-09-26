@@ -1742,6 +1742,12 @@ impl Session {
         self.listen_addr
     }
 
+    /// Whether incoming peers can arrive over UDP as well as TCP. False means
+    /// TCP only, which behind a home router means effectively not at all.
+    pub fn utp_enabled(&self) -> bool {
+        self.connector.utp_enabled()
+    }
+
     pub fn announce_port(&self) -> Option<u16> {
         self.announce_port
     }

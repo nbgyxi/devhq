@@ -213,6 +213,19 @@ struct Settings {
     peer_limit: usize,
     /// Keep seeding a finished torrent, or park it.
     seed_when_finished: bool,
+    /// The TCP port peers connect *in* on.
+    ///
+    /// This has to be stable across restarts, which is why it is a setting and
+    /// not left to the OS. A seeder does not open connections to anybody — it
+    /// has nothing to ask for — so every byte it ever uploads arrives through
+    /// a connection somebody else opened to this port. If the port moves every
+    /// time the engine starts, no router forward and no firewall rule can
+    /// follow it, nothing can reach us, and a queue of finished torrents seeds
+    /// to precisely nobody while looking perfectly healthy.
+    ///
+    /// Zero means one has not been chosen yet; `ensure_listen_port` picks one
+    /// and writes it down.
+    listen_port: u16,
 }
 
 impl Default for Settings {
@@ -224,8 +237,106 @@ impl Default for Settings {
             max_active: 4,
             peer_limit: DEFAULT_PEER_LIMIT,
             seed_when_finished: true,
+            listen_port: 0,
         }
     }
+}
+
+/// Whether a port can carry both halves of BitTorrent, and if not, why.
+///
+/// Both halves is the point. Windows keeps *separate* exclusion lists for TCP
+/// and UDP, and Hyper-V, WSL and WinNAT reserve large blocks of the dynamic
+/// range in one without the other. A port can therefore accept a TCP listener
+/// and refuse a UDP one — which is not a theoretical worry: it is what
+/// happened here, and because the engine treats a failed uTP bind as
+/// survivable when TCP is up, the result was a seeder quietly running
+/// TCP-only, unreachable behind every home router, with nothing on screen to
+/// say so.
+#[derive(PartialEq, Eq, Debug)]
+enum PortVerdict {
+    /// Both bound. Usable.
+    Free,
+    /// Something holds it right now — very often an engine from the last run
+    /// that has not finished exiting. Worth waiting for rather than fleeing:
+    /// a port that keeps changing is a port nothing can be forwarded to.
+    Taken,
+    /// Windows refuses it outright (WSAEACCES). A reserved port never becomes
+    /// available by waiting, so the only answer is a different one.
+    Reserved,
+}
+
+fn probe_port(port: u16) -> PortVerdict {
+    use std::io::ErrorKind;
+    use std::net::{Ipv6Addr, TcpListener, UdpSocket};
+
+    let verdict = |error: &std::io::Error| match error.kind() {
+        ErrorKind::PermissionDenied => PortVerdict::Reserved,
+        _ => PortVerdict::Taken,
+    };
+    // Bound and dropped immediately. There is a moment between this and the
+    // session binding it for real, which is why a failure to bind later is
+    // handled rather than assumed away.
+    match TcpListener::bind((Ipv6Addr::UNSPECIFIED, port)) {
+        Ok(_) => {}
+        Err(e) => return verdict(&e),
+    }
+    match UdpSocket::bind((Ipv6Addr::UNSPECIFIED, port)) {
+        Ok(_) => PortVerdict::Free,
+        Err(e) => verdict(&e),
+    }
+}
+
+/// Settles on a peer port and keeps it.
+///
+/// Deliberately *below* the dynamic range that starts at 49152, not inside it.
+/// The first version of this picked from the dynamic range on the reasoning
+/// that it is the range Windows hands out and so the politest place to sit.
+/// That was backwards: it is the range Windows hands out *and reserves*, so
+/// the port landed in a Hyper-V UDP reservation and uTP could never bind.
+/// Between the well-known services and the dynamic range there is a wide band
+/// that nothing reserves, which is where every other BitTorrent client sits.
+///
+/// The chosen port is verified before it is kept, and a port that has become
+/// reserved since — the reservations move when the machine reboots — is
+/// replaced rather than used broken.
+fn ensure_listen_port(settings: &mut Settings) -> bool {
+    // A port merely busy right now is kept: an engine from the last run that
+    // is still exiting must not cost us the port we are forwarded on.
+    if settings.listen_port != 0 && probe_port(settings.listen_port) != PortVerdict::Reserved {
+        return false;
+    }
+    let previous = settings.listen_port;
+    let mut seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0)
+        ^ u64::from(std::process::id());
+    // 10001..=48000: above the well-known and registered services that are
+    // likely to be running, below the dynamic range and everything reserved
+    // inside it.
+    const LOW: u64 = 10001;
+    const SPAN: u64 = 48000 - 10001;
+    for _ in 0..64 {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let candidate = (LOW + (seed >> 33) % SPAN) as u16;
+        if probe_port(candidate) == PortVerdict::Free {
+            settings.listen_port = candidate;
+            if previous != 0 {
+                tracing::warn!(
+                    previous,
+                    port = candidate,
+                    "the saved peer port is reserved by Windows and cannot carry uTP; moved"
+                );
+            }
+            return true;
+        }
+    }
+    // Nothing took. Leaving it at zero lets the OS choose, which is worse for
+    // seeding but still works for downloading, and says so rather than
+    // refusing to start.
+    tracing::error!("could not find a free peer port; letting Windows choose one");
+    settings.listen_port = 0;
+    previous != 0
 }
 
 fn default_download_folder() -> String {
@@ -508,6 +619,14 @@ struct Snapshot {
     peers: u32,
     uptime_seconds: u64,
     settings: Settings,
+    /// The port the session is really listening on. Compared against the
+    /// setting by the UI: if they differ, the port that was forwarded is not
+    /// the port peers would arrive at.
+    listen_port: Option<u16>,
+    /// Whether peers can also arrive over UDP. False is TCP only, which for a
+    /// seeder behind a home router means effectively nobody arrives at all —
+    /// so it is reported, not left to be guessed from an upload rate of zero.
+    utp: bool,
 }
 
 /// How often a resume that has not finished says which torrents it is still
@@ -681,6 +800,8 @@ fn build_snapshot(
         peers: session.peers.live,
         uptime_seconds: session.uptime_seconds,
         settings: state.settings.clone(),
+        listen_port: state.session.listen_addr().map(|addr| addr.port()),
+        utp: state.session.utp_enabled(),
     }
 }
 
@@ -1383,6 +1504,13 @@ async fn handle(state: &Mutex<State>, op: &str, arg: Value) -> Result<Value> {
             if let Some(v) = arg.get("seedWhenFinished").and_then(Value::as_bool) {
                 state.settings.seed_when_finished = v;
             }
+            // Saved now, in force on the next start: the listener is built
+            // with the session and cannot be moved under a running one.
+            if let Some(v) = arg.get("listenPort").and_then(Value::as_u64) {
+                if (1024..=65535).contains(&v) {
+                    state.settings.listen_port = v as u16;
+                }
+            }
             state.apply_limits();
             state.save_settings();
             Ok(serde_json::to_value(&state.settings)?)
@@ -1729,6 +1857,15 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
+    // Settled before the session is built, and written down straight away so
+    // the very first run keeps the port it is about to announce to trackers.
+    if ensure_listen_port(&mut settings) {
+        let _ = std::fs::write(
+            state_dir.join("settings.json"),
+            serde_json::to_vec_pretty(&settings).unwrap_or_default(),
+        );
+        tracing::info!(port = settings.listen_port, "chose a peer port; it will not change again");
+    }
     let _ = std::fs::create_dir_all(&settings.download_folder);
 
     // A dedicated OS thread owns stdout. It deliberately does not live on the
@@ -1842,7 +1979,33 @@ async fn main() -> Result<()> {
                 download_bps: settings.download_bps.and_then(NonZeroU32::new),
                 upload_bps: settings.upload_bps.and_then(NonZeroU32::new),
             },
-            listen: Some(ListenerOptions::default()),
+            listen: Some(ListenerOptions {
+                // TCP *and* uTP, which is the difference between seeding from
+                // behind a home router and not.
+                //
+                // uTP is BitTorrent over UDP, and the engine ships with it but
+                // defaults to TCP alone. That default is what makes a NATed
+                // seeder unreachable: a router will not carry an unsolicited
+                // inbound TCP connection to a PC that never asked for one, and
+                // nothing short of a forward changes that. UDP it will — the
+                // outbound announces this engine already sends open a binding
+                // on the same port that most consumer routers then leave open
+                // to whoever writes back, so peers who read our address off a
+                // tracker can arrive without anything being configured. It is
+                // how uTorrent and qBittorrent seed on this network with no
+                // forward and no UPnP, and this engine did not.
+                mode: librqbit::ListenerMode::TcpAndUtp,
+                // The fixed port, on every interface. Without this the OS
+                // hands out a different ephemeral port on every start and
+                // incoming connections have nowhere to land.
+                listen_addr: (std::net::Ipv6Addr::UNSPECIFIED, settings.listen_port).into(),
+                // Ask the router to map it. On the home routers that answer,
+                // this is the whole difference between seeding and sitting
+                // there; on the ones that do not, it costs one failed request
+                // at start-up and the port still has to be forwarded by hand.
+                enable_upnp_port_forwarding: true,
+                ..Default::default()
+            }),
             dht: Some(librqbit::DhtSessionConfig {
                 port: args.dht_port,
                 ..Default::default()

@@ -42,14 +42,41 @@
 
   // Rows open and close in bursts, and each save is a file written all the way
   // to the platter, so the writes are coalesced into one per key.
+  //
+  // Anything the user did by hand is written at once instead (`now`): the rail
+  // can be closed, undocked or reloaded in the same second as a drag, and a
+  // coalesced write that never got its turn is a lost drag.
   const saveTimers = new Map();
-  function saveList(key, value) {
+  function saveList(key, value, now) {
     savedLists.set(key, value);
     clearTimeout(saveTimers.get(key));
+    saveTimers.delete(key);
+    if (now) return writeList(key);
     saveTimers.set(key, setTimeout(() => {
-      invoke("ui_state_set", { key, value }).catch(() => { /* the next save retries */ });
+      saveTimers.delete(key);
+      writeList(key);
     }, 200));
   }
+
+  function writeList(key) {
+    return invoke("ui_state_set", { key, value: savedLists.get(key) })
+      .catch(() => { /* the next save retries */ });
+  }
+
+  /// Write whatever is still waiting. Called before the page can go away.
+  function flushLists() {
+    for (const key of [...saveTimers.keys()]) {
+      clearTimeout(saveTimers.get(key));
+      saveTimers.delete(key);
+      writeList(key);
+    }
+  }
+  window.addEventListener("pagehide", flushLists);
+  window.addEventListener("beforeunload", flushLists);
+  // A rail that is being hidden rather than closed gets no unload at all.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushLists();
+  });
 
   const geometry = document.querySelector("[data-geometry]");
   let state = { docked: true, edge: "left", width: 200, taskbarAutoHidden: false };
@@ -392,7 +419,7 @@
 
   let order = [];
 
-  function saveOrder() {
+  function saveOrder(now) {
     const shown = [...list.querySelectorAll("[data-bar]")].map((button) => button.dataset.key);
     const open = new Set(shown);
     // Apps that are closed right now keep their remembered places, and a place
@@ -411,8 +438,20 @@
     }
     order = [...head];
     for (const key of shown) order.push(key, ...(trailing.get(key) || []));
-    order = order.slice(0, ORDER_LIMIT);
-    saveList(ORDER_KEY, order);
+    // Trimming keeps the open rows and the dividers whatever else has to go:
+    // slicing the list without looking threw away the group a closed app had
+    // been left in once the rail had seen enough apps.
+    if (order.length > ORDER_LIMIT) {
+      const keep = new Set([...open, ...order.filter(isDividerKey)]);
+      const cut = order.length - ORDER_LIMIT;
+      let dropped = 0;
+      order = order.filter((key) => {
+        if (dropped >= cut || keep.has(key)) return true;
+        dropped += 1;
+        return false;
+      });
+    }
+    saveList(ORDER_KEY, order, now);
   }
 
   /** What a row is, as far as the saved order is concerned.
@@ -496,10 +535,30 @@
    *  having wandered out of its group. The group is decided first, and only
    *  then is a place inside it looked for. */
   function groupOf(key) {
-    const rank = order.indexOf(key);
+    return groupAt(order.indexOf(key));
+  }
+
+  /// The group a place in the saved order falls in.
+  function groupAt(rank) {
     if (rank === -1) return null;
     for (let i = rank - 1; i >= 0; i -= 1) if (isDividerKey(order[i])) return order[i];
     return "";
+  }
+
+  /** The place in the saved order of another window of the same app — the last
+   *  one, so a new window lands after its siblings rather than among them.
+   *
+   *  An app's key is `<app>#<which window>`, and only the first half is the
+   *  app. A window whose own half has never been seen — a third Edge window, a
+   *  tool opened for the first time — still belongs where that app was put. */
+  function siblingRank(key) {
+    const app = String(key || "").split("#")[0];
+    if (!app) return -1;
+    let found = -1;
+    for (let i = 0; i < order.length; i += 1) {
+      if (!isDividerKey(order[i]) && String(order[i]).split("#")[0] === app) found = i;
+    }
+    return found;
   }
 
   /** The stretch of rows belonging to one group, as it stands on the rail:
@@ -529,9 +588,17 @@
    *  belonging to that group. A divider itself is exempt: it is placed among
    *  all the rows, and a new one is made to end the list. */
   function placeNew(button) {
-    const rank = order.indexOf(button.dataset.key);
+    const key = button.dataset.key;
+    let rank = order.indexOf(key);
     const tail = list.querySelector(".skeleton");
-    // A row nothing is remembered about: the end of the first group.
+    // A second window of an app the rail already knows follows the app, not
+    // the rail: it is placed as its siblings were, so opening another Chrome
+    // window of a profile filed under "Web" does not drop it at the top.
+    if (rank === -1 && button.dataset.bar !== "divider") {
+      const sibling = siblingRank(key);
+      if (sibling !== -1) rank = sibling;
+    }
+    // A row nothing is remembered about at all: the end of the first group.
     if (rank === -1) {
       const before = button.dataset.bar === "divider"
         ? tail
@@ -541,7 +608,7 @@
     }
     // A divider belongs among the dividers, so it is placed against the whole
     // rail rather than inside one of the groups it makes.
-    const group = button.dataset.bar === "divider" ? null : groupSpan(groupOf(button.dataset.key));
+    const group = button.dataset.bar === "divider" ? null : groupSpan(groupAt(rank));
     const bars = group ? group.bars : [...list.querySelectorAll("[data-bar]")];
     const start = group ? group.start : 0;
     const end = group ? group.end : bars.length;
@@ -573,7 +640,7 @@
         // A pinned app's row keeps the last icon its window wore, so the pin
         // does not fall back to a blank glyph once the app is closed.
         const pin = pinned(entry.app);
-        if (pin && pin.icon !== url) { pin.icon = url; savePins(); }
+        if (pin && pin.icon !== url) { pin.icon = url; savePins("icon"); }
       });
   }
 
@@ -591,8 +658,10 @@
   /// The rows standing in for pinned apps that are not running, by pin key.
   const ghosts = new Map();
 
-  function savePins() {
-    saveList(PINS_KEY, pins);
+  /// `icon` alone is the rail keeping up with an app, not the user arranging
+  /// anything, so that one can wait for the timer.
+  function savePins(icon) {
+    saveList(PINS_KEY, pins, !icon);
   }
 
   /** A pin's key and a window row's key are the same string, so a pin holds
@@ -609,7 +678,7 @@
     pins = [...pins.filter((other) => other.key !== pin.key), pin];
     savePins();
     // The pin's place is the place its window holds right now.
-    saveOrder();
+    saveOrder(true);
     refreshWindows();
   }
 
@@ -691,7 +760,7 @@
   const dividerRows = new Map();
 
   function saveDividers() {
-    saveList(DIVIDERS_KEY, dividers);
+    saveList(DIVIDERS_KEY, dividers, true);
   }
 
   function dividerRow(divider) {
@@ -760,7 +829,7 @@
     dividers = [...dividers, divider];
     saveDividers();
     paintDividers();
-    saveOrder();
+    saveOrder(true);
     renameDivider(divider.key);
   }
 
@@ -768,7 +837,7 @@
     dividers = dividers.filter((divider) => divider.key !== key);
     saveDividers();
     paintDividers();
-    saveOrder();
+    saveOrder(true);
   }
 
   function row(win) {
@@ -795,11 +864,20 @@
     return { button, img, glyph, label, badge, app: win.app, workspace: win.workspace || "" };
   }
 
-  function paintWindows(windows) {
-    // Before the rows, so a pin whose app has just started gives up its place
-    // to that app's window rather than sitting beside it.
-    paintPins(windows);
+  function paintWindows(fresh) {
+    // The dividers first: they are what the groups are made of, so a row
+    // placed before they exist has no group to be put back into.
     paintDividers();
+    // Then the pins, so a pin whose app has just started gives up its place to
+    // that app's window rather than sitting beside it.
+    paintPins(fresh);
+    // The backend hands the windows over in Z-order, which changes with every
+    // click. Two windows of one app are told apart by a slot number handed out
+    // as the rows are made, so taking them in that order meant the same two
+    // windows swapped keys — and so swapped places — as soon as the rail was
+    // reloaded with them used in another order. Handles are stable for as long
+    // as the windows live, so they are what the slots follow.
+    const windows = [...fresh].sort((a, b) => Number(a.id) - Number(b.id));
     const seen = new Set(windows.map((win) => win.id));
     let changed = false;
     for (const [id, entry] of rows) {
@@ -916,7 +994,7 @@
       // A click only follows a release over the same row; clear the flag in
       // case this one never comes.
       setTimeout(() => { swallowClick = false; }, 0);
-      saveOrder();
+      saveOrder(true);
     }
     press = null;
   }

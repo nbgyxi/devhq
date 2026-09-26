@@ -1297,6 +1297,81 @@ pub struct OpenWindow {
     pub minimized: bool,
 }
 
+/// WinT's main window, which is the one window of ours whose title follows
+/// whatever tool is open in it. Set by `sidebar_windows`, read off-thread.
+static MAIN_WINDOW: AtomicIsize = AtomicIsize::new(0);
+
+/// A window of ours that is not the main one — a popped-out tool or terminal.
+/// Every one of them is this exe under one AppUserModelID, so the title it set
+/// for itself is the only thing that tells it from the next.
+fn own_tool_identity(raw: isize, exe: &str, title: &str) -> String {
+    if raw == MAIN_WINDOW.load(Ordering::SeqCst) {
+        return String::new();
+    }
+    if own_exe().is_some_and(|own| own == exe.to_ascii_lowercase()) {
+        return title.trim().to_string();
+    }
+    String::new()
+}
+
+/// This program's own path, lowercased, read once.
+fn own_exe() -> Option<&'static str> {
+    static OWN: OnceLock<Option<String>> = OnceLock::new();
+    OWN.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .map(|path| path.to_string_lossy().to_ascii_lowercase())
+    })
+    .as_deref()
+}
+
+/// The AppUserModelID last read for a window, by handle.
+///
+/// Reading one goes through a COM property store, and that read can simply
+/// fail — the apartment this pool thread is in may be the wrong kind, the app
+/// may not have set its ID yet, the store may be busy. The fallback is the
+/// exe, which for a browser throws the profile away and for a packaged app is
+/// another string entirely: the row's key changes, the rail no longer
+/// recognises it, and it is placed — and then saved — somewhere else. That is
+/// most of "the sidebar forgot my order". So an ID once read is kept and
+/// reused, and a failed read costs nothing. Entries go when their window does,
+/// so a handle Windows hands out again starts clean.
+static APP_IDS: std::sync::Mutex<Option<std::collections::HashMap<isize, String>>> =
+    std::sync::Mutex::new(None);
+
+fn app_ids() -> std::sync::MutexGuard<'static, Option<std::collections::HashMap<isize, String>>> {
+    APP_IDS.lock().unwrap_or_else(|error| {
+        APP_IDS.clear_poison();
+        error.into_inner()
+    })
+}
+
+/// The window's app identity, preferring the last one read successfully over a
+/// fresh failure.
+unsafe fn stable_app_id(hwnd: HWND, exe: &str) -> String {
+    let raw = hwnd.0 as isize;
+    let read = window_app_id(hwnd);
+    let mut guard = app_ids();
+    let cache = guard.get_or_insert_with(std::collections::HashMap::new);
+    match read {
+        Some(id) => {
+            cache.insert(raw, id.clone());
+            id
+        }
+        None => cache.get(&raw).cloned().unwrap_or_else(|| exe.to_string()),
+    }
+}
+
+/// Forget the windows that have gone, so the cache cannot answer for a handle
+/// that now belongs to something else.
+fn forget_closed_app_ids(alive: &[isize]) {
+    let mut guard = app_ids();
+    if let Some(cache) = guard.as_mut() {
+        let alive: std::collections::HashSet<isize> = alive.iter().copied().collect();
+        cache.retain(|handle, _| alive.contains(handle));
+    }
+}
+
 /// VS Code gives every window the same AppUserModelID, so on the rail its
 /// windows are one app with nothing to tell them apart — and a window that is
 /// only "the second one" moves the moment another is opened or closed. Its
@@ -1309,6 +1384,11 @@ pub struct OpenWindow {
 /// title and the same single ID, and are treated the same way. A browser needs
 /// none of this: Edge and Chrome already give every profile an
 /// AppUserModelID of its own, which is what `window_app_id` reads.
+///
+/// WinT's own pop-out tools are the same case: every one of them is this exe
+/// under one ID, and what tells them apart is the title the tool sets. Without
+/// it, "Torrents" and "Ports" were only "the first" and "the second" WinT
+/// window, so they traded places whenever they were opened in another order.
 fn editor_workspace(exe: &str, title: &str) -> String {
     let stem = std::path::Path::new(exe)
         .file_stem()
@@ -1501,8 +1581,10 @@ pub(crate) fn list_windows(sidebar: isize) -> Vec<OpenWindow> {
         );
     }
     let active = LAST_FOREGROUND.load(Ordering::SeqCst);
+    forget_closed_app_ids(&handles);
     handles
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|&raw| raw != sidebar)
         .map(|raw| unsafe {
             let hwnd = HWND(raw as *mut c_void);
@@ -1510,12 +1592,16 @@ pub(crate) fn list_windows(sidebar: isize) -> Vec<OpenWindow> {
             let len = GetWindowTextW(hwnd, &mut title).max(0) as usize;
             let exe = window_exe(app_window(hwnd));
             let title = String::from_utf16_lossy(&title[..len]);
+            let mut workspace = editor_workspace(&exe, &title);
+            if workspace.is_empty() {
+                workspace = own_tool_identity(raw, &exe, &title);
+            }
             OpenWindow {
                 id: raw.to_string(),
-                workspace: editor_workspace(&exe, &title),
+                workspace,
                 title,
                 exe: exe.clone(),
-                app: window_app_id(hwnd).unwrap_or(exe),
+                app: stable_app_id(hwnd, &exe),
                 active: raw == active,
                 minimized: IsIconic(hwnd).as_bool(),
             }
@@ -1615,6 +1701,12 @@ fn sidebar_hwnd(app: &AppHandle) -> isize {
 #[tauri::command]
 pub async fn sidebar_windows(app: AppHandle) -> Vec<OpenWindow> {
     let sidebar = sidebar_hwnd(&app);
+    MAIN_WINDOW.store(
+        app.get_webview_window("main")
+            .and_then(|window| window.hwnd().ok())
+            .map_or(0, |hwnd| hwnd.0 as isize),
+        Ordering::SeqCst,
+    );
     off_thread(move || list_windows(sidebar))
         .await
         .unwrap_or_default()

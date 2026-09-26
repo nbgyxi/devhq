@@ -65,7 +65,7 @@ pub fn status() -> Result<CliStatus, String> {
     })
 }
 
-fn bundled_cli(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn bundled_cli(app: &AppHandle) -> Result<PathBuf, String> {
     let mut candidates = Vec::new();
     if let Ok(dir) = app.path().resource_dir() {
         candidates.push(dir.join("wint-cli.exe"));

@@ -61,6 +61,7 @@ mod tool_window;
 mod reg;
 mod ui_state;
 mod netmeter;
+pub mod net_usage;
 mod torrent;
 mod torrent_assoc;
 mod torrent_pace;
@@ -3381,6 +3382,10 @@ pub fn run() {
             netmeter::net_throughput,
             netmeter::net_throughput_reset,
             netmeter::net_speed_test,
+            net_usage::net_app_usage,
+            net_usage::net_app_usage_reset,
+            net_usage::net_app_usage_measure,
+            net_usage::net_app_usage_measure_stop,
             take_pending_torrents,
             open_tool_window,
             browser_assoc::browser_assoc_status,

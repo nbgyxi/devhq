@@ -5167,6 +5167,7 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-slider input[type=range]{flex:1;min-width:120px;accent-color:var(--accent)}
 .tr-pacelive{padding:8px 12px;border-top:1px solid var(--line);color:var(--dim2);font-size:10.5px;line-height:1.5}
 .tr-pacelive[data-tr-yield="1"]{color:var(--accent)}
+.tr-setrow small[data-tr-alarm="1"]{color:var(--red,#e5534b)}
 .tr-enginepanel .tr-setrow span{color:var(--dim2);font-size:11px}
 /* The torrent right-click menu. Same shape as the one in Disk Space, with a
    destructive last item set apart from the rest. */
@@ -5383,4 +5384,22 @@ body.projects-window #status-term-popout{display:none!important}
 .spd-spark{width:100%;height:60px;margin-top:10px;color:var(--accent);opacity:.85}
 .spd-hint{margin:10px 0 0;color:var(--dim2);font-size:10.5px;line-height:1.5}
 .spd-hint strong{color:var(--dim);font-weight:600}
-@media (max-width:880px){.spd{grid-template-columns:minmax(0,1fr)}}
+.spd-apps{grid-column:1/-1;border:1px solid var(--line);border-radius:12px;background:var(--bg1);padding:14px}
+.spd-apps>header{display:flex;align-items:center;gap:7px;margin:-2px 0 10px}
+.spd-apps>header>.ms{font-size:16px;color:var(--accent)}
+.spd-apps>header strong{font-size:11.5px}
+.spd-apps>header small{margin-left:auto;color:var(--dim2);font-size:9.5px}
+.spd-applist{display:flex;flex-direction:column;gap:4px}
+.spd-app{display:grid;grid-template-columns:minmax(0,1fr) 92px 92px 92px;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg2)}
+.spd-app-name{display:flex;flex-direction:column;gap:2px;min-width:0}
+.spd-app-name strong{font-size:11.5px}
+.spd-app-name em{color:var(--dim2);font-size:9.5px;font-style:normal;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.spd-app-rate{display:flex;align-items:center;gap:5px;color:var(--dim);font-size:11px;font-variant-numeric:tabular-nums}
+.spd-app-rate .ms{font-size:14px;color:var(--dim2)}
+.spd-app-tag{justify-self:end;padding:2px 7px;border-radius:999px;background:var(--bg1);border:1px solid var(--line);color:var(--dim2);font-size:9px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
+.spd-app-tag[data-kind="measured"]{color:var(--accent);border-color:var(--accent)}
+.spd-appsfoot{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
+.spd-appsfoot .spd-note{flex:1;min-width:220px;line-height:1.5}
+@media (max-width:880px){.spd{grid-template-columns:minmax(0,1fr)}
+.spd-app{grid-template-columns:minmax(0,1fr) 80px 80px}
+.spd-app-tag{display:none}}
