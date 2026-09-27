@@ -714,54 +714,7 @@ pub(crate) fn popped_out_window(app: &AppHandle, id: &str) -> Option<tauri::Webv
 /// what is being remembered is the shape this tool wants, and a second window
 /// of the same tool wants the same shape.
 fn geometry_key(id: &str) -> String {
-    let name: String = id
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    format!("tool-window.{name}")
-}
-
-/// The size, place and maximized state a tool window was last left in, as the
-/// front end wrote it. Numbers that would put the window where it could not be
-/// found again are dropped rather than trusted: a monitor that is gone takes
-/// its coordinates with it.
-#[derive(Debug, Default, Clone, serde::Deserialize)]
-struct ToolGeometry {
-    width: Option<f64>,
-    height: Option<f64>,
-    x: Option<f64>,
-    y: Option<f64>,
-    #[serde(default)]
-    maximized: bool,
-}
-
-impl ToolGeometry {
-    fn load(app: &AppHandle, id: &str) -> Self {
-        let mut geometry: Self = crate::ui_state::read(app, &geometry_key(id))
-            .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_default();
-        let sane = |value: Option<f64>, low: f64, high: f64| {
-            value.filter(|value| value.is_finite() && (low..=high).contains(value))
-        };
-        geometry.width = sane(geometry.width, 300.0, 20_000.0);
-        geometry.height = sane(geometry.height, 200.0, 20_000.0);
-        geometry.x = sane(geometry.x, -40_000.0, 40_000.0);
-        geometry.y = sane(geometry.y, -40_000.0, 40_000.0);
-        geometry
-    }
-}
-
-/// Records where a tool window was left. Called by the window itself as it
-/// settles, and once more as it closes.
-#[tauri::command]
-pub async fn tool_remember_geometry(
-    app: AppHandle,
-    id: String,
-    geometry: serde_json::Value,
-) -> Result<(), String> {
-    crate::off_thread(move || crate::ui_state::write(&app, &geometry_key(&id), &geometry))
-        .await
-        .unwrap_or_else(|| Err("That window's size could not be saved.".into()))
+    crate::window_geometry::key_for("tool-window", id)
 }
 
 fn valid_instance(instance: Option<&str>) -> Result<Option<String>, String> {
@@ -1064,15 +1017,15 @@ pub async fn tool_popout(
     // Explorer keeps its own window size beside its column layout, from
     // before there was a general store; everything else asks the store.
     let saved = if id == "explorer" {
-        ToolGeometry::default()
+        crate::window_geometry::Geometry::default()
     } else {
         let app = app.clone();
-        let id = id.clone();
-        crate::off_thread(move || ToolGeometry::load(&app, &id))
+        let key = geometry_key(&id);
+        crate::off_thread(move || crate::window_geometry::load(&app, &key))
             .await
             .unwrap_or_default()
     };
-    let (window_width, window_height) = if id == "explorer" {
+    let (default_width, default_height) = if id == "explorer" {
         let data_dir = app.path().app_data_dir().ok();
         off_thread(move || data_dir.map(|dir| crate::explorer::layout(&dir)))
             .await
@@ -1080,18 +1033,37 @@ pub async fn tool_popout(
             .map(|layout| (layout.window_width as f64, layout.window_height as f64))
             .unwrap_or((960.0, 720.0))
     } else {
-        (
-            saved.width.unwrap_or(960.0).max(480.0),
-            saved.height.unwrap_or(720.0).max(320.0),
-        )
+        (960.0, 720.0)
     };
     // A remembered place wins over the point the opener suggested: that is
-    // only where the pop-out button happened to be.
-    let (x, y) = match (saved.x, saved.y) {
-        (Some(x), Some(y)) => (Some(x), Some(y)),
-        _ => (x, y),
+    // only where the pop-out button happened to be. What comes back is fitted
+    // to the monitors that are here now, so a tool last used on a screen that
+    // has since gone opens on one that has not.
+    let placement = {
+        let app = app.clone();
+        crate::off_thread(move || {
+            crate::window_geometry::fit(
+                &app,
+                saved,
+                crate::window_geometry::Defaults {
+                    width: default_width,
+                    height: default_height,
+                    min_width: 480.0,
+                    min_height: 320.0,
+                },
+                // Clicking a tool is asking to see it, whatever state the
+                // window was last left in.
+                false,
+            )
+        })
+        .await
+        .ok_or("Could not work out where that window belongs.")?
     };
-    let maximized = saved.maximized;
+    let (window_width, window_height) = placement.logical_size();
+    let (x, y) = match placement.logical_position() {
+        Some((x, y)) => (Some(x), Some(y)),
+        None => (x, y),
+    };
     off_thread(move || {
         let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(page.into()))
             .title(window_title)
@@ -1113,9 +1085,13 @@ pub async fn tool_popout(
         }
         match builder.build() {
             Ok(window) => {
-                if maximized {
-                    let _ = window.maximize();
-                }
+                // The builder speaks logical pixels and converts them with
+                // whichever screen the window was born on. This window is still
+                // hidden, so the exact rectangle can be set without a flicker.
+                crate::window_geometry::apply(
+                    &crate::window_geometry::window_of(&window),
+                    &placement,
+                );
                 Ok(())
             }
             Err(error) => Err(format!("Could not open the window: {error}")),
@@ -1225,5 +1201,43 @@ pub fn destroy_all(app: &AppHandle) {
         if label.starts_with("tool-") {
             let _ = child.destroy();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{geometry_key, label_for, urlencoding_lite, valid_instance};
+
+    #[test]
+    fn a_tool_window_label_names_its_instance_only_when_it_has_one() {
+        assert_eq!(label_for("torrents", None), "tool-torrents");
+        assert_eq!(label_for("torrents", Some("")), "tool-torrents");
+        assert_eq!(label_for("torrents", Some("2")), "tool-torrents-2");
+    }
+
+    #[test]
+    fn an_instance_from_the_front_end_has_to_be_a_plain_name() {
+        assert_eq!(valid_instance(None).unwrap(), None);
+        assert_eq!(valid_instance(Some("")).unwrap(), None);
+        assert_eq!(valid_instance(Some("2")).unwrap(), Some("2".into()));
+        assert_eq!(valid_instance(Some("a-b_C9")).unwrap(), Some("a-b_C9".into()));
+        assert!(valid_instance(Some("../evil")).is_err());
+        assert!(valid_instance(Some("a b")).is_err());
+        assert!(valid_instance(Some(&"x".repeat(33))).is_err());
+        assert!(valid_instance(Some(&"x".repeat(32))).is_ok());
+    }
+
+    #[test]
+    fn a_geometry_key_is_per_tool_and_holds_no_separators() {
+        assert_eq!(geometry_key("torrents"), "tool-window.torrents");
+        assert_eq!(geometry_key("path-ping"), "tool-window.path-ping");
+        assert_eq!(geometry_key("../x"), "tool-window.---x");
+    }
+
+    #[test]
+    fn a_tool_id_in_a_query_string_is_percent_encoded() {
+        assert_eq!(urlencoding_lite("path-ping"), "path-ping");
+        assert_eq!(urlencoding_lite("a b&c=d"), "a%20b%26c%3Dd");
+        assert_eq!(urlencoding_lite("é"), "%C3%A9");
     }
 }

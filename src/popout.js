@@ -117,6 +117,18 @@
   syncMaximizeButton();
   win.onResized(() => syncMaximizeButton());
 
+  // A terminal window reopens the size it was left at, fitted to the monitors
+  // that are here now. One shape for all of them: what is remembered is how
+  // big a terminal wants to be. A terminal dragged out of a dock still lands
+  // under the pointer that dropped it — the backend prefers what the drag says
+  // over what is remembered.
+  //
+  // An administrator terminal reports nothing: it is the whole app for one
+  // window, and its shape is not what an ordinary pop-out should come back as.
+  const geometry = admin
+    ? { save: async () => {} }
+    : window.wintWindowGeometry.track(win, "terminal-window", "popout");
+
   if (!id && !admin) {
     host.textContent = "No terminal id.";
     return;
@@ -733,6 +745,9 @@
   // as the cross: the shell ends here.
   win.onCloseRequested(async (event) => {
     if (!closed && !handedOver) event.preventDefault();
+    // The last move may still be sitting in the debounce, and this is the last
+    // moment there is a window to measure.
+    await geometry.save();
     await finishClose();
   });
 })();

@@ -16,6 +16,37 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.167.0",
+      title: "Every window comes back where you left it",
+      date: "2026-09-27",
+      changes: [
+        ["new", "Every WinT window now remembers its size, its place on the screen and whether it was maximized, and opens that way next time. The main window never did — it came back centred at the same size every start — and a workspace wrote its size down where nothing ever read it back. Tool windows, workspaces, popped-out terminals and the main window now all go through one store."],
+        ["new", "Close WinT while it is minimized and it starts minimized. Only the main window, and only when WinT is starting itself: clicking a tool always opens a window you can see."],
+        ["better", "A window whose screen is gone comes back somewhere you can reach it. What was saved is now measured against the monitors that are actually plugged in — unplug the screen a window was left on, or switch to a smaller one, and the window is squeezed to fit and slid back inside that screen instead of opening onto nothing. If nothing overlaps at all it opens at its normal size in the middle of the main screen."],
+        ["better", "The Help screen groups tools the way you look for one: Your code, Network, Inside Windows, Diagnose and protect, Every day, and Convert, encode and hash — each with a count. The old headings put the network tools under \"Core\" and swept most of the rest into one technical heap."],
+        ["fix", "The sidebar files the main WinT window as the main window again, instead of filing it under whichever tool happens to be open in it. Visiting Torrents in the main window moved its row into the Torrents group and left it there."],
+        ["fix", "The Stats tab in Torrents shows its up and down bars again. The chart was being drawn three pixels tall and clipped, so every range looked empty no matter how much had actually moved."],
+      ],
+    },
+    {
+      version: "0.166.2",
+      title: "PC Detective keeps the answer it was given",
+      date: "2026-09-27",
+      changes: [
+        ["fix", "A finished sweep no longer ends on “The scan did not finish” with the whole answer dumped as one paragraph. PC Detective now reads the agent's closing report even when the agent forgot to close the code fence, wrote something after it, or had its answer cut off mid-sentence — the findings it had already written are kept and listed as usual, and what it wrote for you to read stays free of the report's own text."],
+        ["fix", "A failed sweep always has a way out. “What the agent said” now opens in a panel of its own that scrolls, instead of being glued onto the message — which pushed the buttons off the bottom and left nothing to click. Ask again and Back to the scan stay pinned in view however long the message is."],
+      ],
+    },
+    {
+      version: "0.166.1",
+      title: "The sidebar names the folder again, not the editor",
+      buildChecksum: "faa55a331b099983ddf0e6d4cce0c6f067dc1571881f28f475e5733432a194b9",
+      date: "2026-09-26",
+      changes: [
+        ["fix", "A VS Code Insiders window is listed under the project it has open. It was listed as \"Visual Studio Code\", because \"Insiders\" is part of the editor's own name and was being read as the folder. The same reading now survives a file name with a dash in it, and an editor with no folder open no longer claims one."],
+      ],
+    },
+    {
       version: "0.166.0",
       title: "A switch that makes the window safe to photograph",
       date: "2026-09-26",

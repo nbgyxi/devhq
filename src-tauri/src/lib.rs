@@ -70,6 +70,7 @@ mod util;
 #[cfg(windows)]
 pub mod vt;
 pub mod wifi;
+pub mod window_geometry;
 pub mod windows_tools;
 mod workspace;
 
@@ -77,7 +78,7 @@ use procs::{ProcessSnapshot, RunningProc};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -128,6 +129,11 @@ fn minimize_to_tray(app: AppHandle) {
     }
     let _ = app.emit("sidebar:tray", ());
 }
+
+/// Set once the main window is where it belongs. Before that, every move and
+/// resize it reports is WinT putting it there, and writing those down would
+/// save the defaults over what the last run left.
+static MAIN_GEOMETRY_READY: AtomicBool = AtomicBool::new(false);
 
 #[derive(Default)]
 struct PendingTool(Mutex<Option<String>>);
@@ -3137,6 +3143,31 @@ pub fn run() {
                 return Ok(());
             }
 
+            // Where the main window was left, before anything can see it. The
+            // window is built hidden (see `visible` in tauri.conf.json) exactly
+            // so this can happen without it appearing centred and then jumping.
+            // The read is on this thread on purpose: it is one small file, and
+            // nothing may be drawn until the answer is in.
+            let main_placement = app.get_window("main").map(|window| {
+                let placement = window_geometry::fit(
+                    app.handle(),
+                    window_geometry::load(app.handle(), window_geometry::MAIN),
+                    window_geometry::Defaults {
+                        width: 1400.0,
+                        height: 900.0,
+                        min_width: 900.0,
+                        min_height: 600.0,
+                    },
+                    // WinT bringing itself back is the one case where a window
+                    // left minimized comes back minimized. Every other window
+                    // is opened because somebody clicked something, and a click
+                    // that produces no visible window looks like a broken click.
+                    true,
+                );
+                window_geometry::apply(&window, &placement);
+                placement
+            });
+
             let args: Vec<String> = std::env::args().collect();
             start_wt_request_queue(app.handle().clone());
             clipboard::start(app.handle().clone());
@@ -3227,16 +3258,35 @@ pub fn run() {
             } else {
                 autostart::Mode::Normal
             };
+            // The window is built hidden, so every branch that is not the tray
+            // has to show it. A window that is only minimized was never shown,
+            // and Windows gives it no taskbar button to bring it back from.
             match start {
                 autostart::Mode::Tray => minimize_to_tray(app.handle().clone()),
                 autostart::Mode::Minimized => {
                     tray.set_visible(false)?;
                     if let Some(window) = app.get_window("main") {
+                        let _ = window.show();
                         let _ = window.minimize();
                     }
                 }
-                autostart::Mode::Normal => tray.set_visible(false)?,
+                autostart::Mode::Normal => {
+                    tray.set_visible(false)?;
+                    if let Some(window) = app.get_window("main") {
+                        let _ = window.show();
+                        // Left minimized last time, so that is how it comes back.
+                        // How WinT starts at sign-in is the user's own setting
+                        // above, and that outranks whatever the last run did.
+                        if main_placement.is_some_and(|placement| placement.minimized) {
+                            let _ = window.minimize();
+                        }
+                    }
+                }
             }
+            // Only from here is what the main window reports worth writing down.
+            // Until now every move and resize is WinT placing the window itself,
+            // and saving those would write the defaults back over what was saved.
+            MAIN_GEOMETRY_READY.store(true, Ordering::Relaxed);
             Ok(())
         });
 
@@ -3378,7 +3428,7 @@ pub fn run() {
             torrent::torrent_only_files,
             torrent::torrent_details,
             torrent::torrent_peers,
-            tool_window::tool_remember_geometry,
+            window_geometry::window_remember_geometry,
             ui_state::ui_state_get,
             ui_state::ui_state_set,
             torrent::torrent_marks,
@@ -3593,6 +3643,28 @@ pub fn run() {
             github::github_api
         ])
         .on_window_event(move |window, event| {
+            // What the main window is left in. Tool, workspace and terminal
+            // windows report their own from the page that owns them; the main
+            // window has no such page to trust, and this catches a minimize,
+            // which no page is told about.
+            if window.label() == "main"
+                && MAIN_GEOMETRY_READY.load(Ordering::Relaxed)
+                && matches!(
+                    event,
+                    tauri::WindowEvent::Moved(_)
+                        | tauri::WindowEvent::Resized(_)
+                        | tauri::WindowEvent::CloseRequested { .. }
+                )
+            {
+                let app = window.app_handle();
+                let previous = window_geometry::load(app, window_geometry::MAIN);
+                let now = window_geometry::capture(window, previous);
+                window_geometry::remember(app, window_geometry::MAIN, now);
+                // On the way out there is no settling left to wait for.
+                if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                    window_geometry::flush(app);
+                }
+            }
             if !matches!(event, tauri::WindowEvent::Destroyed) {
                 return;
             }
@@ -3617,6 +3689,11 @@ pub fn run() {
                     }
                 }
                 tool_window::destroy_all(window.app_handle());
+                // Whatever any window was still settling into when the app was
+                // told to go. Every other shutdown chore below is about things
+                // that must not outlive WinT; this is the one about something
+                // that must.
+                window_geometry::flush(window.app_handle());
                 // The sidebar is a shell appbar: leaving it registered would keep
                 // the work area shrunk, and the taskbar auto-hidden, after the
                 // process is gone.

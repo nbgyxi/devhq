@@ -67,6 +67,17 @@ const sandbox = {
   window: {},
   requestAnimationFrame: (fn) => fn(),
 };
+// window === globalThis in this sandbox (see below), so __TAURI__ has to live
+// on the top-level sandbox object, not the nested `window` value that gets
+// replaced next. util-tools.js reads it while it loads, so nothing runs at all
+// without this - the tools checked here never reach the backend themselves.
+sandbox.__TAURI__ = {
+  core: {
+    invoke: async (cmd) => {
+      throw new Error(`smoke-util-tools does not reach the backend (${cmd})`);
+    },
+  },
+};
 sandbox.globalThis = sandbox;
 sandbox.window = sandbox;
 

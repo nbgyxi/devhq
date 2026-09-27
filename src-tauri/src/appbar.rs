@@ -1407,11 +1407,36 @@ fn editor_workspace(exe: &str, title: &str) -> String {
     ) {
         return String::new();
     }
-    let parts: Vec<&str> = title.split(" - ").collect();
-    if parts.len() < 2 {
+    // The window title ends with the editor's own name, and that name can
+    // contain " - " itself ("devhq - Visual Studio Code - Insiders"), so the
+    // tail is matched by name before anything is split off. Whatever is left
+    // ends with the folder, with the active file, if any, ahead of it.
+    const EDITORS: [&str; 6] = [
+        "Visual Studio Code - Insiders",
+        "Visual Studio Code",
+        "VSCodium",
+        "Codium",
+        "Cursor",
+        "Windsurf",
+    ];
+    let title = title.trim();
+    let rest = EDITORS
+        .iter()
+        // An empty window is titled with the app name alone, and names no
+        // folder — hence the empty head rather than falling through.
+        .find_map(|name| {
+            title
+                .strip_suffix(name)
+                .map(|head| head.strip_suffix(" - ").unwrap_or(""))
+        })
+        // An unknown fork still names itself last; assume one segment for it.
+        .or_else(|| title.rsplit_once(" - ").map(|(head, _)| head));
+    let Some(rest) = rest else {
         return String::new();
-    }
-    parts[parts.len() - 2]
+    };
+    rest.rsplit(" - ")
+        .next()
+        .unwrap_or_default()
         .trim_start_matches(['●', '○', '*', ' '])
         .trim()
         .to_string()
@@ -1642,6 +1667,41 @@ mod sidebar_order_tests {
     }
 
     #[test]
+    fn the_insiders_suffix_is_not_mistaken_for_the_folder() {
+        // " - Insiders" is part of the app's name, so the folder is two
+        // segments further back than in a plain Code title.
+        assert_eq!(
+            editor_workspace(
+                r"C:\Code - Insiders.exe",
+                "app.rs - devhq - Visual Studio Code - Insiders"
+            ),
+            "devhq"
+        );
+    }
+
+    #[test]
+    fn a_dirty_marker_and_a_dash_in_the_file_name_are_both_survived() {
+        let exe = r"C:\Code.exe";
+        assert_eq!(
+            editor_workspace(exe, "● app.rs - devhq - Visual Studio Code"),
+            "devhq"
+        );
+        assert_eq!(
+            editor_workspace(exe, "read - me.md - devhq - Visual Studio Code"),
+            "devhq"
+        );
+    }
+
+    #[test]
+    fn a_title_that_is_only_the_app_name_names_no_folder() {
+        assert_eq!(editor_workspace(r"C:\Code.exe", "Visual Studio Code"), "");
+        assert_eq!(
+            editor_workspace(r"C:\Code - Insiders.exe", "Visual Studio Code - Insiders"),
+            ""
+        );
+    }
+
+    #[test]
     fn vscode_forks_are_told_apart_by_project_too() {
         assert_eq!(
             editor_workspace(r"C:\Users\me\AppData\Local\Programs\cursor\Cursor.exe", "app.js - devhq - Cursor"),
@@ -1701,8 +1761,14 @@ fn sidebar_hwnd(app: &AppHandle) -> isize {
 #[tauri::command]
 pub async fn sidebar_windows(app: AppHandle) -> Vec<OpenWindow> {
     let sidebar = sidebar_hwnd(&app);
+    // `get_webview_window` only answers for a window holding exactly one
+    // webview, and the main window stops being one the moment a tool is
+    // embedded in it as a child. Asking for the *window* is the question that
+    // stays true either way — otherwise the main window went unrecognised for
+    // as long as a tool was open in it, was taken for one more popped-out tool,
+    // and was filed on the rail under whichever tool it happened to be showing.
     MAIN_WINDOW.store(
-        app.get_webview_window("main")
+        app.get_window("main")
             .and_then(|window| window.hwnd().ok())
             .map_or(0, |hwnd| hwnd.0 as isize),
         Ordering::SeqCst,

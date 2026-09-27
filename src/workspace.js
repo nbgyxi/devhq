@@ -455,46 +455,10 @@
   /* ------------------------------------------------------ window geometry */
 
   // A workspace reopens where it was left — same screen, same size, and
-  // maximized if it was maximized. Rust applies this while building the
-  // window, so the geometry is written where the main window can read it back:
-  // both pages share one origin, and the main window is what asks for the
-  // workspace to open.
-  //
-  // While maximized the size and place kept are the *restored* ones, so
-  // un-maximizing a reopened window lands on the box it had before, not on the
-  // screen-sized one.
-  const GEOM_KEY = `wint.workspace.geom:${projectPath.toLowerCase()}`;
-  const readGeometry = () => {
-    try { return JSON.parse(localStorage.getItem(GEOM_KEY) || "null") || {}; } catch { return {}; }
-  };
-  let geomTimer = 0;
-  const saveGeometry = async () => {
-    try {
-      const maximized = await win.isMaximized();
-      const geometry = { ...readGeometry(), maximized };
-      if (!maximized) {
-        const scale = await win.scaleFactor();
-        const size = (await win.innerSize()).toLogical(scale);
-        const position = (await win.outerPosition()).toLogical(scale);
-        geometry.width = Math.round(size.width);
-        geometry.height = Math.round(size.height);
-        geometry.x = Math.round(position.x);
-        geometry.y = Math.round(position.y);
-      }
-      localStorage.setItem(GEOM_KEY, JSON.stringify(geometry));
-    } catch { /* A window that cannot be measured simply reopens at the default. */ }
-  };
-  // Windows resizes and moves in a loop of its own, so this fires constantly
-  // while a window is dragged. Only the value it comes to rest at matters.
-  const queueSaveGeometry = () => {
-    clearTimeout(geomTimer);
-    geomTimer = setTimeout(saveGeometry, 250);
-  };
-  win.onResized(() => queueSaveGeometry()).catch(() => {});
-  win.onMoved(() => queueSaveGeometry()).catch(() => {});
-  // Nothing is saved on load: the window Rust just placed is still settling —
-  // a restored maximize arrives as a resize of its own — and a page that saved
-  // first would write the un-maximized state back over the one it was given.
+  // maximized if it was maximized. The backend keeps it, per project, and fits
+  // it to the monitors that exist when the window is next built. It used to go
+  // to this page's localStorage, which meant it was written and never read.
+  const geometry = window.wintWindowGeometry.track(win, "workspace-window", projectPath);
 
   /* --------------------------------------------------------- window chrome */
 
@@ -541,8 +505,7 @@
     closing = true;
     // The last resize or move may still be waiting out its debounce, and where
     // the window was when it closed is exactly where it should come back.
-    clearTimeout(geomTimer);
-    await saveGeometry();
+    await geometry.save();
     await panels.get("browser")?.settlePreviewEdit?.();
     await invoke("workspace_teardown", { window: label, terminals: workspaceTerminals() })
       .catch(() => {});

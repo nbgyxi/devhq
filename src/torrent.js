@@ -1795,9 +1795,9 @@ Click to open in Explorer` : "";
       const u = Math.round((bar.uploaded / peak) * 100);
       const d = Math.round((bar.downloaded / peak) * 100);
       const label = `${when.format(new Date(bar.startMs))} — ${bytes(bar.uploaded)} up, ${bytes(bar.downloaded)} down`;
-      return `<div class="tr-bar" title="${esc(label)}">
-        <div class="tr-bar-up"><i style="height:${u}%"></i></div>
-        <div class="tr-bar-down"><i style="height:${d}%"></i></div>
+      return `<div class="tr-cbar" title="${esc(label)}">
+        <div class="tr-cbar-up"><i style="height:${u}%"></i></div>
+        <div class="tr-cbar-down"><i style="height:${d}%"></i></div>
       </div>`;
     }).join("");
     const first = bars.length ? when.format(new Date(bars[0].startMs)) : "";

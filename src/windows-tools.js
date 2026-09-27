@@ -923,29 +923,51 @@
   function renderHelp(tool){
     const utility=(window.wintUtilTools?.catalog?.()||[]).map((item)=>({id:item.id,name:item.name,icon:item.icon,hint:item.hint}));
     const byId=(id)=>catalog.find((item)=>item.id===id);
-    const core=[
-      {id:'overview',name:'Home',icon:'home',hint:'what needs attention, favorites, and where you left off'},
-      {id:'projects',name:'Projects',icon:'folder_copy',hint:'Git status, running dev servers, and technology for every project'},
-      {id:'git',name:'Git',icon:'commit',hint:'changes, staging, commits, branches, remotes, and history'},
-      {id:'github',name:'GitHub',icon:'merge',hint:'inbox, pull requests, issues, Actions, and repositories'},
-      {id:'ports',name:'Process Explorer',icon:'lan',hint:'ports, processes, resource use, and termination'},
-      {id:'dns',name:'DNS',icon:'dns',hint:'lookups and resolver comparison'},
-      {id:'hosts',name:'Hosts File',icon:'edit_note',hint:'inspect and safely edit local hostname overrides'},
-      {id:'network',name:'Network',icon:'network_check',hint:'inspect live traffic and the processes behind it'},
-    ];
-    const useful=[byId('time-tracker'),byId('clipboard'),byId('keep-awake'),
-      {id:'disk-space',name:'Disk Space Usage',icon:'hard_drive',hint:'see what fills a drive and drill into folders'},
-      {id:'path-ping',name:'Path Ping',icon:'route',hint:'find latency and packet loss at every hop'},
-    ].filter(Boolean);
-    const developer=[byId('cli'),byId('log-tail'),byId('lock-inspector')].filter(Boolean);
-    const used=new Set(['help',...useful.map((item)=>item.id),...developer.map((item)=>item.id)]);
-    const technical=catalog.filter((item)=>!used.has(item.id)).map((item)=>({id:item.id,name:item.name,icon:item.icon,hint:item.hint}));
+    // Tools that live in the main window rather than in this catalog, so the
+    // help screen can name them too. Only the ones the shell will actually
+    // open: a card that leads nowhere is worse than no card.
+    const shellTools={
+      overview:{name:'Home',icon:'home',hint:'what needs attention, and where you left off'},
+      projects:{name:'Projects',icon:'folder_copy',hint:'git state, running servers and detected tech per repo'},
+      git:{name:'Git',icon:'commit',hint:'stage, commit, branch, merge and history'},
+      github:{name:'GitHub',icon:'merge',hint:'pull requests, issues and Actions in one inbox'},
+      explorer:{name:'Files',icon:'folder_open',hint:'browse a folder and filter by file type'},
+      ports:{name:'Process Explorer',icon:'lan',hint:'ports, processes, resource use and safe kill'},
+      network:{name:'Network',icon:'network_check',hint:'live traffic and the process behind it'},
+      dns:{name:'DNS',icon:'dns',hint:'lookups and resolver comparison'},
+      hosts:{name:'Hosts File',icon:'edit_note',hint:'safely edit hostname overrides'},
+      'path-ping':{name:'Path Ping',icon:'route',hint:'latency and packet loss at every hop'},
+      'disk-space':{name:'Disk Space',icon:'hard_drive',hint:'see what fills a drive, drill into folders'},
+    };
+    const describe=(id)=>{
+      const known=byId(id);
+      if(known)return{id,name:known.name,icon:known.icon,hint:known.hint};
+      const one=shellTools[id];
+      return one?{id,...one}:null;
+    };
+    // Grouped by the job somebody came to do, not by which part of WinT
+    // happens to implement it. The old headings split on that — "Core" held
+    // the network tools, and everything else fell into one "technical" heap,
+    // so the way to find a tool was to read all of it.
+    const groups=[
+      ['Your code','code_blocks',['overview','projects','git','github','explorer','cli']],
+      ['Network','lan',['ports','network','speed-test','dns','hosts','path-ping','browser','torrents']],
+      ['Inside Windows','settings_applications',['registry','system','events','log-tail','disk-space','startup','lock-inspector','sidebar']],
+      ['Diagnose and protect','shield',['security-audit','stall-watch','health']],
+      ['Every day','bolt',['clipboard','focus-mode','keep-awake','time-tracker']],
+    ].map(([name,glyph,ids])=>({name,glyph,items:ids.map(describe).filter(Boolean)}));
+    // A tool added to the catalog and never named above still has to show up,
+    // or the help screen quietly stops listing part of the app.
+    const placed=new Set(['help',...groups.flatMap((group)=>group.items.map((item)=>item.id))]);
+    const rest=catalog.filter((item)=>!placed.has(item.id)).map((item)=>({id:item.id,name:item.name,icon:item.icon,hint:item.hint}));
+    if(rest.length)groups.push({name:'More',glyph:'more_horiz',items:rest});
+    if(utility.length)groups.push({name:'Convert, encode and hash',glyph:'tag',items:utility});
     const cards=(items)=>items.map((item)=>`<button type="button" class="help-tool" data-help-tool="${esc(item.id)}" title="Open ${esc(item.name)}">${icon(item.icon)}<span><strong>${esc(item.name)}</strong><small>${esc(item.hint)}</small></span>${icon('arrow_forward')}</button>`).join('');
     const rows=(items)=>items.map(([name,detail])=>`<div class="help-command"><code>${esc(name)}</code><span>${esc(detail)}</span></div>`).join('');
     const searchableCommands=rows([['<project>','Open that project'],['Run <project>','Run its detected start command; only offered when one is known'],['Terminal — <project>','Open a terminal in its folder'],['Pull <project>','Run git pull; only offered for Git projects'],['Rescan projects','Scan configured project folders again (F5)'],['Toggle terminal panel','Show or hide docked terminals (Ctrl+`)'],['Show / Remove <filter>','Turn a project filter on or off'],['Kill <process | PID | port>','Terminate a matching process']]);
     const projectActions=rows([['Run','Run the detected project command'],['Code / VS Code','Open the project folder in VS Code'],['Terminal','Open a terminal in the project folder'],['Pull','Run git pull for a Git project'],['Explorer','Open the folder in Windows Explorer'],['External shell','Open the configured shell outside WinT'],['Copy path','Copy the project folder path']]);
-    const total=core.length+useful.length+developer.length+technical.length+utility.length;
-    host.innerHTML=header(tool,`<div class="help-page"><section class="help-lead"><span>${icon('search')}</span><div><h2>Search is how you get anywhere</h2><p>Press <kbd>Ctrl</kbd> + <kbd>K</kbd> from any screen, or type <kbd>&gt;</kbd> while you are not editing a field. Search for a tool, project, action, technology, port, or process.</p></div></section><div class="help-columns"><section class="help-panel"><header>${icon('bolt')}<strong>Available commands</strong></header>${searchableCommands}</section><section class="help-panel"><header>${icon('folder_open')}<strong>Actions on an open project</strong></header>${projectActions}</section></div><section class="help-tools"><header><div>${icon('handyman')}<strong>Available tools</strong></div><small>${total} tools</small></header><h3>Core</h3><div class="help-tool-grid">${cards(core)}</div><h3>Everyday utilities</h3><div class="help-tool-grid">${cards(useful)}</div><h3>Developer tools</h3><div class="help-tool-grid">${cards(developer)}</div><h3>Technical Windows tools and repairs</h3><div class="help-tool-grid">${cards(technical)}</div><h3>Encode, hash, time, and data formats</h3><div class="help-tool-grid">${cards(utility)}</div></section></div>`);
+    const total=groups.reduce((sum,group)=>sum+group.items.length,0);
+    host.innerHTML=header(tool,`<div class="help-page"><section class="help-lead"><span>${icon('search')}</span><div><h2>Search is how you get anywhere</h2><p>Press <kbd>Ctrl</kbd> + <kbd>K</kbd> from any screen, or type <kbd>&gt;</kbd> while you are not editing a field. Search for a tool, project, action, technology, port, or process.</p></div></section><div class="help-columns"><section class="help-panel"><header>${icon('bolt')}<strong>Available commands</strong></header>${searchableCommands}</section><section class="help-panel"><header>${icon('folder_open')}<strong>Actions on an open project</strong></header>${projectActions}</section></div><section class="help-tools"><header><div>${icon('handyman')}<strong>Available tools</strong></div><small>${total} tools · type any name in search</small></header>${groups.map((group)=>`<h3>${icon(group.glyph)}<span>${esc(group.name)}</span><small>${group.items.length}</small></h3><div class="help-tool-grid">${cards(group.items)}</div>`).join('')}</section></div>`);
   }
   function renderRegistry(tool) {
     host.innerHTML = header(tool, `<div class="registry-tabs"><button class="${regMode==='browse'?'on':''}" data-reg-mode="browse">${icon('account_tree')}Browse</button><button class="${regMode==='watch'?'on':''}" data-reg-mode="watch">${icon('visibility')}Change Watch</button></div><div class="registry-workspace"><aside class="registry-nav">${regMode==='browse'?`<div class="registry-nav-actions"><button class="btn" data-win-refresh>${icon('refresh')}Reload key</button></div>`:''}<h3>Hives</h3>${[['HKCR','HKEY_CLASSES_ROOT'],['HKCU','HKEY_CURRENT_USER'],['HKLM','HKEY_LOCAL_MACHINE'],['HKU','HKEY_USERS']].map(([short,long])=>`<button data-reg-jump="${short}">${icon('database')}<span><strong>${short}</strong><small>${long}</small></span></button>`).join('')}<h3>Bookmarks</h3>${[['HKCU\\Environment','User environment'],['HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run','Startup apps'],['HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced','Explorer advanced'],['HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment','Machine environment'],['HKLM\\SYSTEM\\CurrentControlSet\\Services','Services']].map(([path,name])=>`<button data-reg-jump="${esc(path)}">${icon('bookmark')}<span><strong>${esc(name)}</strong><small>${esc(path)}</small></span></button>`).join('')}</aside><section class="registry-main">${regMode==='browse'?`<div class="registry-path"><button data-reg-up title="Parent key">${icon('arrow_upward')}</button><input data-reg-path value="${esc(regPath)}" spellcheck="false"><button class="btn primary" data-reg-go>${icon('arrow_forward')}Go</button></div><div class="win-status" data-win-status>Read-only until you explicitly save or delete a value.</div><div class="registry-results" data-reg-results><div class="win-empty">Reading key…</div></div>`:`<div class="registry-watch-head"><div><strong>Watching ${esc(regPath)}</strong><small>Polling the selected key for creates, edits and deletes</small></div><button class="btn primary" data-reg-watch>${icon(timer?'pause':'play_arrow')}${timer?'Pause':'Start watch'}</button></div><div class="win-status" data-win-status>${timer?'Watching for registry changes…':'Watch is paused.'}</div><div class="registry-feed" data-reg-feed>${renderRegistryFeed()}</div>`}</section><aside class="registry-detail" data-reg-detail><div class="win-empty">Select a value to inspect and edit it.</div></aside></div>`);

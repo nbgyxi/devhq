@@ -30,7 +30,21 @@ const appSource = fs.readFileSync("src/app.js", "utf8");
 const navigationReply = appSource.indexOf("await reply(true);", appSource.indexOf('request.action === "navigate"'));
 const navigationOpen = appSource.indexOf("setTimeout(() => openTool(destination), 0);", navigationReply);
 assert(navigationReply >= 0 && navigationOpen > navigationReply, "Isolated navigation must be acknowledged before its webview is replaced");
-assert(appSource.includes('await invoke("tool_embedded_destroy", { id: mountedId });'), "Tool switches must finish destroying the old webview before creating the next one");
+// Tools are resident now and switching suspends rather than destroys, so the
+// teardown that has to be awaited is eviction: the webview must be gone on the
+// Rust side, and its session forgotten here, before anything mounts that tool
+// again - otherwise a fresh mount races the old webview's destruction.
+const evict = appSource.indexOf("async function evictEmbeddedTool(");
+const evictDestroy = appSource.indexOf('await invoke("tool_embedded_destroy", { id })', evict);
+assert(evict >= 0, "evictEmbeddedTool must exist to drop a tool out of memory");
+assert(
+  evictDestroy > evict && evictDestroy - evict < 1200,
+  "Evicting a tool must finish destroying its webview before returning",
+);
+assert(
+  appSource.indexOf("embeddedToolSessions.delete(id)", evict) < evictDestroy,
+  "An evicted tool's session must be forgotten with it",
+);
 assert(!appSource.includes('const previousId = state.activeView === "isolated-tool"'), "Tool switching must not start a second eager webview teardown");
 const bridgeSource = fs.readFileSync("src/tool-bridge.js", "utf8");
 assert(bridgeSource.includes('event.key === ">"'), "Isolated tools must forward the > search shortcut");
@@ -43,7 +57,10 @@ assert(windowsToolsSource.includes("['Run <project>'"), "Help must document the 
 assert(windowsToolsSource.includes('data-related-tool="repair-swap"'), "Audio Subsystem Bouncer must link to Sound Device Switcher");
 assert(windowsToolsSource.includes('data-related-tool="repair-audio"'), "Sound Device Switcher must link to Audio Subsystem Bouncer");
 assert(!windowsToolsSource.includes('<div><h3>${esc(name)}</h3>'), "Repair tools must not repeat their title in the body");
-const pageRule = css.match(/\.windows-tools-page\{([^}]*)\}/)?.[1] || "";
+// Anchored to the start of a line so this reads the base rule and not one of
+// the compound selectors that also end in ".windows-tools-page" (the pop-out
+// host, for one) and would otherwise match first.
+const pageRule = css.match(/^\.windows-tools-page\{([^}]*)\}/m)?.[1] || "";
 assert(pageRule.includes("flex:1"), "Windows tools must fill the shell's remaining height");
 assert(!pageRule.includes("position:absolute"), "Windows tools must not cover the shared toolbar");
 assert(css.includes(".windows-tools-page[hidden]{display:none}"), "hidden Windows tools must leave the flex layout");

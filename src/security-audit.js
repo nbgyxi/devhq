@@ -710,17 +710,10 @@ Then verify it worked. Put the finding in "resolved" if it did, or update it wit
   /** Removes the closing JSON block from something the agent said, leaving
    *  only what it wrote for a person to read. */
   function prose(text) {
-    let value = String(text || "").replace(/```(?:json)?\s*([\s\S]*?)```/g, (whole, body) => {
-      try { const v = JSON.parse(body.trim()); return v && typeof v === "object" && ("summary" in v || "findings" in v) ? "" : whole; } catch { return whole; }
-    });
-    const first = value.indexOf("{");
-    if (first >= 0) {
-      try {
-        const v = JSON.parse(value.slice(first, value.lastIndexOf("}") + 1));
-        if (v && typeof v === "object" && ("summary" in v || "findings" in v)) value = value.slice(0, first);
-      } catch {}
-    }
-    return value.trim();
+    const value = String(text || "");
+    const found = blockRange(value);
+    const said = found ? value.slice(0, found.start) + value.slice(found.end) : value;
+    return said.replace(/^\s*```\s*$/gm, "").replace(/```(?:json)?\s*$/, "").trim();
   }
 
   /** Something the agent wrote between commands: a remark, a plan, a question.
@@ -856,17 +849,89 @@ Then verify it worked. Put the finding in "resolved" if it did, or update it wit
     if (node && turn.activity) node.textContent = turn.activity;
   }
 
-  function parseBlock(text) {
-    const fenced = [...String(text).matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].map((m) => m[1]).reverse();
-    const first = text.indexOf("{"), last = text.lastIndexOf("}");
-    if (first >= 0 && last > first) fenced.push(text.slice(first, last + 1));
-    for (const body of fenced) {
-      try {
-        const value = JSON.parse(body.trim());
-        if (value && typeof value === "object" && ("summary" in value || "findings" in value)) return value;
-      } catch {}
+  const isBlock = (value) => (value && typeof value === "object" && !Array.isArray(value) && ("summary" in value || "findings" in value) ? value : null);
+
+  /** Walks the text and returns every balanced `{...}` in it, last one first.
+   *  Scanning rather than matching a fence is what makes a block survive the
+   *  ways an agent really ends a turn: a fence it never closed, a second
+   *  fenced snippet earlier in the answer, prose written after the block, or
+   *  a stray `}` in the prose before it. */
+  function objectsIn(text) {
+    const out = [];
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] !== "{") continue;
+      let depth = 0, inStr = false, escaped = false;
+      for (let j = i; j < text.length; j++) {
+        const c = text[j];
+        if (inStr) {
+          if (escaped) escaped = false;
+          else if (c === "\\") escaped = true;
+          else if (c === '"') inStr = false;
+          continue;
+        }
+        if (c === '"') inStr = true;
+        else if (c === "{") depth++;
+        else if (c === "}" && --depth === 0) { out.push({ start: i, end: j + 1, body: text.slice(i, j + 1) }); i = j; break; }
+      }
+    }
+    return out.reverse();
+  }
+
+  /** Closes off a block the agent started but never finished - a CLI that
+   *  clips a long answer cuts it mid-array. Everything it had already written
+   *  is still good, so the open string and brackets are closed and the
+   *  half-written tail dropped, rather than losing the whole turn. */
+  function closeTruncated(fragment) {
+    const stack = [];
+    let inStr = false, escaped = false;
+    for (const c of fragment) {
+      if (inStr) {
+        if (escaped) escaped = false;
+        else if (c === "\\") escaped = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') inStr = true;
+      else if (c === "{" || c === "[") stack.push(c === "{" ? "}" : "]");
+      else if (c === "}" || c === "]") stack.pop();
+    }
+    if (!stack.length) return null;
+    let head = fragment;
+    for (let tries = 0; tries < 40 && head.length > 1; tries++) {
+      const candidate = `${head.replace(/[,\s]+$/, "")}${inStr ? '"' : ""}${stack.slice().reverse().join("")}`;
+      try { const value = isBlock(JSON.parse(candidate)); if (value) return value; } catch {}
+      // Step back to the last complete value and try again.
+      const cut = Math.max(head.lastIndexOf(","), head.lastIndexOf("}"), head.lastIndexOf("]"));
+      if (cut <= 0) break;
+      const dropped = head.slice(cut);
+      head = head.slice(0, cut);
+      if (inStr) inStr = false;
+      for (const c of dropped) {
+        if (c === "{" || c === "[") stack.push(c === "{" ? "}" : "]");
+        else if (c === "}" || c === "]") stack.pop();
+      }
     }
     return null;
+  }
+
+  /** Where the agent's closing block sits in what it said, if it said one. */
+  function blockRange(text) {
+    const value = String(text || "");
+    for (const found of objectsIn(value)) {
+      try { const parsed = isBlock(JSON.parse(found.body)); if (parsed) return { ...found, value: parsed }; } catch {}
+    }
+    for (let i = value.lastIndexOf("{"); i >= 0; i = value.lastIndexOf("{", i - 1)) {
+      const head = value.slice(i, i + 400);
+      if (!/"(summary|findings)"/.test(head)) continue;
+      const parsed = closeTruncated(value.slice(i));
+      if (parsed) return { start: i, end: value.length, body: value.slice(i), value: parsed, truncated: true };
+      break;
+    }
+    return null;
+  }
+
+  function parseBlock(text) {
+    return blockRange(text)?.value || null;
   }
 
   const list = (value) => (Array.isArray(value) ? value : []);
@@ -1331,13 +1396,14 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
     const options = (r.options || []).map((o, i) => `<button type="button" class="sa-option${o.changesSystem ? " changes" : ""}" data-sa-option="${i}">
       <strong>${icon(o.changesSystem ? "build" : "arrow_forward")}${esc(o.label)}</strong><small>${o.changesSystem ? "<b>Changes your system.</b> " : ""}${esc(o.detail)}</small></button>`).join("");
     return `<div class="sa-reply${r.failed ? " failed" : r.done ? " done" : ""}">
-      <p>${icon(r.failed ? "error" : r.done ? "task_alt" : "smart_toy")}<span>${esc(r.summary)}</span></p>
+      <p>${icon(r.failed ? "error" : r.done ? "task_alt" : "smart_toy")}<span class="sa-reply-summary">${esc(r.summary)}</span></p>
       ${r.question ? `<p class="sa-question">${icon("help")}${esc(r.question)}</p>` : ""}
       ${options ? `<div class="sa-options">${options}</div>` : ""}
       ${(r.guide || []).length ? `<div class="sa-guide"><span>${icon("troubleshoot")}Nothing on this PC can start an agent until one of these is fixed</span>${r.guide.map(([g, title, detail]) => `<div class="sa-guide-step">${icon(g)}<div><strong>${esc(title)}</strong><small>${esc(detail)}</small></div></div>`).join("")}
         <div class="sa-row-actions"><button type="button" class="btn small primary" data-sa="repair"${st.repair?.busy ? " disabled" : ""}>${icon("build")}${st.repair ? "Check again" : "Check and fix this PC"}</button></div>
         ${repairHtml()}</div>` : ""}
-      ${r.failed ? `<div class="sa-row-actions">${r.raw ? `<button type="button" class="btn small" data-sa="raw">${icon("notes")}What the agent said</button>` : ""}<button type="button" class="btn small" data-sa="retry">${icon("refresh")}Ask again</button></div>` : ""}
+      ${r.failed && r.showRaw && r.raw ? `<pre class="sa-raw">${esc(r.raw)}</pre>` : ""}
+      ${r.failed ? `<div class="sa-row-actions sa-reply-actions">${r.raw ? `<button type="button" class="btn small" data-sa="raw">${icon("notes")}${r.showRaw ? "Hide what the agent said" : "What the agent said"}</button>` : ""}<button type="button" class="btn small" data-sa="retry">${icon("refresh")}Ask again</button><button type="button" class="btn small" data-sa="dismiss">${icon("close")}Back to the scan</button></div>` : ""}
     </div>`;
   }
 
@@ -1582,7 +1648,11 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
       case "passed": st.showPassed = !st.showPassed; return dirty();
       case "report": return exportFile("report.md", markdown());
       case "log": return exportFile("log.md", logText());
-      case "raw": st.reply.summary = `${st.reply.summary}\n\n${st.reply.raw}`; st.reply.raw = ""; return dirty();
+      // What the agent said goes in a scroller of its own. Folding it into
+      // the summary used to push the buttons below a wall of text, leaving
+      // the person no way back to the scan.
+      case "raw": st.reply.showRaw = !st.reply.showRaw; return dirty();
+      case "dismiss": st.reply = null; return dirty();
       case "repair": return repairPc();
       case "retry": {
         const last = st.reply?.retry;

@@ -47,10 +47,6 @@ pub async fn workspace_open(
     path: String,
     name: Option<String>,
     theme: Option<String>,
-    // Where this project's workspace was last left. Applied while the window
-    // is built rather than after it appears, so it never shows at the default
-    // size and then jumps.
-    geometry: Option<WindowGeometry>,
 ) -> Result<String, String> {
     let dir = PathBuf::from(&path);
     if !dir.is_dir() {
@@ -90,7 +86,30 @@ pub async fn workspace_open(
     // regardless, so this only affects the workspace chrome.
     let init_theme = crate::tool_window::theme_script(if light { "light" } else { "dark" });
     let opened = label.clone();
-    let geometry = geometry.filter(WindowGeometry::is_usable);
+    // Where this project's workspace was last left, fitted to the monitors
+    // that are here now and applied while the window is built rather than
+    // after it appears, so it never shows at the default size and then jumps.
+    let placement = {
+        let app = app.clone();
+        let key = geometry_key(&path);
+        crate::off_thread(move || {
+            let saved = crate::window_geometry::load(&app, &key);
+            crate::window_geometry::fit(
+                &app,
+                saved,
+                crate::window_geometry::Defaults {
+                    width: 1440.0,
+                    height: 900.0,
+                    min_width: 760.0,
+                    min_height: 480.0,
+                },
+                // Opening a workspace is asking to see it.
+                false,
+            )
+        })
+        .await
+        .ok_or("Could not work out where that window belongs.")?
+    };
     // Building a webview pumps the event loop, so it cannot happen on the
     // thread that owns it - the window would appear with a webview that never
     // loads, and this command would never answer.
@@ -102,13 +121,10 @@ pub async fn workspace_open(
             .decorations(false)
             .background_color(background)
             .initialization_script(&init_theme);
-        if let Some(geometry) = &geometry {
-            if let (Some(width), Some(height)) = (geometry.width, geometry.height) {
-                builder = builder.inner_size(width.max(760.0), height.max(480.0));
-            }
-            if let (Some(x), Some(y)) = (geometry.x, geometry.y) {
-                builder = builder.position(x, y);
-            }
+        let (width, height) = placement.logical_size();
+        builder = builder.inner_size(width, height);
+        if let Some((x, y)) = placement.logical_position() {
+            builder = builder.position(x, y);
         }
         if let Some(icon) = crate::tool_window::taskbar_icon_for_tool(&app, "workspace") {
             builder = builder
@@ -117,7 +133,7 @@ pub async fn workspace_open(
         }
         match builder.build() {
             Ok(window) => {
-                if geometry.as_ref().is_some_and(|geometry| geometry.maximized) {
+                if placement.maximized {
                     let _ = window.maximize();
                 }
                 let _ = window.set_focus();
@@ -141,39 +157,12 @@ pub async fn workspace_open(
     Ok(opened)
 }
 
-/// The size, place and maximized state a workspace window was last left in.
-/// The front end owns it — it is saved beside that project's panel layout —
-/// so the only job here is to refuse numbers that would put the window
-/// somewhere it could not be found again.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct WindowGeometry {
-    width: Option<f64>,
-    height: Option<f64>,
-    x: Option<f64>,
-    y: Option<f64>,
-    #[serde(default)]
-    maximized: bool,
-}
-
-impl WindowGeometry {
-    /// A monitor that is gone takes its coordinates with it, and a size saved
-    /// on a screen that no longer exists can be bigger than every screen left.
-    /// Rather than track monitors, keep the numbers plausible and let Windows
-    /// do the rest — it already pulls a placed window back onto a screen.
-    fn is_usable(geometry: &Self) -> bool {
-        let sane_size = |value: Option<f64>| {
-            value.map_or(true, |value| {
-                value.is_finite() && (200.0..=20_000.0).contains(&value)
-            })
-        };
-        let sane_pos = |value: Option<f64>| {
-            value.map_or(true, |value| value.is_finite() && value.abs() <= 40_000.0)
-        };
-        sane_size(geometry.width)
-            && sane_size(geometry.height)
-            && sane_pos(geometry.x)
-            && sane_pos(geometry.y)
-    }
+/// Where a workspace window's shape is kept: per project, because that is
+/// what a workspace is. The store owns it now — it used to be written to the
+/// page's `localStorage` and handed back on open, which meant it was never
+/// handed back at all, because nothing passed it.
+fn geometry_key(path: &str) -> String {
+    crate::window_geometry::key_for("workspace-window", &path.to_lowercase())
 }
 
 fn urlencode(value: &str) -> String {
@@ -886,4 +875,108 @@ pub(crate) fn unbase64(text: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        attachment_kind, base64, free_path, is_noise, profile_dir_name, unbase64, urlencode,
+        window_label,
+    };
+
+    #[test]
+    fn base64_round_trips_every_padding_case() {
+        for len in 0..=9usize {
+            let bytes: Vec<u8> = (0..len).map(|i| (i as u8).wrapping_mul(37)).collect();
+            let text = base64(&bytes);
+            assert_eq!(text.len() % 4, 0, "{text} is not a whole number of quads");
+            assert_eq!(unbase64(&text).as_deref(), Some(&bytes[..]), "len {len}");
+        }
+    }
+
+    #[test]
+    fn base64_matches_the_known_answer() {
+        assert_eq!(base64(b"Man"), "TWFu");
+        assert_eq!(base64(b"Ma"), "TWE=");
+        assert_eq!(base64(b"M"), "TQ==");
+        assert_eq!(base64(&[0xff, 0xfe]), "//4=");
+    }
+
+    #[test]
+    fn unbase64_ignores_wrapping_but_refuses_junk() {
+        assert_eq!(unbase64("TWFu\r\nTWFu").as_deref(), Some(&b"ManMan"[..]));
+        assert!(unbase64("TW!u").is_none());
+    }
+
+    #[test]
+    fn a_profile_folder_name_cannot_climb_out_of_the_profiles_directory() {
+        assert_eq!(profile_dir_name(r"..\..\Windows"), "______Windows");
+        assert_eq!(profile_dir_name("a/b"), "a_b");
+        assert_eq!(profile_dir_name(""), "workspace");
+        assert_eq!(profile_dir_name("workspace-1f2e_3"), "workspace-1f2e_3");
+    }
+
+    #[test]
+    fn one_project_is_one_workspace_whatever_its_casing() {
+        assert_eq!(window_label(r"C:\Code\devhq"), window_label(r"c:\code\DEVHQ"));
+        assert_ne!(window_label(r"C:\Code\devhq"), window_label(r"C:\Code\other"));
+        assert!(window_label("x").starts_with("workspace-"));
+    }
+
+    #[test]
+    fn noise_folders_are_matched_however_they_are_typed() {
+        assert!(is_noise("node_modules"));
+        assert!(is_noise("Node_Modules"));
+        assert!(is_noise(".git"));
+        assert!(!is_noise("src"));
+        assert!(!is_noise("node_modules2"));
+    }
+
+    #[test]
+    fn urlencode_keeps_only_the_unreserved_bytes() {
+        assert_eq!(urlencode("a-b_c.d~e"), "a-b_c.d~e");
+        assert_eq!(urlencode("a b/c"), "a%20b%2Fc");
+        // Multi-byte characters are encoded per UTF-8 byte, not per char.
+        assert_eq!(urlencode("é"), "%C3%A9");
+    }
+
+    #[test]
+    fn an_attachment_name_is_made_safe_and_never_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = free_path(dir.path(), r"re:port/1.txt");
+        assert_eq!(first.file_name().unwrap(), "re-port-1.txt");
+        std::fs::write(&first, b"x").unwrap();
+
+        let second = free_path(dir.path(), r"re:port/1.txt");
+        assert_eq!(second.file_name().unwrap(), "re-port-1 (2).txt");
+        std::fs::write(&second, b"x").unwrap();
+        assert_eq!(
+            free_path(dir.path(), r"re:port/1.txt").file_name().unwrap(),
+            "re-port-1 (3).txt"
+        );
+
+        // A name that sanitizes away entirely still has to land somewhere.
+        assert_eq!(
+            free_path(dir.path(), " ... ").file_name().unwrap(),
+            "attachment"
+        );
+    }
+
+    #[test]
+    fn an_attachment_is_an_image_by_extension_and_text_by_inspection() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("shot.PNG");
+        std::fs::write(&png, b"not really a png").unwrap();
+        assert_eq!(attachment_kind(&png).unwrap(), "image");
+
+        let makefile = dir.path().join("Makefile");
+        std::fs::write(&makefile, b"all:\n\techo hi\n").unwrap();
+        assert_eq!(attachment_kind(&makefile).unwrap(), "text");
+
+        let binary = dir.path().join("tool.exe");
+        std::fs::write(&binary, b"MZ\0\0payload").unwrap();
+        assert!(attachment_kind(&binary).is_err());
+
+        assert!(attachment_kind(&dir.path().join("gone.txt")).is_err());
+    }
 }

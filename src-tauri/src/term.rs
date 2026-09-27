@@ -1963,6 +1963,12 @@ fn term_list_now(project_path: Option<String>) -> Vec<TermInfo> {
     out
 }
 
+/// Where a popped-out terminal's shape is kept. One entry for all of them:
+/// the pages that own these windows report under the same name.
+fn popout_geometry_key() -> String {
+    crate::window_geometry::key_for("terminal-window", "popout")
+}
+
 /// Opens a session in its own window. The session is untouched — this only
 /// creates a second view, so a build keeps running while it moves.
 /// Building a webview has to pump the event loop, so it cannot run on the
@@ -1997,7 +2003,32 @@ pub async fn term_popout(
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| session.project_name.clone());
+    // The shape a terminal window was last left in, fitted to the monitors that
+    // are here now. One shape for every popped-out terminal: what is being
+    // remembered is how big a terminal wants to be, and the next one wants the
+    // same. A drag still lands where it was dropped — see below.
+    let placement = {
+        let app = app.clone();
+        crate::off_thread(move || {
+            let saved = crate::window_geometry::load(&app, &popout_geometry_key());
+            crate::window_geometry::fit(
+                &app,
+                saved,
+                crate::window_geometry::Defaults {
+                    width: 900.0,
+                    height: 600.0,
+                    min_width: 400.0,
+                    min_height: 200.0,
+                },
+                // Dragging a terminal out is asking to see it.
+                false,
+            )
+        })
+        .await
+        .ok_or("Could not work out where that window belongs.")?
+    };
     off_thread(move || {
+        let (saved_width, saved_height) = placement.logical_size();
         let mut builder = WebviewWindowBuilder::new(
             &app,
             &label,
@@ -2010,7 +2041,7 @@ pub async fn term_popout(
             ),
         )
         .title(title)
-        .inner_size(900.0, 600.0)
+        .inner_size(saved_width, saved_height)
         .min_inner_size(400.0, 200.0)
         .decorations(false)
         .background_color(tauri::webview::Color(12, 13, 17, 255));
@@ -2020,18 +2051,26 @@ pub async fn term_popout(
                 Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?))
             })
         };
+        // The dock this terminal is leaving knows the size it was showing at,
+        // and that beats the remembered one: the window should be the panel it
+        // was a moment ago, not the last terminal window somebody closed.
         if let Some((cols, rows)) = pair(dimensions) {
             builder = builder.inner_size((cols * 9.0).max(400.0), (rows * 18.0).max(200.0));
         }
+        // Likewise the place: a terminal dragged out belongs under the pointer
+        // that dropped it. Only a pop-out with nothing to say falls back to
+        // where the last terminal window was.
         if let Some((px, py)) = pair(position) {
             builder = builder.position(px, py);
         } else if let (Some(x), Some(y)) = (x, y) {
             builder = builder.position(x, y);
+        } else if let Some((px, py)) = placement.logical_position() {
+            builder = builder.position(px, py);
         }
         builder
             .build()
             .and_then(|window| {
-                if maximized.unwrap_or(false) {
+                if maximized.unwrap_or(placement.maximized) {
                     window.maximize()?;
                 }
                 if fullscreen.unwrap_or(false) {

@@ -1832,3 +1832,96 @@ pub fn set_rate_caps(down_bps: u64, up_bps: u64) {
         diagnose(format!("Could not apply the speed limit: {error}"));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{bounded_line, note_failure, restart_delay, Engine, MAX_CONSECUTIVE_FAILURES};
+    use std::io::BufReader;
+    use std::time::{Duration, Instant};
+
+    fn lines(input: &str, limit: usize) -> Vec<(String, bool)> {
+        let mut reader = BufReader::new(input.as_bytes());
+        let mut out = Vec::new();
+        while let Some(line) = bounded_line(&mut reader, limit).unwrap() {
+            out.push(line);
+        }
+        out
+    }
+
+    #[test]
+    fn a_line_ends_at_the_newline_and_keeps_none_of_it() {
+        assert_eq!(
+            lines("one\ntwo\n", 64),
+            vec![("one".into(), false), ("two".into(), false)]
+        );
+    }
+
+    #[test]
+    fn a_windows_line_ending_is_not_part_of_the_line() {
+        assert_eq!(lines("one\r\n", 64), vec![("one".into(), false)]);
+    }
+
+    #[test]
+    fn a_last_line_without_a_newline_is_still_read() {
+        assert_eq!(
+            lines("one\ntail", 64),
+            vec![("one".into(), false), ("tail".into(), false)]
+        );
+    }
+
+    #[test]
+    fn an_oversized_line_is_cut_and_says_so_without_eating_the_next() {
+        // The whole point of the limit: one absurd line cannot cost unbounded
+        // memory, and the line after it still arrives intact.
+        assert_eq!(
+            lines("aaaaaaaa\nbb\n", 4),
+            vec![("aaaa".into(), true), ("bb".into(), false)]
+        );
+    }
+
+    #[test]
+    fn nothing_to_read_is_not_an_empty_line() {
+        assert!(lines("", 64).is_empty());
+    }
+
+    #[test]
+    fn the_backoff_ladder_climbs_once_and_then_holds() {
+        let secs = |failures| restart_delay(failures).as_secs();
+        // `note_failure` counts from 1, and 0 must not index out of bounds.
+        assert_eq!(secs(0), 1);
+        assert_eq!(
+            (1..=6).map(secs).collect::<Vec<_>>(),
+            vec![1, 2, 5, 10, 30, 60]
+        );
+        assert_eq!(secs(7), 60);
+        assert_eq!(secs(u32::MAX), 60);
+    }
+
+    #[test]
+    fn a_failure_schedules_a_restart_and_forgets_the_healthy_run() {
+        let mut engine = Engine {
+            healthy_since: Some(Instant::now()),
+            ..Default::default()
+        };
+        let delay = note_failure(&mut engine, "The engine stopped.");
+        assert_eq!(delay, Some(Duration::from_secs(1)));
+        assert_eq!(engine.state, "starting");
+        assert_eq!(engine.consecutive_failures, 1);
+        assert_eq!(engine.restarts, 1);
+        assert!(engine.healthy_since.is_none());
+        assert!(engine.message.unwrap().contains("Retrying in 1 seconds"));
+    }
+
+    #[test]
+    fn the_supervisor_gives_up_rather_than_restarting_forever() {
+        let mut engine = Engine::default();
+        for _ in 0..MAX_CONSECUTIVE_FAILURES {
+            assert!(note_failure(&mut engine, "gone").is_some());
+        }
+        // One past the limit is where it stops asking.
+        assert_eq!(note_failure(&mut engine, "gone"), None);
+        assert_eq!(engine.state, "failed");
+        assert!(engine.message.unwrap().contains("Restart the engine"));
+        assert_eq!(engine.restarts, MAX_CONSECUTIVE_FAILURES + 1);
+    }
+}
