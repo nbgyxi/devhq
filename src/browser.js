@@ -402,8 +402,16 @@
         </li>`,
       )
       .join("");
+    // A package cannot be taken at its word here: it reads its own writes back
+    // out of a hive only it can see, so the ticks below say nothing about what
+    // Windows knows. Said before the list rather than after it, because
+    // otherwise the list is read as an all-clear.
+    const packaged = assoc.packaged && !working
+      ? `<p class="br-note">${icon("warning")}This is the packaged (Store/MSIX) build, and a package's registry writes go into a hive only the package itself can read — so the ticks below are what <em>WinT</em> sees, not what Windows sees. A packaged build claims http and https through its manifest instead, which needs a package built with that claim in it; the unpackaged build has no such problem.</p>`
+      : "";
     return `<details class="br-checks"${working ? "" : " open"}>
       <summary>${icon("checklist")}What Windows has been told${working ? "" : ` <em>${checks.filter((check) => !check.ok).length} of ${checks.length} not as WinT asked</em>`}</summary>
+      ${packaged}
       <ul>${rows}</ul>
       ${assoc.exe ? `<p class="br-note">${icon("terminal")}Registered for <span class="mono">${esc(assoc.exe)}</span>. To try the routing without being the default, run that with a link as its argument.</p>` : ""}
       <p class="br-hint">${icon("info")}All green and links still opening elsewhere means Windows never accepted the choice. Open Default apps, search WinT, and set it on <strong>WinT's own page</strong> rather than from the HTTPS tile; if it is not listed there, sign out and back in — Windows caches that list per session. Outlook and Teams can also be set by policy to open links in Edge whatever the default says.</p>

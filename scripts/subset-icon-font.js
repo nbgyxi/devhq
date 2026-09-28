@@ -129,6 +129,43 @@ function namesUsedInSources(available) {
   return { names: [...found].sort(), fileCount: files.length };
 }
 
+/** Names passed to an icon helper that no glyph answers to.
+ *
+ * The scan above is blunt on purpose and only keeps words that ARE glyph names,
+ * so a name that is not one is invisible to it - and invisible in the app too,
+ * in the worst way. Material Symbols draws by ligature, so `icon("feedback")`
+ * does not fall back to nothing: the shaper matches the longest prefix it has,
+ * draws `feed`, and leaves the remaining letters as text. The status bar showed
+ * a feed icon followed by the word "back" for exactly this reason.
+ *
+ * So every literal handed to an icon helper is checked against the font. A
+ * typo, a renamed glyph or a plausible-sounding name that upstream never had
+ * fails the build instead of shipping a word where a picture belongs.
+ */
+function iconCallsWithoutGlyphs(available) {
+  const excluded = new Set(PROSE_ONLY.map((relative) => path.join(ROOT, relative)));
+  const wrong = [];
+  const files = [];
+  (function walk(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (SCAN_SKIP.has(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if ([".js", ".mjs", ".cjs", ".html"].includes(path.extname(entry.name)) && !excluded.has(full)) files.push(full);
+    }
+  })(path.join(ROOT, "src"));
+  for (const file of files) {
+    const text = fs.readFileSync(file, "utf8");
+    // `icon("name")`, and the per-tool helpers that wrap it - dnsIcon, settingsIcon.
+    for (const match of text.matchAll(/\b[a-zA-Z]*[iI]con\(\s*"([a-z][a-z0-9_]*)"/g)) {
+      if (available.has(match[1])) continue;
+      const line = text.slice(0, match.index).split(/\r?\n/).length;
+      wrong.push(`${path.relative(ROOT, file)}:${line}: "${match[1]}" is not a glyph in Material Symbols`);
+    }
+  }
+  return wrong;
+}
+
 async function subset(ttf, gids) {
   const { instance } = await WebAssembly.instantiate(fs.readFileSync(HB_SUBSET_WASM), {});
   const hb = instance.exports;
@@ -231,6 +268,15 @@ async function main() {
   const available = glyphNames(fullTtf);
   const { names, fileCount } = namesUsedInSources(available);
   console.log(`Scanned ${fileCount} source files; ${names.length} of ${available.size} glyph names are referenced.`);
+
+  const wrong = iconCallsWithoutGlyphs(available);
+  if (wrong.length) {
+    console.error(`${wrong.length} icon name(s) no glyph answers to:`);
+    for (const line of wrong) console.error(`  ${line}`);
+    console.error("A name the font does not have is drawn as its longest matching prefix plus the leftover letters, not as nothing.");
+    process.exitCode = 1;
+    return;
+  }
 
   if (checkOnly) {
     const listed = fs.existsSync(OUT_LIST)

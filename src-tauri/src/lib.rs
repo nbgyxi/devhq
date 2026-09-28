@@ -27,6 +27,7 @@ pub mod dns;
 mod download;
 pub mod explorer;
 #[cfg(windows)]
+pub mod feedback;
 mod focus_mode;
 #[cfg(windows)]
 mod gemini;
@@ -974,8 +975,85 @@ async fn health_note(text: String) {
 /// line used to name a freeze, and a render throwing three times a second
 /// would overwrite the step that actually mattered. This only appends.
 #[tauri::command]
-async fn ui_error(text: String) {
-    health::record("ui-error", text.chars().take(1200).collect::<String>());
+async fn ui_error(app: AppHandle, fault: UiFault) {
+    health::record(
+        "ui-error",
+        fault.text.chars().take(1200).collect::<String>(),
+    );
+    // A failed <script> or <img> is a fault of the page, not of the app, and it
+    // is already in the log above. Only the ones that mean code threw are worth
+    // a stranger's attention.
+    if !matches!(
+        fault.kind.as_deref(),
+        Some("error") | Some("unhandled rejection")
+    ) {
+        return;
+    }
+    let area = fault.page.clone().unwrap_or_else(|| "unknown".into());
+    let title = fault
+        .detail
+        .clone()
+        .unwrap_or_else(|| fault.text.clone());
+    feedback::report_error(
+        &area,
+        &format!("{}: {title}", fault.kind.unwrap_or_default()),
+        &fault.text,
+        &environment(&app, fault.environment.as_deref()),
+        &format!("/{area}"),
+    );
+}
+
+/// What a webview says went wrong. Everything past `text` is what the report to
+/// the feedback broker needs and the log line does not, so it is all optional -
+/// a caller that only has a line of text still gets it into the log.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UiFault {
+    text: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    detail: Option<String>,
+    #[serde(default)]
+    page: Option<String>,
+    #[serde(default)]
+    environment: Option<String>,
+}
+
+/// The one line that says which build and which webview this came from. The
+/// version is taken from the package rather than from the window, so a report
+/// cannot claim a version the exe was not built as.
+fn environment(app: &AppHandle, webview: Option<&str>) -> String {
+    let version = app.package_info().version.to_string();
+    match webview {
+        Some(webview) if !webview.trim().is_empty() => {
+            format!("WinT {version} / {}", webview.trim())
+        }
+        _ => format!("WinT {version}"),
+    }
+}
+
+/// Sends one report the user wrote, and waits for the broker to take it: the
+/// button that submits it has to be able to say whether it arrived.
+///
+/// The key never comes through here in either direction. A refusal is a
+/// sentence for the form, never the body of the broker's answer.
+#[tauri::command]
+async fn feedback_submit(
+    app: AppHandle,
+    mut report: feedback::Report,
+) -> Result<feedback::Receipt, String> {
+    report.environment = Some(environment(&app, report.environment.as_deref()));
+    off_thread(move || feedback::submit(&report))
+        .await
+        .unwrap_or_else(|| Err("The report could not be sent.".into()))
+}
+
+/// Whether this build has somewhere to send feedback, so the form can say so
+/// before the user types. Never the key, only whether there is one.
+#[tauri::command]
+fn feedback_configured() -> bool {
+    feedback::configured()
 }
 
 /// Everything that starts with Windows, for the Startup and tray tool. It
@@ -3321,6 +3399,8 @@ pub fn run() {
             ai_agent_verify,
             ai_agent_signin,
             app_version,
+            feedback_submit,
+            feedback_configured,
             project_run_command,
             app_is_official_build,
             app_build_checksum,
@@ -3580,6 +3660,8 @@ pub fn run() {
             appbar::sidebar_reveal,
             appbar::sidebar_settings,
             appbar::sidebar_settings_set,
+            tool_window::feedback_show,
+            tool_window::feedback_hide,
             tool_window::search_show,
             tool_window::search_hide,
             tool_window::search_prepare,
@@ -3747,6 +3829,8 @@ pub fn run() {
         ai_agent_verify,
         ai_agent_signin,
         app_version,
+        feedback_submit,
+        feedback_configured,
         project_run_command,
         app_is_official_build,
         app_build_checksum,
@@ -3828,6 +3912,8 @@ pub fn run() {
         tool_window::tool_embedded_destroy,
         tool_window::tool_bridge_state_put,
         tool_window::tool_bridge_state_take,
+        tool_window::feedback_show,
+        tool_window::feedback_hide,
         tool_window::search_show,
         tool_window::search_hide,
         tool_window::search_prepare,

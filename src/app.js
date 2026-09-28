@@ -3262,6 +3262,37 @@ function closeChangelog() {
   invoke("changelog_hide").catch(() => {});
 }
 
+/** Saying what is broken or what is missing, in a window of its own.
+ *
+ * A window rather than a card in this page for the reason `feedback_show`
+ * gives: an isolated tool is a child webview floating over this page, so a form
+ * drawn here would land behind the very tool being reported on.
+ *
+ * The screen the user is on is the report's subject until they say otherwise -
+ * the open tool names the area, and `currentPath` is the same route the
+ * automatic error reports carry, so a report and a crash from one screen are
+ * filed the same way. The window is placed above the button that opened it and
+ * pulled back inside the display if it would hang off an edge.
+ */
+function openFeedback() {
+  const button = el["status-feedback"];
+  const box = button.getBoundingClientRect();
+  const WIDTH = 470;
+  const HEIGHT = 530;
+  const x = Math.max(0, Math.min(window.screenX + box.right - WIDTH, screen.availWidth - WIDTH));
+  const y = Math.max(0, window.screenY + box.top - HEIGHT - 6);
+  invoke("feedback_show", {
+    theme: state.theme === "light" ? "light" : "dark",
+    area: activeTool()?.name || (state.selectedPath ? "Projects and scan" : "The window itself"),
+    page: currentPath(),
+    x,
+    y,
+  }).catch((error) => {
+    beginWork("feedback-open-fail", "Could not open the feedback form", String(error));
+    setTimeout(() => endWork("feedback-open-fail"), 5000);
+  });
+}
+
 function syncSettingsButton() {
   const status = document.getElementById("status-settings");
   status?.classList.toggle("on", state.activeView === "settings");
@@ -5118,7 +5149,7 @@ function patchSection() {
     return head("Changes", `<div class="sk-note">${icon("hourglass_top")}running git diff...</div>`);
   }
   if (state.diffError) {
-    return head("Changes", `<div class="sk-note">${icon("error_outline")}${esc(state.diffError)}</div>`);
+    return head("Changes", `<div class="sk-note">${icon("error")}${esc(state.diffError)}</div>`);
   }
   if (!state.diff) return "";
 
@@ -5156,7 +5187,7 @@ function todoSourceView(key) {
     return `<div class="todosrc loading">${icon("hourglass_top")}reading the file...</div>`;
   }
   if (entry.error) {
-    return `<div class="todosrc error">${icon("error_outline")}${esc(entry.error)}</div>`;
+    return `<div class="todosrc error">${icon("error")}${esc(entry.error)}</div>`;
   }
   const { start, line, lines } = entry.excerpt;
   const body = lines
@@ -5178,7 +5209,7 @@ function todoSection() {
     return head(`<div class="sk-note">${icon("hourglass_top")}reading the source...</div>`);
   }
   if (state.todosError) {
-    return head(`<div class="sk-note">${icon("error_outline")}${esc(state.todosError)}</div>`);
+    return head(`<div class="sk-note">${icon("error")}${esc(state.todosError)}</div>`);
   }
   if (!state.todos) return "";
   if (!state.todos.items.length) {
@@ -5617,6 +5648,10 @@ function mountShell() {
                 aria-haspopup="dialog" aria-expanded="false"></button>
         <div class="changelog-pop" id="changelog-pop" role="dialog" aria-label="What's new" hidden></div>
       </div>
+      <div class="status-feedback-wrap" id="status-feedback-wrap">
+        <button class="status-btn status-feedback" id="status-feedback" title="Say what is broken or what is missing"
+                aria-haspopup="dialog" aria-expanded="false">${icon("bug_report")}<span class="label">Feedback</span></button>
+      </div>
       <div class="status-orphan-wrap" id="status-orphan-wrap" hidden>
         <button class="status-btn status-orphan" id="status-orphan" title="Processes left running after terminal closure" aria-haspopup="dialog" aria-expanded="false">${icon("warning")}<span>Still running</span><b>0</b></button>
         <div class="orphan-pop" id="orphan-pop" role="dialog" aria-label="Processes still running" hidden></div>
@@ -5642,6 +5677,7 @@ function mountShell() {
     "tech-menu", "tech-menu-input", "tech-menu-list", "tech-clear", "sort-buttons", "view-buttons", "activity", "filters", "filter-chips",
     "banner-host", "summary", "summary-stats", "scroll", "grid", "home-host", "projects-host", "ports-host", "dns-host", "hosts-host", "network-host", "path-ping-host", "explorer-host", "disk-space-host", "github-host", "git-host", "tools-host", "windows-tools-host", "isolated-tool-host", "isolated-tool-slot", "port-filter-input", "port-pins", "port-tabs", "port-sort", "port-live", "ports-list", "ports-detail", "ports-dialogs", "detail-host", "settings-host", "open-settings", "toggle-theme",
     "status-term", "status-term-popout", "status-progress", "status-version", "changelog-pop",
+    "status-feedback-wrap", "status-feedback",
     "status-pins-wrap", "status-pins", "pins-pop", "pins-panel",
   ]) {
     el[id] = document.getElementById(id);
@@ -7033,6 +7069,7 @@ function wireShell() {
   };
 
   el["status-version"].onclick = openChangelog;
+  el["status-feedback"].onclick = openFeedback;
 
   el["changelog-pop"].onclick = (e) => {
     if (e.target.closest("[data-changelog-act=\"close\"]")) {

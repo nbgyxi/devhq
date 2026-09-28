@@ -16,8 +16,40 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.171.0",
+      title: "Tell us when it breaks, without leaving the app",
+      date: "2026-09-28",
+      changes: [
+        ["new", "A Feedback button in the status bar, reachable from every screen, with a tab for a Problem and a tab for an Idea. One box to write in — the first line becomes the summary — then press send, and you get the report number back if it arrived and a plain reason if it did not."],
+        ["new", "The form says who will be able to read what you write before you write it: an idea is posted in public where anyone can read it and vote on it, and a problem report is private to the developers."],
+        ["better", "It already knows where you were. Open it from inside Torrents and the report is about Torrents — you never have to say which part of the app you were using, and a report cannot end up filed under the wrong thing because someone guessed from a list. Closing the popover keeps what you typed, so an interruption mid-sentence costs nothing."],
+        ["new", "When a window throws an error it did not expect, WinT now says so on its own, with the version, the screen it happened on and the fault itself. The same fault is only reported once, and there is a ceiling on how many can go out in an hour, so a render throwing three times a second stays one report."],
+        ["better", "Nothing about a report leaves this PC but the boxes you filled in, the version, the screen and an anonymous number. Anything that reads like a password, a token, a cookie or an address is taken out first, and your Windows account name is taken out of every path — including on the automatic reports, which carry whatever the fault happened to mention."],
+        ["better", "A build set up without a feedback service says so before you type, instead of losing what you wrote on the press."],
+        ["fix", "Two icons that had been drawing a word instead of a picture. Material Symbols draws by name, and a name it does not have is drawn as the longest part it recognises followed by the leftover letters — so the diff error line read \"error_outline\" and Go back to this version read \"restore\". The build now refuses a name no icon answers to, rather than shipping it."],
+      ],
+    },
+    {
+      version: "0.170.0",
+      title: "The packaged build can be your browser too",
+      date: "2026-09-28",
+      changes: [
+        ["fix", "The Store build claims http and https through its package manifest. Before this it only wrote the claim into the registry, and a packaged app's registry writes land in a hive only that app can read — so WinT looked correctly registered to itself while Windows never offered it under Default apps at all, no matter how many times you opened the page. Installing this version puts WinT in the list."],
+        ["better", "The registration checklist says so when it is looking at the packaged build, instead of showing a row of ticks that only prove WinT can read its own writes."],
+      ],
+    },
+    {
+      version: "0.169.2",
+      title: "Still the browser that is playing, for real this time",
+      date: "2026-09-28",
+      changes: [
+        ["fix", "Clicking the browser that is making sound opened the default profile in a new window rather than going to the profile that is playing. Windows names the playing browser as plainly as \"Chrome\", while its windows are named per profile (\"Chrome, Profile 2\"), so the two never lined up and WinT fell back to simply starting the browser again. The two spellings are now matched on the browser they mean, the profile part is used only when Windows actually gives one, and when nothing matches WinT goes to a window of the process that is making sound instead of starting anything."],
+      ],
+    },
+    {
       version: "0.169.1",
       title: "The browser that is playing is the one that opens",
+      buildChecksum: "53ec73eb8effbbb12b21af795a604de35c1300af0bc7d41e33762d8a5be326e1",
       date: "2026-09-28",
       changes: [
         ["fix", "Clicking a browser in the sidebar's list of things making sound now brings up the window of the profile that is actually playing, instead of whichever profile's window happened to be in front. A stream only knows which program is making sound, and every profile of one browser is the same program — so WinT now asks Windows which media session that program is playing, and uses the per-profile identity and the track name it reports to pick the window."],

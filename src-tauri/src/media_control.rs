@@ -257,20 +257,45 @@ fn comparable(text: &str) -> String {
     out.trim().to_string()
 }
 
+/// The browser or app behind an identity, with any profile part dropped:
+/// `Chrome.UserData.Profile2`, `C:\…\chrome.exe` and `Chrome` all come out as
+/// `chrome`. It is what ties a media session to a window when the shell and
+/// the window spell the same browser differently.
+fn identity_family(id: &str) -> String {
+    let leaf = id
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(id)
+        .to_ascii_lowercase();
+    let stem = leaf.strip_suffix(".exe").unwrap_or(&leaf);
+    stem.split('.')
+        .next()
+        .unwrap_or(stem)
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect()
+}
+
 /// The window that is making the sound, not merely one belonging to the app.
 ///
 /// A browser is why this cannot be the first match: one Chrome or Edge install
 /// has a window per profile and many windows per profile, and the enumeration
 /// hands them over in z-order, so the first match is whichever window happens
-/// to be in front. Three signals narrow it down, most telling first:
+/// to be in front. Four signals narrow it down, most telling first:
 ///
-/// * the AppUserModelID the media session names, which browsers set per
-///   profile — the only signal that tells two profiles apart, since they share
-///   one browser process;
+/// * the AppUserModelID the media session names, *when* it carries a profile
+///   part (`MSEdge.UserData.Profile1`) — then it is the only thing that tells
+///   two profiles apart, since they share one browser process. Chrome often
+///   reports the bare `Chrome` instead, which belongs to every profile and
+///   which one profile's window also carries literally, so a bare id counts
+///   for no more than belonging to that browser at all;
 /// * the track (or artist) appearing in the window title, which is how a
 ///   browser window whose playing tab is the one on top gives itself away;
 /// * the window belonging to the process tree holding the audio session, which
-///   still works when the playing tab is a background tab.
+///   still works when the playing tab is a background tab;
+/// * failing all of that, any window of a process that is making sound — still
+///   a better answer than starting the browser over, which opens the default
+///   profile and is what used to happen whenever nothing matched.
 fn pick_source_window(
     windows: Vec<crate::appbar::OpenWindow>,
     source_id: &str,
@@ -278,33 +303,48 @@ fn pick_source_window(
     artist: &str,
 ) -> Option<crate::appbar::OpenWindow> {
     let wanted = source_id.to_ascii_lowercase();
-    let source_file = wanted
+    let family = identity_family(&wanted);
+    // Only an id carrying a profile part can name one profile. A bare `Chrome`
+    // belongs to all of them, whichever window happens to be spelled that way.
+    let bare = wanted
         .rsplit(['\\', '/'])
         .next()
         .unwrap_or(&wanted)
-        .to_string();
+        .trim_end_matches(".exe");
+    let distinguishing = !wanted.is_empty() && bare != family;
     let track = comparable(title);
     let artist = comparable(artist);
-    let mut candidates: Vec<(u32, crate::appbar::OpenWindow)> = windows
-        .into_iter()
-        .filter_map(|window| {
-            let identity = if !wanted.is_empty() && window.app.to_ascii_lowercase() == wanted {
-                2
-            } else if !source_file.is_empty()
-                && window.exe.to_ascii_lowercase().ends_with(&source_file)
-            {
-                1
-            } else {
-                return None;
-            };
-            Some((identity, window))
-        })
-        .collect();
-    if candidates.len() < 2 {
+    let mut rest: Vec<crate::appbar::OpenWindow> = Vec::new();
+    let mut candidates: Vec<(u32, crate::appbar::OpenWindow)> = Vec::new();
+    for window in windows {
+        if distinguishing && window.app.to_ascii_lowercase() == wanted {
+            candidates.push((2, window));
+        } else if !family.is_empty()
+            && (identity_family(&window.app) == family || identity_family(&window.exe) == family)
+        {
+            candidates.push((1, window));
+        } else {
+            rest.push(window);
+        }
+    }
+    if candidates.len() == 1 {
         return candidates.pop().map(|(_, window)| window);
     }
     // Worth a process snapshot only once more than one window is in play.
     let owners = audio_owner_pids();
+    if candidates.is_empty() {
+        // Nothing carried the app's name — an id the shell spells differently
+        // from any window, say. A window of a process that is making sound is
+        // still the right window; starting the app again is not.
+        candidates = rest
+            .into_iter()
+            .filter(|window| owners.contains(&window_pid(&window.id)))
+            .map(|window| (0, window))
+            .collect();
+        if candidates.len() < 2 {
+            return candidates.pop().map(|(_, window)| window);
+        }
+    }
     let mut scored: Vec<(u32, crate::appbar::OpenWindow)> = candidates
         .into_iter()
         .map(|(identity, window)| {
@@ -456,12 +496,8 @@ async fn session_identity_for(
     app: &AppHandle,
     executable: &str,
 ) -> Option<(String, String, String)> {
-    let leaf = executable
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(executable)
-        .to_ascii_lowercase();
-    if leaf.is_empty() {
+    let family = identity_family(executable);
+    if family.is_empty() {
         return None;
     }
     let manager = manager().await.ok()?;
@@ -515,10 +551,11 @@ async fn session_identity_for(
         let windows = crate::appbar::list_windows(sidebar);
         ids.into_iter()
             .filter(|id| {
-                windows.iter().any(|window| {
-                    window.app.eq_ignore_ascii_case(id)
-                        && window.exe.to_ascii_lowercase().ends_with(&leaf)
-                })
+                identity_family(id) == family
+                    || windows.iter().any(|window| {
+                        window.app.eq_ignore_ascii_case(id)
+                            && identity_family(&window.exe) == family
+                    })
             })
             .collect::<std::collections::HashSet<String>>()
     })

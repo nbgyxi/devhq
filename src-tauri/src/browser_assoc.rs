@@ -73,6 +73,12 @@ pub struct Assoc {
     /// The copy of wint.exe the keys name, for a machine where a link goes to
     /// a WinT that is not this one.
     pub exe: Option<String>,
+    /// This copy runs from an MSIX package. Every registry write it makes goes
+    /// into the package's own virtualised hive, which it then reads back
+    /// happily while the shell sees none of it — so the checks below can be
+    /// green on a machine where Windows will never offer WinT at all. The
+    /// claim that counts there is the one in the package manifest.
+    pub packaged: bool,
     /// Each piece Windows needs before it will offer WinT for a scheme, read
     /// back one at a time. All true and still not offered is a Windows-side
     /// problem, not a missing key — which is the whole point of showing them.
@@ -364,9 +370,18 @@ mod imp {
             },
             asked: asked(),
             exe: exe().ok(),
+            packaged: packaged(),
             checks: checks(&http, &https),
             supported: true,
         }
+    }
+
+    /// Running from under `WindowsApps` is what an installed MSIX package
+    /// looks like from the inside. The path is the honest test here: an API
+    /// that asks the package identity would answer yes for a package that is
+    /// merely registered, and what matters is where this exe is.
+    fn packaged() -> bool {
+        exe().is_ok_and(|path| path.to_ascii_lowercase().contains(r"\windowsapps\"))
     }
 
     /// Read every piece back rather than trusting that `register` wrote it.

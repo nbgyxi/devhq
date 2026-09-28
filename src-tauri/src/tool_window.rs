@@ -604,6 +604,111 @@ pub fn maturity_hide(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+const FEEDBACK_LABEL: &str = "feedback-report";
+
+/// Saying what is broken or what is missing, in a window of its own.
+///
+/// The same reason as the release history and the badge explanation above: an
+/// isolated tool is a child webview floating over the page, so a form drawn in
+/// the shell's HTML lands behind it. Hiding the tool to make room would be
+/// worse than useless here - the tool is the thing being reported on, and it
+/// has to stay on screen while it is described.
+///
+/// `area` and `page` are what the shell worked out about the screen the user
+/// was on. They arrive as a call into the page rather than as a rebuild, so a
+/// half-written report survives being put away and taken out again.
+#[tauri::command]
+pub async fn feedback_show(
+    app: AppHandle,
+    theme: Option<String>,
+    area: Option<String>,
+    page: Option<String>,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let light = theme.as_deref() == Some("light");
+    let position = LogicalPosition::new(x.max(0.0), y.max(0.0));
+    // Serialised rather than pasted in: a tool name is not hostile, but a name
+    // with an apostrophe in it would end the string and break the call.
+    let context = serde_json::json!({
+        "area": area.clone().unwrap_or_default(),
+        "page": page.clone().unwrap_or_default(),
+    })
+    .to_string();
+
+    if let Some(window) = app.get_webview_window(FEEDBACK_LABEL) {
+        window
+            .eval(format!(
+                r#"{}window.wintFeedbackReport?.show({context});"#,
+                theme_script(if light { "light" } else { "dark" })
+            ))
+            .map_err(|e| e.to_string())?;
+        window.set_position(position).map_err(|e| e.to_string())?;
+        return focus_search_window(&window);
+    }
+
+    let background = if light {
+        tauri::webview::Color(244, 245, 248, 255)
+    } else {
+        tauri::webview::Color(12, 13, 17, 255)
+    };
+    let page_url = format!(
+        "feedback.html?theme={}&area={}&page={}",
+        if light { "light" } else { "dark" },
+        urlencoding(area.as_deref().unwrap_or_default()),
+        urlencoding(page.as_deref().unwrap_or_default())
+    );
+    let build_app = app.clone();
+    off_thread(move || {
+        WebviewWindowBuilder::new(&app, FEEDBACK_LABEL, WebviewUrl::App(page_url.into()))
+            .title("Tell us about it")
+            .inner_size(470.0, 530.0)
+            .min_inner_size(380.0, 420.0)
+            .decorations(false)
+            .resizable(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .visible(false)
+            .position(position.x, position.y)
+            .background_color(background)
+            .build()
+            .map(|_| ())
+            .map_err(|e| format!("Could not open the feedback form: {e}"))
+    })
+    .await
+    .unwrap_or_else(|| Err("Could not open the feedback form.".to_string()))?;
+    let window = build_app
+        .get_webview_window(FEEDBACK_LABEL)
+        .ok_or_else(|| "The feedback form was created without a window.".to_string())?;
+    focus_search_window(&window)
+}
+
+#[tauri::command]
+pub fn feedback_hide(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(FEEDBACK_LABEL) {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Percent-encodes the few characters that would end a query value or start
+/// another one. The values are a tool name and an app route, not arbitrary
+/// text, so this is a guard against a stray `&` rather than a general encoder.
+fn urlencoding(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '~' | '/' => c.to_string(),
+            ' ' => "%20".to_string(),
+            other => other
+                .to_string()
+                .bytes()
+                .map(|b| format!("%{b:02X}"))
+                .collect::<String>(),
+        })
+        .collect()
+}
+
 /// The calendar behind the rail's date, in a window of its own.
 ///
 /// The docked rail is as narrow as the user dragged it, and a month grid is

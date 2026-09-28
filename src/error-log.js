@@ -27,21 +27,29 @@
     return name ? `${page}:${name}` : page;
   };
 
-  const send = (text) => {
+  // The engine and its version, for the environment line on a report. The
+  // user agent carries far more than that, so only the build number is taken
+  // from it and the rest is left behind.
+  const engine = () => {
+    const found = /Edg\/([\d.]+)/.exec(navigator.userAgent) || /Chrome\/([\d.]+)/.exec(navigator.userAgent);
+    return found ? `WebView2 ${found[1]}` : "";
+  };
+
+  const send = (fault) => {
     const invoke = window.__TAURI__?.core?.invoke;
     // Before the Tauri bridge exists there is nowhere to send it. Hold it:
     // the earliest errors are the start-up ones, and they are the ones most
     // worth keeping.
     if (!invoke) {
-      if (queue.length < 50) queue.push(text);
+      if (queue.length < 50) queue.push(fault);
       return;
     }
     if (queue.length) {
       const held = queue;
       queue = [];
-      for (const line of held) invoke("ui_error", { text: line }).catch(() => {});
+      for (const earlier of held) invoke("ui_error", { fault: earlier }).catch(() => {});
     }
-    invoke("ui_error", { text }).catch(() => {});
+    invoke("ui_error", { fault }).catch(() => {});
   };
 
   const report = (kind, detail, source) => {
@@ -56,7 +64,16 @@
     seen.set(key, { at, suppressed: 0 });
     let text = `${where()}  ${kind}: ${detail}${repeat}`;
     if (source) text += `\n    at ${source}`;
-    send(text.slice(0, MAX_TEXT));
+    // `kind`, `detail` and the page travel alongside the line rather than
+    // being parsed back out of it in Rust: they are the same fields a feedback
+    // report needs, and the backend decides whether this fault earns one.
+    send({
+      text: text.slice(0, MAX_TEXT),
+      kind,
+      detail: String(detail).slice(0, 300),
+      page: where(),
+      environment: engine(),
+    });
   };
 
   const describe = (value) => {
@@ -87,6 +104,10 @@
   // case this was written for.
   window.wintErrorLog = {
     report(context, error) { report(context, describe(error)); },
-    note(text) { send(`${where()}  ${String(text).slice(0, MAX_TEXT)}`); },
+    // A note is a step, not a fault: it goes to the log and never to the
+    // feedback broker, which is what the `note` kind tells the backend.
+    note(text) {
+      send({ text: `${where()}  ${String(text).slice(0, MAX_TEXT)}`, kind: "note", page: where(), environment: engine() });
+    },
   };
 })();

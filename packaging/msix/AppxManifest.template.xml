@@ -11,8 +11,9 @@
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
   xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
-  IgnorableNamespaces="uap rescap desktop">
+  IgnorableNamespaces="uap uap3 rescap desktop">
 
   <Identity
     Name="{{IDENTITY_NAME}}"
@@ -52,6 +53,28 @@
         <desktop:Extension Category="windows.startupTask" Executable="WinT.exe" EntryPoint="Windows.FullTrustApplication">
           <desktop:StartupTask TaskId="WinTStartup" Enabled="false" DisplayName="{{DISPLAY_NAME}}" />
         </desktop:Extension>
+
+        <!-- What makes WinT a browser when it is installed as a package.
+             src-tauri/src/browser_assoc.rs writes the same claim into
+             HKCU for an unpackaged build, but a package's registry writes
+             land in its own virtualised hive: the app reads them back
+             happily while the shell never sees them, so WinT is simply
+             never offered under Default apps -> HTTPS. Declared here, the
+             claim is part of the package and the shell honours it.
+             The parameter is the URL as one quoted argument, matching
+             `open_command` in browser_assoc.rs. -->
+        <uap3:Extension Category="windows.protocol">
+          <uap3:Protocol Name="http" Parameters="&quot;%1&quot;">
+            <uap:Logo>Assets\Square44x44Logo.png</uap:Logo>
+            <uap:DisplayName>{{DISPLAY_NAME}}</uap:DisplayName>
+          </uap3:Protocol>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.protocol">
+          <uap3:Protocol Name="https" Parameters="&quot;%1&quot;">
+            <uap:Logo>Assets\Square44x44Logo.png</uap:Logo>
+            <uap:DisplayName>{{DISPLAY_NAME}}</uap:DisplayName>
+          </uap3:Protocol>
+        </uap3:Extension>
       </Extensions>
     </Application>
   </Applications>

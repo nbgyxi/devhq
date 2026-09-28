@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<title>Tell us about it</title>
+<link rel="stylesheet" href="styles.css" />
+<style>
+  /* Its own window, so it is the whole page rather than a floating card. */
+  html, body { height: 100%; }
+  body { margin: 0; overflow: hidden; background: var(--bg1); }
+</style>
+</head>
+<body>
+<div class="feedback-win" data-feedback-root></div>
+<script src="error-log.js"></script>
+<script src="analytics.js"></script>
+<script src="feedback-report.js"></script>
+<script>
+  (() => {
+    "use strict";
+    const query = new URLSearchParams(location.search);
+    if (query.get("theme") === "light") document.documentElement.dataset.theme = "light";
+
+    const form = window.wintFeedbackReport;
+    form.mount(document.querySelector("[data-feedback-root]"));
+    form.show({ area: query.get("area") || "", page: query.get("page") || "" });
+
+    const hide = () => window.__TAURI__?.core?.invoke?.("feedback_hide").catch(() => {});
+
+    // Pressing the status bar button again focuses WinT, which blurs this window
+    // a moment before that button asks for it to be shown. Hiding is therefore
+    // delayed just long enough for the show to arrive and cancel it, so a second
+    // press does not make the form flash out and back.
+    //
+    // Unlike the badge note, this window holds something the user is in the
+    // middle of writing, so a blur only puts it away — the draft is still there
+    // when it comes back.
+    let going = 0;
+    const hideSoon = () => { clearTimeout(going); going = setTimeout(hide, 220); };
+    const stay = () => clearTimeout(going);
+
+    const shown = form.show.bind(form);
+    form.show = (context) => { stay(); shown(context); };
+
+    window.addEventListener("focus", stay);
+    window.addEventListener("blur", hideSoon);
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { stay(); hide(); }
+      // Enter makes a new line in a box this size, so Ctrl+Enter is the send.
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        document.querySelector("[data-feedback-send]")?.click();
+      }
+    });
+  })();
+</script>
+</body>
+</html>

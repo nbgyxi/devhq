@@ -9,3 +9,5 @@ scripts/e2e/last-run.log
 assistant panel.zip
 .gitignore
 git client.zip
+.env
+.env.local

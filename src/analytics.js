@@ -34,6 +34,12 @@
     visitorId = crypto.randomUUID();
   }
 
+  /** The anonymous id, for anything else that needs to say who is reporting
+   *  without saying who the person is — the feedback form being the one case.
+   *  It is the same random number analytics uses and nothing more: it is not
+   *  derived from the machine, the account or anything typed into the app. */
+  window.wintVisitorId = () => visitorId;
+
   /** Follows the setting, whether it was just answered or just switched off. */
   window.wintAnalyticsConsent = (on) => {
     allowed = on === true;
