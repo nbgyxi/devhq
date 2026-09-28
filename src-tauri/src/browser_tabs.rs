@@ -152,8 +152,7 @@ fn read_tabs() -> Vec<OpenTab> {
     use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
     use windows::Win32::System::Variant::VARIANT;
     use windows::Win32::UI::Accessibility::{
-        CUIAutomation, IUIAutomation,
-        UIA_ControlTypePropertyId, UIA_EditControlTypeId,
+        CUIAutomation, IUIAutomation, UIA_ControlTypePropertyId, UIA_EditControlTypeId,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetWindowTextLengthW, GetWindowTextW, IsWindowVisible,
@@ -347,7 +346,6 @@ fn read_url(
     None
 }
 
-
 // ---- every tab, not just the one showing ------------------------------------
 //
 // UI Automation can only reach the address bar, which holds the tab in front.
@@ -483,7 +481,10 @@ fn session_urls(profile_dir: &std::path::Path) -> Vec<String> {
 /// the profile's `Sessions` folder.
 fn newest_session_file(profile_dir: &std::path::Path) -> Option<std::path::PathBuf> {
     let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
-    for entry in std::fs::read_dir(profile_dir.join("Sessions")).ok()?.flatten() {
+    for entry in std::fs::read_dir(profile_dir.join("Sessions"))
+        .ok()?
+        .flatten()
+    {
         let path = entry.path();
         if !path
             .file_name()

@@ -378,7 +378,36 @@
           <button class="btn" data-br-refresh title="Read what Windows says now">${icon("refresh")}</button>
         </div>
       </div>${other}
-      <p class="br-hint">${icon("info")}Windows signs the choice of default browser itself, so no app can set it — not even one you have just installed. The button opens the page where you make the choice, with WinT named on it.</p>`;
+      <p class="br-hint">${icon("info")}Windows signs the choice of default browser itself, so no app can set it — not even one you have just installed. The button opens the page where you make the choice, with WinT named on it.</p>
+      ${assocChecks()}`;
+  }
+
+  /** Every piece of the registration, read back from the registry.
+   *
+   *  Folded away while links really are arriving, because then there is
+   *  nothing to diagnose. Open by default the moment something is wrong: the
+   *  question "WinT does not show up under HTTPS on this PC" has an answer,
+   *  and it is one of these lines — or, when they are all green, the last two,
+   *  which name what owns the scheme instead.
+   */
+  function assocChecks() {
+    const checks = Array.isArray(assoc?.checks) ? assoc.checks : [];
+    if (!checks.length) return "";
+    const working = assoc.defaultHttp && assoc.defaultHttps;
+    const rows = checks
+      .map(
+        (check) => `<li class="${check.ok ? "ok" : "bad"}">${icon(check.ok ? "check" : "close")}
+          <span><strong>${esc(check.label)}</strong><small class="mono">${esc(check.key)}</small></span>
+          <code>${check.found ? esc(check.found) : "not set"}</code>
+        </li>`,
+      )
+      .join("");
+    return `<details class="br-checks"${working ? "" : " open"}>
+      <summary>${icon("checklist")}What Windows has been told${working ? "" : ` <em>${checks.filter((check) => !check.ok).length} of ${checks.length} not as WinT asked</em>`}</summary>
+      <ul>${rows}</ul>
+      ${assoc.exe ? `<p class="br-note">${icon("terminal")}Registered for <span class="mono">${esc(assoc.exe)}</span>. To try the routing without being the default, run that with a link as its argument.</p>` : ""}
+      <p class="br-hint">${icon("info")}All green and links still opening elsewhere means Windows never accepted the choice. Open Default apps, search WinT, and set it on <strong>WinT's own page</strong> rather than from the HTTPS tile; if it is not listed there, sign out and back in — Windows caches that list per session. Outlook and Teams can also be set by policy to open links in Edge whatever the default says.</p>
+    </details>`;
   }
 
   /** Settings: everything true of this PC rather than of one site.

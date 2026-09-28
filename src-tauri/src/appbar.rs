@@ -29,6 +29,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::RemoteDesktop::{
     WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
 };
+use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Shell::{
     DefSubclassProc, RemoveWindowSubclass, SHAppBarMessage, SetWindowSubclass, ABE_LEFT, ABE_RIGHT,
@@ -36,7 +37,6 @@ use windows::Win32::UI::Shell::{
     ABM_WINDOWPOSCHANGED, ABN_FULLSCREENAPP, ABN_POSCHANGED, ABN_STATECHANGE, ABN_WINDOWARRANGE,
     ABS_ALWAYSONTOP, ABS_AUTOHIDE, APPBARDATA,
 };
-use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
     ChangeWindowMessageFilterEx, FindWindowExW, FindWindowW, GetWindowLongW,
     GetWindowThreadProcessId, IsWindowVisible, PostMessageW, RegisterWindowMessageW, SetWindowPos,
@@ -1704,7 +1704,10 @@ mod sidebar_order_tests {
     #[test]
     fn vscode_forks_are_told_apart_by_project_too() {
         assert_eq!(
-            editor_workspace(r"C:\Users\me\AppData\Local\Programs\cursor\Cursor.exe", "app.js - devhq - Cursor"),
+            editor_workspace(
+                r"C:\Users\me\AppData\Local\Programs\cursor\Cursor.exe",
+                "app.js - devhq - Cursor"
+            ),
             "devhq"
         );
         assert_eq!(
@@ -1748,6 +1751,14 @@ pub(crate) unsafe fn window_title_and_exe(hwnd: HWND) -> (String, String) {
         String::from_utf16_lossy(&title[..len]),
         window_exe(app_window(hwnd)),
     )
+}
+
+/// The rail's key for a window - its AppUserModelID, or its exe when it has
+/// none, the same string `stable_app_id` hands the sidebar. It is read straight
+/// from the window, so it still answers for one Focus mode has hidden and the
+/// enumeration no longer sees.
+pub(crate) unsafe fn window_app_key(hwnd: HWND) -> String {
+    window_app_id(hwnd).unwrap_or_else(|| window_exe(app_window(hwnd)))
 }
 
 fn sidebar_hwnd(app: &AppHandle) -> isize {
@@ -1954,6 +1965,52 @@ pub(crate) fn program_icon(exe: &str) -> Option<String> {
     }
 }
 
+/// What the Start menu calls a packaged app, and the icon it draws for it -
+/// read through the shell from the window's AppUserModelID, the only thing
+/// that leads back to the package. What such an app is called and what it
+/// looks like are both in the package, never in the file: WhatsApp ships as
+/// `WhatsApp.Root.exe`, describes itself as "WhatsApp.Root" and carries no
+/// icon resource at all. `None` for anything else, so an ordinary program
+/// still answers out of its own file.
+pub(crate) unsafe fn packaged_identity(hwnd: HWND, exe: &str) -> Option<(String, Option<String>)> {
+    if !is_packaged(exe) {
+        return None;
+    }
+    let aumid = window_app_id(hwnd)?;
+    // A desktop app's "app id" is often just a path; only a real
+    // AppUserModelID means anything to the Apps folder.
+    if !aumid.contains('!') || aumid.contains('\\') || aumid.contains('/') {
+        return None;
+    }
+    // The rail asks again every few seconds, and entering the shell's
+    // apartment to ask it the same question is the expensive part. What the
+    // shell says about a package only changes when the package does.
+    if let Some(known) = PACKAGED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|cache| cache.get(&aumid))
+    {
+        return known.clone();
+    }
+    let found = {
+        let _apartment = crate::com::Apartment::single_threaded();
+        crate::suggest::shell_item(&aumid)
+    };
+    PACKAGED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(std::collections::HashMap::new)
+        .insert(aumid, found.clone());
+    found
+}
+
+/// What the shell said about a package, by AppUserModelID - including that it
+/// said nothing, which is just as much worth not asking twice.
+type PackagedIdentity = Option<(String, Option<String>)>;
+static PACKAGED: std::sync::Mutex<Option<std::collections::HashMap<String, PackagedIdentity>>> =
+    std::sync::Mutex::new(None);
+
 /// The icon for one window's button: its own icon when it has one, else the
 /// icon of the program behind it.
 #[tauri::command]
@@ -1967,11 +2024,16 @@ pub async fn sidebar_window_icon(id: String) -> Option<String> {
                 return Some(url);
             }
         }
+        let exe = window_exe(app);
+        // A packaged app's picture lives in its package; its exe has none.
+        if let Some((_, Some(url))) = packaged_identity(app, &exe) {
+            return Some(url);
+        }
         // The program's own icon, not a thumbnail of it: the shell's thumbnail
         // call refuses the generic type icon, which for a program is the only
         // picture there is. A tray app whose window carries no icon — it has
         // no window worth the name — would otherwise come back blank.
-        program_icon(&window_exe(app))
+        program_icon(&exe)
     })
     .await
     .flatten()
@@ -2207,7 +2269,8 @@ fn is_packaged(exe: &str) -> bool {
 
 /// The exes this is worth trying at all. Every one of them is Chromium, lays
 /// its install out the same way and writes the same kind of AppUserModelID.
-pub(crate) const CHROMIUM_EXES: [&str; 6] = ["msedge", "chrome", "brave", "vivaldi", "opera", "thorium"];
+pub(crate) const CHROMIUM_EXES: [&str; 6] =
+    ["msedge", "chrome", "brave", "vivaldi", "opera", "thorium"];
 
 /// Where a Chromium browser keeps its profiles. It is read off the exe's own
 /// path rather than a list of browsers: every one of them installs as
@@ -2355,12 +2418,18 @@ pub async fn sidebar_window_menu(id: String) -> Result<WindowMenu, String> {
         }
         let exe = window_exe(app_window(hwnd));
         let packaged = is_packaged(&exe);
-        let name = exe_description(&exe).unwrap_or_else(|| {
-            std::path::Path::new(&exe)
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        });
+        // The Start menu's name for a packaged app, before the file's own -
+        // the file behind WhatsApp calls itself "WhatsApp.Root", and a pin
+        // made from this menu would carry that name for good.
+        let name = packaged_identity(hwnd, &exe)
+            .map(|(name, _)| name)
+            .or_else(|| exe_description(&exe))
+            .unwrap_or_else(|| {
+                std::path::Path::new(&exe)
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            });
         let target = if packaged {
             window_app_id(hwnd).unwrap_or_default()
         } else {
@@ -2981,14 +3050,22 @@ pub async fn sidebar_tray_apps(app: AppHandle) -> Vec<TrayApp> {
                         .unwrap_or_default();
                     *icons.get(&key).or_else(|| icons.get(&file))?
                 };
+                // A packaged app is asked about through the shell first: its
+                // file says "WhatsApp.Root", the Start menu says "WhatsApp".
+                let packaged = unsafe {
+                    packaged_identity(HWND(group.best as *mut c_void), &group.exe)
+                        .map(|(name, _)| name)
+                };
                 Some(TrayApp {
                     id: group.best.to_string(),
-                    name: exe_description(&group.exe).unwrap_or_else(|| {
-                        std::path::Path::new(&group.exe)
-                            .file_stem()
-                            .map(|stem| stem.to_string_lossy().into_owned())
-                            .unwrap_or_default()
-                    }),
+                    name: packaged
+                        .or_else(|| exe_description(&group.exe))
+                        .unwrap_or_else(|| {
+                            std::path::Path::new(&group.exe)
+                                .file_stem()
+                                .map(|stem| stem.to_string_lossy().into_owned())
+                                .unwrap_or_default()
+                        }),
                     exe: group.exe,
                     can_show: group.rank > 0,
                     promoted,

@@ -1220,7 +1220,10 @@ mod tests {
         assert_eq!(valid_instance(None).unwrap(), None);
         assert_eq!(valid_instance(Some("")).unwrap(), None);
         assert_eq!(valid_instance(Some("2")).unwrap(), Some("2".into()));
-        assert_eq!(valid_instance(Some("a-b_C9")).unwrap(), Some("a-b_C9".into()));
+        assert_eq!(
+            valid_instance(Some("a-b_C9")).unwrap(),
+            Some("a-b_C9".into())
+        );
         assert!(valid_instance(Some("../evil")).is_err());
         assert!(valid_instance(Some("a b")).is_err());
         assert!(valid_instance(Some(&"x".repeat(33))).is_err());

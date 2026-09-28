@@ -4562,6 +4562,15 @@ function hotkeyBinding(id) {
   return Object.prototype.hasOwnProperty.call(state.hotkeys, id) ? state.hotkeys[id] : (HOTKEY_DEFAULTS[id] || "");
 }
 
+/** The hint in the search field is the binding, not a guess. The palette
+ *  hotkey is what gets rebound, so whatever it says now is what is drawn; with
+ *  it cleared, the built-in Ctrl+F is still there and is shown instead. */
+function renderSearchHint() {
+  const kbd = el["search-kbd"];
+  if (!kbd) return;
+  kbd.textContent = hotkeyBinding("command:palette") || "Ctrl+F";
+}
+
 function hotkeyFromEvent(e) {
   if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return "";
   const parts = [];
@@ -4634,6 +4643,7 @@ async function runShellRepair() {
 
 const globalHotkeyErrors = new Map();
 async function syncGlobalHotkeys() {
+  renderSearchHint();
   const api = window.__TAURI__?.globalShortcut;
   if (!api) return;
   globalHotkeyErrors.clear();
@@ -5437,7 +5447,7 @@ function mountShell() {
       <div class="field search" id="search-box">${icon("search")}
         <input id="search-input" spellcheck="false"
                placeholder="Search projects, tools and commands..." />
-        <kbd class="search-kbd" aria-hidden="true">Ctrl+F</kbd>
+        <kbd class="search-kbd" id="search-kbd" aria-hidden="true"></kbd>
         <div class="search-menu" id="search-menu" hidden></div>
       </div>
       <div class="drag drag-fill"></div>
@@ -5628,7 +5638,7 @@ function mountShell() {
 
   for (const id of [
     "brand-sub", "loadbar", "roots-btn", "roots-label", "roots-pop", "roots-list",
-    "rescan", "title-home", "search-input", "search-menu", "tech-picker", "tech-filter", "tech-filter-label",
+    "rescan", "title-home", "search-input", "search-kbd", "search-menu", "tech-picker", "tech-filter", "tech-filter-label",
     "tech-menu", "tech-menu-input", "tech-menu-list", "tech-clear", "sort-buttons", "view-buttons", "activity", "filters", "filter-chips",
     "banner-host", "summary", "summary-stats", "scroll", "grid", "home-host", "projects-host", "ports-host", "dns-host", "hosts-host", "network-host", "path-ping-host", "explorer-host", "disk-space-host", "github-host", "git-host", "tools-host", "windows-tools-host", "isolated-tool-host", "isolated-tool-slot", "port-filter-input", "port-pins", "port-tabs", "port-sort", "port-live", "ports-list", "ports-detail", "ports-dialogs", "detail-host", "settings-host", "open-settings", "toggle-theme",
     "status-term", "status-term-popout", "status-progress", "status-version", "changelog-pop",
@@ -5640,6 +5650,8 @@ function mountShell() {
   // The native child is not part of CSS layout. Terminal docks, pin shelves,
   // toolbars and other shell regions can resize its slot without resizing the
   // OS window, so observe the slot itself and mirror every resulting rectangle.
+  renderSearchHint();
+
   new ResizeObserver(() => syncEmbeddedTool()).observe(el["isolated-tool-slot"]);
 
   window.wintAssistant?.mount(document.getElementById("assistant-host"), document.getElementById("toggle-assistant"));

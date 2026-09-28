@@ -443,6 +443,93 @@ pub async fn media_state(app: AppHandle) -> Result<MediaState, String> {
     })
 }
 
+/// Trade an executable for the identity of the media session playing from it.
+///
+/// A row in the audio stream list knows only which executable is making sound,
+/// and every profile of one browser shares that executable, so focusing on it
+/// alone lands on whichever profile's window happens to be in front. The media
+/// sessions do tell profiles apart: each publishes its own AppUserModelID, the
+/// one signal `pick_source_window` can use. Sessions whose windows run some
+/// other executable are dropped, and a session that is actually playing wins
+/// over one that is merely paused.
+async fn session_identity_for(
+    app: &AppHandle,
+    executable: &str,
+) -> Option<(String, String, String)> {
+    let leaf = executable
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(executable)
+        .to_ascii_lowercase();
+    if leaf.is_empty() {
+        return None;
+    }
+    let manager = manager().await.ok()?;
+    // The session view itself cannot cross an await, so take the sessions out
+    // of it before asking any of them for their track.
+    let open: Vec<Session> = {
+        let sessions = manager.GetSessions().ok()?;
+        let count = sessions.Size().ok()?;
+        (0..count)
+            .filter_map(|index| sessions.GetAt(index).ok())
+            .collect()
+    };
+    let mut found: Vec<(bool, String, String, String)> = Vec::new();
+    for session in open {
+        let id = session
+            .SourceAppUserModelId()
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        if id.is_empty() {
+            continue;
+        }
+        let playing = session
+            .GetPlaybackInfo()
+            .ok()
+            .and_then(|info| info.PlaybackStatus().ok())
+            .is_some_and(|status| status == PlaybackStatus::Playing);
+        let (title, artist) = match session.TryGetMediaPropertiesAsync() {
+            Ok(operation) => match operation.await {
+                Ok(properties) => (
+                    properties
+                        .Title()
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                    properties
+                        .Artist()
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                ),
+                Err(_) => (String::new(), String::new()),
+            },
+            Err(_) => (String::new(), String::new()),
+        };
+        found.push((playing, id, title, artist));
+    }
+    if found.is_empty() {
+        return None;
+    }
+    let sidebar = crate::appbar::sidebar_window_handle(app);
+    let ids: Vec<String> = found.iter().map(|entry| entry.1.clone()).collect();
+    let matching = crate::off_thread(move || {
+        let windows = crate::appbar::list_windows(sidebar);
+        ids.into_iter()
+            .filter(|id| {
+                windows.iter().any(|window| {
+                    window.app.eq_ignore_ascii_case(id)
+                        && window.exe.to_ascii_lowercase().ends_with(&leaf)
+                })
+            })
+            .collect::<std::collections::HashSet<String>>()
+    })
+    .await?;
+    found
+        .into_iter()
+        .filter(|entry| matching.contains(&entry.1))
+        .max_by_key(|entry| entry.0)
+        .map(|(_, id, title, artist)| (id, title, artist))
+}
+
 #[tauri::command]
 pub async fn media_focus(
     app: AppHandle,
@@ -452,8 +539,17 @@ pub async fn media_focus(
     artist: Option<String>,
 ) -> Result<(), String> {
     let sidebar = crate::appbar::sidebar_window_handle(&app);
-    let wanted = source_id.clone();
-    let (title, artist) = (title.unwrap_or_default(), artist.unwrap_or_default());
+    let (mut title, mut artist) = (title.unwrap_or_default(), artist.unwrap_or_default());
+    let mut wanted = source_id.clone();
+    // An executable rather than an AppUserModelID means the click came from the
+    // audio stream list, which cannot tell one browser profile from another.
+    if wanted.to_ascii_lowercase().ends_with(".exe") {
+        if let Some((id, track, performer)) = session_identity_for(&app, &wanted).await {
+            wanted = id;
+            title = track;
+            artist = performer;
+        }
+    }
     let found = crate::off_thread(move || {
         pick_source_window(
             crate::appbar::list_windows(sidebar),

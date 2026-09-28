@@ -39,12 +39,16 @@ pub mod indicators;
 mod jump_list;
 #[cfg(windows)]
 mod media_control;
+pub mod net_usage;
+mod netmeter;
 pub mod network;
 mod path_ping;
 #[cfg(windows)]
 mod picker;
 pub mod procs;
 mod recent;
+#[cfg(windows)]
+mod reg;
 #[cfg(windows)]
 mod security_audit;
 #[cfg(windows)]
@@ -57,15 +61,11 @@ mod term;
 mod time_tracker;
 pub mod todo;
 mod tool_window;
-#[cfg(windows)]
-mod reg;
-mod ui_state;
-mod netmeter;
-pub mod net_usage;
 mod torrent;
 mod torrent_assoc;
 mod torrent_pace;
 pub mod tray;
+mod ui_state;
 mod util;
 #[cfg(windows)]
 pub mod vt;

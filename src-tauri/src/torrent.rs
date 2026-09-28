@@ -927,14 +927,10 @@ fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>)
                             phase_changed = engine.phase.as_deref() != Some(phase);
                             engine.phase = Some(phase.to_owned());
                         }
-                        engine.resuming = data
-                            .get("resuming")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0) as usize;
-                        let resumed = data
-                            .get("resumed")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0) as usize;
+                        engine.resuming =
+                            data.get("resuming").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        let resumed =
+                            data.get("resumed").and_then(Value::as_u64).unwrap_or(0) as usize;
                         phase_changed |= resumed != engine.resumed;
                         engine.resumed = resumed;
                         engine.resuming_name = data
@@ -949,10 +945,7 @@ fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>)
                                 .get("engine")
                                 .and_then(Value::as_str)
                                 .map(str::to_owned);
-                            let exe = data
-                                .get("exe")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned);
+                            let exe = data.get("exe").and_then(Value::as_str).map(str::to_owned);
                             let built = data.get("builtMs").and_then(Value::as_u64);
                             if let Some(running) = engine.running.as_mut() {
                                 running.engine = name;

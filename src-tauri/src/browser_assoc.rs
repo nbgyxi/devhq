@@ -38,6 +38,21 @@ const CAPABILITIES: &str = r"Software\Clients\StartMenuInternet\WinT\Capabilitie
 /// `torrent_assoc` already owns for a different set of capabilities.
 const REGISTERED: &str = "WinT.Browser";
 
+/// One line of the registration, as the Browser tool lists it: what Windows
+/// was asked for, and what is there now.
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Check {
+    /// Plain words, not the key path — the path goes in `where`.
+    pub label: String,
+    /// The registry location, shown small, because this is the one screen
+    /// where a user comparing two machines needs it.
+    pub key: String,
+    pub ok: bool,
+    /// What was read, when something was.
+    pub found: Option<String>,
+}
+
 /// What Windows currently thinks, as the Browser tool shows it.
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +70,13 @@ pub struct Assoc {
     pub https_owner: Option<String>,
     /// Whether this user has already answered the one-time default question.
     pub asked: bool,
+    /// The copy of wint.exe the keys name, for a machine where a link goes to
+    /// a WinT that is not this one.
+    pub exe: Option<String>,
+    /// Each piece Windows needs before it will offer WinT for a scheme, read
+    /// back one at a time. All true and still not offered is a Windows-side
+    /// problem, not a missing key — which is the whole point of showing them.
+    pub checks: Vec<Check>,
     /// False off Windows, where none of this exists.
     pub supported: bool,
 }
@@ -159,8 +181,8 @@ use imp::{asked, register, set_asked, settings_page, status, unregister};
 
 #[cfg(windows)]
 mod imp {
-    use super::{Assoc, CAPABILITIES, CLIENT, PROGID_URL, REGISTERED};
-    use crate::reg::{delete_tree, delete_value, get_sz, set_sz};
+    use super::{Assoc, Check, CAPABILITIES, CLIENT, PROGID_URL, REGISTERED};
+    use crate::reg::{delete_tree, delete_value, get_sz, set_dword, set_sz};
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::System::Registry::HKEY_CURRENT_USER;
     use windows::Win32::UI::Shell::{
@@ -199,6 +221,10 @@ mod imp {
         // Present at all is what marks a protocol handler; the contents are
         // never read.
         hkcu_set(&key, Some("URL Protocol"), "")?;
+        // What Windows' own picker puts next to the entry. Without a friendly
+        // name an entry can be left out of the list for a scheme entirely,
+        // which looks exactly like not being registered at all.
+        hkcu_set(&key, Some("FriendlyTypeName"), "WinT web link")?;
         hkcu_set(&format!(r"{key}\DefaultIcon"), None, &icon)?;
         hkcu_set(&format!(r"{key}\shell\open\command"), None, &command)?;
 
@@ -212,6 +238,18 @@ mod imp {
             None,
             &format!("\"{exe}\""),
         )?;
+
+        // `InstallInfo` is what every real browser writes and what Windows
+        // reads to decide the client is a browser that is *installed* rather
+        // than a leftover key. `IconsVisible` is the value it actually looks
+        // at; the commands exist because Windows expects the trio, and WinT
+        // has no shortcuts of its own to hide or show, so they are harmless
+        // no-ops that name this exe.
+        let install = format!(r"{CLIENT}\InstallInfo");
+        set_dword(HKEY_CURRENT_USER, &install, "IconsVisible", 1)?;
+        hkcu_set(&install, Some("ReinstallCommand"), &format!("\"{exe}\""))?;
+        hkcu_set(&install, Some("ShowIconsCommand"), &format!("\"{exe}\""))?;
+        hkcu_set(&install, Some("HideIconsCommand"), &format!("\"{exe}\""))?;
 
         hkcu_set(CAPABILITIES, Some("ApplicationName"), "WinT")?;
         hkcu_set(CAPABILITIES, Some("ApplicationIcon"), &icon)?;
@@ -243,7 +281,10 @@ mod imp {
     }
 
     pub fn unregister() -> Result<(), String> {
-        delete_tree(HKEY_CURRENT_USER, &format!(r"Software\Classes\{PROGID_URL}"))?;
+        delete_tree(
+            HKEY_CURRENT_USER,
+            &format!(r"Software\Classes\{PROGID_URL}"),
+        )?;
         delete_tree(HKEY_CURRENT_USER, CLIENT)?;
         delete_value(
             HKEY_CURRENT_USER,
@@ -311,15 +352,98 @@ mod imp {
             other_exe,
             default_http,
             default_https,
-            http_owner: if default_http { None } else { owner_name(&http) },
+            http_owner: if default_http {
+                None
+            } else {
+                owner_name(&http)
+            },
             https_owner: if default_https {
                 None
             } else {
                 owner_name(&https)
             },
             asked: asked(),
+            exe: exe().ok(),
+            checks: checks(&http, &https),
             supported: true,
         }
+    }
+
+    /// Read every piece back rather than trusting that `register` wrote it.
+    /// A machine where WinT never appears in the picker is answered by which
+    /// of these lines is red — and when none of them is, by the last two,
+    /// which say who owns the scheme instead.
+    fn checks(http: &str, https: &str) -> Vec<Check> {
+        let line = |label: &str, key: String, found: Option<String>, want: Option<&str>| {
+            let ok = match (&found, want) {
+                (Some(value), Some(want)) => value.eq_ignore_ascii_case(want),
+                (Some(_), None) => true,
+                (None, _) => false,
+            };
+            Check {
+                label: label.to_string(),
+                key,
+                ok,
+                found,
+            }
+        };
+        let progid = format!(r"Software\Classes\{PROGID_URL}");
+        vec![
+            line(
+                "Link handler",
+                format!(r"HKCU\{progid}\shell\open\command"),
+                hkcu_get(&format!(r"{progid}\shell\open\command"), None),
+                None,
+            ),
+            line(
+                "Handler name",
+                format!(r"HKCU\{progid}   FriendlyTypeName"),
+                hkcu_get(&progid, Some("FriendlyTypeName")),
+                None,
+            ),
+            line(
+                "Listed as a browser",
+                format!(r"HKCU\{CLIENT}"),
+                hkcu_get(CLIENT, None),
+                None,
+            ),
+            line(
+                "Counted as installed",
+                format!(r"HKCU\{CLIENT}\InstallInfo   ReinstallCommand"),
+                hkcu_get(&format!(r"{CLIENT}\InstallInfo"), Some("ReinstallCommand")),
+                None,
+            ),
+            line(
+                "Claims http",
+                format!(r"HKCU\{CAPABILITIES}\URLAssociations   http"),
+                hkcu_get(&format!(r"{CAPABILITIES}\URLAssociations"), Some("http")),
+                Some(PROGID_URL),
+            ),
+            line(
+                "Claims https",
+                format!(r"HKCU\{CAPABILITIES}\URLAssociations   https"),
+                hkcu_get(&format!(r"{CAPABILITIES}\URLAssociations"), Some("https")),
+                Some(PROGID_URL),
+            ),
+            line(
+                "Offered in Default apps",
+                format!(r"HKCU\Software\RegisteredApplications   {REGISTERED}"),
+                hkcu_get(r"Software\RegisteredApplications", Some(REGISTERED)),
+                Some(CAPABILITIES),
+            ),
+            line(
+                "Windows opens http with",
+                r"HKCU\…\UrlAssociations\http\UserChoice   ProgId".into(),
+                (!http.is_empty()).then(|| http.to_string()),
+                Some(PROGID_URL),
+            ),
+            line(
+                "Windows opens https with",
+                r"HKCU\…\UrlAssociations\https\UserChoice   ProgId".into(),
+                (!https.is_empty()).then(|| https.to_string()),
+                Some(PROGID_URL),
+            ),
+        ]
     }
 
     /// Windows' own Default apps page, opened directly at WinT.

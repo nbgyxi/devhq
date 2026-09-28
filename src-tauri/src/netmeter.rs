@@ -167,8 +167,8 @@ fn read_counters() -> Option<Counters> {
 /// that number throttles a line nobody else is using.
 #[cfg(windows)]
 fn default_route_luid() -> Option<windows::Win32::NetworkManagement::Ndis::NET_LUID_LH> {
-    use windows::Win32::Networking::WinSock::{AF_INET, IN_ADDR, SOCKADDR_INET};
     use windows::Win32::NetworkManagement::IpHelper::{GetBestRoute2, MIB_IPFORWARD_ROW2};
+    use windows::Win32::Networking::WinSock::{AF_INET, IN_ADDR, SOCKADDR_INET};
 
     // Asking for the route to a public address is what picks the adapter that
     // reaches the internet, rather than whichever one happens to be first.
@@ -186,17 +186,7 @@ fn default_route_luid() -> Option<windows::Win32::NetworkManagement::Ndis::NET_L
     let mut source = SOCKADDR_INET::default();
     // SAFETY: all four pointers are to live locals for the duration of the
     // call, and the two out-parameters are fully initialised structs.
-    let error = unsafe {
-        GetBestRoute2(
-            None,
-            0,
-            None,
-            &destination,
-            0,
-            &mut route,
-            &mut source,
-        )
-    };
+    let error = unsafe { GetBestRoute2(None, 0, None, &destination, 0, &mut route, &mut source) };
     if error.is_err() {
         return None;
     }

@@ -54,6 +54,10 @@ pub struct FocusState {
     pub hidden: usize,
     /// What the last press did.
     pub message: String,
+    /// The rail's keys - AppUserModelID or exe, lowercased - of the apps whose
+    /// windows are hidden right now. The sidebar takes their pinned rows away
+    /// while Focus mode holds them, so a hidden app leaves no trace on the rail.
+    pub hidden_apps: Vec<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -180,6 +184,7 @@ fn hide_matching(sidebar: isize) -> FocusState {
             message:
                 "No Focus mode rules yet - pick programs or title words in the Focus mode tool."
                     .into(),
+            hidden_apps: Vec::new(),
         };
     }
     let mut hidden = HIDDEN.lock().unwrap_or_else(|e| e.into_inner());
@@ -201,8 +206,10 @@ fn hide_matching(sidebar: isize) -> FocusState {
         }
     }
     let count = hidden.len();
+    let hidden_apps = app_keys(&hidden);
     FocusState {
         hidden: count,
+        hidden_apps,
         message: match count {
             0 => "Nothing open matched the Focus mode rules.".into(),
             1 => "1 window hidden. Press again to bring it back.".into(),
@@ -253,11 +260,31 @@ fn reveal_all() -> FocusState {
     remember_hidden(&[]);
     FocusState {
         hidden: 0,
+        hidden_apps: Vec::new(),
         message: match shown {
             1 => "1 window is back.".into(),
             n => format!("{n} windows are back."),
         },
     }
+}
+
+/// The rail's keys for these window handles, deduplicated. A hidden window is
+/// gone from the enumeration the sidebar works from, so its key has to be read
+/// from the handle Focus mode wrote down.
+fn app_keys(handles: &[isize]) -> Vec<String> {
+    let mut keys: Vec<String> = handles
+        .iter()
+        .map(|&raw| unsafe { crate::appbar::window_app_key(HWND(raw as *mut c_void)) })
+        .map(|key| key.to_lowercase())
+        .filter(|key| !key.is_empty())
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+fn hidden_apps() -> Vec<String> {
+    app_keys(&HIDDEN.lock().map(|list| list.clone()).unwrap_or_default())
 }
 
 fn hidden_count() -> usize {
@@ -287,6 +314,7 @@ pub async fn focus_mode_toggle(app: AppHandle) -> Result<FocusState, String> {
 pub async fn focus_mode_state() -> FocusState {
     FocusState {
         hidden: hidden_count(),
+        hidden_apps: hidden_apps(),
         message: String::new(),
     }
 }
@@ -448,6 +476,7 @@ pub async fn focus_mode_show(app: AppHandle, id: String) -> Result<FocusState, S
         remember_hidden(&hidden);
         FocusState {
             hidden: hidden.len(),
+            hidden_apps: app_keys(&hidden),
             message: "The window is back.".into(),
         }
     })

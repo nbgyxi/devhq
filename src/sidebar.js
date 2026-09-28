@@ -137,9 +137,17 @@
 
   // The Focus mode button shows whether it is holding windows back, whether
   // the press came from here, the shortcut or the tool.
+  // The keys of the apps Focus mode is holding hidden. A pinned app keeps a row
+  // on the rail with nothing running, and a "start it again" row would give away
+  // exactly what was hidden - so those rows go while Focus mode holds them.
+  let focusHidden = new Set();
+  let focusHiddenCount = 0;
+
   function paintFocus(focus) {
     const button = document.querySelector("[data-action=focus]");
     const hidden = focus?.hidden || 0;
+    focusHidden = new Set((focus?.hiddenApps || []).map(pinKey));
+    focusHiddenCount = hidden;
     button.classList.toggle("active", hidden > 0);
     button.querySelector(".ms").textContent = hidden ? "visibility" : "shield_lock";
     const label = button.querySelector("small");
@@ -717,13 +725,13 @@
   function paintPins(windows) {
     const running = new Set(windows.map((win) => pinKey(win.app)));
     for (const [key, ghost] of ghosts) {
-      if (running.has(key) || !pins.some((pin) => pin.key === key)) {
+      if (running.has(key) || focusHidden.has(key) || !pins.some((pin) => pin.key === key)) {
         ghost.remove();
         ghosts.delete(key);
       }
     }
     for (const pin of pins) {
-      if (running.has(pin.key) || ghosts.has(pin.key)) continue;
+      if (running.has(pin.key) || focusHidden.has(pin.key) || ghosts.has(pin.key)) continue;
       const ghost = ghostRow(pin);
       ghosts.set(pin.key, ghost);
       placeNew(ghost);
@@ -1171,6 +1179,72 @@
     return suggestLoading;
   }
 
+  // ---- a rail button's own right-click ----------------------------------------
+  // A right-click on one of the rail's buttons used to open the suggested-apps
+  // menu - a list that had nothing to do with the button under the pointer.
+  // Each button now answers for itself: what its click cannot offer, then the
+  // one thing every rail row should have, a way off the rail, and the settings.
+  //
+  // What the chosen item does is run once the menu has closed: an item that
+  // opens a window cannot do it from inside the menu, because the window would
+  // be built on the thread the menu is still holding.
+  let slotAfter = null;
+  const later = (run) => () => { slotAfter = run; };
+  const slotText = (value) => String(value ?? "").replaceAll("&", "&&");
+
+  /** Keep a change to the rail's own settings, and draw it at once rather than
+   *  waiting for the backend to hand the settings back. */
+  function saveSettings(next) {
+    applySettings(next);
+    invoke("sidebar_settings_set", { settings: { ...settings } }).catch(say);
+  }
+
+  /** Take a button off the rail. Every slot is a switch on the Docked Sidebar
+   *  page; this is that switch, within reach of the button itself. */
+  function hideSlot(slot) {
+    saveSettings({ ...settings, slots: { ...settings.slots, [slot]: false } });
+  }
+
+  function removeTool(id) {
+    const tools = (Array.isArray(settings.tools) ? settings.tools : []).filter((tool) => tool?.id !== id);
+    saveSettings({ ...settings, tools });
+  }
+
+  async function slotItems(button) {
+    const action = button.dataset.action;
+    const items = [];
+    if (action === "focus") {
+      items.push(await MenuItem.new({ text: "Configure Focus mode…", action: later(() => openTool("focus-mode")) }));
+      items.push(await MenuItem.new({
+        text: focusHiddenCount ? `Bring ${focusHiddenCount} hidden back` : "Hide now",
+        action: later(() => invoke("focus_mode_toggle").catch((error) => flash(button, error))),
+      }));
+    }
+    if (action === "clipboard") {
+      items.push(await MenuItem.new({ text: "Clipboard history…", action: later(() => openTool("clipboard")) }));
+    }
+    if (action === "search") {
+      items.push(await MenuItem.new({ text: "Help and tools…", action: later(() => openTool("help")) }));
+    }
+    if (action === "edge") {
+      items.push(await MenuItem.new({
+        text: state.edge === "left" ? "Dock on the right" : "Dock on the left",
+        action: later(() => ask("sidebar_configure", { edge: state.edge === "left" ? "right" : "left" })),
+      }));
+    }
+    if (action === "tool") {
+      const id = button.dataset.tool;
+      const name = button.querySelector("small")?.textContent || id;
+      items.push(await MenuItem.new({ text: `Open ${slotText(name)}`, action: later(() => openTool(id)) }));
+      items.push(await MenuItem.new({ text: `Remove ${slotText(name)} from the rail`, action: later(() => removeTool(id)) }));
+    } else if (button.dataset.slot) {
+      items.push(await MenuItem.new({ text: "Hide this from the rail", action: later(() => hideSlot(button.dataset.slot)) }));
+    }
+    items.push(await PredefinedMenuItem.new({ item: "Separator" }));
+    items.push(await MenuItem.new({ text: "Dock settings", action: later(() => window.__TAURI__.event.emit("sidebar:open-settings").catch((error) => say(error))) }));
+    return items;
+  }
+
   let suggesting = false;
   // Last in line: this fires for a right-click anywhere on the rail that
   // nothing nearer has already answered and stopped. It used to fire for
@@ -1179,6 +1253,25 @@
   document.addEventListener("contextmenu", async (event) => {
     event.preventDefault();
     if (event.target.closest("[data-bar]") || menuOpen) return;
+    // A button of its own comes first; the suggestions are for the rail's own
+    // space, where there is nothing else to say.
+    const slot = event.target.closest("[data-action]");
+    if (slot) {
+      menuOpen = true;
+      slotAfter = null;
+      try {
+        const menu = await Menu.new({ items: await slotItems(slot) });
+        await menu.popup();
+      } catch (error) {
+        flash(slot, error);
+      } finally {
+        menuOpen = false;
+      }
+      const run = slotAfter;
+      slotAfter = null;
+      if (run) run();
+      return;
+    }
     menuOpen = true;
     suggesting = true;
     try {

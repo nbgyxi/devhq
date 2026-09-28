@@ -1348,7 +1348,10 @@ pub fn clipboard_set_text(text: &str) -> Result<(), String> {
     use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 
     // UTF-16 with a terminator, which is what CF_UNICODETEXT is.
-    let wide: Vec<u16> = std::ffi::OsStr::new(text).encode_wide().chain([0]).collect();
+    let wide: Vec<u16> = std::ffi::OsStr::new(text)
+        .encode_wide()
+        .chain([0])
+        .collect();
     let bytes = std::mem::size_of_val(wide.as_slice());
     // SAFETY: the handle is allocated movable and filled exactly to its own
     // size; ownership passes to the clipboard on a successful SetClipboardData
@@ -1518,7 +1521,10 @@ pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
             .unwrap_or(S_OK.0)
     }));
     if ole == RPC_E_CHANGED_MODE {
-        return Err("This thread is not in a single-threaded apartment, so Windows will not start a drag.".into());
+        return Err(
+            "This thread is not in a single-threaded apartment, so Windows will not start a drag."
+                .into(),
+        );
     }
     let mut pidls = Vec::new();
     for path in paths {
@@ -1540,7 +1546,10 @@ pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
                 "Windows does not recognise {} of the {} item(s) asked for. First: {:?}",
                 paths.len(),
                 paths.len(),
-                paths.first().map(String::as_str).unwrap_or("<the list was empty>")
+                paths
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or("<the list was empty>")
             ));
         }
         let items =

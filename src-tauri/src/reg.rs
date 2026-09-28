@@ -12,7 +12,7 @@ use windows::core::{HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_SUCCESS};
 use windows::Win32::System::Registry::{
     RegCloseKey, RegDeleteKeyValueW, RegDeleteTreeW, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW,
-    RegSetKeyValueW, HKEY, KEY_READ, REG_SZ, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
+    RegSetKeyValueW, HKEY, KEY_READ, REG_DWORD, REG_SZ, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
 };
 
 /// `RegSetKeyValueW` creates the subkey it is given, so this is the only
@@ -126,6 +126,28 @@ pub fn subkeys(root: HKEY, sub: &str) -> Vec<String> {
         names.push(String::from_utf16_lossy(&buf[..len as usize]));
         index += 1;
     }
-    unsafe { let _ = RegCloseKey(key); };
+    unsafe {
+        let _ = RegCloseKey(key);
+    };
     names
+}
+
+/// One `REG_DWORD`. Only `InstallInfo\IconsVisible` needs it, but a browser
+/// registration Windows is willing to offer in its picker is not complete
+/// without that key, and it cannot be a string.
+pub fn set_dword(root: HKEY, sub: &str, name: &str, value: u32) -> Result<(), String> {
+    let sub_h = HSTRING::from(sub);
+    let name_h = HSTRING::from(name);
+    unsafe {
+        RegSetKeyValueW(
+            root,
+            PCWSTR(sub_h.as_ptr()),
+            PCWSTR(name_h.as_ptr()),
+            REG_DWORD.0,
+            Some((&raw const value).cast()),
+            4,
+        )
+    }
+    .ok()
+    .map_err(|e| format!("Could not write {sub} {name}: {e}"))
 }

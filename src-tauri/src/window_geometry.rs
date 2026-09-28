@@ -237,10 +237,12 @@ pub fn fit(
 
     // Old records are logical; see the module note on units.
     let factor = if saved.is_physical() { 1.0 } else { base_scale };
-    let default_size = |scale: f64| PhysicalSize::new(
-        (defaults.width * scale).round().max(1.0) as u32,
-        (defaults.height * scale).round().max(1.0) as u32,
-    );
+    let default_size = |scale: f64| {
+        PhysicalSize::new(
+            (defaults.width * scale).round().max(1.0) as u32,
+            (defaults.height * scale).round().max(1.0) as u32,
+        )
+    };
 
     let fallback = || {
         let scale = base_scale;
@@ -268,7 +270,10 @@ pub fn fit(
         // A size but no place: keep the size, let the window centre itself.
         let mut placement = fallback();
         placement.size = clamp_size(
-            PhysicalSize::new(width.round().max(1.0) as u32, height.round().max(1.0) as u32),
+            PhysicalSize::new(
+                width.round().max(1.0) as u32,
+                height.round().max(1.0) as u32,
+            ),
             primary.as_ref().map(|m| m.work_area().size),
             defaults,
             base_scale,
@@ -286,7 +291,8 @@ pub fn fit(
         .iter()
         .map(|monitor| {
             let work = monitor.work_area();
-            let seen_wide = (x + width).min(f64::from(work.position.x) + f64::from(work.size.width))
+            let seen_wide = (x + width)
+                .min(f64::from(work.position.x) + f64::from(work.size.width))
                 - x.max(f64::from(work.position.x));
             let seen_tall = (y + height)
                 .min(f64::from(work.position.y) + f64::from(work.size.height))
@@ -308,7 +314,10 @@ pub fn fit(
 
     let work = monitor.work_area();
     let size = clamp_size(
-        PhysicalSize::new(width.round().max(1.0) as u32, height.round().max(1.0) as u32),
+        PhysicalSize::new(
+            width.round().max(1.0) as u32,
+            height.round().max(1.0) as u32,
+        ),
         Some(work.size),
         defaults,
         scale,
@@ -563,7 +572,10 @@ mod tests {
 
     #[test]
     fn two_long_names_that_start_alike_get_different_keys() {
-        let a = key_for("workspace-window", &format!("C:\\{}\\alpha", "x".repeat(80)));
+        let a = key_for(
+            "workspace-window",
+            &format!("C:\\{}\\alpha", "x".repeat(80)),
+        );
         let b = key_for("workspace-window", &format!("C:\\{}\\beta", "x".repeat(80)));
         assert_ne!(a, b);
         // ui_state refuses a key longer than 120 characters, and a key it

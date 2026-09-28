@@ -317,7 +317,9 @@ fn ensure_listen_port(settings: &mut Settings) -> bool {
     const LOW: u64 = 10001;
     const SPAN: u64 = 48000 - 10001;
     for _ in 0..64 {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let candidate = (LOW + (seed >> 33) % SPAN) as u16;
         if probe_port(candidate) == PortVerdict::Free {
             settings.listen_port = candidate;
@@ -443,11 +445,22 @@ impl Ledger {
         // A counter that went backwards is a torrent that was restarted or
         // re-added, so what it reads now is all of it and none of it is a
         // repeat of what was already booked.
-        let up = if uploaded >= last.uploaded { uploaded - last.uploaded } else { uploaded };
-        let down = if downloaded >= last.downloaded { downloaded - last.downloaded } else { downloaded };
+        let up = if uploaded >= last.uploaded {
+            uploaded - last.uploaded
+        } else {
+            uploaded
+        };
+        let down = if downloaded >= last.downloaded {
+            downloaded - last.downloaded
+        } else {
+            downloaded
+        };
         self.seen.insert(
             info_hash.to_owned(),
-            Totals { uploaded, downloaded },
+            Totals {
+                uploaded,
+                downloaded,
+            },
         );
         if up == 0 && down == 0 {
             return;
@@ -841,9 +854,12 @@ fn build_snapshot(
         // Booked before the rate is worked out, so the ledger sees every
         // reading even for a torrent that is not Live and whose rate is
         // deliberately reported as nothing.
-        state
-            .ledger
-            .observe(&t.info_hash, stats.uploaded_bytes, stats.progress_bytes, now_ms);
+        state.ledger.observe(
+            &t.info_hash,
+            stats.uploaded_bytes,
+            stats.progress_bytes,
+            now_ms,
+        );
         let booked = state.ledger.totals_for(&t.info_hash);
         let rate = state.rates.entry(id).or_default();
         let (download_bps, upload_bps) = if matches!(stats.state, librqbit::TorrentStatsState::Live)
@@ -869,7 +885,10 @@ fn build_snapshot(
         } else if missing.contains(&id) {
             "missing"
         } else if state.queue.paused.contains(&t.info_hash)
-            && matches!(stats.state, librqbit::TorrentStatsState::Initializing { .. })
+            && matches!(
+                stats.state,
+                librqbit::TorrentStatsState::Initializing { .. }
+            )
         {
             // A pause asked for while a torrent was checking leaves the engine
             // in `Initializing` until the check is picked up again, which for a
@@ -1707,22 +1726,20 @@ async fn handle(state: &Mutex<State>, op: &str, arg: Value) -> Result<Value> {
                 .collect();
             // Names come from the session, because the ledger only keeps
             // hashes — it has to outlive the torrent being removed.
-            let names: HashMap<String, String> = state
-                .session
-                .with_torrents(|torrents| {
-                    torrents
-                        .map(|(_, t)| {
-                            (
-                                t.info_hash().as_string(),
-                                t.metadata
-                                    .load()
-                                    .as_ref()
-                                    .map(|m| m.info.name().unwrap_or_default().to_string())
-                                    .unwrap_or_default(),
-                            )
-                        })
-                        .collect()
-                });
+            let names: HashMap<String, String> = state.session.with_torrents(|torrents| {
+                torrents
+                    .map(|(_, t)| {
+                        (
+                            t.info_hash().as_string(),
+                            t.metadata
+                                .load()
+                                .as_ref()
+                                .map(|m| m.info.name().unwrap_or_default().to_string())
+                                .unwrap_or_default(),
+                        )
+                    })
+                    .collect()
+            });
             let mut totals: Vec<Value> = state
                 .ledger
                 .totals
@@ -2002,7 +2019,9 @@ fn read_saved_torrents(state_dir: &Path) -> Vec<SavedTorrent> {
         });
     let mut by_hash: HashMap<String, (usize, String)> = HashMap::new();
     for (id, torrent) in session.torrents {
-        let Ok(id) = id.parse::<usize>() else { continue };
+        let Ok(id) = id.parse::<usize>() else {
+            continue;
+        };
         by_hash.insert(
             torrent.info_hash.to_ascii_lowercase(),
             (id, torrent.output_folder),
@@ -2108,7 +2127,10 @@ async fn main() -> Result<()> {
             state_dir.join("settings.json"),
             serde_json::to_vec_pretty(&settings).unwrap_or_default(),
         );
-        tracing::info!(port = settings.listen_port, "chose a peer port; it will not change again");
+        tracing::info!(
+            port = settings.listen_port,
+            "chose a peer port; it will not change again"
+        );
     }
     let _ = std::fs::create_dir_all(&settings.download_folder);
 

@@ -16,6 +16,57 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.169.1",
+      title: "The browser that is playing is the one that opens",
+      date: "2026-09-28",
+      changes: [
+        ["fix", "Clicking a browser in the sidebar's list of things making sound now brings up the window of the profile that is actually playing, instead of whichever profile's window happened to be in front. A stream only knows which program is making sound, and every profile of one browser is the same program — so WinT now asks Windows which media session that program is playing, and uses the per-profile identity and the track name it reports to pick the window."],
+      ],
+    },
+    {
+      version: "0.169.0",
+      title: "Link Router shows why Windows will not hand it a link",
+      date: "2026-09-28",
+      changes: [
+        ["new", "Link Router now lists every piece of the browser registration and whether Windows has it: the link handler, the handler's name, being listed as a browser, the claim on http and https, being offered in Default apps, and what Windows currently opens each of the two with. The list opens by itself whenever links are not arriving, names the exact registry location of each line so two PCs can be compared, and says what to do when every line is green but links still open elsewhere."],
+        ["better", "WinT registers itself as a browser the way the installed browsers do, adding the InstallInfo key Windows reads to tell an installed browser from a leftover registration, and a friendly name on the link handler. Without those, some PCs never offered WinT under Default apps → HTTPS at all."],
+        ["better", "The registration panel names the copy of wint.exe the keys point at, so a link going to another WinT — or the routing being tested by hand, without making WinT the default — is something you can see rather than guess at."],
+      ],
+    },
+    {
+      version: "0.168.2",
+      title: "The search field names your own shortcut",
+      date: "2026-09-28",
+      changes: [
+        ["fix", "The hint inside the search field shows the shortcut that is actually bound to the command palette — Ctrl+K unless you changed it in Settings › Hotkeys — instead of the fixed Ctrl+F it used to print. Rebinding it updates the hint straight away, and clearing the binding falls back to Ctrl+F, which always works."],
+      ],
+    },
+    {
+      version: "0.168.1",
+      title: "Store apps are called what they are called",
+      date: "2026-09-28",
+      changes: [
+        ["fix", "A Store app in the rail's notification area is now named and drawn the way the Start menu names and draws it. WhatsApp showed up as \"WhatsApp.Root\" with a blank window icon, because that is what its file says about itself — a packaged app keeps its real name and its picture in the package, not in the exe. The same name now reaches a window's right-click menu, so pinning one no longer keeps the wrong name for good."],
+      ],
+    },
+    {
+      version: "0.168.0",
+      title: "Every rail button has a right-click",
+      date: "2026-09-28",
+      changes: [
+        ["new", "Right-clicking a button on the sidebar now opens that button's own menu instead of the suggested-apps list, which had nothing to do with whatever was under the pointer. Focus mode offers \"Configure Focus mode…\" and hide or bring back; the clipboard button offers the full Clipboard History tool; WinT offers Help and tools; Flip side names the edge it would move to. The suggested apps are still a right-click on the rail itself."],
+        ["new", "Any rail button can be taken off the rail from its own right-click, and a tool shortcut can be removed from there too — the switches were only on the Docked Sidebar page before, which meant opening settings to get rid of one button."],
+      ],
+    },
+    {
+      version: "0.167.1",
+      title: "Focus mode leaves nothing on the rail",
+      date: "2026-09-28",
+      changes: [
+        ["fix", "A pinned app whose windows Focus mode hid is gone from the sidebar too. Its window row went, but the pin took its place as a dimmed \"start it again\" row — naming the very app that was supposed to be out of sight. The row comes back the moment the windows do."],
+      ],
+    },
+    {
       version: "0.167.0",
       title: "Every window comes back where you left it",
       date: "2026-09-27",

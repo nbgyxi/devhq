@@ -918,8 +918,14 @@ mod tests {
 
     #[test]
     fn one_project_is_one_workspace_whatever_its_casing() {
-        assert_eq!(window_label(r"C:\Code\devhq"), window_label(r"c:\code\DEVHQ"));
-        assert_ne!(window_label(r"C:\Code\devhq"), window_label(r"C:\Code\other"));
+        assert_eq!(
+            window_label(r"C:\Code\devhq"),
+            window_label(r"c:\code\DEVHQ")
+        );
+        assert_ne!(
+            window_label(r"C:\Code\devhq"),
+            window_label(r"C:\Code\other")
+        );
         assert!(window_label("x").starts_with("workspace-"));
     }
 

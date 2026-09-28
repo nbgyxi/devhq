@@ -169,8 +169,9 @@ fn sockets() -> HashMap<u32, Sockets> {
         // SAFETY: the buffer was sized by the call above and holds the table
         // class that was asked for.
         let table = unsafe { &*(buffer.as_ptr() as *const MIB_TCPTABLE_OWNER_PID) };
-        let rows =
-            unsafe { std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize) };
+        let rows = unsafe {
+            std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize)
+        };
         for row in rows {
             if loopback_v4(row.dwRemoteAddr) {
                 continue;
@@ -196,8 +197,9 @@ fn sockets() -> HashMap<u32, Sockets> {
         )
     }) {
         let table = unsafe { &*(buffer.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID) };
-        let rows =
-            unsafe { std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize) };
+        let rows = unsafe {
+            std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize)
+        };
         for row in rows {
             if loopback_v6(&row.ucRemoteAddr) {
                 continue;
@@ -225,8 +227,9 @@ fn sockets() -> HashMap<u32, Sockets> {
         )
     }) {
         let table = unsafe { &*(buffer.as_ptr() as *const MIB_UDPTABLE_OWNER_PID) };
-        let rows =
-            unsafe { std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize) };
+        let rows = unsafe {
+            std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize)
+        };
         for row in rows {
             note(row.dwOwningPid, false, None);
         }
@@ -242,8 +245,9 @@ fn sockets() -> HashMap<u32, Sockets> {
         )
     }) {
         let table = unsafe { &*(buffer.as_ptr() as *const MIB_UDP6TABLE_OWNER_PID) };
-        let rows =
-            unsafe { std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize) };
+        let rows = unsafe {
+            std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize)
+        };
         for row in rows {
             note(row.dwOwningPid, false, None);
         }
@@ -399,7 +403,9 @@ pub fn report() -> UsageReport {
         .unwrap_or(0.0);
     let usable = (0.05..=30.0).contains(&seconds);
     for pid in sockets.keys() {
-        let Some(io) = io_counters(*pid) else { continue };
+        let Some(io) = io_counters(*pid) else {
+            continue;
+        };
         if let Some((_, table)) = before {
             if let Some(was) = table.get(pid) {
                 if usable {
@@ -675,8 +681,8 @@ mod estats {
     pub fn sample() -> Vec<AppUsage> {
         use windows::Win32::NetworkManagement::IpHelper::{
             GetExtendedTcpTable, GetPerTcpConnectionEStats, SetPerTcpConnectionEStats,
-            TcpConnectionEstatsData, MIB_TCPROW_LH, MIB_TCPTABLE_OWNER_PID, TCP_ESTATS_DATA_ROD_v0,
-            TCP_ESTATS_DATA_RW_v0, TCP_TABLE_OWNER_PID_CONNECTIONS,
+            TCP_ESTATS_DATA_ROD_v0, TCP_ESTATS_DATA_RW_v0, TcpConnectionEstatsData, MIB_TCPROW_LH,
+            MIB_TCPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_CONNECTIONS,
         };
         use windows::Win32::Networking::WinSock::AF_INET;
 
@@ -695,8 +701,9 @@ mod estats {
         // SAFETY: as in `sockets` — the buffer holds the table that was asked
         // for, sized by the call itself.
         let table = unsafe { &*(buffer.as_ptr() as *const MIB_TCPTABLE_OWNER_PID) };
-        let rows =
-            unsafe { std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize) };
+        let rows = unsafe {
+            std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize)
+        };
 
         let now = Instant::now();
         let mut totals: Totals = HashMap::new();

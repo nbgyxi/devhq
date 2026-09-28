@@ -334,7 +334,9 @@ pub fn host_of(url: &str) -> Option<String> {
     // A bracketed IPv6 literal keeps its brackets; only a trailing `:port` on
     // an ordinary host is cut.
     let host = if host.starts_with('[') {
-        host.split_once(']').map_or(host, |(h, _)| h).trim_matches('[')
+        host.split_once(']')
+            .map_or(host, |(h, _)| h)
+            .trim_matches('[')
     } else {
         host.split_once(':').map_or(host, |(h, _)| h)
     };
@@ -497,9 +499,11 @@ pub(crate) fn installed_browsers() -> Vec<Browser> {
         };
         for key in subkeys(hive, path) {
             let base = format!(r"{path}\{key}");
-            let command = get_sz(hive, &format!(r"{base}\shell\open\command"), None)
-                .unwrap_or_default();
-            let Some(exe) = exe_of(&command) else { continue };
+            let command =
+                get_sz(hive, &format!(r"{base}\shell\open\command"), None).unwrap_or_default();
+            let Some(exe) = exe_of(&command) else {
+                continue;
+            };
             // WinT registers itself here too, and is the one browser that
             // must never appear in its own chooser.
             if is_wint(&exe) {
@@ -514,10 +518,14 @@ pub(crate) fn installed_browsers() -> Vec<Browser> {
             {
                 continue;
             }
-            let name = get_sz(hive, &format!(r"{base}\Capabilities"), Some("ApplicationName"))
-                .or_else(|| get_sz(hive, &base, None))
-                .filter(|name| !name.trim().is_empty())
-                .unwrap_or_else(|| key.clone());
+            let name = get_sz(
+                hive,
+                &format!(r"{base}\Capabilities"),
+                Some("ApplicationName"),
+            )
+            .or_else(|| get_sz(hive, &base, None))
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| key.clone());
             let kind = kind_of(&exe);
             browsers.push(Browser {
                 profiles: profiles_of(&exe, &kind),
@@ -822,9 +830,10 @@ pub(crate) fn installed_browsers_visible(rules: &Rules) -> Vec<Browser> {
         return browsers;
     }
     let is_hidden = |exe: &str, profile: Option<&str>| {
-        rules.hidden.iter().any(|gone| {
-            gone.exe.eq_ignore_ascii_case(exe) && gone.profile.as_deref() == profile
-        })
+        rules
+            .hidden
+            .iter()
+            .any(|gone| gone.exe.eq_ignore_ascii_case(exe) && gone.profile.as_deref() == profile)
     };
     for browser in &mut browsers {
         browser
@@ -1006,52 +1015,52 @@ pub async fn browser_open_url(
         // has been moved or uninstalled does not also cost the answer and
         // make WinT ask the same question again next time.
         let remembered = (|| -> Result<(), String> {
-        match remember.as_deref().filter(|scope| !scope.is_empty()) {
-            // "Always this one": the rule that shortlisted this link had
-            // several browsers on it and the user has just settled it. The
-            // rule is narrowed rather than a second one written, so the
-            // shortlist does not survive next to the answer that replaced it.
-            Some("only") => {
-                let mut rules = load(&app);
-                let id = rule_id
-                    .as_deref()
-                    .ok_or("There is no rule to settle for this link.")?;
-                let rule = rules
-                    .rules
-                    .iter_mut()
-                    .find(|rule| rule.id == id)
-                    .ok_or("That rule is no longer there.")?;
-                rule.migrate();
-                rule.targets = vec![target.clone()];
-                store(&app, &rules)?;
+            match remember.as_deref().filter(|scope| !scope.is_empty()) {
+                // "Always this one": the rule that shortlisted this link had
+                // several browsers on it and the user has just settled it. The
+                // rule is narrowed rather than a second one written, so the
+                // shortlist does not survive next to the answer that replaced it.
+                Some("only") => {
+                    let mut rules = load(&app);
+                    let id = rule_id
+                        .as_deref()
+                        .ok_or("There is no rule to settle for this link.")?;
+                    let rule = rules
+                        .rules
+                        .iter_mut()
+                        .find(|rule| rule.id == id)
+                        .ok_or("That rule is no longer there.")?;
+                    rule.migrate();
+                    rule.targets = vec![target.clone()];
+                    store(&app, &rules)?;
+                }
+                Some(scope) => {
+                    let pattern = pattern_for(&url, scope)?;
+                    let mut rules = load(&app);
+                    // One pattern, one rule: answering again about the same site
+                    // replaces the old answer rather than piling a second one on
+                    // it.
+                    rules
+                        .rules
+                        .retain(|rule| !(rule.scope == scope && rule.pattern == pattern));
+                    rules.rules.push(Rule {
+                        id: format!("{}-{}", now_ms(), rules.rules.len()),
+                        pattern,
+                        scope: scope.to_string(),
+                        targets: vec![target.clone()],
+                        exe: String::new(),
+                        browser: String::new(),
+                        profile: None,
+                        profile_name: None,
+                        enabled: true,
+                        created: now_ms(),
+                        uses: 0,
+                    });
+                    store(&app, &rules)?;
+                }
+                None => {}
             }
-            Some(scope) => {
-                let pattern = pattern_for(&url, scope)?;
-                let mut rules = load(&app);
-                // One pattern, one rule: answering again about the same site
-                // replaces the old answer rather than piling a second one on
-                // it.
-                rules
-                    .rules
-                    .retain(|rule| !(rule.scope == scope && rule.pattern == pattern));
-                rules.rules.push(Rule {
-                    id: format!("{}-{}", now_ms(), rules.rules.len()),
-                    pattern,
-                    scope: scope.to_string(),
-                    targets: vec![target.clone()],
-                    exe: String::new(),
-                    browser: String::new(),
-                    profile: None,
-                    profile_name: None,
-                    enabled: true,
-                    created: now_ms(),
-                    uses: 0,
-                });
-                store(&app, &rules)?;
-            }
-            None => {}
-        }
-        Ok(())
+            Ok(())
         })();
         // A link that came through a shortlist still went through that rule,
         // whichever branch of it the user took.

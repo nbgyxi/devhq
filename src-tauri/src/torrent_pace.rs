@@ -305,8 +305,16 @@ fn tick(
     let other_up = link
         .up_bps
         .saturating_sub((engine_up as f64 * OVERHEAD) as u64);
-    let other_down = if other_down < IDLE_FLOOR_BPS { 0 } else { other_down };
-    let other_up = if other_up < IDLE_FLOOR_BPS { 0 } else { other_up };
+    let other_down = if other_down < IDLE_FLOOR_BPS {
+        0
+    } else {
+        other_down
+    };
+    let other_up = if other_up < IDLE_FLOOR_BPS {
+        0
+    } else {
+        other_up
+    };
 
     // The line is at least as fast as the fastest it has ever been seen to
     // run. A ceiling that was only ever guessed corrects itself this way, and
@@ -425,9 +433,7 @@ fn send_if_changed(down: u64, up: u64, scale: u64) {
         let before = sent.load(Ordering::Relaxed);
         // Never seen, or crossing between limited and unlimited, is always a
         // change: those two are not a difference in degree.
-        before == u64::MAX
-            || (before == 0) != (value == 0)
-            || before.abs_diff(value) > threshold
+        before == u64::MAX || (before == 0) != (value == 0) || before.abs_diff(value) > threshold
     };
     if !moved(&SENT_DOWN, down) && !moved(&SENT_UP, up) {
         return;
@@ -480,7 +486,9 @@ fn learn(down_bps: u64, held: &mut Option<(u64, Instant)>) -> u64 {
 /// test is still what the panel should credit.
 fn remember_learned(app: &AppHandle, down_bps: u64) {
     let saved = {
-        let Ok(mut pace) = config().lock() else { return };
+        let Ok(mut pace) = config().lock() else {
+            return;
+        };
         if down_bps <= pace.ceiling_down_bps {
             return;
         }
@@ -517,7 +525,10 @@ pub async fn torrent_pace() -> PaceView {
 /// Changes the settings. Absent keys are left alone, like the engine's own
 /// `settings`, so the panel can send one switch without restating the rest.
 #[tauri::command]
-pub async fn torrent_pace_set(app: AppHandle, patch: serde_json::Value) -> Result<PaceView, String> {
+pub async fn torrent_pace_set(
+    app: AppHandle,
+    patch: serde_json::Value,
+) -> Result<PaceView, String> {
     let updated = {
         let mut pace = current();
         if let Some(v) = patch.get("adaptive").and_then(serde_json::Value::as_bool) {
@@ -532,7 +543,10 @@ pub async fn torrent_pace_set(app: AppHandle, patch: serde_json::Value) -> Resul
         if let Some(v) = patch.get("reserve").and_then(serde_json::Value::as_f64) {
             pace.reserve = v;
         }
-        if let Some(v) = patch.get("floorDownBps").and_then(serde_json::Value::as_u64) {
+        if let Some(v) = patch
+            .get("floorDownBps")
+            .and_then(serde_json::Value::as_u64)
+        {
             pace.floor_down_bps = v;
         }
         if let Some(v) = patch.get("floorUpBps").and_then(serde_json::Value::as_u64) {
