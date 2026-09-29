@@ -1,0 +1,48 @@
+{
+  "candidates": 3726,
+  "catalogued": 3720,
+  "missing": [
+    {
+      "text": "{{expr:1}} runtime · {{expr:2}} dev",
+      "locations": [
+        "app.js:5254 (probable UI template)"
+      ],
+      "dynamic": true
+    },
+    {
+      "text": "> npm run",
+      "locations": [
+        "app.js:6548 (assignment innerHTML text)"
+      ],
+      "dynamic": true
+    },
+    {
+      "text": "Converters & utilities",
+      "locations": [
+        "windows-tools.js:384 (HTML template text)"
+      ],
+      "dynamic": true
+    },
+    {
+      "text": "newer ·",
+      "locations": [
+        "terminal.js:565 (HTML literal text)"
+      ],
+      "dynamic": false
+    },
+    {
+      "text": "older ·",
+      "locations": [
+        "terminal.js:565 (HTML literal text)"
+      ],
+      "dynamic": false
+    },
+    {
+      "text": "Say commit, push, pull and branch in a project workspace's Save & upload panel, instead of spelling out what each button does.",
+      "locations": [
+        "app.js:6548 (assignment innerHTML text)"
+      ],
+      "dynamic": true
+    }
+  ]
+}

@@ -5,6 +5,7 @@ window.wintI18n = (() => {
   let english = {};
   let active = {};
   let language = "en";
+  let patterns = [];
   const originalText = new WeakMap();
   const originalAttrs = new WeakMap();
   const attrs = ["title", "placeholder", "aria-label"];
@@ -15,8 +16,43 @@ window.wintI18n = (() => {
     return response.json();
   }
 
+  function rebuildPatterns() {
+    const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    patterns = Object.keys(english)
+      .filter((key) => /\{\{expr:\d+\}\}/.test(key) && (key.match(/[A-Za-zÀ-ž]/g) || []).length >= 4)
+      .map((key) => {
+        const numbers = [];
+        const pieces = key.split(/\{\{expr:(\d+)\}\}/g);
+        let source = "^";
+        for (let index = 0; index < pieces.length; index++) {
+          if (index % 2) {
+            numbers.push(pieces[index]);
+            source += "([\\s\\S]*?)";
+          } else source += escape(pieces[index]);
+        }
+        return { key, numbers, regex: new RegExp(`${source}$`), weight: key.replace(/\{\{expr:\d+\}\}/g, "").length };
+      })
+      .sort((a, b) => b.weight - a.weight);
+  }
+
   function translated(source) {
-    return active[source] || english[source] || source;
+    const exact = active[source] || english[source];
+    if (exact) return exact;
+    for (const pattern of patterns) {
+      const match = pattern.regex.exec(source);
+      if (!match) continue;
+      const values = {};
+      pattern.numbers.forEach((number, index) => { values[number] = match[index + 1]; });
+      const template = active[pattern.key] || english[pattern.key] || pattern.key;
+      return template.replace(/\{\{expr:(\d+)\}\}/g, (placeholder, number) => values[number] ?? placeholder);
+    }
+    return source;
+  }
+
+  function t(source, values = {}) {
+    return translated(source).replace(/\{(\w+)\}/g, (match, name) => (
+      Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : match
+    ));
   }
 
   function translateText(node) {
@@ -56,6 +92,7 @@ window.wintI18n = (() => {
     language = code === "system" ? (navigator.language || "en").toLowerCase().split("-")[0] : code;
     try { active = language === "en" ? english : await catalog(language); }
     catch { active = {}; }
+    rebuildPatterns();
     document.documentElement.lang = language;
     document.documentElement.dir = language === "ar" ? "rtl" : "ltr";
     apply();
@@ -79,5 +116,5 @@ window.wintI18n = (() => {
     apply(element);
   }
 
-  return { init, setLanguage, apply, refresh, storedLanguage, get language() { return language; } };
+  return { init, setLanguage, apply, refresh, storedLanguage, t, get language() { return language; } };
 })();

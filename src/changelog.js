@@ -16,16 +16,23 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.171.1",
+      title: "Every tool speaks the selected language",
+      date: "2026-09-29",
+      changes: [
+        ["fix", "Every tool's headings, buttons, hints, filters, empty states and accessibility labels now use the selected language instead of leaving most tool screens in English. An automated rendered-screen audit now checks every tool and every language catalog so new static text cannot silently miss localization."],
+      ],
+    },
+    {
       version: "0.171.0",
       title: "Tell us when it breaks, without leaving the app",
       date: "2026-09-28",
       changes: [
         ["new", "A Feedback button in the status bar, reachable from every screen, with a tab for a Problem and a tab for an Idea. One box to write in — the first line becomes the summary — then press send, and you get the report number back if it arrived and a plain reason if it did not."],
         ["new", "The form says who will be able to read what you write before you write it: an idea is posted in public where anyone can read it and vote on it, and a problem report is private to the developers."],
-        ["better", "It already knows where you were. Open it from inside Torrents and the report is about Torrents — you never have to say which part of the app you were using, and a report cannot end up filed under the wrong thing because someone guessed from a list. Closing the popover keeps what you typed, so an interruption mid-sentence costs nothing."],
+        ["better", "It already knows where you were. Open it from inside Torrents and the report is about Torrents — you never have to say which part of the app you were using, and a report cannot end up filed under the wrong thing because someone guessed from a list. It opens in a window of its own, so it can sit beside the tool you are describing instead of hiding it, and putting it away keeps what you typed — an interruption mid-sentence costs nothing."],
         ["new", "When a window throws an error it did not expect, WinT now says so on its own, with the version, the screen it happened on and the fault itself. The same fault is only reported once, and there is a ceiling on how many can go out in an hour, so a render throwing three times a second stays one report."],
-        ["better", "Nothing about a report leaves this PC but the boxes you filled in, the version, the screen and an anonymous number. Anything that reads like a password, a token, a cookie or an address is taken out first, and your Windows account name is taken out of every path — including on the automatic reports, which carry whatever the fault happened to mention."],
-        ["better", "A build set up without a feedback service says so before you type, instead of losing what you wrote on the press."],
+        ["better", "Nothing about a report leaves this PC but what you wrote, the version, the screen and an anonymous number. Anything that reads like a password, a token, a cookie or an address is taken out first, and your Windows account name is taken out of every path — including on the automatic reports, which carry whatever the fault happened to mention."],
         ["fix", "Two icons that had been drawing a word instead of a picture. Material Symbols draws by name, and a name it does not have is drawn as the longest part it recognises followed by the leftover letters — so the diff error line read \"error_outline\" and Go back to this version read \"restore\". The build now refuses a name no icon answers to, rather than shipping it."],
       ],
     },

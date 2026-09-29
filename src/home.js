@@ -203,7 +203,9 @@ window.wintHome = (() => {
     const longest = stalls.reduce((a, b) => (b.durationMs > a.durationMs ? b : a));
     const latest = stalls.reduce((a, b) => (b.at > a.at ? b : a));
     return card("amber", {
-      icon: "mouse", title: `The PC froze ${stalls.length === 1 ? "once" : `${stalls.length} times`}`,
+      icon: "mouse", title: stalls.length === 1
+        ? window.wintI18n.t("The PC froze once")
+        : window.wintI18n.t("The PC froze {count} times", { count: stalls.length }),
       source: status.watching ? "Input Stall Watch is watching" : "from Input Stall Watch's last session",
       fact: `${(longest.durationMs / 1000).toFixed(1)}s`, factTail: `longest stall · last one ${when(latest.at)}`,
       detail: latest.verdict || latest.detail || "Open Input Stall Watch to see what the machine was doing at that second.",

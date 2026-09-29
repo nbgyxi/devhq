@@ -2110,7 +2110,7 @@
       label: "Qwen",
       product: "Local Qwen coding agent",
       icon: "memory",
-      placeholder: "Ask local Qwen to work on this projectâ€¦",
+      placeholder: "Ask local Qwen to work on this project…",
       statusCmd: "assistant_status",
       sendCmd: "assistant_chat",
       cancelCmd: "assistant_chat_cancel",

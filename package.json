@@ -27,6 +27,7 @@
     "test:front": "node scripts/test.js --front"
   },
   "devDependencies": {
+    "acorn": "^8.15.0",
     "@napi-rs/canvas": "^0.1.67",
     "@tauri-apps/cli": "^2",
     "harfbuzzjs": "^1.6.1",

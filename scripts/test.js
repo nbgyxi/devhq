@@ -82,6 +82,8 @@ if (only !== "rust") {
   parseCheck();
   run("util tool catalog", process.execPath, ["scripts/smoke-util-tools.js"]);
   run("windows tool catalog", process.execPath, ["scripts/smoke-windows-tools.js"]);
+  run("source localization coverage", process.execPath, ["scripts/audit-i18n-source.js"]);
+  run("tool localization coverage", process.execPath, ["scripts/audit-i18n.js"]);
   if (!skipE2e) run("every screen and tool opens", process.execPath, ["scripts/e2e/run-browser.js"]);
 }
 
