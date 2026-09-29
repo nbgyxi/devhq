@@ -16,6 +16,16 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.172.0",
+      title: "The terminal line edits like a text box",
+      date: "2026-09-29",
+      changes: [
+        ["fix", "Walking back down the command history with the down arrow landed on mangled commands. Each step measured the line by reading it off the screen, which had not finished drawing the command the previous step wrote, so the wrong number of characters was erased. The walk now tracks what it put there itself, and typing over a recalled command starts the next walk fresh from what is on the line."],
+        ["new", "Clicking inside the command you are typing moves the cursor to where you clicked, instead of leaving it at the end of the line."],
+        ["fix", "Pasting over selected text replaces the selection and leaves the cursor there. Dragging to the end of a line or starting the drag on the prompt used to cancel the replacement without a word and paste at the cursor instead; the selection is now trimmed to the part of the line you can edit."],
+      ],
+    },
+    {
       version: "0.171.3",
       title: "The sidebar stops forgetting its settings",
       date: "2026-09-29",

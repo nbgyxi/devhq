@@ -529,6 +529,7 @@ class TermView {
     this.sessionHistory = [];
     this.historyArrowIndex = -1;
     this.historyArrowDraft = "";
+    this.historyArrowShown = "";
     // Chromium may collapse a DOM selection while dispatching the browser's
     // native paste. Keep the shell edit calculated at Ctrl+V keydown so the
     // following paste event can still replace exactly what was selected.
@@ -838,13 +839,24 @@ class TermView {
       if (this.mouseMode) e.preventDefault();
     });
     this.host.addEventListener("click", (e) => {
-      if (!e.ctrlKey || e.button !== 0) return;
-      const link = this.linkUnder(e);
-      if (!link) return;
-      e.preventDefault();
-      e.stopPropagation();
-      this.setLink(null);
-      openTerminalLink(link.url);
+      if (e.button !== 0) return;
+      if (e.ctrlKey) {
+        const link = this.linkUnder(e);
+        if (!link) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.setLink(null);
+        openTerminalLink(link.url);
+        return;
+      }
+      // A plain click inside the command being typed puts the shell cursor
+      // where it was aimed. A click that finished a drag selected something
+      // instead, so it is left alone.
+      if (e.shiftKey || e.altKey || e.metaKey || this.boxSelection) return;
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed) return;
+      const col = this.editableColAt(e);
+      if (col !== null) this.moveCursorToCol(col);
     });
     this.scroll.addEventListener("scroll", () => {
       // A resize pins scrollTop on purpose; that must not look like the user
@@ -977,17 +989,26 @@ class TermView {
     if (this.host.classList.contains("alt") || !nativeCommandHistoryLoaded) return false;
     const commands = this.powerShellHistory();
     if (!commands.length) return false;
-    const row = this.rowEls[this.cy];
-    const rowText = row?.textContent || "";
-    const cursor = Math.min(this.cx, rowText.length);
-    const start = this.commandStart(rowText, cursor);
-    if (start === null) return false;
-    const current = rowText.slice(start).trimEnd();
-    if (this.historyArrowIndex < 0) this.historyArrowDraft = current;
+    // Only the first step reads the line off the screen. After that the line
+    // holds exactly what the last step wrote, and that is the only honest
+    // measure of it: the write is asynchronous, so reading the screen again
+    // races the paint and erases the wrong number of characters - which is
+    // what left walking back down the list on a mangled command.
+    let current = this.historyArrowShown;
+    if (this.historyArrowIndex < 0) {
+      const row = this.rowEls[this.cy];
+      const rowText = row?.textContent || "";
+      const cursor = Math.min(this.cx, rowText.length);
+      const start = this.commandStart(rowText, cursor);
+      if (start === null) return false;
+      current = rowText.slice(start).trimEnd();
+      this.historyArrowDraft = current;
+    }
     const next = Math.max(-1, Math.min(commands.length - 1, this.historyArrowIndex + direction));
     if (next === this.historyArrowIndex) return true;
     this.historyArrowIndex = next;
     const command = next < 0 ? this.historyArrowDraft : commands[next];
+    this.historyArrowShown = command;
     this.commandDraft = command;
     const erase = "\x1b[H" + "\x1b[3~".repeat(current.length);
     const data = erase + command;
@@ -1315,11 +1336,44 @@ class TermView {
     if (end <= start) return "";
     const text = row.textContent || "";
     const commandStart = this.commandStart(text, Math.min(this.cx, text.length));
-    if (commandStart === null || start < commandStart || end > text.trimEnd().length) return "";
+    if (commandStart === null) return "";
+    // A mouse selection reaches for whole cells, so dragging to the end of the
+    // line picks up the blanks after it and dragging left of the command picks
+    // up the prompt. Clamping to the editable run keeps those drags working
+    // rather than silently pasting at the cursor instead.
+    const from = Math.max(start, commandStart);
+    const to = Math.min(end, text.trimEnd().length);
+    if (to <= from) return "";
     if (clear) sel.removeAllRanges();
-    const dx = start - this.cx;
+    const dx = from - this.cx;
     const walk = dx > 0 ? "\x1b[C".repeat(dx) : "\x1b[D".repeat(-dx);
-    return walk + "\x1b[3~".repeat(end - start);
+    return walk + "\x1b[3~".repeat(to - from);
+  }
+
+  /** The editable column under a pointer, or null when the pointer is not on
+   *  the line being edited. Output above is finished text and a full-screen
+   *  program owns its own cursor, so a click there moves nothing. */
+  editableColAt(at) {
+    if (this.host.classList.contains("alt") || this.mouseMode || !this.cursorVisible) return null;
+    const row = this.rowEls[this.cy];
+    if (!row || !this.host.contains(row)) return null;
+    const box = row.getBoundingClientRect();
+    // The row, not the click target: clicking past the end of a short command
+    // lands on the screen rather than on any span, and still means that line.
+    if (at.clientY < box.top || at.clientY >= box.bottom) return null;
+    const text = row.textContent || "";
+    const start = this.commandStart(text, Math.min(this.cx, text.length));
+    if (start === null) return null;
+    const col = Math.round((at.clientX - box.left) / this.cellW);
+    return Math.max(start, Math.min(text.trimEnd().length, col));
+  }
+
+  /** Walks the shell cursor to a column. The shell owns the caret, so moving
+   *  it means sending the arrow presses that would have got there. */
+  moveCursorToCol(col) {
+    const dx = col - this.cx;
+    if (!dx) return;
+    this.send((dx > 0 ? "\x1b[C" : "\x1b[D").repeat(Math.abs(dx)));
   }
 
   /** The column a DOM position sits at within `row`, counted as the text in
@@ -1546,8 +1600,12 @@ class TermView {
       if (commandLine && this.sessionHistory[0] !== commandLine) this.sessionHistory.unshift(commandLine);
       this.historyArrowIndex = -1;
       this.historyArrowDraft = "";
+      this.historyArrowShown = "";
       this.commandDraft = "";
     } else if (!text.includes("\x1b") && !text.includes("\x03")) {
+      // The line is no longer the recalled command, so its length is no longer
+      // known: the next Up starts a fresh walk from what is on screen.
+      this.historyArrowIndex = -1;
       for (const char of text) {
         if (char === "\x7f") this.commandDraft = this.commandDraft.slice(0, -1);
         else if (char >= " ") this.commandDraft += char;
