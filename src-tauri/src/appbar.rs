@@ -771,6 +771,48 @@ fn recover_tray_windows() {
     let _ = std::fs::remove_file(&note);
 }
 
+/// Save JSON so that losing power halfway through cannot lose the settings.
+///
+/// A plain `fs::write` truncates the file first and leaves the contents in a
+/// cache: a crash, a hard restart or a machine that goes down between the two
+/// left `sidebar-settings.json` on disk as zero bytes, which reads back as "no
+/// settings" and is how the rail's settings went missing without anyone
+/// touching them. The new contents go to a temporary file and all the way to
+/// the platter before anything replaces the old file, and the last good copy
+/// is kept beside it as `.bak` for the case where the file itself is lost.
+fn save_json_durably(file: &std::path::Path, text: &str) -> Result<(), String> {
+    use std::io::Write;
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let temporary = file.with_extension("tmp");
+    {
+        let mut handle = std::fs::File::create(&temporary).map_err(|e| e.to_string())?;
+        handle.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+        // The rename can land while the contents are still only in a cache, so
+        // the bytes are forced down before the rename is allowed to happen.
+        handle.sync_all().map_err(|e| e.to_string())?;
+    }
+    // Keep the copy that is about to be replaced, but only if it is readable:
+    // a half-written file must never become the backup.
+    if load_json_file(file).is_some() {
+        let _ = std::fs::copy(file, file.with_extension("bak"));
+    }
+    // Atomic on NTFS, so an interrupted save leaves the previous file whole.
+    std::fs::rename(&temporary, file).map_err(|e| e.to_string())
+}
+
+/// Read one of those files back, falling back to the `.bak` beside it when the
+/// file is missing or does not parse.
+fn load_json_durably(file: &std::path::Path) -> Option<serde_json::Value> {
+    load_json_file(file).or_else(|| load_json_file(&file.with_extension("bak")))
+}
+
+fn load_json_file(file: &std::path::Path) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(file).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 /// Where the last edge and width are kept, so a dock at startup comes back
 /// where the user left it.
 fn geometry_file() -> Option<std::path::PathBuf> {
@@ -785,12 +827,9 @@ fn geometry_file() -> Option<std::path::PathBuf> {
 fn remember_geometry(edge: String, width: u32) {
     std::thread::spawn(move || {
         let Some(file) = geometry_file() else { return };
-        if let Some(dir) = file.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(
+        let _ = save_json_durably(
             &file,
-            serde_json::json!({ "edge": edge, "width": width }).to_string(),
+            &serde_json::json!({ "edge": edge, "width": width }).to_string(),
         );
     });
 }
@@ -802,10 +841,7 @@ fn remember_geometry(edge: String, width: u32) {
 pub(crate) fn dock_at_start(app: AppHandle) {
     std::thread::spawn(move || {
         recover_taskbar();
-        if let Some(saved) = geometry_file()
-            .and_then(|file| std::fs::read_to_string(file).ok())
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        {
+        if let Some(saved) = geometry_file().and_then(|file| load_json_durably(&file)) {
             apply(
                 saved["edge"].as_str().map(str::to_string),
                 saved["width"].as_u64().map(|width| width as u32),
@@ -2063,8 +2099,7 @@ fn load_settings() -> serde_json::Value {
         return value.clone();
     }
     let value = settings_file()
-        .and_then(|file| std::fs::read_to_string(file).ok())
-        .and_then(|text| serde_json::from_str(&text).ok())
+        .and_then(|file| load_json_durably(&file))
         .unwrap_or_else(|| serde_json::json!({}));
     *cached = Some(value.clone());
     value
@@ -2092,10 +2127,7 @@ pub async fn sidebar_settings_set(
     let _ = app.emit("sidebar:settings", settings.clone());
     off_thread(move || {
         let file = settings_file().ok_or("Windows did not provide LOCALAPPDATA.")?;
-        if let Some(dir) = file.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
-        std::fs::write(&file, settings.to_string()).map_err(|e| e.to_string())
+        save_json_durably(&file, &settings.to_string())
     })
     .await
     .unwrap_or_else(|| Err("Could not save the sidebar settings.".into()))

@@ -16,6 +16,14 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.171.3",
+      title: "The sidebar stops forgetting its settings",
+      date: "2026-09-29",
+      changes: [
+        ["fix", "A crash or a sudden restart could wipe the Docked Sidebar's settings — which buttons the rail shows, its width and which edge it sits on — and put every one of them back to its default. The file was emptied before the new contents were written and those contents were still only in a cache, so a machine that went down in between came back to an empty file, which read as no settings at all. Both files are now written beside the old one and forced to disk before they replace it, and the last good copy is kept as a spare in case the file is ever lost anyway."],
+      ],
+    },
+    {
       version: "0.171.2",
       title: "Docked tools stay in your language too",
       date: "2026-09-29",
