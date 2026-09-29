@@ -70,9 +70,14 @@ function add(value, file, line, reason, dynamic = false) {
 }
 
 function htmlCopy(value, file, line, reason, dynamic = false) {
+  // An icon's text is a glyph name, not copy: `<span class="ms">open_in_new</span>`
+  // draws a picture only while that name survives verbatim. Harvesting one as a
+  // translation key is how an icon ends up rendering as a word. The runtime skips
+  // the same elements, so the catalog must never carry them in the first place.
   const source = String(value)
     .replace(/<script\b[\s\S]*?<\/script>/gi, "")
-    .replace(/<style\b[\s\S]*?<\/style>/gi, "");
+    .replace(/<style\b[\s\S]*?<\/style>/gi, "")
+    .replace(/<(\w+)\b[^>]*(?:class\s*=\s*["'][^"']*\bms\b[^"']*["']|aria-hidden\s*=\s*["']true["'])[^>]*>[\s\S]*?<\/\1>/gi, "");
   for (const match of source.matchAll(/\b(?:title|placeholder|aria-label)\s*=\s*["']([^"']+)["']/gi)) {
     add(match[1], file, line, `${reason} attribute`, dynamic || match[1].includes("{{expr:"));
   }

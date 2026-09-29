@@ -55,7 +55,20 @@ window.wintI18n = (() => {
     ));
   }
 
+  // An icon is a text node too: `<span class="ms">open_in_new</span>` draws a
+  // picture only as long as the glyph name survives verbatim. Catalogs built by
+  // reading rendered screens picked those names up as if they were UI text, so
+  // translating one turns the icon into a word. Nothing inside an icon, a
+  // script, a style or a code sample is ever language.
+  function skipText(node) {
+    const parent = node.parentElement;
+    if (!parent) return true;
+    if (["SCRIPT", "STYLE", "CODE", "KBD"].includes(parent.tagName)) return true;
+    return !!parent.closest(".ms,[aria-hidden=true]");
+  }
+
   function translateText(node) {
+    if (skipText(node)) return;
     if (!originalText.has(node)) originalText.set(node, node.nodeValue);
     const source = originalText.get(node);
     const value = source.trim();

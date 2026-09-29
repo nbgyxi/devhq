@@ -16,6 +16,15 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.171.2",
+      title: "Docked tools stay in your language too",
+      date: "2026-09-29",
+      changes: [
+        ["fix", "A tool opened inside the main window — PC Detective and every other docked tool — came up in English no matter which language was selected, because that view never loaded the translations. The translated text was already there; only this one screen was not asking for it."],
+        ["fix", "Icons drew a word instead of a picture in every language but English. Material Symbols draws by name, and the name sits in the page as ordinary text, so translating the page translated the names too — the pop-out button read \"open_in_new\" with its first half in Arabic. Icons are now left alone wherever text is translated, and the 44 glyph names that had been collected as if they were words are out of the language files."],
+      ],
+    },
+    {
       version: "0.171.1",
       title: "Every tool speaks the selected language",
       date: "2026-09-29",
