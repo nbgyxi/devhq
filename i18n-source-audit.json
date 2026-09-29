@@ -1,48 +1,380 @@
 {
-  "candidates": 3726,
-  "catalogued": 3720,
-  "missing": [
+  "candidates": 4032,
+  "catalogued": 4032,
+  "filesChecked": 62,
+  "files": [
     {
-      "text": "{{expr:1}} runtime · {{expr:2}} dev",
-      "locations": [
-        "app.js:5254 (probable UI template)"
-      ],
-      "dynamic": true
+      "file": "analytics.js",
+      "candidates": 0,
+      "catalogued": 0,
+      "missing": []
     },
     {
-      "text": "> npm run",
-      "locations": [
-        "app.js:6548 (assignment innerHTML text)"
-      ],
-      "dynamic": true
+      "file": "app-health.js",
+      "candidates": 19,
+      "catalogued": 19,
+      "missing": []
     },
     {
-      "text": "Converters & utilities",
-      "locations": [
-        "windows-tools.js:384 (HTML template text)"
-      ],
-      "dynamic": true
+      "file": "app.js",
+      "candidates": 604,
+      "catalogued": 604,
+      "missing": []
     },
     {
-      "text": "newer ·",
-      "locations": [
-        "terminal.js:565 (HTML literal text)"
-      ],
-      "dynamic": false
+      "file": "assistant.html",
+      "candidates": 0,
+      "catalogued": 0,
+      "missing": []
     },
     {
-      "text": "older ·",
-      "locations": [
-        "terminal.js:565 (HTML literal text)"
-      ],
-      "dynamic": false
+      "file": "assistant.js",
+      "candidates": 137,
+      "catalogued": 137,
+      "missing": []
     },
     {
-      "text": "Say commit, push, pull and branch in a project workspace's Save & upload panel, instead of spelling out what each button does.",
-      "locations": [
-        "app.js:6548 (assignment innerHTML text)"
-      ],
-      "dynamic": true
+      "file": "browser-ask.html",
+      "candidates": 17,
+      "catalogued": 17,
+      "missing": []
+    },
+    {
+      "file": "browser-ask.js",
+      "candidates": 18,
+      "catalogued": 18,
+      "missing": []
+    },
+    {
+      "file": "browser.js",
+      "candidates": 110,
+      "catalogued": 110,
+      "missing": []
+    },
+    {
+      "file": "calendar.html",
+      "candidates": 11,
+      "catalogued": 11,
+      "missing": []
+    },
+    {
+      "file": "changelog-window.js",
+      "candidates": 4,
+      "catalogued": 4,
+      "missing": []
+    },
+    {
+      "file": "changelog.html",
+      "candidates": 3,
+      "catalogued": 3,
+      "missing": []
+    },
+    {
+      "file": "clipboard-picker.html",
+      "candidates": 9,
+      "catalogued": 9,
+      "missing": []
+    },
+    {
+      "file": "clipboard-picker.js",
+      "candidates": 1,
+      "catalogued": 1,
+      "missing": []
+    },
+    {
+      "file": "copy-feedback.js",
+      "candidates": 1,
+      "catalogued": 1,
+      "missing": []
+    },
+    {
+      "file": "demo-mode.js",
+      "candidates": 7,
+      "catalogued": 7,
+      "missing": []
+    },
+    {
+      "file": "disk-space.js",
+      "candidates": 40,
+      "catalogued": 40,
+      "missing": []
+    },
+    {
+      "file": "dns.js",
+      "candidates": 70,
+      "catalogued": 70,
+      "missing": []
+    },
+    {
+      "file": "error-log.js",
+      "candidates": 2,
+      "catalogued": 2,
+      "missing": []
+    },
+    {
+      "file": "explorer.js",
+      "candidates": 151,
+      "catalogued": 151,
+      "missing": []
+    },
+    {
+      "file": "feedback-report.js",
+      "candidates": 30,
+      "catalogued": 30,
+      "missing": []
+    },
+    {
+      "file": "feedback.html",
+      "candidates": 1,
+      "catalogued": 1,
+      "missing": []
+    },
+    {
+      "file": "focus-mode.js",
+      "candidates": 50,
+      "catalogued": 50,
+      "missing": []
+    },
+    {
+      "file": "git-client.js",
+      "candidates": 383,
+      "catalogued": 383,
+      "missing": []
+    },
+    {
+      "file": "github.js",
+      "candidates": 154,
+      "catalogued": 154,
+      "missing": []
+    },
+    {
+      "file": "highlight.js",
+      "candidates": 19,
+      "catalogued": 19,
+      "missing": []
+    },
+    {
+      "file": "home.js",
+      "candidates": 160,
+      "catalogued": 160,
+      "missing": []
+    },
+    {
+      "file": "hosts.js",
+      "candidates": 75,
+      "catalogued": 75,
+      "missing": []
+    },
+    {
+      "file": "i18n.js",
+      "candidates": 2,
+      "catalogued": 2,
+      "missing": []
+    },
+    {
+      "file": "index.html",
+      "candidates": 1,
+      "catalogued": 1,
+      "missing": []
+    },
+    {
+      "file": "maturity.html",
+      "candidates": 3,
+      "catalogued": 3,
+      "missing": []
+    },
+    {
+      "file": "maturity.js",
+      "candidates": 10,
+      "catalogued": 10,
+      "missing": []
+    },
+    {
+      "file": "network.js",
+      "candidates": 78,
+      "catalogued": 78,
+      "missing": []
+    },
+    {
+      "file": "path-ping.js",
+      "candidates": 50,
+      "catalogued": 50,
+      "missing": []
+    },
+    {
+      "file": "popout.js",
+      "candidates": 21,
+      "catalogued": 21,
+      "missing": []
+    },
+    {
+      "file": "ports-tool.js",
+      "candidates": 31,
+      "catalogued": 31,
+      "missing": []
+    },
+    {
+      "file": "projects.html",
+      "candidates": 1,
+      "catalogued": 1,
+      "missing": []
+    },
+    {
+      "file": "search.html",
+      "candidates": 10,
+      "catalogued": 10,
+      "missing": []
+    },
+    {
+      "file": "search.js",
+      "candidates": 6,
+      "catalogued": 6,
+      "missing": []
+    },
+    {
+      "file": "security-audit.js",
+      "candidates": 279,
+      "catalogued": 279,
+      "missing": []
+    },
+    {
+      "file": "sidebar-resize-preview.html",
+      "candidates": 0,
+      "catalogued": 0,
+      "missing": []
+    },
+    {
+      "file": "sidebar.html",
+      "candidates": 36,
+      "catalogued": 36,
+      "missing": []
+    },
+    {
+      "file": "sidebar.js",
+      "candidates": 87,
+      "catalogued": 87,
+      "missing": []
+    },
+    {
+      "file": "speedtest.js",
+      "candidates": 40,
+      "catalogued": 40,
+      "missing": []
+    },
+    {
+      "file": "stall-watch.js",
+      "candidates": 54,
+      "catalogued": 54,
+      "missing": []
+    },
+    {
+      "file": "startup-tray.js",
+      "candidates": 34,
+      "catalogued": 34,
+      "missing": []
+    },
+    {
+      "file": "terminal-drag.html",
+      "candidates": 2,
+      "catalogued": 2,
+      "missing": []
+    },
+    {
+      "file": "terminal.html",
+      "candidates": 16,
+      "catalogued": 16,
+      "missing": []
+    },
+    {
+      "file": "terminal.js",
+      "candidates": 40,
+      "catalogued": 40,
+      "missing": []
+    },
+    {
+      "file": "terminals.js",
+      "candidates": 76,
+      "catalogued": 76,
+      "missing": []
+    },
+    {
+      "file": "tool-bridge.js",
+      "candidates": 6,
+      "catalogued": 6,
+      "missing": []
+    },
+    {
+      "file": "tool-drag.html",
+      "candidates": 2,
+      "catalogued": 2,
+      "missing": []
+    },
+    {
+      "file": "tool-embedded.html",
+      "candidates": 3,
+      "catalogued": 3,
+      "missing": []
+    },
+    {
+      "file": "tool-embedded.js",
+      "candidates": 9,
+      "catalogued": 9,
+      "missing": []
+    },
+    {
+      "file": "tool-popout.js",
+      "candidates": 49,
+      "catalogued": 49,
+      "missing": []
+    },
+    {
+      "file": "tool-state.js",
+      "candidates": 0,
+      "catalogued": 0,
+      "missing": []
+    },
+    {
+      "file": "tool.html",
+      "candidates": 12,
+      "catalogued": 12,
+      "missing": []
+    },
+    {
+      "file": "torrent.js",
+      "candidates": 218,
+      "catalogued": 218,
+      "missing": []
+    },
+    {
+      "file": "util-tools.js",
+      "candidates": 225,
+      "catalogued": 225,
+      "missing": []
+    },
+    {
+      "file": "window-geometry.js",
+      "candidates": 0,
+      "catalogued": 0,
+      "missing": []
+    },
+    {
+      "file": "windows-tools.js",
+      "candidates": 653,
+      "catalogued": 653,
+      "missing": []
+    },
+    {
+      "file": "workspace.html",
+      "candidates": 10,
+      "catalogued": 10,
+      "missing": []
+    },
+    {
+      "file": "workspace.js",
+      "candidates": 289,
+      "catalogued": 289,
+      "missing": []
     }
-  ]
+  ],
+  "missing": []
 }

@@ -37,6 +37,8 @@ function clean(value) {
 
 function looksHuman(value) {
   const text = clean(value);
+  const literalText = text.replace(/\{\{expr:\d+\}\}/g, "");
+  if (!/[A-Za-z]{2}/.test(literalText)) return false;
   if (!text || text.length > 700 || !/[A-Za-zÀ-ž]{2}/.test(text)) return false;
   if (NON_COPY.test(text) || /^https?:\/\//i.test(text) || /^[A-Z]:\\/i.test(text)) return false;
   if (/^[\w.-]+@[\w.-]+$/.test(text)) return false;
@@ -72,11 +74,19 @@ function htmlCopy(value, file, line, reason, dynamic = false) {
     .replace(/<script\b[\s\S]*?<\/script>/gi, "")
     .replace(/<style\b[\s\S]*?<\/style>/gi, "");
   for (const match of source.matchAll(/\b(?:title|placeholder|aria-label)\s*=\s*["']([^"']+)["']/gi)) {
-    if (!match[1].includes("{{expr:")) add(match[1], file, line, `${reason} attribute`, dynamic);
+    add(match[1], file, line, `${reason} attribute`, dynamic || match[1].includes("{{expr:"));
   }
   for (const match of source.matchAll(/>([^<>]+)</g)) {
     const text = clean(match[1]);
-    if (!text.includes("{{expr:")) add(text, file, line, `${reason} text`, dynamic);
+    if (!text.includes("{{expr:")) {
+      add(text, file, line, `${reason} text`, dynamic);
+      continue;
+    }
+    // An interpolation that renders markup (commonly an icon) creates a separate
+    // DOM node. Preserve the adjacent static copy as its own translation key.
+    const staticText = clean(text.replace(/^(?:\{\{expr:\d+\}\})+|(?:\{\{expr:\d+\}\})+$/g, ""));
+    if (staticText && !staticText.includes("{{expr:")) add(staticText, file, line, `${reason} text beside interpolation`);
+    else add(text, file, line, `${reason} dynamic text`, true);
   }
 }
 
@@ -161,7 +171,21 @@ for (const file of fs.readdirSync(SRC).filter((name) => name.endsWith(".html")))
 
 const items = [...found.values()].sort((a, b) => a.text.localeCompare(b.text));
 const missing = items.filter((item) => !(item.text in english));
-const report = { candidates: items.length, catalogued: items.length - missing.length, missing };
+const sourceFiles = fs.readdirSync(SRC).filter((name) =>
+  (name.endsWith(".js") && name !== "changelog.js") || name.endsWith(".html")
+).sort();
+const files = sourceFiles.map((file) => {
+  const candidates = items.filter((item) => item.locations.some((location) => location.startsWith(`${file}:`)));
+  const missing = candidates.filter((item) => !(item.text in english));
+  return { file, candidates: candidates.length, catalogued: candidates.length - missing.length, missing: missing.map((item) => item.text) };
+});
+const report = {
+  candidates: items.length,
+  catalogued: items.length - missing.length,
+  filesChecked: files.length,
+  files,
+  missing,
+};
 if (process.argv.includes("--write")) {
   fs.writeFileSync(path.join(ROOT, "i18n-source-audit.json"), `${JSON.stringify(report, null, 2)}\n`);
 } else {
