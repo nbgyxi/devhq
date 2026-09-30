@@ -127,17 +127,11 @@ if (new URLSearchParams(location.search).get("id") === "projects") {
 <script src="i18n.js"></script>
 <script>window.wintI18n.init(window.wintI18n.storedLanguage());</script>
 <script src="maturity.js"></script>
-<script src="dns.js"></script>
-<script src="hosts.js"></script>
-<script src="network.js?v=0.28.2"></script>
-<script src="path-ping.js"></script>
-<script src="disk-space.js"></script>
-<script src="explorer.js?v=0.94.1"></script>
-<script src="github.js?v=0.43.20"></script>
-<script src="git-client.js?v=0.5.7"></script>
-<script src="ports-tool.js?v=1"></script>
-<script src="util-tools.js?v=0.28.1"></script>
-<script src="windows-tools.js?v=0.43.8"></script>
+<!-- The tools themselves are deliberately absent. Every one of them used to be
+     parsed here before this window could show anything - half a megabyte of
+     other tools' code between the click and the first pixel, for a window that
+     mounts exactly one of them. tool-popout.js fetches the one it needs, after
+     the chrome is on screen. -->
 <script src="tool-state.js"></script>
 <script src="window-geometry.js"></script>
 <script src="tool-popout.js?v=0.43.3"></script>

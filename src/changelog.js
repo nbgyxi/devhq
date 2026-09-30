@@ -16,6 +16,18 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.174.0",
+      title: "Downloaded files stop claiming to be empty",
+      date: "2026-09-30",
+      changes: [
+        ["fix", "A finished torrent could leave most of its files reading 0 B in Files, in Explorer and everywhere else that lists a folder, even though the download was complete and the files were whole. Windows only writes a file's size into the folder listing when the last handle on it closes, and the engine holds every file of a running torrent open — so the listing stayed at the size the file was created with. The sizes are now brought up to date the moment a torrent finishes, and once a minute while one is still running, so a folder fills up on screen the way it fills up on disk."],
+        ["fix", "Transferred totals grew by the size of the library every time the engine restarted, so a torrent fetched once could claim hundreds of gigabytes downloaded. The reading each total is measured against was being thrown away on shutdown; it is now kept, and a torrent whose reading has never been taken is written down rather than counted."],
+        ["fix", "An external drive that faults on a single write — \"I/O device error\" — no longer takes the torrent down with it. Under a torrent's load a USB disk can stall long enough to be reset, and the same write succeeds moments later, so the engine now waits it out across a few tries before giving up. A drive that really has gone still says so within seconds."],
+        ["new", "A torrent that has stopped with an error now has a Try again button, in its error box and on its right-click menu. Nothing restarts a failed torrent by itself — whatever stopped it is usually still true a second later — but a drive that faulted has often come back by the time the error has been read, and until now the only way to ask was to remove the torrent and add it again. Trying again checks what is already on disk and carries on from there, so nothing is downloaded twice."],
+        ["better", "Tool windows open straight away. Every one of them used to parse the code for all twelve tools before it could show anything — half a megabyte of other tools' work between the click and the first pixel. A window now loads only the tool it is actually opening, and does it after it is already on screen."],
+      ],
+    },
+    {
       version: "0.173.4",
       title: "A write the disk will not take one way is tried the other",
       date: "2026-09-30",

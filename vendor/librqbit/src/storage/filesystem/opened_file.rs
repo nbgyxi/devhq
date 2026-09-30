@@ -183,8 +183,7 @@ impl OpenedFile {
         }
         let path = g.path.clone();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| Error::FsOpen(parent.to_owned(), e))?;
+            std::fs::create_dir_all(parent).map_err(|e| Error::FsOpen(parent.to_owned(), e))?;
         }
         let f = std::fs::OpenOptions::new()
             .create(true)

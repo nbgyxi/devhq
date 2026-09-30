@@ -1341,6 +1341,7 @@ Click to open in Explorer` : "";
         <div class="tr-derror" data-tr-derror hidden>
           <div class="tr-derror-head">
             ${icon("error")}<strong data-tr-derror-gist></strong>
+            <button type="button" class="btn" data-tr-derror-retry>${icon("refresh")}<span>Try again</span></button>
             <button type="button" class="btn" data-tr-derror-copy>${icon("content_copy")}<span>Copy</span></button>
           </div>
           <pre data-tr-derror-text></pre>
@@ -1436,6 +1437,10 @@ Click to open in Explorer` : "";
     const hint = errorHint(text);
     setText(box.querySelector("[data-tr-derror-gist]"), hint || firstLine(text));
     setText(box.querySelector("[data-tr-derror-text]"), text);
+    // Only a torrent that actually stopped has anything to try again. An error
+    // left over beside a torrent that is running is history, not an offer.
+    const retry = box.querySelector("[data-tr-derror-retry]");
+    if (retry) retry.hidden = row.state !== "error";
   }
 
   /** The file list, virtualized the same way as the torrents: a torrent with
@@ -2541,6 +2546,7 @@ Click to open in Explorer` : "";
 
     if (t.closest("[data-tr-toggle]")) return toggleSelected();
     if (t.closest("[data-tr-remove]")) return removeSelected();
+    if (t.closest("[data-tr-derror-retry]")) return retrySelected();
     if (t.closest("[data-tr-derror-copy]")) {
       const text = t.closest("[data-tr-derror]")?.querySelector("[data-tr-derror-text]")?.textContent || "";
       return void navigator.clipboard.writeText(text)
@@ -2648,6 +2654,22 @@ Click to open in Explorer` : "";
     if (!rows.length) return;
     const action = rows.every((row) => row.state === "paused" || row.state === "queued") ? "start" : "pause";
     Promise.all(rows.map((row) => invoke("torrent_action", { id: row.id, action })))
+      .catch((error) => note(String(error)));
+  }
+
+  /** Pick a failed torrent back up.
+   *
+   *  Nothing restarts one on its own: whatever stopped it is usually still
+   *  true a moment later, and a torrent that keeps throwing itself at a drive
+   *  that has gone is worse than one that waits to be asked. The error names
+   *  something that often passes — a drive that faulted, a folder that was not
+   *  there — so the one thing the error box was missing is the way to say try
+   *  it again without removing the torrent and adding it back. */
+  function retrySelected() {
+    const rows = selectedRows().filter((row) => row.state === "error");
+    if (!rows.length) return;
+    note(rows.length === 1 ? `Trying ${rows[0].name} again` : `Trying ${rows.length} torrents again`);
+    Promise.all(rows.map((row) => invoke("torrent_action", { id: row.id, action: "retry" })))
       .catch((error) => note(String(error)));
   }
 
@@ -2762,12 +2784,16 @@ Click to open in Explorer` : "";
     const targets = selectedRows(row);
     const many = targets.length > 1;
     const allForced = targets.every((item) => item.forceStarted);
+    // Offered wherever a failed torrent is, not only when its error box is on
+    // screen: the row itself is where someone notices one has stopped.
+    const failed = targets.filter((item) => item.state === "error");
     const menu = document.createElement("div");
     menu.className = "tr-context";
     menu.innerHTML = `
       <button type="button" data-act="explorer">${icon("folder_open")}Open folder</button>
       <button type="button" data-act="files">${icon("dock_to_right")}Open in WinT Files</button>
       <hr />
+      ${failed.length ? `<button type="button" data-act="retry">${icon("refresh")}Try again${failed.length > 1 ? ` (${failed.length})` : ""}</button>` : ""}
       <button type="button" data-act="toggle">${icon(paused ? "play_arrow" : "pause")}${paused ? "Resume" : "Pause"}${many ? ` ${targets.length} torrents` : ""}</button>
       <button type="button" data-act="force">${icon(allForced ? "playlist_play" : "bolt")}${allForced ? "Use download queue" : "Force start"}${many ? ` ${targets.length} torrents` : ""}</button>
       <hr />
@@ -2790,6 +2816,11 @@ Click to open in Explorer` : "";
         .catch(() => note("That folder could not be opened."));
       if (act === "files") return void openInWintFiles(await torrentFolder(row))
         .catch((error) => note(String(error)));
+      if (act === "retry") {
+        note(failed.length === 1 ? `Trying ${failed[0].name} again` : `Trying ${failed.length} torrents again`);
+        return void Promise.all(failed.map((item) => invoke("torrent_action", { id: item.id, action: "retry" })))
+          .catch((error) => note(String(error)));
+      }
       if (act === "toggle") return void Promise.all(targets.map((item) => invoke("torrent_action", { id: item.id, action: paused ? "start" : "pause" })))
         .catch((error) => note(String(error)));
       if (act === "force") return void Promise.all(targets.map((item) => invoke("torrent_action", { id: item.id, action: allForced ? "start" : "force_start" })))

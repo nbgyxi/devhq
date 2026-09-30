@@ -1921,16 +1921,15 @@ impl PeerHandler {
                             break;
                         }
                         Err(e) => {
-                            let again = attempt < ATTEMPTS
-                                && crate::file_ops::is_transient_io_error(&e);
+                            let again =
+                                attempt < ATTEMPTS && crate::file_ops::is_transient_io_error(&e);
                             if !again {
                                 outcome = Err(e);
                                 break;
                             }
                             warn!(
                                 id = state.shared.id,
-                                attempt,
-                                "error writing to disk, trying again: {e:#}"
+                                attempt, "error writing to disk, trying again: {e:#}"
                             );
                             // Short and growing. Long enough for a device that
                             // is re-appearing to finish doing so, short enough

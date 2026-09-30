@@ -1680,6 +1680,7 @@ pub async fn torrent_action(
             "start" => "start",
             "force_start" => "force_start",
             "pause" => "pause",
+            "retry" => "retry",
             "remove" => "remove",
             other => return Err(format!("There is no torrent action called {other}.")),
         };

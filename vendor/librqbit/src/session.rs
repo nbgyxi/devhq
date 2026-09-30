@@ -939,39 +939,39 @@ impl Session {
             let mut futs = FuturesUnordered::new();
 
             while !added_all || !futs.is_empty() {
-                    // NOTE: this closure exists purely to workaround rustfmt screwing up when inlining it.
-                    let add_torrent_span = |info_hash: &Id20| -> tracing::Span {
-                        debug_span!(parent: session.rs(), "add_torrent", info_hash=?info_hash)
-                    };
-                    tokio::select! {
-                        Some(res) = futs.next(), if !futs.is_empty() => {
-                            if let Err(e) = res {
-                                error!("error adding torrent to session: {e:#}");
-                            }
+                // NOTE: this closure exists purely to workaround rustfmt screwing up when inlining it.
+                let add_torrent_span = |info_hash: &Id20| -> tracing::Span {
+                    debug_span!(parent: session.rs(), "add_torrent", info_hash=?info_hash)
+                };
+                tokio::select! {
+                    Some(res) = futs.next(), if !futs.is_empty() => {
+                        if let Err(e) = res {
+                            error!("error adding torrent to session: {e:#}");
                         }
-                        st = ps.next(), if !added_all => {
-                            match st {
-                                // One unreadable saved torrent is skipped with
-                                // a line about it. It used to abort the resume,
-                                // which on a background resume would silently
-                                // leave every torrent after it unloaded.
-                                Some(Err(e)) => error!("error reading a saved torrent: {e:#}"),
-                                Some(Ok((id, st))) => {
-                                    let span = add_torrent_span(st.info_hash());
-                                    match st.into_add_torrent() {
-                                        Ok((add_torrent, mut opts)) => {
-                                            opts.preferred_id = Some(id);
-                                            let fut = session.add_torrent(add_torrent, Some(opts));
-                                            let fut = fut.instrument(span);
-                                            futs.push(fut);
-                                        }
-                                        Err(e) => error!(?id, "error resuming a saved torrent: {e:#}"),
+                    }
+                    st = ps.next(), if !added_all => {
+                        match st {
+                            // One unreadable saved torrent is skipped with
+                            // a line about it. It used to abort the resume,
+                            // which on a background resume would silently
+                            // leave every torrent after it unloaded.
+                            Some(Err(e)) => error!("error reading a saved torrent: {e:#}"),
+                            Some(Ok((id, st))) => {
+                                let span = add_torrent_span(st.info_hash());
+                                match st.into_add_torrent() {
+                                    Ok((add_torrent, mut opts)) => {
+                                        opts.preferred_id = Some(id);
+                                        let fut = session.add_torrent(add_torrent, Some(opts));
+                                        let fut = fut.instrument(span);
+                                        futs.push(fut);
                                     }
-                                },
-                                None => added_all = true
-                            };
-                        }
-                    };
+                                    Err(e) => error!(?id, "error resuming a saved torrent: {e:#}"),
+                                }
+                            },
+                            None => added_all = true
+                        };
+                    }
+                };
             }
         }
     }

@@ -8,8 +8,8 @@ pub mod utils;
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock, Weak};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
 use anyhow::Context;

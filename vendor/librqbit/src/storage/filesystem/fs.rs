@@ -130,6 +130,55 @@ fn is_invalid_function(error: &anyhow::Error) -> bool {
         .any(|io| io.raw_os_error() == Some(1))
 }
 
+/// ERROR_IO_DEVICE: the drive answered the write with a fault of its own.
+///
+/// External USB disks do this under a torrent's load — many small writes at
+/// scattered offsets across a lot of open files is close to the worst case for
+/// a bridge chip, and one of them stalling long enough to be reset surfaces
+/// here. It is not the bytes, the file or the handle: the same write to the
+/// same place succeeds a moment later, once the device has finished picking
+/// itself up. So it is worth waiting out rather than failing a torrent that is
+/// otherwise downloading perfectly well.
+#[cfg(windows)]
+fn is_device_io_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|e| e.downcast_ref::<std::io::Error>())
+        .any(|io| io.raw_os_error() == Some(1117))
+}
+
+/// How long to keep trying a write the device faulted on, and how long to wait
+/// between attempts. A USB disk that has been reset is back within a couple of
+/// seconds or is not coming back at all, and the waiting happens on librqbit's
+/// blocking write path, so the whole budget stays short enough that a genuinely
+/// dead drive still reports itself as one promptly.
+#[cfg(windows)]
+const DEVICE_RETRY_BACKOFF: &[u64] = &[50, 200, 500, 1000, 2000];
+
+/// Run a write, and sit out a device fault rather than failing on it.
+#[cfg(windows)]
+fn retry_through_device_fault<T>(mut op: impl FnMut() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    let mut last = match op() {
+        Ok(v) => return Ok(v),
+        Err(e) => e,
+    };
+    for wait_ms in DEVICE_RETRY_BACKOFF {
+        if !is_device_io_error(&last) {
+            return Err(last);
+        }
+        warn!(
+            wait_ms,
+            "the drive faulted on a write; waiting and trying it again"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(*wait_ms));
+        match op() {
+            Ok(v) => return Ok(v),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
 /// Whether an error says the handle is dead rather than the operation wrong.
 #[cfg(windows)]
 fn is_stale_handle(error: &anyhow::Error) -> bool {
@@ -169,7 +218,9 @@ impl TorrentStorage for FilesystemStorage {
             retry_through_reopen(of, || {
                 #[cfg(windows)]
                 {
-                    match of.try_mark_sparse()?.pwrite_all(offset, buf) {
+                    match retry_through_device_fault(|| {
+                        of.try_mark_sparse()?.pwrite_all(offset, buf)
+                    }) {
                         Ok(()) => Ok(()),
                         // "Incorrect function" for a write that is inside the
                         // file, on a drive that is otherwise working, is the
@@ -181,10 +232,9 @@ impl TorrentStorage for FilesystemStorage {
                         Err(e) if is_invalid_function(&e) => {
                             warn!(
                                 file_id,
-                                offset,
-                                "a positional write was refused; seeking to it instead"
+                                offset, "a positional write was refused; seeking to it instead"
                             );
-                            of.pwrite_all_seeking(offset, buf)
+                            retry_through_device_fault(|| of.pwrite_all_seeking(offset, buf))
                         }
                         Err(e) => Err(e),
                     }
@@ -204,7 +254,9 @@ impl TorrentStorage for FilesystemStorage {
         let of = self.opened_files.get(file_id).context("no such file")?;
         retry_through_reopen(of, || {
             #[cfg(windows)]
-            return of.try_mark_sparse()?.pwrite_all_vectored(offset, bufs);
+            return retry_through_device_fault(|| {
+                of.try_mark_sparse()?.pwrite_all_vectored(offset, bufs)
+            });
             #[cfg(not(windows))]
             return of.lock_read()?.pwrite_all_vectored(offset, bufs);
         })

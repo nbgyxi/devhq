@@ -63,6 +63,9 @@ const MAX_FILES_IN_REPLY: usize = 4096;
 /// often that check runs. See `files_are_missing`.
 const MISSING_CHECK_SAMPLE: usize = 48;
 const MISSING_CHECK_EVERY: Duration = Duration::from_secs(10);
+/// How often the sizes Explorer shows are brought back in line with what has
+/// actually been written. See `refresh_dir_entries`.
+const SIZE_REFRESH_EVERY: Duration = Duration::from_secs(60);
 /// Ceilings the engine is started with, so one torrent cannot take the machine
 /// apart. All of them are overridable from settings except the hash-check
 /// limit, which exists to keep the disk usable while checking.
@@ -109,6 +112,10 @@ fn note_recovery_read_failure(info_hash: &str) {
 /// Windows, but Explorer presents a 20 GB torrent as 20 GB of files before a
 /// byte has arrived. Delegate all real I/O to librqbit and skip only that eager
 /// sizing step; positioned writes grow each file naturally as pieces arrive.
+///
+/// The cost of skipping it is that nothing writes a size into the directory
+/// entry while the engine holds the file open, so a listing goes on saying
+/// 0 B. `refresh_dir_entries` is what pays that cost back.
 #[derive(Default, Clone, Copy)]
 struct GrowingFilesFactory;
 
@@ -424,9 +431,15 @@ struct Ledger {
     totals: HashMap<String, Totals>,
     /// Hours since the epoch, to what moved during them.
     hours: BTreeMap<u64, Bucket>,
-    /// Not saved: the last reading taken from each torrent this run, so only
-    /// the increment is counted.
-    #[serde(skip)]
+    /// The last reading taken from each torrent, so only the increment is
+    /// counted.
+    ///
+    /// Saved, and it has to be. The engine's `progress_bytes` is how much of
+    /// the torrent is on disk, which survives a restart — so a helper that
+    /// came back with no memory of the last reading booked a finished 10 GB
+    /// torrent as 10 GB freshly downloaded, every single start. The totals
+    /// climbed by the size of the library on every restart and ended up
+    /// reporting hundreds of gigabytes for a torrent that was fetched once.
     seen: HashMap<String, Totals>,
     #[serde(skip)]
     dirty: bool,
@@ -441,7 +454,23 @@ fn unix_hour(now_ms: u64) -> u64 {
 impl Ledger {
     /// Takes a reading for one torrent and books the difference.
     fn observe(&mut self, info_hash: &str, uploaded: u64, downloaded: u64, now_ms: u64) {
-        let last = self.seen.get(info_hash).copied().unwrap_or_default();
+        let Some(last) = self.seen.get(info_hash).copied() else {
+            // Nothing to take a difference from yet: this is either a torrent
+            // the ledger has never seen or a ledger saved before readings were
+            // kept. Either way the reading itself is a standing total, not
+            // something that moved just now, so it is written down and not
+            // booked. A torrent genuinely starting from nothing loses at most
+            // the one tick's worth that arrived before the first reading.
+            self.seen.insert(
+                info_hash.to_owned(),
+                Totals {
+                    uploaded,
+                    downloaded,
+                },
+            );
+            self.dirty = true;
+            return;
+        };
         // A counter that went backwards is a torrent that was restarted or
         // re-added, so what it reads now is all of it and none of it is a
         // repeat of what was already booked.
@@ -603,6 +632,42 @@ mod rate_tests {
         // load as an empty override list.
         let old: Queue = serde_json::from_str(r#"{"wanted":["ordinary"]}"#).unwrap();
         assert!(old.force_started.is_empty());
+    }
+
+    /// A restart is the whole point: `progress_bytes` reads the same after one
+    /// as it did before, and booking that reading again is what turned a
+    /// 10 GB torrent into hundreds of gigabytes transferred.
+    #[test]
+    fn a_restart_does_not_book_what_was_already_downloaded() {
+        let mut ledger = Ledger::default();
+        // First sight of a torrent is recorded, not counted.
+        ledger.observe("t", 0, 0, 0);
+        ledger.observe("t", 1_000, 4_000_000_000, 1_000);
+        ledger.observe("t", 2_000, 10_000_000_000, 2_000);
+        assert_eq!(ledger.totals_for("t").downloaded, 10_000_000_000);
+
+        // Round-trip the way a helper restart does, and take the same reading
+        // again: the torrent is finished, so nothing has moved.
+        let saved = serde_json::to_vec(&ledger).unwrap();
+        let mut restored: Ledger = serde_json::from_slice(&saved).unwrap();
+        restored.observe("t", 0, 10_000_000_000, 3_000);
+        restored.observe("t", 500, 10_000_000_000, 4_000);
+        assert_eq!(restored.totals_for("t").downloaded, 10_000_000_000);
+        // Uploading starts from zero again each run, and is counted from there.
+        assert_eq!(restored.totals_for("t").uploaded, 2_500);
+    }
+
+    /// A ledger written before readings were kept must not count every
+    /// torrent's whole progress once more on the first start that can read it.
+    #[test]
+    fn a_ledger_without_readings_primes_itself() {
+        let mut ledger: Ledger =
+            serde_json::from_str(r#"{"totals":{"t":{"uploaded":5,"downloaded":9}},"hours":{}}"#)
+                .unwrap();
+        ledger.observe("t", 0, 10_000_000_000, 0);
+        assert_eq!(ledger.totals_for("t").downloaded, 9);
+        ledger.observe("t", 0, 10_000_001_000, 1_000);
+        assert_eq!(ledger.totals_for("t").downloaded, 1_009);
     }
 }
 
@@ -837,6 +902,12 @@ fn build_snapshot(
                     .unwrap_or(0);
                 state.completed_at.insert(t.info_hash.clone(), completed_at);
                 completions_changed = true;
+                // A torrent that has just finished is the one moment somebody
+                // goes and looks at the folder, so its listing has to be right
+                // then rather than at the next sweep.
+                if let Ok((_, files)) = torrent_paths(&state.api, TorrentIdOrHash::Id(id)) {
+                    tokio::task::spawn_blocking(move || refresh_dir_entries(&files));
+                }
             }
         }
         // A torrent goes back into the checking set whenever the engine puts
@@ -1088,6 +1159,36 @@ fn files_are_missing(files: &[PathBuf]) -> bool {
         .step_by(step)
         .take(MISSING_CHECK_SAMPLE)
         .any(|path| !path.exists())
+}
+
+/// Bring the sizes Explorer shows back in line with what is on disk.
+///
+/// Windows keeps a file's size in its directory entry, and that entry is only
+/// brought up to date when a handle to the file is closed. The engine holds
+/// every file of a running torrent open from the moment it is added until it
+/// is removed, so a file that has had gigabytes written through that handle
+/// still reads as **0 B** to anything that lists the folder — Explorer, the
+/// Files tool, `dir`. Nothing is wrong with the data: opening the file shows
+/// its real length. It is the listing that is stale.
+///
+/// The upstream backend never hits this because it calls `set_len` on every
+/// file up front, which writes the final size into the directory entry before
+/// a byte arrives. `GrowingFilesFactory` deliberately skips that — a 20 GB
+/// torrent should not read as 20 GB of files on the day it is added — and this
+/// is the other half of that trade: opening each stale file for write and
+/// closing it again costs about what a stat costs, and refreshes the entry.
+///
+/// Only files whose entry still says zero are touched, so the sweep does no
+/// work on a folder that is already telling the truth.
+fn refresh_dir_entries(files: &[PathBuf]) {
+    for path in files {
+        let stale = std::fs::metadata(path).map(|m| m.len() == 0).unwrap_or(false);
+        if stale {
+            // Opening for write and dropping it is the whole operation: no
+            // read, no flush, no change to the file itself.
+            drop(std::fs::OpenOptions::new().write(true).open(path));
+        }
+    }
 }
 
 /// Decide which torrents should be live and move the ones that disagree.
@@ -1478,6 +1579,37 @@ async fn handle(state: &Mutex<State>, op: &str, arg: Value) -> Result<Value> {
             state.save_queue();
             // `reconcile` on the next tick decides whether a started torrent
             // runs now or waits, so the active limit is honoured either way.
+            Ok(json!({}))
+        }
+
+        // Pick a torrent back up after it has failed.
+        //
+        // `reconcile` deliberately leaves an errored torrent alone: whatever
+        // stopped it is usually still true a second later, and a queue that
+        // restarts a failing torrent forever is worse than one that stops. So
+        // nothing starts it again by itself, and this is the user saying to
+        // try anyway — a drive that faulted has often come back by the time
+        // somebody has read the error and reached for the button.
+        //
+        // The engine answers a start from its error state by hash-checking
+        // what is already on disk and carrying on from there, so nothing that
+        // was downloaded is fetched twice.
+        "retry" => {
+            let mut state = state.lock().await;
+            let id = torrent_id(&arg)?;
+            let handle = state.api.mgr_handle(id)?;
+            let hash = handle.shared().info_hash.as_string();
+            // A torrent that failed is not one the user paused, and a failed
+            // read recorded against it belongs to the run that failed.
+            state.queue.paused.retain(|h| *h != hash);
+            if !state.queue.wanted.contains(&hash) {
+                state.queue.wanted.push(hash.clone());
+            }
+            if let Ok(mut found) = recovery_mismatches().lock() {
+                found.remove(&hash);
+            }
+            state.save_queue();
+            state.api.api_torrent_action_start(id).await?;
             Ok(json!({}))
         }
 
@@ -2326,6 +2458,7 @@ async fn main() -> Result<()> {
             // A reconcile every ~2s; a snapshot every tick.
             let reconcile_every = (2000 / args.snapshot_ms).max(1) as u32;
             let mut last_missing_check = std::time::Instant::now() - MISSING_CHECK_EVERY;
+            let mut last_size_refresh = std::time::Instant::now();
             let mut last_resume_report = std::time::Instant::now();
             loop {
                 tick.tick().await;
@@ -2373,6 +2506,32 @@ async fn main() -> Result<()> {
                         }
                     }
                     missing = found;
+                }
+
+                // The same staleness the completion hook fixes, but for a
+                // download still running: somebody watching a folder fill up
+                // should see it fill up. See `refresh_dir_entries`.
+                if last_size_refresh.elapsed() >= SIZE_REFRESH_EVERY {
+                    last_size_refresh = std::time::Instant::now();
+                    let guard = state.lock().await;
+                    let running: Vec<usize> = guard
+                        .api
+                        .api_torrent_list_ext(ApiTorrentListOpts { with_stats: true })
+                        .torrents
+                        .iter()
+                        .filter(|t| t.stats.as_ref().is_some_and(|s| !s.finished))
+                        .filter_map(|t| t.id)
+                        .collect();
+                    let mut paths = Vec::new();
+                    for id in running {
+                        if let Ok((_, files)) = torrent_paths(&guard.api, TorrentIdOrHash::Id(id)) {
+                            paths.extend(files);
+                        }
+                    }
+                    drop(guard);
+                    if !paths.is_empty() {
+                        tokio::task::spawn_blocking(move || refresh_dir_entries(&paths));
+                    }
                 }
 
                 since_reconcile += 1;

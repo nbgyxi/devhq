@@ -1,6 +1,6 @@
-use std::path::PathBuf;
 use governor::InsufficientCapacity;
 use peer_binary_protocol::MessageDeserializeError;
+use std::path::PathBuf;
 use tokio::sync::AcquireError;
 
 #[derive(thiserror::Error, Debug)]

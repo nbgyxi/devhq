@@ -86,6 +86,40 @@
     boot.hidden = false;
   };
 
+  /** The file each tool lives in. A window loads its own and nothing else.
+   *
+   *  Anything not named here is one of the two catalogs — Utilities and
+   *  Windows tools — which own a whole shelf of ids between them, so those are
+   *  the fallback rather than an error. */
+  const TOOL_SCRIPTS = {
+    ports: "ports-tool.js?v=1",
+    dns: "dns.js",
+    hosts: "hosts.js",
+    network: "network.js?v=0.28.2",
+    "path-ping": "path-ping.js",
+    explorer: "explorer.js?v=0.94.1",
+    "disk-space": "disk-space.js",
+    github: "github.js?v=0.43.20",
+    git: "git-client.js?v=0.5.7",
+  };
+  const CATALOG_SCRIPTS = ["util-tools.js?v=0.28.1", "windows-tools.js?v=0.43.8"];
+
+  const loadScript = (src) => new Promise((resolve, reject) => {
+    const tag = document.createElement("script");
+    tag.src = src;
+    tag.onload = () => resolve();
+    tag.onerror = () => reject(new Error(src));
+    document.head.appendChild(tag);
+  });
+
+  /** Fetch the code this window's tool needs, in parallel where there is more
+   *  than one file. Failing to load is reported as the tool failing to mount,
+   *  which is what it is. */
+  const loadToolCode = async (toolId) => {
+    const wanted = TOOL_SCRIPTS[toolId] ? [TOOL_SCRIPTS[toolId]] : CATALOG_SCRIPTS;
+    await Promise.all(wanted.map((src) => loadScript(src)));
+  };
+
   const icon = (name) => `<span class="ms" aria-hidden="true">${name}</span>`;
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
@@ -207,17 +241,12 @@
     return;
   }
 
-  const meta = catalogEntry();
-  if (!meta) {
-    failBoot(`${openedAs || "That tool"} is not a tool this version knows how to open.`);
-    clearTimeout(revealFallback);
-    await reveal();
-    return;
-  }
-
-  window.wintTrackPageView?.(`/tool-popout/${id}`);
-  document.title = meta.name;
-  document.getElementById("pop-name").textContent = meta.name;
+  // Everything down to the reveal is drawn from the URL alone. The name WinT
+  // put there is the same name the catalog would give, and waiting for the
+  // catalog to confirm it would mean waiting for the tool's code — which is
+  // the whole reason the window used to sit there doing nothing after a click.
+  document.title = openedAs || "Tool";
+  document.getElementById("pop-name").textContent = openedAs;
   const applyBrandIcon = () => {
     const brandImg = document.querySelector(".brand img");
     if (!brandImg) return;
@@ -238,10 +267,32 @@
   // beside it the Alpha/Beta mark that used to sit in the page header. The hint
   // sentence stays out — it crowds the bar and reads as centered noise.
   document.getElementById("pop-hint").innerHTML = window.wintMaturity?.badge(id) ?? "";
-  showBoot(meta.name, `Starting ${meta.name}…`);
+  showBoot(openedAs, `Starting ${openedAs}…`);
   // Show themed chrome and the named loading screen — never the blank flash.
   clearTimeout(revealFallback);
   await reveal();
+
+  // The window is up and saying what it is. Only now is the tool's own code
+  // fetched, and only its own.
+  try {
+    await loadToolCode(id);
+  } catch (_) {
+    failBoot(`${openedAs || "That tool"} could not be loaded.`);
+    return;
+  }
+
+  const meta = catalogEntry();
+  if (!meta) {
+    failBoot(`${openedAs || "That tool"} is not a tool this version knows how to open.`);
+    return;
+  }
+  window.wintTrackPageView?.(`/tool-popout/${id}`);
+  // The catalog's own name is the true one; the URL only got the window open.
+  if (meta.name !== openedAs) {
+    document.title = meta.name;
+    document.getElementById("pop-name").textContent = meta.name;
+    showBoot(meta.name, `Starting ${meta.name}…`);
+  }
 
   const workBusy = new Map();
   window.wintWork = {
