@@ -143,7 +143,7 @@ mod imp {
 
     fn task() -> Result<StartupTask, String> {
         StartupTask::GetAsync(&HSTRING::from(TASK_ID))
-            .and_then(|op| op.get())
+            .and_then(|op| op.join())
             .map_err(|e| format!("Could not reach WinT's startup task: {e}"))
     }
 
@@ -195,7 +195,7 @@ mod imp {
         if enabled {
             let state = task
                 .RequestEnableAsync()
-                .and_then(|op| op.get())
+                .and_then(|op| op.join())
                 .map_err(|e| format!("Could not turn on starting with Windows: {e}"))?;
             Ok(task_state_status(state))
         } else {

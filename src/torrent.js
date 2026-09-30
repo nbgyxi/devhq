@@ -25,6 +25,9 @@
   /** One row's height, in pixels. Fixed, because that is what lets the list be
    *  virtualized without measuring anything. Kept in step with `.tr-row` in
    *  styles.css. */
+  /** How many of the engine log's newest lines the Engine tab lays out. The
+   *  rest are still kept, and Copy still hands over all of them. */
+  const LOG_DRAW_LINES = 2000;
   const ROW = 34;
   const FILE_ROW = 28;
   const UI_CRASH_KEY = "wint:torrent-ui-crash";
@@ -603,19 +606,32 @@
     return /^[A-Za-z]:/.test(path || "") ? path.slice(0, 2).toUpperCase() : null;
   }
 
+  /** States in which nothing is known about how much of a torrent is already
+   *  on disk, because the hash check has not run. See `drawSpace`. */
+  const UNCHECKED_STATES = new Set(["waiting", "adding", "check-queued", "initializing", "needs-check", "missing"]);
+
   /** Warns when finishing everything on a drive would need more room than the
    *  drive has. Counted per drive, because torrents can be going to several,
    *  and it is the one that runs out that matters — not the total.
    *
    *  What is counted is what is still to be written: total size less what is
    *  already on disk, for every torrent that has not finished. Paused and
-   *  queued ones count too — they are still going to want the room. */
+   *  queued ones count too — they are still going to want the room.
+   *
+   *  A torrent whose files have not been hash-checked yet is left out of the
+   *  sum entirely. The engine reports no progress for one until the check runs,
+   *  so its bytes on disk read as zero — counting it would claim a finished
+   *  torrent still has to download all of itself, and a queue of those adds up
+   *  to a warning about hundreds of gigabytes that are already there. What is
+   *  left out is said out loud rather than quietly rolled in. */
   function drawSpace() {
     const el = st.host?.querySelector("[data-tr-space]");
     if (!el) return;
     const needed = new Map();
+    let unchecked = 0;
     for (const row of st.snap?.torrents || []) {
       if (row.finished) continue;
+      if (UNCHECKED_STATES.has(row.state)) { unchecked += 1; continue; }
       const remaining = Math.max(0, (row.totalBytes || 0) - (row.progressBytes || 0));
       const drive = driveOf(row.outputFolder);
       if (!remaining || !drive) continue;
@@ -634,7 +650,10 @@
     const sentence = short
       .map((drive) => `${drive.label} needs ${bytes(drive.need)} and has ${bytes(drive.free)} free — ${bytes(drive.need - drive.free)} short`)
       .join("; ");
-    el.innerHTML = `${icon("warning")}<span>Not enough room to finish everything: ${esc(sentence)}. Downloads will fail as the disk fills up.</span>`;
+    const caveat = unchecked
+      ? ` ${unchecked} torrent${unchecked === 1 ? " is" : "s are"} not counted yet — how much of ${unchecked === 1 ? "it is" : "them is"} already on disk is unknown until the files are checked.`
+      : "";
+    el.innerHTML = `${icon("warning")}<span>Not enough room to finish everything: ${esc(sentence)}. Downloads will fail as the disk fills up.${esc(caveat)}</span>`;
   }
 
   /** How much room the drives have left. Asked for on mount and every half
@@ -682,8 +701,28 @@
       `${Number(s.pendingRequests) || 0} pending requests`,
       `${bytes(s.memoryBytes)} memory`,
       `${Number(s.restarts) || 0} restarts`,
+      swarmFact(),
       resumeProgress(s),
     ].filter(Boolean);
+  }
+
+  /** How many peers are actually connected, across every torrent.
+   *
+   *  Uploading needs someone on the other end, and nothing else on this page
+   *  says whether there is. A list of torrents all saying "Seeding" with no
+   *  peers behind them looks identical to one that is busy, so the number that
+   *  decides it is spelled out - and when it is zero while there is something
+   *  to share, it says that too, because that is not a quiet success. */
+  function swarmFact() {
+    const rows = st.snap?.torrents || [];
+    const live = rows.filter((row) => row.state === "live");
+    if (!live.length) return "";
+    const peers = live.reduce((sum, row) => sum + (Number(row.peers) || 0), 0);
+    const seeding = live.filter((row) => row.finished).length;
+    if (peers) return `${peers} peer${peers === 1 ? "" : "s"} connected`;
+    return seeding
+      ? `No peers connected — nothing can be uploaded until someone reaches this PC`
+      : "No peers connected";
   }
 
   /** Everything worth handing to whoever has to work out what went wrong, as
@@ -1170,7 +1209,10 @@
     const statusEl = el.querySelector(".tr-status");
     setText(statusEl.querySelector(":scope > span"), status.text);
     statusEl.className = `tr-status ${status.tone}`;
-    statusEl.title = row.error || "";
+    // Only the first line. A tooltip that carries a stack backtrace cannot be
+    // read, selected or copied, and it disappears the moment the pointer moves
+    // - the full text lives in the details pane instead, where it stays put.
+    statusEl.title = row.error ? `${firstLine(row.error)}\nClick the row for the full error.` : "";
     statusEl.querySelector("[data-tr-recheck]").hidden = row.state !== "needs-check";
     setText(el.querySelector(".tr-completed"), completedAt(row.completedAt));
     setText(el.querySelector(".tr-down"), row.state === "live" && !row.finished ? speed(row.downloadBps) : "—");
@@ -1296,6 +1338,13 @@ Click to open in Explorer` : "";
             <button type="button" class="btn danger" data-tr-remove>${icon("delete")}<span>Remove</span></button>
           </div>
         </div>
+        <div class="tr-derror" data-tr-derror hidden>
+          <div class="tr-derror-head">
+            ${icon("error")}<strong data-tr-derror-gist></strong>
+            <button type="button" class="btn" data-tr-derror-copy>${icon("content_copy")}<span>Copy</span></button>
+          </div>
+          <pre data-tr-derror-text></pre>
+        </div>
         <div class="tr-files" data-tr-files>
           <div class="tr-fhead" data-tr-fhead>
             <i></i>
@@ -1324,6 +1373,7 @@ Click to open in Explorer` : "";
       : "";
     setText(pane.querySelector(".tr-dtitle small"),
       `${bytes(row.totalBytes)} · ${pct.toFixed(pct >= 100 || pct === 0 ? 0 : 1)}% complete · ${row.outputFolder}${cut}`);
+    drawError(pane, row);
     drawFileHead();
     const toggle = pane.querySelector("[data-tr-toggle]");
     if (!toggle) return;
@@ -1331,6 +1381,61 @@ Click to open in Explorer` : "";
     setText(toggle.querySelector(".ms"), paused ? "play_arrow" : "pause");
     setText(toggle.querySelector("span:last-child"), paused ? "Resume" : "Pause");
     drawFiles();
+  }
+
+  /** The first line of an error, for the places that have room for one line. */
+  function firstLine(text) {
+    return String(text).split(/\r?\n/, 1)[0].trim();
+  }
+
+  /** Turn the operating system's number for a disk failure into a sentence.
+   *
+   *  "os error 1117" is the truth and tells the reader nothing. These are the
+   *  ones worth naming, because each calls for something different: a fault in
+   *  the drive is not a full disk and neither is a name Windows will not take,
+   *  and only one of the three is WinT's to fix. */
+  function errorHint(text) {
+    const t = String(text);
+    if (/os error 1117|I\/O device error/i.test(t)) {
+      return "The drive reported a hardware fault. This is the disk itself failing the request, not something WinT can retry around — check the drive's health and its cable before trusting more data to it.";
+    }
+    // ERROR_INVALID_FUNCTION on an ordinary write means the file handle no
+    // longer refers to anything the system can write to - which is what is
+    // left behind when a drive disappears while files on it are open. It
+    // follows a run of device errors rather than appearing on its own.
+    if (/os error 1|incorrect function/i.test(t)) {
+      return "The drive is no longer answering. Files that were open on it are now stale, so nothing more can be written until it is reconnected and the engine is restarted.";
+    }
+    if (/os error 23|data error \(cyclic redundancy check\)/i.test(t)) {
+      return "The drive could not read the data back correctly. That is usually failing media.";
+    }
+    if (/os error 112|not enough space/i.test(t)) {
+      return "The disk is full.";
+    }
+    if (/os error 123|filename, directory name, or volume label syntax/i.test(t)) {
+      return "Windows will not accept that filename.";
+    }
+    if (/os error 5|access is denied/i.test(t)) {
+      return "Windows refused access to that file. Another program may have it open, or the folder may be read-only.";
+    }
+    return "";
+  }
+
+  /** The full error for the selected torrent, kept where it can be read.
+   *
+   *  It used to be a `title` tooltip. An engine error runs to a stack
+   *  backtrace, and a tooltip is the one place text can be neither selected,
+   *  copied nor held still long enough to screenshot — which is exactly what
+   *  someone does with an error they intend to report. */
+  function drawError(pane, row) {
+    const box = pane.querySelector("[data-tr-derror]");
+    if (!box) return;
+    const text = row.error || "";
+    box.hidden = !text;
+    if (!text) return;
+    const hint = errorHint(text);
+    setText(box.querySelector("[data-tr-derror-gist]"), hint || firstLine(text));
+    setText(box.querySelector("[data-tr-derror-text]"), text);
   }
 
   /** The file list, virtualized the same way as the torrents: a torrent with
@@ -1487,7 +1592,33 @@ Click to open in Explorer` : "";
     }
     setText(view.querySelector("[data-tr-enginefacts]"), engineLine());
     setText(view.querySelector("[data-tr-enginebuild]"), engineBuild() || "");
-    drawEngineLog();
+    // The tab opens now; the log fills in once the tab has been painted.
+    //
+    // The log is thousands of lines, backtraces and all, and writing it into
+    // the page is one long synchronous layout. Doing that in the same frame as
+    // the click meant the tab did not appear until the log was ready - the
+    // window sitting on the old view, looking like nothing had happened. The
+    // panels and the header cost nothing, so they go up immediately and the
+    // text arrives afterwards, which is the difference between a tab that
+    // opens and a tab that hangs.
+    //
+    // One `requestAnimationFrame` was not enough, and that is why the first
+    // open still stalled: a frame callback runs at the *start* of the next
+    // frame, before that frame is painted, so the log's layout was still paid
+    // for before anything appeared on screen. The `setTimeout` inside it is a
+    // task, and a task cannot run until the frame it was queued from has been
+    // painted. Opening the tab again never showed the stall, because the text
+    // was already written and nothing was laid out a second time.
+    if (view.dataset.trLogPending === "1") return;
+    view.dataset.trLogPending = "1";
+    // Not left blank in the meantime: an empty pane reads as an engine with
+    // nothing to say, which is not the same as a log still on its way.
+    const pre = view.querySelector("[data-tr-log]");
+    if (pre && !pre.textContent) pre.textContent = "Reading the engine log…";
+    requestAnimationFrame(() => setTimeout(() => {
+      delete view.dataset.trLogPending;
+      if (view.isConnected && !view.hidden) drawEngineLog();
+    }, 0));
   }
 
   /** Writes the log, keeping the view pinned to the newest line unless the
@@ -1496,16 +1627,24 @@ Click to open in Explorer` : "";
   function drawEngineLog() {
     const pre = st.host?.querySelector("[data-tr-log]");
     if (!pre) return;
-    const lines = Array.isArray(st.engine?.diagnostics) ? st.engine.diagnostics : [];
+    const all = Array.isArray(st.engine?.diagnostics) ? st.engine.diagnostics : [];
+    // Only the newest are drawn. The whole log is still what Copy hands over;
+    // this cap is about what the page has to lay out, which otherwise grows
+    // without limit for as long as the engine runs and makes the tab slower
+    // every time it is opened.
+    const lines = all.length > LOG_DRAW_LINES ? all.slice(-LOG_DRAW_LINES) : all;
     const text = lines.length ? lines.join(String.fromCharCode(10)) : "The engine has not said anything yet.";
     if (pre.textContent !== text) {
       const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 24;
       pre.textContent = text;
       if (atBottom) pre.scrollTop = pre.scrollHeight;
     }
+    const trimmed = all.length - lines.length;
     setText(
       st.host.querySelector("[data-tr-logcount]"),
-      lines.length ? `${lines.length} line${lines.length === 1 ? "" : "s"}, newest last` : "",
+      all.length
+        ? `${all.length} line${all.length === 1 ? "" : "s"}, newest last${trimmed ? ` · showing the last ${lines.length}` : ""}`
+        : "",
     );
   }
 
@@ -2402,6 +2541,12 @@ Click to open in Explorer` : "";
 
     if (t.closest("[data-tr-toggle]")) return toggleSelected();
     if (t.closest("[data-tr-remove]")) return removeSelected();
+    if (t.closest("[data-tr-derror-copy]")) {
+      const text = t.closest("[data-tr-derror]")?.querySelector("[data-tr-derror-text]")?.textContent || "";
+      return void navigator.clipboard.writeText(text)
+        .then(() => note("Error copied"))
+        .catch(() => note("The error could not be copied"));
+    }
     if (t.closest("[data-tr-ask-dismiss]")) {
       markAsked();
       drawAsk();

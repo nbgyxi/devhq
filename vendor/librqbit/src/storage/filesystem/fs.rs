@@ -57,21 +57,142 @@ impl FilesystemStorage {
     }
 }
 
+/// Say everything known about a write that failed.
+///
+/// One file failing while every other file on the same drive is written
+/// without trouble is not a drive that has stopped working, and the two were
+/// indistinguishable from the message alone: a file id, an error, and nothing
+/// to say whether the file was unusual. Where in the file, how big the write
+/// was, how big the file is, and what Windows thinks its attributes are
+/// together answer that, and they are cheap because this only runs when
+/// something has already gone wrong.
+fn describe_on_failure<T>(
+    of: &OpenedFile,
+    file_id: usize,
+    offset: u64,
+    len: usize,
+    op: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    match op() {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            // Attached to the error, not merely logged. The error is what the
+            // window shows and what gets copied into a bug report; a log line
+            // somewhere else is no use to whoever is looking at the failure.
+            let detail = format!(
+                "writing {len} bytes at offset {offset} (ending at {}) of file {file_id}, {}",
+                offset + len as u64,
+                of.describe()
+            );
+            warn!("{detail}: {e:#}");
+            Err(e.context(detail))
+        }
+    }
+}
+
+/// Run a file operation, and if it fails because the handle no longer refers
+/// to a working device, open the file again and run it once more.
+///
+/// This is what a removable drive that vanishes and comes back needs. While it
+/// is away, every handle on it is dead, and the system says so with
+/// "Incorrect function" - an answer that does not change no matter how many
+/// times the same handle is used, so the ordinary retry higher up cannot get
+/// past it. Reopening is the only move that can, and once the drive is back
+/// it succeeds immediately.
+///
+/// Exactly one extra attempt. If the drive really is gone the reopen fails on
+/// its own and the original error is what the caller sees, so nothing is
+/// hidden and nothing is retried in a loop.
+fn retry_through_reopen<T>(
+    of: &OpenedFile,
+    mut op: impl FnMut() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    match op() {
+        Ok(v) => Ok(v),
+        Err(first) => {
+            if !is_stale_handle(&first) {
+                return Err(first);
+            }
+            warn!("the drive stopped answering; opening the file again and retrying");
+            of.reopen_on_next_use();
+            op().map_err(|_| first)
+        }
+    }
+}
+
+/// ERROR_INVALID_FUNCTION, which on a write means the volume would not do it
+/// the way it was asked, not that the bytes or the file are wrong.
+#[cfg(windows)]
+fn is_invalid_function(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|e| e.downcast_ref::<std::io::Error>())
+        .any(|io| io.raw_os_error() == Some(1))
+}
+
+/// Whether an error says the handle is dead rather than the operation wrong.
+#[cfg(windows)]
+fn is_stale_handle(error: &anyhow::Error) -> bool {
+    // ERROR_INVALID_HANDLE, ERROR_DEVICE_NOT_CONNECTED, ERROR_NOT_READY,
+    // ERROR_FILE_INVALID (the volume was dismounted).
+    //
+    // ERROR_INVALID_FUNCTION is deliberately absent. It looked like a dead
+    // handle and is not: reopening the file changes nothing, and the reopen
+    // itself can take half a minute on the file it happens to. It is handled
+    // where it belongs, as a write the volume would not do that way.
+    const STALE: &[i32] = &[6, 1167, 21, 1006];
+    error
+        .chain()
+        .filter_map(|e| e.downcast_ref::<std::io::Error>())
+        .any(|io| io.raw_os_error().is_some_and(|c| STALE.contains(&c)))
+}
+
+#[cfg(not(windows))]
+fn is_stale_handle(error: &anyhow::Error) -> bool {
+    // EBADF, ENXIO, ENODEV.
+    const STALE: &[i32] = &[9, 6, 19];
+    error
+        .chain()
+        .filter_map(|e| e.downcast_ref::<std::io::Error>())
+        .any(|io| io.raw_os_error().is_some_and(|c| STALE.contains(&c)))
+}
+
 impl TorrentStorage for FilesystemStorage {
     fn pread_exact(&self, file_id: usize, offset: u64, buf: &mut [u8]) -> anyhow::Result<()> {
-        self.opened_files
-            .get(file_id)
-            .context("no such file")?
-            .lock_read()?
-            .pread_exact(offset, buf)
+        let of = self.opened_files.get(file_id).context("no such file")?;
+        retry_through_reopen(of, || of.lock_read()?.pread_exact(offset, buf))
     }
 
     fn pwrite_all(&self, file_id: usize, offset: u64, buf: &[u8]) -> anyhow::Result<()> {
         let of = self.opened_files.get(file_id).context("no such file")?;
-        #[cfg(windows)]
-        return of.try_mark_sparse()?.pwrite_all(offset, buf);
-        #[cfg(not(windows))]
-        return of.lock_read()?.pwrite_all(offset, buf);
+        describe_on_failure(of, file_id, offset, buf.len(), || {
+            retry_through_reopen(of, || {
+                #[cfg(windows)]
+                {
+                    match of.try_mark_sparse()?.pwrite_all(offset, buf) {
+                        Ok(()) => Ok(()),
+                        // "Incorrect function" for a write that is inside the
+                        // file, on a drive that is otherwise working, is the
+                        // volume refusing the positional write rather than
+                        // refusing the write. Seeking to the same place and
+                        // writing there is worth one try before the torrent is
+                        // given up on; it is slower and takes an exclusive
+                        // lock, so it stays on the failure path only.
+                        Err(e) if is_invalid_function(&e) => {
+                            warn!(
+                                file_id,
+                                offset,
+                                "a positional write was refused; seeking to it instead"
+                            );
+                            of.pwrite_all_seeking(offset, buf)
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                #[cfg(not(windows))]
+                return of.lock_read()?.pwrite_all(offset, buf);
+            })
+        })
     }
 
     fn pwrite_all_vectored(
@@ -81,10 +202,12 @@ impl TorrentStorage for FilesystemStorage {
         bufs: [IoSlice<'_>; 2],
     ) -> anyhow::Result<usize> {
         let of = self.opened_files.get(file_id).context("no such file")?;
-        #[cfg(windows)]
-        return of.try_mark_sparse()?.pwrite_all_vectored(offset, bufs);
-        #[cfg(not(windows))]
-        return of.lock_read()?.pwrite_all_vectored(offset, bufs);
+        retry_through_reopen(of, || {
+            #[cfg(windows)]
+            return of.try_mark_sparse()?.pwrite_all_vectored(offset, bufs);
+            #[cfg(not(windows))]
+            return of.lock_read()?.pwrite_all_vectored(offset, bufs);
+        })
     }
 
     fn remove_file(&self, _file_id: usize, filename: &Path) -> anyhow::Result<()> {

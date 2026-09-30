@@ -198,6 +198,79 @@ impl OpenedFile {
         Ok(())
     }
 
+    /// Write at `offset` by moving the file pointer instead of passing the
+    /// offset to the write call, under an exclusive lock.
+    ///
+    /// The ordinary path is a positional write: the offset goes to `WriteFile`
+    /// in an OVERLAPPED and the file pointer is never touched, which is what
+    /// makes it safe for several peers to write to one file at once. Some
+    /// volumes refuse that on a sparse file with "Incorrect function" while
+    /// accepting a plain seek and write of the very same bytes.
+    ///
+    /// Seeking moves state shared by every writer of this file, so this takes
+    /// the write lock rather than the read lock the positional path uses. That
+    /// is why it lives here and not on `File`: two concurrent seek-and-writes
+    /// would land each other's bytes at the wrong offset, and the corruption
+    /// would only show up as a failed hash check much later.
+    #[cfg(windows)]
+    pub fn pwrite_all_seeking(&self, offset: u64, buf: &[u8]) -> anyhow::Result<()> {
+        use std::io::{Seek, SeekFrom, Write};
+        self.ensure_open()?;
+        let mut g = self.file.write();
+        let f = g.fd.as_mut().ok_or(Error::FsFileIsNone)?;
+        f.seek(SeekFrom::Start(offset))?;
+        f.write_all(buf)?;
+        Ok(())
+    }
+
+    /// What is known about this file right now, for an error message.
+    ///
+    /// A write that fails names a file id and nothing else, which is not
+    /// enough to tell a fault in the drive from something particular to one
+    /// file - and those call for opposite responses.
+    pub fn describe(&self) -> String {
+        let g = self.file.read();
+        let path = g.path.clone();
+        let opened = g.fd.is_some();
+        match std::fs::metadata(&path) {
+            Ok(m) => {
+                use std::os::windows::fs::MetadataExt;
+                format!(
+                    "{path:?} (on disk: {} bytes, attributes {:#x}, opened: {opened})",
+                    m.len(),
+                    m.file_attributes()
+                )
+            }
+            Err(e) => format!("{path:?} (cannot be stat'd: {e}, opened: {opened})"),
+        }
+    }
+
+    /// Throw away the handle so the next read or write opens the file again.
+    ///
+    /// A removable drive that disappears leaves every handle on it pointing at
+    /// nothing. Windows answers I/O on one of those with "Incorrect function"
+    /// (`ERROR_INVALID_FUNCTION`) rather than with anything that sounds like a
+    /// missing disk, and it answers that way forever: retrying the same handle
+    /// cannot work, because the handle is what is broken. Reopening is the
+    /// only thing that can, and it costs one `CreateFile` on a path that is
+    /// already known.
+    ///
+    /// A file that was never opened is left alone - there is no stale handle
+    /// to drop, and marking it unopened would resurrect a padding placeholder
+    /// or a dummy as a real file.
+    pub fn reopen_on_next_use(&self) {
+        let mut g = self.file.write();
+        if g.fd.is_none() {
+            return;
+        }
+        g.fd = None;
+        g.unopened = true;
+        #[cfg(windows)]
+        {
+            g.tried_marking_sparse = false;
+        }
+    }
+
     pub fn new_dummy() -> Self {
         Self {
             file: RwLock::new(Default::default()),
@@ -241,7 +314,20 @@ impl OpenedFile {
         if !g.tried_marking_sparse {
             g.tried_marking_sparse = true;
             let f = g.fd.as_ref().ok_or(Error::FsFileIsNone)?;
-            tracing::debug!(path=?g.path, marked=super::sparse::mark_file_sparse(f), "marking sparse");
+            // exFAT and FAT32 have no sparse files, and the ioctl that asks
+            // for one answers "Incorrect function" there. That was logged at
+            // debug and otherwise ignored, so a volume that cannot do sparse
+            // files looked exactly like one that can - worth knowing when
+            // writes to that same file then start failing.
+            let marked = super::sparse::mark_file_sparse(f);
+            if marked {
+                tracing::debug!(path=?g.path, "marked sparse");
+            } else {
+                tracing::warn!(
+                    path=?g.path,
+                    "this file could not be marked sparse; the filesystem may not support it"
+                );
+            }
         }
         let g = parking_lot::RwLockWriteGuard::downgrade(g);
         Ok(RwLockReadGuard::try_map(g, |f| f.fd.as_ref()).ok().unwrap())

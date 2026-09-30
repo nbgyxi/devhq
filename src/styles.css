@@ -5164,6 +5164,18 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-detail{flex:0 0 360px;min-width:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow:hidden}
 .tr-detail[hidden]{display:none}
 .tr-dhead{flex:none;display:flex;flex-direction:column;gap:10px;min-width:0;padding:11px 12px;border-bottom:1px solid var(--line);background:var(--bg2)}
+/* The full text of a torrent's error. This was a `title` tooltip, which is the
+   one place text can be neither selected nor copied and will not hold still
+   long enough to screenshot - exactly what someone needs from an error they
+   mean to report. It is selectable, it stays, and it has a Copy button. */
+.tr-derror{flex:none;margin:0 12px 11px;border:1px solid rgba(242,84,91,.4);border-radius:10px;background:rgba(242,84,91,.08);overflow:hidden}
+.tr-derror[hidden]{display:none}
+.tr-derror-head{display:flex;align-items:center;gap:8px;padding:9px 11px;font-size:12px}
+.tr-derror-head>.ms{flex:0 0 auto;color:var(--red)}
+.tr-derror-head>strong{flex:1;min-width:0;font-weight:600;line-height:1.5}
+.tr-derror-head>.btn{flex:0 0 auto}
+/* Capped so a backtrace cannot push the file list off the pane; it scrolls. */
+.tr-derror>pre{margin:0;max-height:180px;overflow:auto;padding:9px 11px;border-top:1px solid rgba(242,84,91,.25);color:var(--dim);font-family:var(--mono,ui-monospace,Consolas,monospace);font-size:11px;line-height:1.55;white-space:pre-wrap;word-break:break-word;user-select:text}
 .tr-dtitle{min-width:0;display:flex;flex-direction:column;gap:4px}
 .tr-dtitle strong{font-size:12.5px;line-height:1.35;overflow-wrap:anywhere}
 .tr-dtitle small{color:var(--dim2);font-size:10.5px;line-height:1.5;overflow-wrap:anywhere}

@@ -54,21 +54,47 @@ use self::paused::TorrentStatePaused;
 pub use self::stats::{TorrentStats, TorrentStatsState};
 pub use self::streaming::FileStream;
 
-/// How many torrents may hash-check at once, process-wide.
+/// How many torrents may hash-check at once **per volume**.
 ///
-/// It was a hardcoded 1, which quietly ignored `SessionOptions::concurrent_init_limit`:
-/// a caller could pass any number and still get one at a time. Checking is the
-/// disk-heaviest thing here and one at a time is still the right default, but
-/// the number a caller asks for is now the number it gets.
+/// It was a hardcoded 1 shared by the whole process, which quietly ignored
+/// `SessionOptions::concurrent_init_limit`: a caller could pass any number and
+/// still get one at a time. Worse, one limit for every volume meant a long
+/// queue on one disk held back every other disk, so a torrent whose files were
+/// already complete could sit in `check-queued` for hours and never reach the
+/// swarm — nothing seeds while it waits.
+///
+/// Hashing is disk-bound, and the disk that matters is the one holding the
+/// files, so the limit is applied to each volume independently. One at a time
+/// per volume is still the right default; the number a caller asks for is now
+/// the number each volume gets.
 pub(crate) fn set_initialization_limit(limit: usize) {
-    let _ = INITIALIZATION_SEMAPHORE.set(Arc::new(tokio::sync::Semaphore::new(limit.max(1))));
+    INITIALIZATION_LIMIT.store(limit.max(1), Ordering::Release);
 }
 
-static INITIALIZATION_SEMAPHORE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+static INITIALIZATION_LIMIT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(1);
+static INITIALIZATION_SEMAPHORES: OnceLock<
+    parking_lot::Mutex<std::collections::HashMap<PathBuf, Arc<tokio::sync::Semaphore>>>,
+> = OnceLock::new();
 
-fn initialization_semaphore() -> Arc<tokio::sync::Semaphore> {
-    INITIALIZATION_SEMAPHORE
-        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1)))
+/// The volume a path lives on: the drive on Windows (`D:\`), the root
+/// elsewhere. Anything that has no prefix to speak of shares one bucket, which
+/// is the old behaviour and the safe way to be wrong.
+fn volume_key(path: &Path) -> PathBuf {
+    use std::path::Component;
+    match path.components().next() {
+        Some(c @ (Component::Prefix(_) | Component::RootDir)) => PathBuf::from(c.as_os_str()),
+        _ => PathBuf::new(),
+    }
+}
+
+fn initialization_semaphore(output_folder: &Path) -> Arc<tokio::sync::Semaphore> {
+    let limit = INITIALIZATION_LIMIT.load(Ordering::Acquire).max(1);
+    INITIALIZATION_SEMAPHORES
+        .get_or_init(Default::default)
+        .lock()
+        .entry(volume_key(output_folder))
+        .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(limit)))
         .clone()
 }
 
@@ -168,7 +194,18 @@ impl TorrentMetadata {
             .iter_file_details_ext()
             .map(|fd| {
                 Ok::<_, anyhow::Error>(FileInfo {
-                    relative_filename: fd.details.filename.to_pathbuf(),
+                    relative_filename: {
+                        let original = fd.details.filename.to_pathbuf();
+                        let safe = crate::file_info::sanitize_for_platform(&original);
+                        if safe != original {
+                            tracing::info!(
+                                ?original,
+                                ?safe,
+                                "check: this file's name is not legal here and was rewritten"
+                            );
+                        }
+                        safe
+                    },
                     offset_in_torrent: fd.offset,
                     piece_range: fd.pieces,
                     len: fd.details.len,
@@ -386,18 +423,91 @@ impl ManagedTorrent {
                         "initialize_and_start",
                         token.clone(),
                         async move {
-                            // Hash-checking is deliberately process-wide serial.
-                            // Exactly one torrent may read and hash files at a time,
-                            // regardless of its volume or Session.
-                            let _check_permit = initialization_semaphore()
+                            // Hash-checking is serialised per volume: the
+                            // limit is about keeping one disk usable, so a
+                            // queue on one disk must not stall another.
+                            let volume = volume_key(t.output_folder());
+                            let waiting_since = std::time::Instant::now();
+                            tracing::info!(
+                                ?volume,
+                                folder = ?t.output_folder(),
+                                "check: waiting for this volume's hash-check slot"
+                            );
+                            let _check_permit = initialization_semaphore(t.output_folder())
                                 .acquire_owned()
                                 .await
                                 .context("bug: concurrent init semaphore was closed")?;
+                            tracing::info!(
+                                ?volume,
+                                waited = ?waiting_since.elapsed(),
+                                "check: got the slot, starting"
+                            );
 
                             init.check_active.store(true, Ordering::Release);
+                            let started = std::time::Instant::now();
+                            // A hash pass runs on a blocking thread. If a read
+                            // never returns - a disk that has stopped
+                            // answering - that thread cannot report anything,
+                            // including that it is stuck, so the progress it
+                            // prints simply stops and the percentage sits
+                            // where it was. This watches from outside and says
+                            // which file it stopped on, which is the one thing
+                            // the blocked thread cannot tell anyone.
+                            let watchdog = {
+                                let init = init.clone();
+                                let t = t.clone();
+                                tokio::spawn(async move {
+                                    const QUIET: Duration = Duration::from_secs(60);
+                                    let mut last = init.get_checked_bytes();
+                                    let mut since = tokio::time::Instant::now();
+                                    loop {
+                                        tokio::time::sleep(Duration::from_secs(10)).await;
+                                        if !init.check_active.load(Ordering::Acquire) {
+                                            return;
+                                        }
+                                        let now = init.get_checked_bytes();
+                                        if now != last {
+                                            last = now;
+                                            since = tokio::time::Instant::now();
+                                            continue;
+                                        }
+                                        if since.elapsed() < QUIET {
+                                            continue;
+                                        }
+                                        let idx = init.checking_file.load(Ordering::Relaxed);
+                                        let file = t
+                                            .metadata
+                                            .load_full()
+                                            .as_ref()
+                                            .and_then(|m| m.file_infos.get(idx))
+                                            .map(|fi| fi.relative_filename.clone());
+                                        warn!(
+                                            stuck_for = ?since.elapsed(),
+                                            checked_bytes = now,
+                                            file_index = idx,
+                                            ?file,
+                                            folder = ?t.output_folder(),
+                                            "check: the hash pass has not moved - it is blocked                                              reading this file, which usually means the disk has                                              stopped answering"
+                                        );
+                                    }
+                                })
+                            };
                             let check_result = init.check().await;
                             init.check_active.store(false, Ordering::Release);
+                            watchdog.abort();
                             init.finish_check();
+                            match &check_result {
+                                Ok(_) => tracing::info!(
+                                    ?volume,
+                                    took = ?started.elapsed(),
+                                    "check: finished"
+                                ),
+                                Err(e) => tracing::warn!(
+                                    ?volume,
+                                    took = ?started.elapsed(),
+                                    "check: failed: {e:#}"
+                                ),
+                            }
 
                             match check_result {
                                 Ok(paused) => {

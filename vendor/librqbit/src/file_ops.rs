@@ -1,6 +1,6 @@
 use std::{
     marker::PhantomData,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 use anyhow::{Context, bail};
@@ -11,7 +11,7 @@ use librqbit_core::{
 };
 use peer_binary_protocol::{DoubleBufHelper, Piece};
 use sha1w::{ISha1, Sha1};
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::{
     file_info::FileInfo,
@@ -55,6 +55,45 @@ pub(crate) struct FileOps<'a> {
     phantom_data: PhantomData<Sha1>,
 }
 
+/// Whether a failed disk write is worth trying again.
+///
+/// Some of what Windows reports is a passing condition rather than a verdict:
+/// a USB disk that drops and re-enumerates, a device still spinning up, a
+/// virus scanner holding a handle for a moment. Those come back as a hard
+/// error on the first attempt and succeed on the next, and giving up on the
+/// first one loses the whole torrent over a hiccup.
+///
+/// A drive that is genuinely failing returns the same code every time, so a
+/// couple of attempts cost a second and change nothing about the outcome -
+/// they only tell the two apart, which nothing else here can do.
+///
+/// Deliberately not retried: a full disk, a rejected filename, a missing
+/// folder. Those are answers, not hiccups, and repeating them wastes time.
+#[cfg(windows)]
+pub fn is_transient_io_error(error: &anyhow::Error) -> bool {
+    // ERROR_NOT_READY, ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION,
+    // ERROR_OPERATION_ABORTED, ERROR_IO_DEVICE, ERROR_NO_SYSTEM_RESOURCES,
+    // ERROR_DEVICE_NOT_CONNECTED.
+    const RETRY: &[i32] = &[21, 32, 33, 995, 1117, 1450, 1167];
+    error
+        .chain()
+        .filter_map(|e| e.downcast_ref::<std::io::Error>())
+        .any(|io| io.raw_os_error().is_some_and(|c| RETRY.contains(&c)))
+}
+
+#[cfg(not(windows))]
+pub fn is_transient_io_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|e| e.downcast_ref::<std::io::Error>())
+        .any(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
+            )
+        })
+}
+
 impl<'a> FileOps<'a> {
     pub fn new(
         torrent: &'a ValidatedTorrentMetaV1Info<ByteBufOwned>,
@@ -70,10 +109,16 @@ impl<'a> FileOps<'a> {
     }
 
     // Returns the bitvector with pieces we have.
+    /// `current_file` is written before every read, so a watcher outside this
+    /// thread can say which file a stalled check is sitting on. A read that
+    /// never returns - a disk that has stopped answering, most often - blocks
+    /// this loop, and a blocked loop cannot log anything about itself. The
+    /// index is one past the end when the check is done.
     pub fn initial_check(
         &self,
         progress: &AtomicU64,
         pause_requested: &AtomicBool,
+        current_file_out: &AtomicUsize,
     ) -> anyhow::Result<BF> {
         let mut have_pieces =
             BF::from_boxed_slice(vec![0u8; self.torrent.lengths().piece_bitfield_bytes()].into());
@@ -109,9 +154,35 @@ impl<'a> FileOps<'a> {
 
         let mut read_buffer = vec![0u8; 65536];
 
+        // A check that is making no progress and a check that is merely slow
+        // look identical from outside - both are a percentage that is not
+        // moving. Saying where it has got to, and how long it has been going,
+        // tells the two apart without guessing.
+        let check_started = std::time::Instant::now();
+        let mut last_report = std::time::Instant::now();
+        let total_pieces = self.torrent.lengths().total_pieces();
+        let mut pieces_done: u32 = 0;
+        // Which files could not be read, so the summary at the end can name
+        // them. Individual read errors are logged at debug, which is off in a
+        // normal build, so without this a torrent that checks as 0% gives no
+        // clue as to why.
+        let mut broken_files = std::collections::BTreeSet::<usize>::new();
+
         for piece_info in self.torrent.lengths().iter_piece_infos() {
             if pause_requested.load(Ordering::Relaxed) {
                 bail!("initial check paused");
+            }
+
+            pieces_done += 1;
+            if last_report.elapsed() > std::time::Duration::from_secs(10) {
+                last_report = std::time::Instant::now();
+                info!(
+                    pieces = format_args!("{pieces_done}/{total_pieces}"),
+                    have = have_pieces.count_ones(),
+                    broken_files = broken_files.len(),
+                    elapsed = ?check_started.elapsed(),
+                    "check: hashing"
+                );
             }
 
             piece_files.clear();
@@ -144,6 +215,8 @@ impl<'a> FileOps<'a> {
                     continue;
                 }
 
+                current_file_out.store(current_file.index, Ordering::Relaxed);
+
                 if let Err(err) = update_hash_from_file(
                     current_file.index,
                     current_file.fi,
@@ -159,6 +232,7 @@ impl<'a> FileOps<'a> {
                     );
                     current_file.is_broken = true;
                     some_files_broken = true;
+                    broken_files.insert(current_file.index);
                 }
             }
 
@@ -178,6 +252,28 @@ impl<'a> FileOps<'a> {
             {
                 have_pieces.set(piece_info.piece_index.get() as usize, true);
             }
+        }
+
+        current_file_out.store(usize::MAX, Ordering::Relaxed);
+        info!(
+            pieces = format_args!("{}/{total_pieces}", pieces_done),
+            have = have_pieces.count_ones(),
+            elapsed = ?check_started.elapsed(),
+            "check: hashing done"
+        );
+        if !broken_files.is_empty() {
+            // Named rather than counted: when a torrent checks as 0% the
+            // question is always which file it could not read.
+            for idx in broken_files.iter().take(20) {
+                warn!(
+                    file = ?self.file_infos.get(*idx).map(|fi| &fi.relative_filename),
+                    "check: could not read this file, its pieces count as missing"
+                );
+            }
+            warn!(
+                count = broken_files.len(),
+                "check: files that could not be read"
+            );
         }
 
         Ok(have_pieces)

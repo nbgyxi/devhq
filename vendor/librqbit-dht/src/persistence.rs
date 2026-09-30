@@ -35,14 +35,52 @@ pub struct DhtPersistenceConfig {
 ///
 /// The bind IP is derived solely from `ipv4_only` (`0.0.0.0` if true, `[::]`
 /// otherwise); any persisted IP is intentionally ignored. The port is chosen
-/// in priority order: explicit -> stored -> 0 (random).
+/// in priority order: explicit -> stored -> 0 (random), and a chosen port that
+/// something else already holds falls back to 0 as well; see
+/// `free_or_ephemeral`.
 pub fn dht_listen_addr(port: Option<u16>, stored_port: Option<u16>, ipv4_only: bool) -> SocketAddr {
     let ip: IpAddr = if ipv4_only {
         Ipv4Addr::UNSPECIFIED.into()
     } else {
         Ipv6Addr::UNSPECIFIED.into()
     };
-    SocketAddr::new(ip, port.or(stored_port).unwrap_or(0))
+    free_or_ephemeral(SocketAddr::new(ip, port.or(stored_port).unwrap_or(0)))
+}
+
+/// The address to actually listen on, given the one that was asked for.
+///
+/// A wanted port that something else already holds used to end the whole
+/// session: the DHT returned "only one usage of each socket address is
+/// normally permitted", `Session::new` turned that into "cannot start the
+/// torrent engine", and the process exited. Nothing about that is
+/// recoverable by retrying, because the port is still taken on the next
+/// attempt — a supervisor that restarts the engine just loops forever, and
+/// no torrent runs at all. The usual cause is an engine from an earlier run
+/// that outlived its app and still holds the socket.
+///
+/// The port is a preference, not a requirement: the DHT works on any port, and
+/// the one that was persisted is only there so peers that remember this node
+/// can still find it. So a port that cannot be had falls back to an ephemeral
+/// one, and the engine comes up. The port it settles on is what gets persisted,
+/// so the next start asks for one that is free.
+///
+/// Probing with a bind of our own is not airtight — something could take the
+/// port between the probe and the real bind — but losing that race lands on the
+/// error that was the only outcome before, so it costs nothing to try.
+fn free_or_ephemeral(addr: SocketAddr) -> SocketAddr {
+    if addr.port() == 0 {
+        return addr;
+    }
+    match std::net::UdpSocket::bind(addr) {
+        Ok(_) => addr,
+        Err(e) => {
+            warn!(
+                %addr,
+                "DHT: cannot listen on the wanted port ({e:#}); asking the OS for a free one"
+            );
+            SocketAddr::new(addr.ip(), 0)
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]

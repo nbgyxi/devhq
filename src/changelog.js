@@ -16,6 +16,88 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.173.4",
+      title: "A write the disk will not take one way is tried the other",
+      date: "2026-09-30",
+      changes: [
+        ["better", "Writes normally carry their position with them, so several peers can fill different parts of one file at the same time. Some drives refuse that on a part-downloaded file — answering “Incorrect function” to a write that is perfectly ordinary — and one such file could stop a whole torrent. The engine now seeks to the spot and writes there instead, which those drives accept. It does this only after the normal way has been refused, and one writer at a time, so nothing can land in the wrong place."],
+        ["fix", "That same refusal was being read as the drive having been unplugged, which sent the engine off to reopen the file — half a minute of waiting that could never have helped. It is no longer mistaken for one."],
+      ],
+    },
+    {
+      version: "0.173.3",
+      title: "The Engine tab opens on the first click",
+      date: "2026-09-30",
+      changes: [
+        ["fix", "Opening the Engine tab in Torrents for the first time left the window on the previous tab for a moment while the engine log — thousands of lines — was laid out. The tab and its panels now appear at once and the log arrives straight after, with “Reading the engine log…” in its place until it does."],
+      ],
+    },
+    {
+      version: "0.173.2",
+      title: "A write that fails says which file and where",
+      date: "2026-09-29",
+      changes: [
+        ["better", "A failed write now reports the file it was writing, how far into it, how big the write was, how big the file already is and what Windows says about it — in the error itself, where it can be read and copied, not only in the log. One awkward file and a drive in trouble produced the same bare message before, and they call for opposite responses."],
+        ["fix", "A write that failed said it had been tried three times even when it had been tried once. A second attempt is only made for errors that can pass on their own, and the message now says how many attempts were really made — which is the whole point of mentioning them."],
+        ["better", "If a file cannot be marked sparse — which is how a part-downloaded file avoids taking its full size on disk, and which exFAT and FAT32 cannot do — the engine now says so instead of passing over it silently."],
+      ],
+    },
+    {
+      version: "0.173.1",
+      title: "A drive that comes back is picked up again",
+      date: "2026-09-29",
+      changes: [
+        ["better", "A removable drive that disappears while torrents are using it no longer ends them. Every file open on it is dead once it goes, and Windows answers those with “Incorrect function” forever — retrying could never work, because the handle itself is what broke. The file is now opened again and the read or write tried once more, so a drive that drops and comes back is picked up where it left off instead of needing the engine restarted."],
+      ],
+    },
+    {
+      version: "0.173.0",
+      title: "Errors you can actually read, and a disk hiccup you can survive",
+      date: "2026-09-29",
+      changes: [
+        ["new", "A torrent that has failed now shows the whole error in its details pane, in text you can select, with a Copy button. It used to be a hover tooltip, which is the one place text cannot be selected, cannot be copied, and vanishes before you can screenshot it — which is exactly what you want to do with an error you mean to report."],
+        ["new", "Disk failures are named in plain language instead of a number. “os error 1117” now reads as the drive reporting a hardware fault, and “os error 1” as the drive having stopped answering altogether — told apart from a full disk, a filename Windows will not take, and a file another program is holding open, because only one of those is something WinT can do anything about."],
+        ["better", "A failed write to disk is tried again a couple of times before the torrent is given up on. A removable drive that drops for a moment, or a device still spinning up, reports a hard error and then works on the next attempt; that used to throw the torrent away over a hiccup. A drive that is genuinely failing answers the same way every time and still stops, now saying so after three attempts."],
+        ["new", "The diagnostics say how many peers are actually connected, across every torrent. A list of torrents all saying “Seeding” looks the same whether the swarm has found this PC or not, and nothing can be uploaded until it has — so when the number is zero and there is something to share, it says so rather than leaving it to be inferred."],
+        ["fix", "The Engine tab opens straight away. It was waiting for the whole log to be laid out before the tab appeared, so a long-running engine made it look like the click had not registered. The panels come up immediately and the log fills in a frame later; only the newest lines are drawn, while Copy still hands over all of them."],
+      ],
+    },
+    {
+      version: "0.172.4",
+      title: "A wedged file check now says so",
+      date: "2026-09-29",
+      changes: [
+        ["better", "When checking a torrent's files stops dead — a read that never comes back, which is what a disk that has stopped answering looks like — the check could not report it, because the thread that would do the reporting is the one that is stuck. A watcher outside it now notices the percentage has not moved for a minute and names the file it is blocked on, in the Torrents diagnostics."],
+      ],
+    },
+    {
+      version: "0.172.3",
+      title: "The file check says what it is doing",
+      date: "2026-09-29",
+      changes: [
+        ["better", "A torrent stuck partway through checking its files used to be a percentage that simply stopped moving, with nothing to say whether it was slow or wedged. The engine now reports how far the hash pass has got every ten seconds, and names any file it could not read — those count as missing, which is what makes a torrent with a complete-looking folder check as 0%. It shows up in the Torrents diagnostics."],
+      ],
+    },
+    {
+      version: "0.172.2",
+      title: "Torrents survive a taken port and an awkward filename",
+      date: "2026-09-29",
+      changes: [
+        ["fix", "If anything else held the port the torrent engine wanted for peer discovery, the engine refused to start at all and the supervisor restarted it every few seconds forever — the port was still taken each time, so no torrent ever ran. The usual culprit is an engine left behind by an earlier run. The port is now a preference rather than a requirement: one that cannot be had is swapped for a free one, the engine comes up, and the port it settles on is the one it asks for next time."],
+        ["fix", "A torrent containing a file whose name Windows will not accept — anything with ? : \" < > | or * in it, which is ordinary on the machines many torrents are made on — failed with a write error and stopped, over one character in one file. Those characters are now replaced with an underscore in the name on disk. What the torrent shares with everyone else is unchanged."],
+        ["better", "Updated the window and tray toolkit to its current release."],
+      ],
+    },
+    {
+      version: "0.172.1",
+      title: "Torrents check one disk at a time, not one torrent at a time",
+      date: "2026-09-29",
+      changes: [
+        ["fix", "A long queue of torrents waiting to be checked stopped everything from seeding. Only one torrent in the whole app was ever hash-checked at a time, so a big torrent on one disk held back every torrent on every other disk, and none of them reached the swarm to upload. Checking now runs on each disk independently, as the window has always said it did."],
+        ["fix", "The out-of-room warning counted torrents that had not been checked yet as if none of their files were on disk, so a list of finished torrents waiting to be checked read as hundreds of gigabytes still to download. Those torrents are now left out of the figure, and the warning says how many it could not count."],
+      ],
+    },
+    {
       version: "0.172.0",
       title: "The terminal line edits like a text box",
       date: "2026-09-29",

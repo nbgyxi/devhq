@@ -1,6 +1,74 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use librqbit_core::torrent_metainfo::FileDetailsAttrs;
+
+/// Make a path from a torrent safe to create on this platform.
+///
+/// A torrent carries whatever names the person who made it used, and plenty of
+/// them were made on Linux, where `?`, `:`, `"` and `|` are ordinary
+/// characters. Windows rejects those outright: creating the file fails with
+/// "the filename, directory name, or volume label syntax is incorrect"
+/// (os error 123), which surfaces as an unrecoverable write error and stops
+/// the torrent — one bad character in one file out of thousands.
+///
+/// So the offending characters are replaced rather than passed through. This
+/// is what every other client on Windows does, and it is confined to the name
+/// on disk: the torrent's own piece data is untouched, and the name the swarm
+/// knows is unchanged.
+///
+/// Off Windows the name is passed through, because it is already legal there
+/// and quietly rewriting it would make the same torrent land in two different
+/// places depending on the machine.
+#[cfg(windows)]
+pub fn sanitize_for_platform(path: &Path) -> PathBuf {
+    path.components()
+        .map(|component| {
+            let name = component.as_os_str().to_string_lossy();
+            let mut cleaned: String = name
+                .chars()
+                .map(|c| match c {
+                    // `/` and `\` are absent by construction - the path was
+                    // built by splitting on the torrent's own separators.
+                    '<' | '>' | ':' | '"' | '|' | '?' | '*' => '_',
+                    c if (c as u32) < 0x20 => '_',
+                    c => c,
+                })
+                .collect();
+            // Windows silently drops trailing dots and spaces, so a name
+            // ending in one is not the name that ends up on disk - and a later
+            // lookup by the original name then misses.
+            let trimmed = cleaned.trim_end_matches(['.', ' ']);
+            if trimmed.len() != cleaned.len() {
+                cleaned = trimmed.to_owned();
+            }
+            // The DOS device names are still reserved, with or without an
+            // extension, and opening one talks to the device instead.
+            let stem = cleaned
+                .split('.')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_uppercase();
+            let reserved = matches!(
+                stem.as_str(),
+                "CON" | "PRN" | "AUX" | "NUL" | "COM0" | "COM1" | "COM2" | "COM3" | "COM4"
+                    | "COM5" | "COM6" | "COM7" | "COM8" | "COM9" | "LPT0" | "LPT1" | "LPT2"
+                    | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+            );
+            if reserved {
+                cleaned.insert(0, '_');
+            }
+            if cleaned.is_empty() {
+                cleaned.push('_');
+            }
+            cleaned
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+pub fn sanitize_for_platform(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
 
 #[derive(Debug, Clone)]
 pub struct FileInfo {

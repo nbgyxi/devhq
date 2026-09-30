@@ -99,14 +99,31 @@ function stopStrayHelpers(helpers) {
     `Stopping a torrent engine from an earlier run (PID ${helpers.join(", ")}); it is holding\n` +
       "wint-torrent-helper.exe open, and Windows will not let this build replace a file in use.",
   );
+  const stubborn = [];
   for (const pid of helpers) {
     const killed = spawnSync("taskkill", ["/pid", pid, "/f"], { encoding: "utf8" });
     if (killed.status === 0) continue;
+    stubborn.push({ pid, killed });
+  }
+  // Killing by name reaches engines that killing by number did not. It is the
+  // command the failure message at the end of this script tells people to run
+  // by hand, and there is no reason to make them run it by hand first.
+  if (stubborn.length) {
+    spawnSync("taskkill", ["/f", "/im", "wint-torrent-helper.exe"], { encoding: "utf8" });
+  }
+  for (const { pid, killed } of stubborn) {
+    // Gone now, by name or on its own - whatever the first attempt said about
+    // it no longer describes anything.
+    if (!runningHelpers().includes(pid)) continue;
     const said = `${killed.stderr || ""}${killed.stdout || ""}`.trim();
     // An engine started by an elevated WinT cannot be stopped from an ordinary
     // terminal, and no amount of waiting changes that. Saying which of the two
     // it is saves trying the same build again and getting the same error.
-    if (/access is denied/i.test(said)) {
+    // Elevation does not always announce itself as "access is denied": asked
+    // about a process it may not open, taskkill can answer "there is no running
+    // instance of the task" about a PID `tasklist` has just listed. Both
+    // readings call for the same advice, so both get it.
+    if (/access is denied|no running instance/i.test(said)) {
       console.warn(
         `PID ${pid} belongs to a WinT running as administrator; this terminal cannot stop it.\n` +
           "Build from an administrator terminal, or close that WinT first.",

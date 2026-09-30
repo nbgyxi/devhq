@@ -1,7 +1,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Instant,
 };
@@ -31,6 +31,10 @@ pub struct TorrentStateInitializing {
     pub(crate) metadata: Arc<TorrentMetadata>,
     pub(crate) only_files: Option<Vec<usize>>,
     pub(crate) checked_bytes: AtomicU64,
+    /// Which file the hash pass is reading right now; `usize::MAX` once it is
+    /// finished. Read by the stall watcher in `mod.rs`, which is the only way
+    /// to learn anything about a check whose thread is blocked on a read.
+    pub(crate) checking_file: AtomicUsize,
     pause_requested: AtomicBool,
     check_running: AtomicBool,
     pub(crate) check_active: AtomicBool,
@@ -51,6 +55,7 @@ impl TorrentStateInitializing {
             only_files,
             files,
             checked_bytes: AtomicU64::new(0),
+            checking_file: AtomicUsize::new(usize::MAX),
             pause_requested: AtomicBool::new(false),
             check_running: AtomicBool::new(false),
             check_active: AtomicBool::new(false),
@@ -228,7 +233,11 @@ impl TorrentStateInitializing {
                     .spawner
                     .block_in_place_with_semaphore(|| {
                         FileOps::new(&self.metadata.info, &self.files, &self.metadata.file_infos)
-                            .initial_check(&self.checked_bytes, &self.pause_requested)
+                            .initial_check(
+                                &self.checked_bytes,
+                                &self.pause_requested,
+                                &self.checking_file,
+                            )
                     })
                     .await?;
                 bitv_factory

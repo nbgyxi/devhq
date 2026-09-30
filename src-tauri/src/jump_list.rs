@@ -44,7 +44,7 @@ unsafe fn set_recent_tools_com(
 ) -> windows::core::Result<()> {
     CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
     let result = (|| {
-        let executable = std::env::current_exe().map_err(|_| windows::core::Error::from_win32())?;
+        let executable = std::env::current_exe().map_err(|_| windows::core::Error::from_thread())?;
         let executable = wide(&executable.to_string_lossy());
         let list: ICustomDestinationList =
             CoCreateInstance(&DestinationList, None, CLSCTX_INPROC_SERVER)?;

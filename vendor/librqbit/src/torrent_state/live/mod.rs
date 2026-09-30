@@ -1893,17 +1893,60 @@ impl PeerHandler {
             //
 
             if !cfg!(feature = "_disable_disk_write_net_benchmark") {
-                match state.file_ops().write_chunk(addr, piece, chunk_info) {
-                    Ok(()) => {}
-                    Err(e) => {
-                        error!(
-                            id = state.shared.id,
-                            info_hash = ?state.shared.info_hash,
-                            "FATAL: error writing chunk to disk: {e:#}"
-                        );
-                        return state.on_fatal_error(e);
+                // A write that fails is not always a write that will keep
+                // failing. A removable disk that drops for a moment, a device
+                // still spinning up, a scanner holding the file - all report a
+                // hard error and then work on the next attempt, and treating
+                // the first one as final threw the torrent away over a hiccup.
+                // A disk that is really failing answers the same way every
+                // time, so this costs a second and tells the two apart.
+                const ATTEMPTS: usize = 3;
+                let mut outcome = Ok(());
+                // What it actually did, not what it was allowed to do. This
+                // said "after 3 attempts" even when it had given up after one
+                // because the error was not the retryable kind - which is
+                // exactly the thing the message exists to tell you.
+                let mut made = 0usize;
+                for attempt in 1..=ATTEMPTS {
+                    made = attempt;
+                    match state.file_ops().write_chunk(addr, piece, chunk_info) {
+                        Ok(()) => {
+                            if attempt > 1 {
+                                warn!(
+                                    id = state.shared.id,
+                                    attempt, "the disk accepted the write after retrying"
+                                );
+                            }
+                            outcome = Ok(());
+                            break;
+                        }
+                        Err(e) => {
+                            let again = attempt < ATTEMPTS
+                                && crate::file_ops::is_transient_io_error(&e);
+                            if !again {
+                                outcome = Err(e);
+                                break;
+                            }
+                            warn!(
+                                id = state.shared.id,
+                                attempt,
+                                "error writing to disk, trying again: {e:#}"
+                            );
+                            // Short and growing. Long enough for a device that
+                            // is re-appearing to finish doing so, short enough
+                            // that a dead disk is not waited on for long.
+                            std::thread::sleep(Duration::from_millis(250 << (attempt - 1)));
+                        }
                     }
-                };
+                }
+                if let Err(e) = outcome {
+                    error!(
+                        id = state.shared.id,
+                        info_hash = ?state.shared.info_hash,
+                        "FATAL: error writing chunk to disk after {made} attempt(s)                          (of at most {ATTEMPTS}; a further attempt is only made when the                          error is one that can pass): {e:#}"
+                    );
+                    return state.on_fatal_error(e);
+                }
             }
 
             let full_piece_download_time = {
