@@ -10,6 +10,7 @@ mod browser_rules;
 mod browser_tabs;
 #[cfg(windows)]
 mod claude;
+mod chkdsk;
 mod cli_registration;
 pub mod clipboard;
 #[cfg(windows)]
@@ -2374,8 +2375,11 @@ async fn explorer_clipboard_get() -> Result<Option<explorer::Clip>, String> {
 }
 
 /// The one Files call that runs on the window's thread: a drag belongs to the
-/// thread the mouse is held on. Windows pumps messages throughout, so the
-/// window keeps drawing while the drag is in the air.
+/// thread the mouse is held on, because that is the only thread whose input
+/// queue knows the button is still down. See `explorer::drag_out` for what
+/// running it anywhere else costs. Windows pumps messages throughout, so the
+/// window keeps drawing while the drag is in the air; this command itself only
+/// waits for the answer, off the window's thread like every other one.
 #[tauri::command]
 async fn explorer_drag_out(app: AppHandle, paths: Vec<String>) -> Result<String, String> {
     #[cfg(windows)]
@@ -3108,6 +3112,23 @@ async fn net_export(path: String) -> Result<network::Exported, String> {
 }
 
 #[tauri::command]
+async fn chkdsk_volumes() -> Result<chkdsk::Survey, String> {
+    off_thread(chkdsk::survey)
+        .await
+        .unwrap_or_else(|| Err("Reading the drive list did not finish.".into()))
+}
+
+#[tauri::command]
+fn chkdsk_start(app: AppHandle, options: chkdsk::Options) -> Result<u64, String> {
+    chkdsk::start(app, options)
+}
+
+#[tauri::command]
+fn chkdsk_cancel() {
+    chkdsk::cancel();
+}
+
+#[tauri::command]
 fn path_ping_start(app: AppHandle, options: path_ping::Options) -> Result<u64, String> {
     path_ping::start(app, options)
 }
@@ -3595,8 +3616,10 @@ pub fn run() {
             tool_window::tool_drag_preview,
             tool_window::tool_dock,
             tool_window::tool_embedded_show,
+            tool_window::tool_embedded_warm,
             tool_window::tool_embedded_hide,
             tool_window::tool_embedded_destroy,
+            tool_window::tools_set_language,
             tool_window::tool_bridge_state_put,
             tool_window::tool_bridge_state_take,
             appbar::sidebar_state,
@@ -3696,6 +3719,9 @@ pub fn run() {
             net_export,
             path_ping_start,
             path_ping_cancel,
+            chkdsk_volumes,
+            chkdsk_start,
+            chkdsk_cancel,
             event_log_query,
             registry_list,
             registry_change,
@@ -3887,6 +3913,9 @@ pub fn run() {
         net_export,
         path_ping_start,
         path_ping_cancel,
+        chkdsk_volumes,
+        chkdsk_start,
+        chkdsk_cancel,
         event_log_query,
         registry_list,
         registry_change,
@@ -3908,8 +3937,10 @@ pub fn run() {
         tool_window::tool_drag_preview,
         tool_window::tool_dock,
         tool_window::tool_embedded_show,
+        tool_window::tool_embedded_warm,
         tool_window::tool_embedded_hide,
         tool_window::tool_embedded_destroy,
+        tool_window::tools_set_language,
         tool_window::tool_bridge_state_put,
         tool_window::tool_bridge_state_take,
         tool_window::feedback_show,

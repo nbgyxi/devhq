@@ -786,6 +786,55 @@ pub fn thumbnail(raw_path: String, size: u32) -> Result<Option<String>, String> 
     decode_thumbnail(&path, size)
 }
 
+/// How many shell thumbnail calls may be in the air across the whole app.
+///
+/// Each Files window already asks for four at a time, which is the right
+/// number for one window and the wrong number for the process: a second Files
+/// window, a preview pane and Disk Space bring their own four each, and the
+/// shell is one shared thing underneath all of them. Ten at once is what the
+/// health log caught wedged in `windows.storage` while a drag was in the air,
+/// each one on a blocking-pool thread, none of them coming back.
+///
+/// Four process-wide keeps the shell busy without letting one browsing session
+/// take the thumbnail pipe away from everything else in the app.
+#[cfg(windows)]
+const SHELL_THUMBNAIL_LIMIT: usize = 4;
+
+/// The permits for the above, as a count and a condvar rather than a semaphore
+/// crate: a handful of waiters, held for one call each.
+#[cfg(windows)]
+fn shell_thumbnail_permits() -> &'static (std::sync::Mutex<usize>, std::sync::Condvar) {
+    static PERMITS: std::sync::OnceLock<(std::sync::Mutex<usize>, std::sync::Condvar)> =
+        std::sync::OnceLock::new();
+    PERMITS.get_or_init(|| (std::sync::Mutex::new(0), std::sync::Condvar::new()))
+}
+
+#[cfg(windows)]
+struct ShellThumbnailPermit;
+
+#[cfg(windows)]
+impl ShellThumbnailPermit {
+    fn take() -> Self {
+        let (lock, ready) = shell_thumbnail_permits();
+        let mut held = lock.lock().unwrap_or_else(|e| e.into_inner());
+        while *held >= SHELL_THUMBNAIL_LIMIT {
+            held = ready.wait(held).unwrap_or_else(|e| e.into_inner());
+        }
+        *held += 1;
+        Self
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ShellThumbnailPermit {
+    fn drop(&mut self) {
+        let (lock, ready) = shell_thumbnail_permits();
+        let mut held = lock.lock().unwrap_or_else(|e| e.into_inner());
+        *held = held.saturating_sub(1);
+        ready.notify_one();
+    }
+}
+
 #[cfg(windows)]
 fn shell_thumbnail(path: &Path, size: u32) -> Result<Option<String>, String> {
     use windows::core::PCWSTR;
@@ -810,6 +859,9 @@ fn shell_thumbnail(path: &Path, size: u32) -> Result<Option<String>, String> {
     // takes the reference another caller is still holding, and the crash lands
     // somewhere else entirely.
     let _apartment = crate::com::Apartment::single_threaded();
+    // Taken after the apartment and before anything is asked of the shell, and
+    // released when this call returns however it returns.
+    let _permit = ShellThumbnailPermit::take();
     let result = (|| -> Result<Option<String>, String> {
         // A file the shell will not even name is a file with no thumbnail,
         // not an error worth showing: the row keeps its type icon either way,
@@ -1471,9 +1523,26 @@ pub fn clipboard_get() -> Result<Option<Clip>, String> {
 
 /// Hands files to Windows as a real drag, so they can be dropped on Windows
 /// Explorer, the desktop, another Files window or any program that takes
-/// files. Must run on the window's own thread - that is where the mouse
-/// button is held - and returns once the drop lands. Windows keeps the window
-/// painting through the drag, the same as Explorer's own drags.
+/// files. Returns once the drop lands.
+///
+/// **Must run on the window's own thread — the one the mouse button is held
+/// on.** This was once moved to a thread of its own to stop a slow drop target
+/// holding the window, on the reasoning that `DoDragDrop` takes its own
+/// capture and pumps its own messages so it does not care where it runs. It
+/// cares. `DoDragDrop`'s modal loop reads the key state from the calling
+/// thread's input queue, and a thread that was spawned for the drag has an
+/// input queue that never saw the button go down. `QueryContinueDrag` is
+/// therefore handed a key state with no `MK_LBUTTON` in it on the very first
+/// callback, answers `DRAGDROP_S_DROP` — the button is up, so the drag is
+/// over — and the whole thing ends before it starts. Nothing picks up, no
+/// cursor changes, and no error is returned, because as far as Windows is
+/// concerned the drag ran and completed.
+///
+/// A drag does block this thread for as long as the drop target takes. That is
+/// what `DoDragDrop` is, and Explorer does the same thing: the loop pumps
+/// messages throughout, so the window carries on drawing. What it cannot
+/// survive is the shell itself being wedged underneath it, which is what
+/// `SHELL_THUMBNAIL_LIMIT` is for.
 #[cfg(windows)]
 pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
     use windows::core::{implement, BOOL, HRESULT, PCWSTR};
@@ -1512,7 +1581,8 @@ pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
     // apartment, and it says so only through its return value - which is why a
     // missing OleInitialize looks exactly like a drag nobody completed: no
     // cursor, no error, nothing. This is the main thread and it stays
-    // initialised for the life of the process, so it is done once.
+    // initialised for the life of the process, so it is done once. It is never
+    // uninitialised: the apartment belongs to the window, not to one drag.
     static OLE: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
     let ole = HRESULT(*OLE.get_or_init(|| {
         unsafe { OleInitialize(None) }

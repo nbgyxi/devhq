@@ -22,6 +22,7 @@
     { id: "torrents", name: "Torrents", icon: "download", hint: "magnet links and .torrent files, downloaded by an engine that runs in its own process so a stalled tracker can never freeze WinT", keywords: "torrent torrents bittorrent bit torrent magnet magnet link .torrent torrent file download downloads downloading seed seeding seeder leech leecher peer peers swarm tracker trackers dht announce piece pieces hash check rehash ratio upload uploading share sharing p2p peer to peer client qbittorrent utorrent transmission deluge rtorrent rqbit libtorrent iso linux distro ubuntu debian archive queue priority limit throttle speed limit bandwidth cap pause resume stop start remove delete files folder save location eta progress" },
     { id: "speed-test", name: "Speed Test", icon: "network_check", hint: "what the line can actually carry, what this PC is using of it right now, and whether it stays responsive when it is full", keywords: "speed test speedtest internet speed connection bandwidth throughput mbps mb/s megabit download upload up down latency ping round trip rtt jitter lag laggy slow internet slow wifi slow connection is my internet slow how fast is my internet measure benchmark check test line link isp provider contract gigabit fiber fibre dsl cable 5g router modem bufferbloat buffer bloat congestion saturated full line video call zoom teams stutter game ping spike network usage monitor meter live traffic adapter nic who is using my bandwidth what is using my internet" },
     { id: "browser", name: "Link Router", icon: "alt_route", hint: "WinT takes every link Windows opens and sends it to the browser and profile you chose for that site — and asks when the site is new", keywords: "browser browsers default browser web browser link links url urls http https open with route router routing rule rules redirect send site domain host subdomain profile profiles chrome google chrome edge microsoft edge msedge firefox mozilla brave vivaldi opera librewolf waterfox zen floorp thorium chromium work profile personal profile second profile account accounts separate profile switch switcher choose picker ask prompt which browser default apps set default make default association associations urlassociations startmenuinternet userchoice registry teams slack outlook email link opens in wrong browser always opens wrong browser keep work and personal separate incognito"  },
+    { id: "disk-check", name: "Disk Check", icon: "hard_drive", hint: "runs Windows' own chkdsk and turns its one rewritten console line into stages, a percentage and a verdict", keywords: "chkdsk check disk checkdisk disk check scandisk scan disk drive volume ntfs fat32 exfat file system filesystem corruption corrupt errors bad sector sectors bad blocks repair fix fsck integrity verify verification health smart failing drive dying disk cannot read file unreadable crc error data error cyclic redundancy chkdsk /scan /f /r /spotfix online scan spot fix index security descriptors usn journal orphan file records volume bitmap c: d: e: hard drive ssd hdd partition" },
     { id: "time-tracker", name: "Active Window Time Tracker", icon: "schedule", hint: "local time by application and window title", keywords: "time tracker tracking activity active window title productivity apps applications usage screen time hours focus idle away log history what did i do local private" },
   ];
   const repairTools = [
@@ -106,6 +107,14 @@
   let awakeSchedule = { enabled: false, days: [1, 2, 3, 4, 5], startMinute: 9 * 60, endMinute: 16 * 60, system: true, display: true, awayMode: false, nudge: true, nudgeSeconds: 120 };
   const AWAKE_DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
   const AWAKE_DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  // Everything the Disk Check panel knows. `chkdsk` itself is the only source
+  // of truth while it runs: the backend forwards each console fragment and
+  // this is what has been made of them so far.
+  let disk = {
+    volumes: [], elevated: false, loaded: false, drive: "", mode: "readonly",
+    running: false, token: 0, percent: 0, stage: 0, stages: 0, stageName: "",
+    lines: [], summary: [], verdict: "", error: "", started: 0, finished: 0, showLog: false,
+  };
   let handoffHtml = "";
   let handoffRunning = false;
 
@@ -132,6 +141,20 @@
       if (active === "clipboard" && host) renderClipboard(catalog.find((item) => item.id === "clipboard"));
     });
   } catch { /* no event bridge in this window; the list still loads on open */ }
+
+  // chkdsk talks in a steady stream of rewritten console lines. They arrive
+  // whether or not this tool is on screen, so the run survives a trip to
+  // another tool and the page picks it up again on the next open.
+  try {
+    window.__TAURI__.event.listen("chkdsk:line", (event) => {
+      if (!disk.running || event.payload.token !== disk.token) return;
+      diskLine(event.payload.text);
+    });
+    window.__TAURI__.event.listen("chkdsk:done", (event) => {
+      if (event.payload.token !== disk.token) return;
+      diskFinish(event.payload);
+    });
+  } catch { /* no event bridge in this window */ }
 
   // Every window asks once on load and is told about every change after, so a
   // switch flipped on Home is already true here before the tool is opened.
@@ -272,6 +295,7 @@
     if (active === "cli") renderCli(tool);
     if (active === "registry") renderRegistry(tool);
     if (active === "system") renderSystem(tool);
+    if (active === "disk-check") renderDiskCheck(tool);
     if (active === "log-tail") renderLogTail(tool);
     if (active === "lock-inspector") renderLockInspector(tool);
     if (active === "clipboard") renderClipboard(tool);
@@ -952,7 +976,7 @@
     const groups=[
       ['Your code','code_blocks',['overview','projects','git','github','explorer','cli']],
       ['Network','lan',['ports','network','speed-test','dns','hosts','path-ping','browser','torrents']],
-      ['Inside Windows','settings_applications',['registry','system','events','log-tail','disk-space','startup','lock-inspector','sidebar']],
+      ['Inside Windows','settings_applications',['registry','system','events','log-tail','disk-space','disk-check','startup','lock-inspector','sidebar']],
       ['Diagnose and protect','shield',['security-audit','stall-watch','health']],
       ['Every day','bolt',['clipboard','focus-mode','keep-awake','time-tracker']],
     ].map(([name,glyph,ids])=>({name,glyph,items:ids.map(describe).filter(Boolean)}));
@@ -1051,6 +1075,250 @@
     armed = ""; renderRepair(catalog.find((x) => x.id === active));
     status(result.ok ? (result.output || "Repair completed.") : (result.error || "Repair failed."), result.ok ? "ok" : "bad");
   }
+  // ---- Disk Check -------------------------------------------------------
+  // chkdsk is a good tool with a terrible readout: one line, rewritten in
+  // place, that says "12 percent complete" without ever saying what it is 12
+  // percent of. Everything below exists to turn that into a stage list, a
+  // bar that moves, and a verdict in words.
+
+  const DISK_STAGES = [
+    ["File records", "description", "Every file record on the volume is read and checked against the master file table."],
+    ["Indexes", "list", "Directory indexes are matched against the files they claim to hold."],
+    ["Security descriptors", "shield", "Ownership and permissions are verified for every object."],
+    ["USN journal", "history", "The change journal is verified against the volume."],
+    ["File data", "data_usage", "The contents of each file are read to find unreadable sectors."],
+    ["Free space", "space_dashboard", "The volume bitmap is checked against the space actually in use."],
+  ];
+
+  /** The three things chkdsk can be asked to do, in order of how much they
+   *  touch. Only the last one writes to the volume, and only the last one can
+   *  fence off bad media: `/R` reads every sector, moves what it can out of
+   *  the ones it cannot read, and records them so NTFS never uses them again.
+   *  That is also why it needs the drive to itself and runs for hours. */
+  const DISK_MODES = [
+    ["readonly", "visibility", "Read-only check", "Reports what is wrong and changes nothing. No administrator rights needed."],
+    ["scan", "build", "Online scan", "Windows' own /scan pass. Finds and queues repairs while the volume stays mounted — it never asks to dismount or to check at the next boot."],
+    ["repair", "healing", "Repair and check sectors", "Windows' /R pass. Fixes what it finds and reads every sector, marking any it cannot read so they are never used again. Locks the volume and runs for hours."],
+  ];
+  const DISK_MODE_ARGS = { readonly: "", scan: " /scan /perf", repair: " /R" };
+
+  const diskBytes = (bytes) => {
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let value = Number(bytes) || 0, unit = 0;
+    while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+    return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+  };
+  const diskElapsed = () => {
+    const end = disk.finished || Date.now();
+    const seconds = Math.max(0, Math.round((end - disk.started) / 1000));
+    return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+  };
+  /** How far the whole run is, not how far the current stage is — a bar that
+   *  restarts at zero five times is worse than no bar at all. */
+  const diskOverall = () => {
+    if (!disk.stage) return disk.percent;
+    const stages = Math.max(disk.stages || DISK_STAGES.length, disk.stage);
+    return Math.min(100, Math.round(((disk.stage - 1) + disk.percent / 100) * (100 / stages)));
+  };
+
+  function renderDiskCheck(tool) {
+    host.innerHTML = header(tool, `<div class="disk-check">
+      <section class="disk-volumes" data-disk-volumes>${diskVolumesHtml()}</section>
+      <section class="disk-run">
+        <div class="disk-modes">${DISK_MODES.map(([id, glyph, name, detail]) => `<button type="button" class="disk-mode${disk.mode === id ? " on" : ""}" data-disk-mode="${id}" ${disk.running ? "disabled" : ""}><span class="disk-check-mark">${icon(disk.mode === id ? "check" : "")}</span>${icon(glyph)}<span><strong>${name}</strong><small>${esc(detail)}</small>${id !== "readonly" && !disk.elevated ? `<em class="disk-needs-admin">${icon("shield")}Windows asks for administrator when it starts</em>` : ""}</span></button>`).join("")}</div>
+        ${disk.mode === "repair" ? `<div class="disk-warning">${icon("warning")}<span><strong>This one takes the drive out of use and takes hours.</strong> A repair pass locks the volume, so close anything reading or writing it first — including torrents seeding from it. It then reads every sector on the disk, which on a large drive runs for hours, and there is no useful progress through that stage beyond the percentage. It is the only mode that writes to the volume.</span></div>` : ""}
+        <div class="win-status" data-win-status>${esc(disk.error || diskStatusLine())}</div>
+        ${diskProgressHtml()}
+        <footer class="disk-action-bar">
+          <code>chkdsk ${esc(disk.drive || "C:")}${DISK_MODE_ARGS[disk.mode] || ""}</code>
+          <span>${disk.mode === "readonly" ? "A read-only check never writes to the volume." : `Windows ${disk.elevated ? "already granted" : "asks for"} administrator${disk.elevated ? "" : " — one prompt, for this run only"}. It keeps running if you leave this tool.`}</span>
+          <button class="btn ${disk.running ? "danger" : "primary"}" data-disk-run>${icon(disk.running ? "stop" : "play_arrow")}${disk.running ? "Stop the check" : "Check this drive"}</button>
+        </footer>
+      </section>
+      <section class="disk-report">
+        <header>${icon("assignment")}<strong>What chkdsk reported</strong><button class="btn" data-disk-log>${icon(disk.showLog ? "expand_less" : "expand_more")}${disk.showLog ? "Hide raw output" : "Raw output"}</button></header>
+        <div data-disk-summary>${diskSummaryHtml()}</div>
+        <pre class="disk-log" data-disk-log-output ${disk.showLog ? "" : "hidden"}>${esc(disk.lines.join("\n"))}</pre>
+      </section>
+    </div>`);
+    if (!disk.loaded) loadDiskVolumes();
+  }
+
+  function diskStatusLine() {
+    if (disk.stopping) return `Asking chkdsk to stop checking ${disk.drive}…`;
+    if (disk.awaitingAdmin) return "Waiting for the Windows administrator prompt for this scan…";
+    if (disk.running) return `Checking ${disk.drive} · ${disk.stageName || "starting chkdsk"} · ${diskOverall()}%`;
+    if (disk.finished) return `${disk.verdict || "Check finished"} · ${disk.drive} · ${diskElapsed()}`;
+    if (!disk.loaded) return "Reading the volumes on this machine…";
+    return disk.drive ? `Ready to check ${disk.drive}.` : "Choose a drive to check.";
+  }
+
+  function diskVolumesHtml() {
+    if (!disk.loaded) return `<div class="disk-volume skeleton"></div><div class="disk-volume skeleton"></div><div class="disk-volume skeleton"></div>`;
+    if (!disk.volumes.length) return '<div class="win-empty">No local volumes were found on this machine.</div>';
+    return disk.volumes.map((volume) => {
+      const used = volume.totalBytes ? Math.round(((volume.totalBytes - volume.freeBytes) / volume.totalBytes) * 100) : 0;
+      return `<button type="button" class="disk-volume${disk.drive === volume.letter ? " on" : ""}" data-disk-volume="${esc(volume.letter)}" ${disk.running ? "disabled" : ""}>
+        <span class="disk-letter">${esc(volume.letter)}</span>
+        <span class="disk-volume-name"><strong>${esc(volume.label || (volume.removable ? "Removable volume" : "Local disk"))}</strong><small>${esc(volume.fileSystem || "Unknown file system")}${volume.system ? " · Windows" : ""}${volume.removable ? " · Removable" : ""}</small></span>
+        <span class="disk-volume-space"><span class="disk-bar"><i style="width:${used}%"></i></span><small>${diskBytes(volume.freeBytes)} free of ${diskBytes(volume.totalBytes)}</small></span>
+      </button>`;
+    }).join("");
+  }
+
+  function diskProgressHtml() {
+    const stages = disk.stages || DISK_STAGES.length;
+    const overall = diskOverall();
+    return `<div class="disk-progress${disk.running ? " running" : ""}" data-disk-progress>
+      <div class="disk-overall"><span data-disk-phase>${esc(disk.stageName || (disk.awaitingAdmin ? "Waiting for administrator" : disk.running ? "Starting chkdsk" : disk.finished ? "Finished" : "Not started"))}</span><em data-disk-percent>${disk.running || disk.finished ? `${overall}%` : "—"}</em></div>
+      <div class="disk-bar big"><i data-disk-fill style="width:${disk.running || disk.finished ? overall : 0}%"></i></div>
+      <div class="disk-stages" data-disk-stages>${DISK_STAGES.slice(0, Math.max(stages, disk.stage)).map(([name, glyph, detail], index) => {
+        const number = index + 1;
+        const state = disk.stage > number || (disk.finished && !disk.error) ? "done" : disk.stage === number ? "now" : "todo";
+        return `<div class="disk-stage ${state}" data-disk-stage="${number}">${icon(state === "done" ? "check_circle" : state === "now" ? "progress_activity" : "radio_button_unchecked")}<span><strong>Stage ${number} · ${esc(name)}</strong><small>${esc(detail)}</small></span><em data-disk-stage-percent>${state === "now" ? `${disk.percent}%` : ""}</em></div>`;
+      }).join("")}</div>
+      <div class="disk-elapsed" data-disk-elapsed>${disk.started ? `Running for ${diskElapsed()}` : "chkdsk reads every file record on the volume; on a large disk this takes minutes."}</div>
+    </div>`;
+  }
+
+  function diskSummaryHtml() {
+    if (!disk.summary.length) return `<div class="win-empty">${disk.running ? "chkdsk reports its findings when the last stage completes." : "Nothing has been checked yet."}</div>`;
+    return disk.summary.map((row) => `<div class="disk-summary-row"><span>${esc(row.label)}</span><strong>${esc(row.value)}</strong></div>`).join("");
+  }
+
+  async function loadDiskVolumes() {
+    try {
+      const survey = await work("disk-check-volumes", "Reading local volumes", invoke("chkdsk_volumes"));
+      disk.volumes = survey.volumes || [];
+      disk.elevated = Boolean(survey.elevated);
+      disk.loaded = true;
+      if (!disk.drive) disk.drive = (disk.volumes.find((volume) => volume.system) || disk.volumes[0])?.letter || "";
+      if (disk.mode === "scan" && !disk.elevated) disk.mode = "readonly";
+      if (active === "disk-check") renderDiskCheck(catalog.find((item) => item.id === "disk-check"));
+    } catch (error) {
+      disk.loaded = true;
+      status(String(error), "bad");
+    }
+  }
+
+  async function startDiskCheck() {
+    if (disk.running) return stopDiskCheck();
+    if (!disk.drive) return status("Choose a drive to check.", "warn");
+    // The online scan needs rights WinT does not have, so Windows is asked for
+    // them for this one run. The prompt is what the user sees next, and the
+    // panel says so instead of showing a bar that cannot move yet.
+    disk = { ...disk, running: true, stopping: false, awaitingAdmin: disk.mode === "scan" && !disk.elevated, percent: 0, stage: 0, stages: 0, stageName: "", lines: [], summary: [], verdict: "", error: "", started: Date.now(), finished: 0 };
+    renderDiskCheck(catalog.find((item) => item.id === "disk-check"));
+    window.wintWork?.beginWork("disk-check", `Checking ${disk.drive}`, disk.awaitingAdmin ? "Waiting for administrator" : "Starting chkdsk");
+    try {
+      disk.token = await invoke("chkdsk_start", { options: { drive: disk.drive, mode: disk.mode } });
+    } catch (error) {
+      disk.running = false;
+      disk.error = String(error);
+      window.wintWork?.endWork("disk-check");
+      renderDiskCheck(catalog.find((item) => item.id === "disk-check"));
+    }
+  }
+
+  /** Asking is all this can do. An administrator scan belongs to Windows, not
+   *  to WinT, so the run itself reports whether it actually stopped. */
+  async function stopDiskCheck() {
+    disk.stopping = true;
+    status(diskStatusLine(), "warn");
+    try { await invoke("chkdsk_cancel"); } catch { /* it had already finished */ }
+  }
+
+  /** One console fragment from chkdsk. Percentages are patched straight into
+   *  the nodes that show them — a full rerender per percent would throw away
+   *  the scroll position of the log several times a second. */
+  function diskLine(text) {
+    const line = String(text || "");
+    // The first line is proof the prompt was answered and chkdsk is running.
+    if (disk.awaitingAdmin) {
+      disk.awaitingAdmin = false;
+      window.wintWork?.updateWork?.("disk-check", `${disk.drive} · starting chkdsk`);
+      if (active === "disk-check" && host) renderDiskCheck(catalog.find((item) => item.id === "disk-check"));
+    }
+    disk.lines.push(line);
+    if (disk.lines.length > 2000) disk.lines.splice(0, disk.lines.length - 2000);
+
+    const stage = line.match(/Stage (\d+)(?:\s+of\s+(\d+))?\s*[:.]\s*(.*)/i);
+    const percent = line.match(/(\d+)\s*percent complete/i);
+    const total = line.match(/Total\s+of\s+(\d+)\s+stages/i) || line.match(/(\d+)\s+stages\b/i);
+    if (total) disk.stages = Number(total[1]) || disk.stages;
+    if (stage) {
+      const number = Number(stage[1]);
+      if (stage[2]) disk.stages = Number(stage[2]);
+      const named = stage[3].replace(/\.+\s*$/, "").trim();
+      if (number !== disk.stage) disk.percent = 0;
+      disk.stage = number;
+      disk.stageName = named || DISK_STAGES[number - 1]?.[0] || `Stage ${number}`;
+      window.wintWork?.updateWork?.("disk-check", `${disk.drive} · ${disk.stageName}`);
+      if (active === "disk-check" && host) return renderDiskCheck(catalog.find((item) => item.id === "disk-check"));
+      return;
+    }
+    if (percent) disk.percent = Math.min(100, Number(percent[1]) || 0);
+    diskCollect(line);
+    if (active === "disk-check" && host) diskPaint(percent ? "" : line);
+  }
+
+  /** The findings chkdsk prints once, at the end. Kept as label/value pairs so
+   *  the report reads as a report rather than as console output. */
+  function diskCollect(line) {
+    const space = line.match(/^\s*([\d.,]+)\s*KB\s+(.+?)\.?\s*$/i);
+    if (space) {
+      const kb = Number(space[1].replace(/[.,]/g, ""));
+      if (Number.isFinite(kb)) disk.summary.push({ label: space[2].replace(/^in /, "In "), value: diskBytes(kb * 1024) });
+      return;
+    }
+    const counted = line.match(/^\s*([\d.,]+)\s+(.+?(?:processed|files|records|indexes|descriptors|reparse records|unindexed files))\.?\s*$/i);
+    if (counted) { disk.summary.push({ label: counted[2], value: counted[1] }); return; }
+    if (/found no problems|no further action is required/i.test(line)) disk.verdict = "No problems found";
+    else if (/found problems|errors found|corruption/i.test(line)) disk.verdict = "Problems found";
+    else if (/bad sectors/i.test(line)) disk.verdict = "Bad sectors reported";
+    if (/^Windows |found (no )?problems|action is required|scanned the file system/i.test(line)) disk.summary.push({ label: line.replace(/\s+/g, " ").trim(), value: "" });
+  }
+
+  /** Patch the live numbers in place; nothing else in the panel moves. */
+  function diskPaint(logLine) {
+    const overall = diskOverall();
+    const fill = host.querySelector("[data-disk-fill]");
+    if (fill) fill.style.width = `${overall}%`;
+    const shown = host.querySelector("[data-disk-percent]");
+    if (shown) shown.textContent = `${overall}%`;
+    const elapsed = host.querySelector("[data-disk-elapsed]");
+    if (elapsed) elapsed.textContent = `Running for ${diskElapsed()}`;
+    const stageNode = host.querySelector(`[data-disk-stage="${disk.stage}"] [data-disk-stage-percent]`);
+    if (stageNode) stageNode.textContent = `${disk.percent}%`;
+    const statusNode = host.querySelector("[data-win-status]");
+    if (statusNode) statusNode.textContent = diskStatusLine();
+    if (logLine && disk.showLog) {
+      const log = host.querySelector("[data-disk-log-output]");
+      if (log) {
+        const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+        log.textContent = disk.lines.join("\n");
+        if (atBottom) log.scrollTop = log.scrollHeight;
+      }
+    }
+  }
+
+  function diskFinish(payload) {
+    const stopped = disk.stopping;
+    disk.running = false;
+    disk.stopping = false;
+    disk.awaitingAdmin = false;
+    disk.finished = Date.now();
+    disk.error = payload.ok ? "" : (payload.error || "");
+    if (payload.ok && !disk.verdict) disk.verdict = "No problems found";
+    // A cancelled run comes back as a failure with nothing to say, because
+    // stopping it was not a fault of the volume.
+    if (!payload.ok && !payload.error) disk.verdict = "Stopped before it finished";
+    else if (!payload.ok && !disk.verdict) disk.verdict = stopped ? "Still running" : "chkdsk could not finish";
+    if (payload.ok) { disk.stage = disk.stages || disk.stage; disk.percent = 100; }
+    window.wintWork?.endWork("disk-check");
+    if (active === "disk-check" && host) renderDiskCheck(catalog.find((item) => item.id === "disk-check"));
+  }
+
   function renderLogTail(tool) {
     host.innerHTML = header(tool, `<div class="win-controls"><label class="grow">Log file<input data-log-path spellcheck="false" placeholder="C:\\logs\\app.log"></label><label>Lines<input data-log-lines type="number" min="10" max="2000" value="300"></label><label class="grow">Filter<input data-log-filter placeholder="text or regular expression"></label><button class="btn primary" data-log-start>${icon("play_arrow")} Start</button></div><div class="win-status" data-win-status>Choose a local text log to follow.</div><pre class="log-tail-output" data-log-output></pre>`);
   }
@@ -1168,6 +1436,10 @@
     if(event.target.closest('[data-reg-save]')){const row=regRows.find((r)=>r.name===regSelected);if(!row)return;return changeRegistry({path:regPath,name:row.name,kind:host.querySelector('[data-reg-kind]').value,value:host.querySelector('[data-reg-data]').value,delete:false});}
     if(event.target.closest('[data-reg-watch]')){const button=event.target.closest('[data-reg-watch]');if(timer){clearInterval(timer);timer=0;button.innerHTML=`${icon('play_arrow')}Start watch`;return status('Watch paused.');}regWatch.clear();pollRegistry();timer=setInterval(pollRegistry,2000);button.innerHTML=`${icon('pause')}Pause`;return status(`Watching ${regPath}…`,'ok');}
     if(event.target.closest("[data-log-start]")){const button=event.target.closest("[data-log-start]");if(timer){clearInterval(timer);timer=0;button.innerHTML=`${icon("play_arrow")} Start`;return status("Tail paused.");}loadLogTail();timer=setInterval(loadLogTail,1500);button.innerHTML=`${icon("pause")} Pause`;return;}
+    const diskVolume=event.target.closest("[data-disk-volume]");if(diskVolume){if(disk.running)return;disk.drive=diskVolume.dataset.diskVolume;return renderDiskCheck(catalog.find((item)=>item.id==="disk-check"));}
+    const diskMode=event.target.closest("[data-disk-mode]");if(diskMode){if(disk.running)return;disk.mode=diskMode.dataset.diskMode;return renderDiskCheck(catalog.find((item)=>item.id==="disk-check"));}
+    if(event.target.closest("[data-disk-log]")){disk.showLog=!disk.showLog;return renderDiskCheck(catalog.find((item)=>item.id==="disk-check"));}
+    if(event.target.closest("[data-disk-run]"))return startDiskCheck();
     if(event.target.closest("[data-lock-go]"))return inspectLocks();
     const systemTab=event.target.closest('[data-system-mode]');if(systemTab){clearInterval(timer);timer=0;systemMode=systemTab.dataset.systemMode;return renderSystem(catalog.find((x)=>x.id==='system'));}
     const scopeButton=event.target.closest('[data-system-scope]');if(scopeButton){systemScope=scopeButton.dataset.systemScope;systemSelected='Path';return renderSystemEnvironment();}

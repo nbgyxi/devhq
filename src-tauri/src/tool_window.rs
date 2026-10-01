@@ -873,6 +873,175 @@ pub fn tool_bridge_state_take(id: String) -> Result<Option<serde_json::Value>, S
         .remove(&id))
 }
 
+fn check_embedded_args(id: &str, session: &str) -> Result<(), String> {
+    if id.is_empty()
+        || id
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
+    {
+        return Err("That tool id cannot be isolated.".into());
+    }
+    if session.len() < 16 || session.chars().any(|c| !c.is_ascii_alphanumeric()) {
+        return Err("That tool session is invalid.".into());
+    }
+    Ok(())
+}
+
+/// The language the shell is drawn in, as the front end last saved it.
+///
+/// An isolated tool gets a WebView2 user data folder of its own, so it cannot
+/// read the shell's `localStorage` — which is where the chosen language used to
+/// live and nowhere else. The shell mirrors it into the durable store, and the
+/// answer travels in the page URL so the tool is in the right language from its
+/// first paint. Nothing saved means the page falls back on its own, as before.
+fn preferred_language(app: &AppHandle) -> Option<String> {
+    let value = crate::ui_state::read(app, "language")?;
+    let code = value.as_str()?.trim().to_string();
+    let valid = !code.is_empty()
+        && code.len() <= 12
+        && code.chars().all(|c| c.is_ascii_alphabetic() || c == '-');
+    valid.then_some(code)
+}
+
+fn embedded_background(light: bool) -> tauri::webview::Color {
+    if light {
+        tauri::webview::Color(244, 245, 248, 255)
+    } else {
+        tauri::webview::Color(12, 13, 17, 255)
+    }
+}
+
+/// Build the tool's child webview. Creating one means a WebView2 environment of
+/// its own on disk and a renderer process to go with it, which is the expensive
+/// part of opening an isolated tool; `tool_embedded_warm` calls this ahead of
+/// the click so that only the move and the show are left.
+#[allow(clippy::too_many_arguments)]
+fn create_embedded_webview(
+    app: &AppHandle,
+    window: &tauri::Window,
+    id: &str,
+    name: &str,
+    session: &str,
+    light: bool,
+    pinned: bool,
+    position: LogicalPosition<f64>,
+    size: LogicalSize<f64>,
+) -> Result<(), String> {
+    let label = embedded_label_for(id);
+    // A child webview using the main view's WebView2 environment can share its
+    // renderer process. A synchronous loop in either view then stalls both.
+    // A dedicated data directory creates a distinct WebView2 environment and
+    // therefore a real renderer/process boundary for the isolated tool.
+    let data_directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("isolated-webviews")
+        .join(id);
+    // The name travels in the URL so the page can say what it is loading in its
+    // very first paint, before styles.css, the bridge or the tool's own code.
+    let page = format!(
+        "tool-embedded.html?id={}&name={}&theme={}&pinned={}&session={}{}",
+        urlencoding_lite(id),
+        urlencoding_lite(name),
+        if light { "light" } else { "dark" },
+        if pinned { "1" } else { "0" },
+        urlencoding_lite(session),
+        match preferred_language(app) {
+            Some(code) => format!("&lang={}", urlencoding_lite(&code)),
+            None => String::new(),
+        }
+    );
+    let init_theme = theme_script(if light { "light" } else { "dark" });
+    let make_builder = || {
+        WebviewBuilder::new(&label, WebviewUrl::App(page.clone().into()))
+            .data_directory(data_directory.clone())
+            .initialization_script(&init_theme)
+            .background_color(embedded_background(light))
+    };
+    embedded_sessions()
+        .lock()
+        .unwrap()
+        .insert(id.to_string(), session.to_string());
+    match window.add_child(make_builder(), position, size) {
+        Ok(_) => Ok(()),
+        Err(first_err) => {
+            // This tool's dedicated WebView2 environment can end up corrupted
+            // - e.g. left mid-creation by a killed process - and once it is,
+            // every future attempt to open this same tool fails identically
+            // forever: nothing before this ever cleared it, so the only way
+            // out was deleting the directory by hand. Wipe it and try once
+            // more with a clean slate - a real recreate-on-corruption
+            // recovery, not just reporting the failure and leaving the tool
+            // permanently broken.
+            let _ = std::fs::remove_dir_all(&data_directory);
+            window
+                .add_child(make_builder(), position, size)
+                .map(|_| ())
+                .map_err(|second_err| {
+                    format!(
+                        "Could not create the isolated tool: {first_err} \
+                         (also failed after clearing its cached environment: {second_err})"
+                    )
+                })
+        }
+    }
+}
+
+/// Build a tool's webview before anything asks to see it, so that opening it is
+/// a move rather than a cold start.
+///
+/// The first open of an isolated tool used to cost seconds that had nowhere to
+/// hide: a WebView2 environment created from nothing, a renderer process
+/// started, then the page's whole boot — stylesheet, icon font, the tool's own
+/// script — with an empty cache, all of it between the click and the first row.
+/// Warming pays that while the shell is idle.
+///
+/// The webview is parked just below the main window's client area rather than
+/// hidden. The parent clips it away, so it is invisible either way, but a
+/// parked webview still lays out and paints at the size it will really have -
+/// and a list that measures its own viewport to decide how many rows to draw
+/// gets that measurement right the first time.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn tool_embedded_warm(
+    app: AppHandle,
+    id: String,
+    name: Option<String>,
+    session: String,
+    theme: Option<String>,
+    pinned: bool,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    check_embedded_args(&id, &session)?;
+    // Already built, or built under another session: either way warming has
+    // nothing to add, and replacing a live webview is the one thing it must
+    // never do behind the user's back.
+    if app.get_webview(&embedded_label_for(&id)).is_some() {
+        return Ok(());
+    }
+    let window = app
+        .get_window("main")
+        .ok_or_else(|| "The main window is not available.".to_string())?;
+    let scale = window.scale_factor().unwrap_or(1.0).max(0.1);
+    let below = window
+        .inner_size()
+        .map(|inner| f64::from(inner.height) / scale)
+        .unwrap_or(2000.0);
+    create_embedded_webview(
+        &app,
+        &window,
+        &id,
+        name.as_deref().unwrap_or(&id),
+        &session,
+        theme.as_deref() == Some("light"),
+        pinned,
+        LogicalPosition::new(0.0, below + 8.0),
+        LogicalSize::new(width.max(1.0), height.max(1.0)),
+    )
+}
+
 /// Show one tool inside the main window while keeping its JavaScript in a
 /// separate child webview. A blocked tool renderer therefore cannot block the
 /// shell renderer. The shell remains responsible for the child's rectangle.
@@ -890,25 +1059,12 @@ pub async fn tool_embedded_show(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    if id.is_empty()
-        || id
-            .chars()
-            .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
-    {
-        return Err("That tool id cannot be isolated.".into());
-    }
-    if session.len() < 16 || session.chars().any(|c| !c.is_ascii_alphanumeric()) {
-        return Err("That tool session is invalid.".into());
-    }
+    check_embedded_args(&id, &session)?;
     let label = embedded_label_for(&id);
     let position = LogicalPosition::new(x.max(0.0), y.max(0.0));
     let size = LogicalSize::new(width.max(1.0), height.max(1.0));
     let light = theme.as_deref() == Some("light");
-    let background = if light {
-        tauri::webview::Color(244, 245, 248, 255)
-    } else {
-        tauri::webview::Color(12, 13, 17, 255)
-    };
+    let background = embedded_background(light);
     // A webview carries the session it was built with in its URL, and the shell
     // ignores anything from a session it no longer knows. So a surviving
     // webview whose session has been rolled - an eviction that did not take,
@@ -946,66 +1102,49 @@ pub async fn tool_embedded_show(
     let window = app
         .get_window("main")
         .ok_or_else(|| "The main window is not available.".to_string())?;
-    // A child webview using the main view's WebView2 environment can share its
-    // renderer process. A synchronous loop in either view then stalls both.
-    // A dedicated data directory creates a distinct WebView2 environment and
-    // therefore a real renderer/process boundary for the isolated tool.
-    let data_directory = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("isolated-webviews")
-        .join(&id);
-    // The name travels in the URL so the page can say what it is loading in its
-    // very first paint, before styles.css, the bridge or the tool's own code.
-    let page = format!(
-        "tool-embedded.html?id={}&name={}&theme={}&pinned={}&session={}",
-        urlencoding_lite(&id),
-        urlencoding_lite(name.as_deref().unwrap_or(&id)),
-        if light { "light" } else { "dark" },
-        if pinned { "1" } else { "0" },
-        urlencoding_lite(&session)
-    );
-    let init_theme = theme_script(if light { "light" } else { "dark" });
-    let make_builder = || {
-        WebviewBuilder::new(&label, WebviewUrl::App(page.clone().into()))
-            .data_directory(data_directory.clone())
-            .initialization_script(&init_theme)
-            .background_color(background)
-    };
-    embedded_sessions()
-        .lock()
-        .unwrap()
-        .insert(id.clone(), session.clone());
-    match window.add_child(make_builder(), position, size) {
-        Ok(_) => Ok(()),
-        Err(first_err) => {
-            // This tool's dedicated WebView2 environment can end up corrupted
-            // - e.g. left mid-creation by a killed process - and once it is,
-            // every future attempt to open this same tool fails identically
-            // forever: nothing before this ever cleared it, so the only way
-            // out was deleting the directory by hand. Wipe it and try once
-            // more with a clean slate - a real recreate-on-corruption
-            // recovery, not just reporting the failure and leaving the tool
-            // permanently broken.
-            let _ = std::fs::remove_dir_all(&data_directory);
-            window
-                .add_child(make_builder(), position, size)
-                .map(|_| ())
-                .map_err(|second_err| {
-                    format!(
-                        "Could not create the isolated tool: {first_err} \
-                         (also failed after clearing its cached environment: {second_err})"
-                    )
-                })
-        }
-    }
+    create_embedded_webview(
+        &app,
+        &window,
+        &id,
+        name.as_deref().unwrap_or(&id),
+        &session,
+        light,
+        pinned,
+        position,
+        size,
+    )
 }
 
 #[tauri::command]
 pub fn tool_embedded_hide(app: AppHandle, id: String) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&embedded_label_for(&id)) {
         webview.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Re-language every tool webview that is already open.
+///
+/// The URL stamp only settles the language a tool is *built* with. Changing the
+/// setting with tools already open has to reach them, and they cannot hear the
+/// shell's storage, so the shell says it out loud instead.
+#[tauri::command]
+pub fn tools_set_language(app: AppHandle, language: String) -> Result<(), String> {
+    let valid = !language.is_empty()
+        && language.len() <= 12
+        && language
+            .chars()
+            .all(|c| c.is_ascii_alphabetic() || c == '-');
+    if !valid {
+        return Err("That is not a language code.".into());
+    }
+    // Every WinT page loads i18n.js, and the guard makes this a no-op in one
+    // that has not got that far or is not ours, so the whole set is told rather
+    // than a hand-kept list of labels that would rot the next time a window is
+    // added.
+    let script = format!(r#"window.wintI18n&&window.wintI18n.setLanguage("{language}");"#);
+    for webview in app.webviews().values() {
+        let _ = webview.eval(&script);
     }
     Ok(())
 }
@@ -1095,16 +1234,20 @@ pub async fn tool_popout(
     };
     // Same reason as the embedded page: the window must be able to name what it
     // is opening in its first frame, with no script having run yet.
+    let lang = match preferred_language(&app) {
+        Some(code) => format!("&lang={}", urlencoding_lite(&code)),
+        None => String::new(),
+    };
     let page = match instance.as_deref() {
         Some(instance) => format!(
-            "tool.html?id={}&name={}&theme={}&instance={}",
+            "tool.html?id={}&name={}&theme={}{lang}&instance={}",
             urlencoding_lite(&id),
             urlencoding_lite(&window_title),
             if light { "light" } else { "dark" },
             urlencoding_lite(instance)
         ),
         None => format!(
-            "tool.html?id={}&name={}&theme={}",
+            "tool.html?id={}&name={}&theme={}{lang}",
             urlencoding_lite(&id),
             urlencoding_lite(&window_title),
             if light { "light" } else { "dark" }

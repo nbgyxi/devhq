@@ -660,6 +660,14 @@ function applyLanguage() {
     ? (navigator.language || "en")
     : state.language;
   window.wintI18n?.setLanguage(state.language);
+  // Tools live in webviews with a storage of their own, so the shell's prefs
+  // never reach them. The durable copy is what a tool is built with, and the
+  // broadcast is what the ones already open hear.
+  const language = state.language === "system"
+    ? (navigator.language || "en").toLowerCase().split("-")[0]
+    : state.language;
+  invoke("ui_state_set", { key: "language", value: language }).catch(() => {});
+  invoke("tools_set_language", { language }).catch(() => {});
 }
 
 function applyTheme() {
@@ -745,6 +753,7 @@ function firstRunLanguage() {
       state.language = language;
       state.languageChosen = true;
       savePrefs();
+      applyLanguage();
       await window.wintI18n?.setLanguage(language);
       overlay.remove();
       resolve();
@@ -2007,6 +2016,65 @@ function setEmbeddedToolAwake(id, awake) {
     commandId: `${session}:awake:${Date.now()}`,
     action: awake ? "resume" : "suspend",
   }).catch(() => {});
+}
+
+/** Tools whose webview was built before anything asked to see it, and which
+ *  therefore still have to be put to sleep once they finish booting. */
+const embeddedToolWarmingIds = new Set();
+
+/** Build a tool's webview while nothing is waiting for it.
+ *
+ *  The first open of an isolated tool is the expensive one: a WebView2
+ *  environment created from nothing, a renderer process of its own, then the
+ *  page's whole boot with an empty cache - and all of it used to sit between
+ *  the click and the first row, with only a stand-in to show for it. Warming
+ *  moves that behind the overview the user is already looking at, so the click
+ *  is the move and the show that are left.
+ *
+ *  Only the tool they had open last is warmed. It is the one they are most
+ *  likely to open again, and guessing more widely would spend a renderer
+ *  process per guess.
+ */
+async function warmEmbeddedTool(id) {
+  const tool = id ? toolById(id) : null;
+  if (!tool || embeddedToolOpening) return;
+  // Alive already - on screen, resident or warmed - is nothing to warm.
+  if (embeddedToolMountedId === id || embeddedToolResident.includes(id)) return;
+  if (state.activeView === "isolated-tool" && state.isolatedToolId === id) return;
+  // Creating a WebView2 touches the native window tree, which must never
+  // overlap with another create, hide or destroy. This takes the same lock the
+  // open path takes, so a click landing mid-warm waits rather than races.
+  embeddedToolOpening = true;
+  try {
+    await invoke("tool_embedded_warm", {
+      id,
+      name: tool.name || id,
+      session: sessionForTool(id),
+      theme: state.theme === "light" ? "light" : "dark",
+      pinned: isToolPinned(id),
+      // Parked off screen, it still lays out, so it is built at roughly the
+      // size it will be shown at and a list that counts rows against its own
+      // viewport gets that count right the first time.
+      width: Math.max(480, window.innerWidth),
+      height: Math.max(320, window.innerHeight),
+    });
+    // It boots awake, and nobody is looking at it. Suspending it here would
+    // race its own bridge into existence, so `ready` is where it is put down.
+    embeddedToolWarmingIds.add(id);
+    embeddedToolAwakeIds.add(id);
+    touchResidentTool(id);
+    await trimResidentTools(state.isolatedToolId);
+  } catch (error) {
+    // A tool that could not be warmed is not a failure the user needs to hear
+    // about: nothing was asked for, and opening it will report for itself.
+    console.error(`Could not warm the isolated ${tool.name || id}`, error);
+  } finally {
+    embeddedToolOpening = false;
+    if (embeddedToolResyncPending) {
+      embeddedToolResyncPending = false;
+      syncEmbeddedTool();
+    }
+  }
 }
 
 /** Drop a tool out of memory for good, and forget its session with it. */
@@ -8105,6 +8173,13 @@ async function wireToolPopoutEvents() {
           if (failure) failEmbeddedToolLoading(toolById(fromId), String(failure));
           else hideEmbeddedToolLoading();
         }
+        // A tool warmed ahead of being asked for has finished booting with
+        // nobody looking at it. Now - and not before, when its bridge did not
+        // yet exist to hear it - is when it can be put down. If the user got
+        // there first it is on screen, and it stays awake.
+        if (embeddedToolWarmingIds.delete(fromId) && fromId !== embeddedToolMountedId) {
+          setEmbeddedToolAwake(fromId, false);
+        }
         await reply(true, { accepted: true });
       } else if (request.action === "heartbeat") {
         embeddedToolLastBeat.set(fromId, Date.now());
@@ -8477,7 +8552,20 @@ async function askBrowserDefault() {
   // now, and this queues behind any first-run dialog rather than racing it.
   await askTorrentDefault();
   askBrowserDefault();
+
+  // With the questions answered and the shell settled, build the tool they had
+  // open last so that clicking it is instant rather than a cold WebView2. It is
+  // deliberately the very last thing startup does: nothing on screen waits on
+  // it, and a tool the user opens first takes the native window tree from it.
+  const warmId = state.isolatedToolId;
+  if (warmId) requestIdleCallback2(() => warmEmbeddedTool(warmId));
 })();
+
+/** `requestIdleCallback` is not in every WebView2 the app may be hosted by. */
+function requestIdleCallback2(run) {
+  if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 4000 });
+  else setTimeout(run, 1200);
+}
 
 /** The folder a terminal opened from nowhere in particular should start in. */
 window.wintPrimaryRoot = () => state.roots[0] || "";

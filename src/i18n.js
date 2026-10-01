@@ -2,8 +2,12 @@
 // source strings, which keeps the JSON files straightforward for translators.
 // Empty/missing values fall back to English.
 window.wintI18n = (() => {
-  let english = {};
-  let active = {};
+  // A distinct empty object, so "not loaded yet" is tellable from "loaded and
+  // it held nothing".
+  const EMPTY = {};
+  let english = EMPTY;
+  let active = EMPTY;
+  let translating = false;
   let language = "en";
   let patterns = [];
   const originalText = new WeakMap();
@@ -101,25 +105,60 @@ window.wintI18n = (() => {
     }
   }
 
+  /** The English catalog is only ever a fallback for another language: with it
+   *  empty, `translated` hands every source string straight back, which is
+   *  exactly what English is. It is a third of a megabyte of JSON and a few
+   *  thousand compiled regexes, and every window - the shell and each isolated
+   *  tool webview, each with a cache of its own - used to pay for it on boot
+   *  before anything was drawn. It loads on the way to a real translation now.
+   */
+  async function loadEnglish() {
+    if (english !== EMPTY) return;
+    try { english = await catalog("en"); } catch { english = {}; }
+  }
+
+  // Watching the whole document only earns its cost while something is being
+  // translated. In English there is nothing to apply, so every row a tool
+  // renders would walk a TreeWalker in order to change nothing.
+  let observer = null;
+  function observe() {
+    if (observer || !document.body) return;
+    observer = new MutationObserver((records) => {
+      for (const record of records) for (const node of record.addedNodes) apply(node);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
   async function setLanguage(code) {
     language = code === "system" ? (navigator.language || "en").toLowerCase().split("-")[0] : code;
-    try { active = language === "en" ? english : await catalog(language); }
-    catch { active = {}; }
+    if (language === "en") active = english;
+    else {
+      await loadEnglish();
+      try { active = await catalog(language); } catch { active = {}; }
+    }
     rebuildPatterns();
     document.documentElement.lang = language;
     document.documentElement.dir = language === "ar" ? "rtl" : "ltr";
-    apply();
+    if (language !== "en") { translating = true; observe(); }
+    // Going back to English still has to walk the page: `apply` is what puts
+    // the remembered source text back into nodes another language rewrote.
+    if (translating) apply();
   }
 
   async function init(code) {
-    try { english = await catalog("en"); } catch { english = {}; }
     await setLanguage(code);
-    new MutationObserver((records) => {
-      for (const record of records) for (const node of record.addedNodes) apply(node);
-    }).observe(document.body, { childList: true, subtree: true });
   }
 
+  // An isolated tool webview is built with a WebView2 user data folder of its
+  // own, so it has a `localStorage` of its own too: the shell's prefs are
+  // simply not there, every tool read back "system", and each one drew itself
+  // in the Windows language whatever the user had chosen. The shell stamps the
+  // chosen language into the page URL when it builds one, and that wins.
   function storedLanguage() {
+    try {
+      const asked = new URLSearchParams(location.search).get("lang");
+      if (asked) return asked;
+    } catch {}
     try { return JSON.parse(localStorage.getItem("wint.prefs.v1") || "{}").language || "system"; }
     catch { return "system"; }
   }

@@ -139,7 +139,10 @@ pub async fn browser_assoc_should_ask() -> bool {
     crate::off_thread(|| {
         let assoc = status();
         assoc.supported
-            && assoc.registered
+            // A packaged build never writes `registered` anywhere the shell
+            // or it can see, so requiring it would mean the Store build was
+            // never asked at all.
+            && (assoc.registered || assoc.packaged)
             && !(assoc.default_http && assoc.default_https)
             && !asked()
     })
@@ -189,8 +192,9 @@ use imp::{asked, register, set_asked, settings_page, status, unregister};
 mod imp {
     use super::{Assoc, Check, CAPABILITIES, CLIENT, PROGID_URL, REGISTERED};
     use crate::reg::{delete_tree, delete_value, get_sz, set_dword, set_sz};
-    use windows::core::{HSTRING, PCWSTR};
-    use windows::Win32::System::Registry::HKEY_CURRENT_USER;
+    use windows::core::{HSTRING, PCWSTR, PWSTR};
+    use windows::Win32::Storage::Packaging::Appx::GetCurrentApplicationUserModelId;
+    use windows::Win32::System::Registry::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER};
     use windows::Win32::UI::Shell::{
         SHChangeNotify, ShellExecuteW, SHCNE_ASSOCCHANGED, SHCNF_IDLIST,
     };
@@ -334,6 +338,54 @@ mod imp {
         })
     }
 
+    /// This package's AppUserModelID, or `None` for an unpackaged build —
+    /// where the call fails with `ERROR_NO_PACKAGE` and there would be nothing
+    /// to compare against anyway.
+    fn aumid() -> Option<String> {
+        let mut len = 0u32;
+        // The first call only asks how long the answer is.
+        let _ = unsafe { GetCurrentApplicationUserModelId(&mut len, None) };
+        if len == 0 {
+            return None;
+        }
+        let mut buffer = vec![0u16; len as usize];
+        if unsafe { GetCurrentApplicationUserModelId(&mut len, Some(PWSTR(buffer.as_mut_ptr()))) }
+            .is_err()
+        {
+            return None;
+        }
+        buffer.truncate(len.saturating_sub(1) as usize);
+        let id = String::from_utf16_lossy(&buffer);
+        (!id.is_empty()).then_some(id)
+    }
+
+    /// Whether a ProgID the shell recorded in `UserChoice` means *this* WinT.
+    ///
+    /// Unpackaged, that is the ProgID we wrote. Packaged, it never is: the
+    /// shell gives a package's handler a generated `AppX…` ProgID of its own,
+    /// so a packaged WinT that really had been chosen would compare unequal to
+    /// `WinT.Url` for good and go on reporting itself as not the default — and
+    /// on going on asking. The generated key carries the AppUserModelID of the
+    /// package behind it, and that is the thing worth comparing; the hash in
+    /// its name is not ours to reproduce.
+    fn progid_is_ours(progid: &str) -> bool {
+        if progid.is_empty() {
+            return false;
+        }
+        if progid.eq_ignore_ascii_case(PROGID_URL) {
+            return true;
+        }
+        let Some(ours) = aumid() else {
+            return false;
+        };
+        get_sz(
+            HKEY_CLASSES_ROOT,
+            &format!(r"{progid}\Application"),
+            Some("AppUserModelID"),
+        )
+        .is_some_and(|id| id.eq_ignore_ascii_case(&ours))
+    }
+
     pub fn status() -> Assoc {
         let command = hkcu_get(
             &format!(r"Software\Classes\{PROGID_URL}\shell\open\command"),
@@ -350,8 +402,14 @@ mod imp {
 
         let http = user_choice("http").unwrap_or_default();
         let https = user_choice("https").unwrap_or_default();
-        let default_http = registered && http == PROGID_URL;
-        let default_https = registered && https == PROGID_URL;
+        // `registered` is the proof the keys point here, and it is the right
+        // gate for an unpackaged build. For a packaged one it proves nothing —
+        // it reads the package's own virtualised hive — so what the shell
+        // recorded is allowed to stand on its own there.
+        let packaged = packaged();
+        let claimed = |progid: &str| (packaged || registered) && progid_is_ours(progid);
+        let default_http = claimed(&http);
+        let default_https = claimed(&https);
 
         Assoc {
             registered,
@@ -370,7 +428,7 @@ mod imp {
             },
             asked: asked(),
             exe: exe().ok(),
-            packaged: packaged(),
+            packaged,
             checks: checks(&http, &https),
             supported: true,
         }
@@ -401,6 +459,12 @@ mod imp {
                 ok,
                 found,
             }
+        };
+        let chosen = |label: &str, scheme: &str, progid: &str| Check {
+            label: label.to_string(),
+            key: format!(r"HKCU\…\UrlAssociations\{scheme}\UserChoice   ProgId"),
+            ok: progid_is_ours(progid),
+            found: (!progid.is_empty()).then(|| progid.to_string()),
         };
         let progid = format!(r"Software\Classes\{PROGID_URL}");
         vec![
@@ -446,18 +510,12 @@ mod imp {
                 hkcu_get(r"Software\RegisteredApplications", Some(REGISTERED)),
                 Some(CAPABILITIES),
             ),
-            line(
-                "Windows opens http with",
-                r"HKCU\…\UrlAssociations\http\UserChoice   ProgId".into(),
-                (!http.is_empty()).then(|| http.to_string()),
-                Some(PROGID_URL),
-            ),
-            line(
-                "Windows opens https with",
-                r"HKCU\…\UrlAssociations\https\UserChoice   ProgId".into(),
-                (!https.is_empty()).then(|| https.to_string()),
-                Some(PROGID_URL),
-            ),
+            // Not compared against `PROGID_URL` like the lines above: a
+            // packaged WinT is recorded under a generated `AppX…` ProgID, so
+            // the question is whether the ProgID resolves to this WinT, not
+            // whether it is spelled like ours.
+            chosen("Windows opens http with", "http", http),
+            chosen("Windows opens https with", "https", https),
         ]
     }
 

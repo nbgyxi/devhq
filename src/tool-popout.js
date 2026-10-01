@@ -102,7 +102,7 @@
     github: "github.js?v=0.43.20",
     git: "git-client.js?v=0.5.7",
   };
-  const CATALOG_SCRIPTS = ["util-tools.js?v=0.28.1", "windows-tools.js?v=0.43.8"];
+  const CATALOG_SCRIPTS = ["util-tools.js?v=0.28.1", "windows-tools.js?v=0.176.1"];
 
   const loadScript = (src) => new Promise((resolve, reject) => {
     const tag = document.createElement("script");

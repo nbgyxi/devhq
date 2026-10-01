@@ -1975,6 +1975,14 @@ function mount(host) {
     // dropped, exactly as Escape does.
     if (!painting && event.target.closest(".fx-address")) leaveAddress();
   });
+  // How many rows the list draws is measured against the scroller at paint
+  // time, so a viewport that changes size after a paint stops short of its own
+  // bottom. A window the user resized taller did it, and so does a webview
+  // built ahead of the click at one size and then shown at another.
+  window.addEventListener("resize", () => {
+    const rows = fx.host?.querySelector(".fx-rows");
+    if (rows) paintVirtualRows(rows);
+  });
   host.addEventListener("pointerdown", watchDrag);
   host.addEventListener("pointerdown", watchMarquee);
   host.addEventListener("pointermove", maybeDrag);
@@ -2149,21 +2157,28 @@ function mount(host) {
   render();
 }
 
+/** Returns as soon as the window can be shown, not when the data has arrived.
+ *
+ *  Nothing here is awaited. The shell uncovers the tool the moment `opened`
+ *  resolves, so awaiting the drives, the saved layout and a full folder listing
+ *  - three round trips to Rust, the slowest of them a directory Windows may
+ *  take a second to stat - meant the first open of Files sat behind the loading
+ *  screen for as long as all three took. Every one of them has a skeleton to
+ *  draw in its place, so they fill in on screen instead of before it. */
 async function opened() {
   fx.open.add(THIS_PC);
-  // The drive list is the first thing on screen, so it is fetched first and
-  // the bookmarks fill in beside it rather than holding it up.
-  const drives = loadRoots();
+  // `loadRoots` raises its own loading flag synchronously, so the first frame
+  // is already named skeletons rather than an empty This PC.
+  loadRoots();
   loadBookmarks();
-  const layout = loadLayout();
-  await Promise.all([drives, layout]);
+  loadLayout();
   // A folder listed before the tool was handed to another window is stale by
   // definition - files move while a window is closed - so re-read it.
   if (fx.path !== THIS_PC && !fx.loading) openFolder(fx.path, { push: false, keepFilter: true });
   // A fresh window (no handoff) opens on This PC; put it back where Files was
   // last, if that folder is still there.
-  else if (fx.path === THIS_PC) await restoreLastPath();
-  else dirty();
+  else if (fx.path === THIS_PC) restoreLastPath();
+  dirty();
 }
 
 function preparePopout() {

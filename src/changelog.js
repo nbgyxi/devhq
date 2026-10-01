@@ -16,6 +16,67 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.177.1",
+      title: "The Store build can tell when it is the browser you chose",
+      buildChecksum: "113d67e53df94ee354d9c104b706b62bb6f42eb87f48fa8eec2e6a72d0d5e936",
+      date: "2026-10-01",
+      changes: [
+        ["fix", "Once you pick the Store build of WinT for links, WinT now knows it. Windows files a packaged app's link handler under a generated name of its own rather than the one WinT writes, so WinT was comparing the two, finding them different and concluding it had not been chosen — Link Router showed the last two lines of the checklist red, and the question about becoming your default browser came back every time WinT started, however many times you had already answered it. WinT now asks Windows which app the name it recorded actually stands for."],
+        ["fix", "The Store build is asked the default-browser question at all. It was skipped unless WinT had written its registration into the registry — something a packaged build cannot do in a place anything else can read — so the one build that needs the Windows picker was the one never pointed at it."],
+      ],
+    },
+    {
+      version: "0.177.0",
+      title: "Checking the sectors, and going easy on a drive that is struggling",
+      date: "2026-09-30",
+      changes: [
+        ["new", "Disk Check can now run Windows' /R pass: it fixes what it finds and then reads every sector on the drive, moving what it can out of any it cannot read and recording them so the file system never uses them again. That is the one thing that fences off failing media, and it is priced accordingly — it locks the volume, so nothing else may be using the drive, and it runs for hours on a large one."],
+        ["better", "A repair pass will never answer chkdsk's questions on your behalf. A drive with files open stays mounted and the check reports that it could not lock it, rather than forcing a dismount and pulling the volume out from under whatever was using it. On the drive Windows is running from, where a repair can only ever mean a check at the next restart, it declines and says so — a tool should not be able to hold a machine out of Windows for hours without being asked."],
+        ["new", "A drive that faults on a write is now written to one piece at a time until it settles. A torrent asks a disk for close to the hardest thing it can be asked — many small writes at scattered offsets across thousands of files at once — and an external drive whose controller is struggling struggles most under exactly that. When one answers with a device fault, everything WinT writes to that drive queues behind a single writer until it has gone a minute without faulting, then opens up again. Healthy drives never notice: they are not queued at all."],
+      ],
+    },
+    {
+      version: "0.176.1",
+      title: "The disk scan asks for administrator itself",
+      date: "2026-09-30",
+      changes: [
+        ["better", "Disk Check's online scan no longer asks you to restart WinT as administrator. It asks Windows for the rights it needs for that one run, the way the hosts file and PC Detective do: one prompt, while WinT keeps running, and the scan starts the moment you approve it."],
+        ["better", "An elevated scan reports its progress exactly as an ordinary check does — stage, percentage, elapsed time. While the prompt is still on screen the panel says it is waiting for it, rather than showing a bar that cannot move yet."],
+        ["fix", "Stopping a check now reports what actually happened. Windows does not let WinT stop a scan it granted administrator rights to, and the panel says that instead of claiming it stopped."],
+      ],
+    },
+    {
+      version: "0.176.0",
+      title: "Disk Check",
+      date: "2026-09-30",
+      changes: [
+        ["new", "Disk Check runs Windows' own chkdsk on any local drive and shows what it is doing while it does it. chkdsk reports itself through one console line it keeps rewriting, so from a terminal it looks stuck for minutes; here it becomes the stage it has reached, the percentage through that stage, how far the whole run is, and how long it has been going."],
+        ["new", "Pick the drive from a list of the volumes on this machine, with the label, the file system and how full each one is, then choose a read-only check - which writes nothing and needs no administrator - or the online /scan pass. The scan is offered only when WinT is running as administrator, and it never dismounts a volume or schedules a check at the next boot."],
+        ["new", "What chkdsk found is read back as a report - file records, indexes, security descriptors, the space it accounts for and the verdict in words - with the raw console output one click away if you want it. A check can be stopped at any point, and it keeps running if you move to another tool."],
+      ],
+    },
+    {
+      version: "0.175.0",
+      title: "Files opens the instant you click it",
+      date: "2026-09-30",
+      changes: [
+        ["better", "Files opens instantly. Opening a tool for the first time built a browser environment for it from nothing — its own process, an empty cache, then the whole page read from scratch — and every second of that sat between the click and anything appearing. WinT now builds the tool you had open last while you are still looking at the overview, so clicking it only has to show it."],
+        ["better", "Files no longer waits for its own contents before it appears. It used to hold its loading screen until the drive list, the saved layout and a full folder listing had all come back from Windows — three separate round trips, the slowest of them a folder that can take a second to read. The window is there straight away now, with named skeletons wherever something is still on its way."],
+        ["better", "Every window starts faster. Each one — the main window and each tool, all with caches of their own — read and compiled the entire English text catalogue on startup, a third of a megabyte of it, and then watched every element it would ever draw in case it needed translating. In English none of that changed a single word, so none of it happens any more. Choosing another language loads it then."],
+        ["fix", "A file list made taller by resizing the window now fills the space it gained, instead of stopping where the old bottom used to be."],
+      ],
+    },
+    {
+      version: "0.174.1",
+      title: "Tools speak the language you chose",
+      date: "2026-09-30",
+      changes: [
+        ["fix", "Tools stayed in English — or in the Windows language — however the app's language was set. A tool runs in a webview of its own with its own storage, so the language the shell had written down was simply not there to read, and every tool fell back on asking Windows. The chosen language is now saved where a tool can reach it and travels with the tool as it opens, so a tool is in the right language from its first frame."],
+        ["better", "Changing the language now reaches the tools that are already open, instead of only the ones opened afterwards."],
+        ["fix", "The app could stop responding while files were being dragged out of Files, long enough for Windows to offer to close it. Previews are read from the Windows shell, and each window was asking for four at a time on its own — so a second Files window, a preview pane and Disk Space together could have ten requests inside the shell at once. When the shell went slow they all sat there waiting together, and a drag, which asks the shell for the files it is carrying, had to queue behind them. Four at a time is now the limit across the whole app."],
+      ],
+    },
+    {
       version: "0.174.0",
       title: "Downloaded files stop claiming to be empty",
       date: "2026-09-30",

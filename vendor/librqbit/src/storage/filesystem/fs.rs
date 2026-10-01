@@ -3,6 +3,11 @@ use std::{
     io::IoSlice,
     path::{Path, PathBuf},
 };
+#[cfg(windows)]
+use std::{
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use anyhow::Context;
 use tracing::warn;
@@ -28,6 +33,8 @@ impl StorageFactory for FilesystemStorageFactory {
         _metadata: &TorrentMetadata,
     ) -> anyhow::Result<FilesystemStorage> {
         Ok(FilesystemStorage {
+            #[cfg(windows)]
+            gate: volume_gate(&shared.options.output_folder),
             output_folder: shared.options.output_folder.clone(),
             opened_files: Default::default(),
         })
@@ -41,6 +48,9 @@ impl StorageFactory for FilesystemStorageFactory {
 pub struct FilesystemStorage {
     pub(crate) output_folder: PathBuf,
     pub(crate) opened_files: Vec<OpenedFile>,
+    /// How much of this volume may be written at once. See `VolumeGate`.
+    #[cfg(windows)]
+    pub(crate) gate: &'static VolumeGate,
 }
 
 impl FilesystemStorage {
@@ -53,6 +63,8 @@ impl FilesystemStorage {
                 .map(|f| f.take_clone())
                 .collect::<anyhow::Result<Vec<_>>>()?,
             output_folder: self.output_folder.clone(),
+            #[cfg(windows)]
+            gate: self.gate,
         })
     }
 }
@@ -155,17 +167,156 @@ fn is_device_io_error(error: &anyhow::Error) -> bool {
 #[cfg(windows)]
 const DEVICE_RETRY_BACKOFF: &[u64] = &[50, 200, 500, 1000, 2000];
 
-/// Run a write, and sit out a device fault rather than failing on it.
+/// How many writes a volume that has just faulted is allowed to have in the
+/// air at once, and how long it has to go without faulting before the limit
+/// comes off again.
+///
+/// One. A torrent's write pattern - many small writes at scattered offsets
+/// across thousands of open files, from as many peer tasks as there are peers
+/// - is close to the worst case a USB bridge chip ever sees, and a bridge that
+/// is stalling under it stalls less when it is asked for one thing at a time.
+/// A minute is long enough that a drive which is genuinely struggling stays
+/// clamped through a whole torrent, and short enough that a one-off fault does
+/// not cost the rest of the evening's throughput.
 #[cfg(windows)]
-fn retry_through_device_fault<T>(mut op: impl FnMut() -> anyhow::Result<T>) -> anyhow::Result<T> {
+const FAULTED_VOLUME_WRITES: usize = 1;
+#[cfg(windows)]
+const VOLUME_RECOVERY: Duration = Duration::from_secs(60);
+
+/// How much of a volume WinT is willing to use at once, decided by how the
+/// volume has been behaving.
+///
+/// A healthy disk is not gated at all - `limit` is `usize::MAX`, the write path
+/// reads one atomic and carries on, and an NVMe never pays for the existence of
+/// this. A volume that answers a write with a device fault is clamped to one
+/// write at a time until it has been quiet for `VOLUME_RECOVERY`, which is the
+/// difference between a drive that is struggling and a torrent that has to be
+/// given up on.
+#[cfg(windows)]
+pub(crate) struct VolumeGate {
+    limit: AtomicUsize,
+    in_flight: parking_lot::Mutex<usize>,
+    room: parking_lot::Condvar,
+    faulted_at: parking_lot::Mutex<Option<std::time::Instant>>,
+    name: String,
+}
+
+#[cfg(windows)]
+const UNGATED: usize = usize::MAX;
+
+#[cfg(windows)]
+impl VolumeGate {
+    fn new(name: String) -> Self {
+        Self {
+            limit: AtomicUsize::new(UNGATED),
+            in_flight: parking_lot::Mutex::new(0),
+            room: parking_lot::Condvar::new(),
+            faulted_at: parking_lot::Mutex::new(None),
+            name,
+        }
+    }
+
+    /// Wait until this volume has room for one more write. `None` while the
+    /// volume is healthy, which is the case that has to stay free.
+    fn enter(&self) -> Option<VolumePermit<'_>> {
+        if self.limit.load(Ordering::Relaxed) == UNGATED {
+            return None;
+        }
+        let mut held = self.in_flight.lock();
+        while *held >= self.limit.load(Ordering::Relaxed) {
+            self.room.wait(&mut held);
+        }
+        *held += 1;
+        Some(VolumePermit { gate: self })
+    }
+
+    /// The volume faulted. Clamp it, and start the quiet period again.
+    fn note_fault(&self) {
+        *self.faulted_at.lock() = Some(std::time::Instant::now());
+        if self
+            .limit
+            .swap(FAULTED_VOLUME_WRITES, Ordering::Relaxed)
+            == UNGATED
+        {
+            warn!(
+                volume = %self.name,
+                "this drive faulted on a write; writing to it one at a time until it settles"
+            );
+        }
+    }
+
+    /// A write went through. Let the clamp go once the volume has been quiet
+    /// long enough to have earned it.
+    fn note_success(&self) {
+        if self.limit.load(Ordering::Relaxed) == UNGATED {
+            return;
+        }
+        let quiet = {
+            let faulted_at = self.faulted_at.lock();
+            faulted_at.is_none_or(|at| at.elapsed() >= VOLUME_RECOVERY)
+        };
+        if quiet && self.limit.swap(UNGATED, Ordering::Relaxed) != UNGATED {
+            warn!(volume = %self.name, "this drive has been steady for a while; writing to it freely again");
+            self.room.notify_all();
+        }
+    }
+}
+
+#[cfg(windows)]
+struct VolumePermit<'a> {
+    gate: &'a VolumeGate,
+}
+
+#[cfg(windows)]
+impl Drop for VolumePermit<'_> {
+    fn drop(&mut self) {
+        let mut held = self.gate.in_flight.lock();
+        *held = held.saturating_sub(1);
+        self.gate.room.notify_one();
+    }
+}
+
+/// One gate per volume, shared by every torrent on it — the drive is the thing
+/// that struggles, not the torrent, so a second torrent on the same disk must
+/// not be able to undo the first one's clamp. Leaked deliberately: there are as
+/// many as there are drives, and they outlive every torrent.
+#[cfg(windows)]
+pub(crate) fn volume_gate(folder: &Path) -> &'static VolumeGate {
+    use std::collections::HashMap;
+    use std::path::Component;
+    static GATES: std::sync::OnceLock<parking_lot::Mutex<HashMap<PathBuf, &'static VolumeGate>>> =
+        std::sync::OnceLock::new();
+    let key = match folder.components().next() {
+        Some(c @ (Component::Prefix(_) | Component::RootDir)) => PathBuf::from(c.as_os_str()),
+        _ => PathBuf::new(),
+    };
+    let mut gates = GATES.get_or_init(Default::default).lock();
+    gates.entry(key.clone()).or_insert_with(|| {
+        Box::leak(Box::new(VolumeGate::new(key.to_string_lossy().into_owned())))
+    })
+}
+
+/// Run a write with everything this volume has learned about itself: wait for
+/// room if it is clamped, sit out a device fault rather than failing on it, and
+/// tell the gate how it went either way.
+#[cfg(windows)]
+fn guarded_write<T>(
+    gate: &'static VolumeGate,
+    mut op: impl FnMut() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let _permit = gate.enter();
     let mut last = match op() {
-        Ok(v) => return Ok(v),
+        Ok(v) => {
+            gate.note_success();
+            return Ok(v);
+        }
         Err(e) => e,
     };
     for wait_ms in DEVICE_RETRY_BACKOFF {
         if !is_device_io_error(&last) {
             return Err(last);
         }
+        gate.note_fault();
         warn!(
             wait_ms,
             "the drive faulted on a write; waiting and trying it again"
@@ -218,7 +369,7 @@ impl TorrentStorage for FilesystemStorage {
             retry_through_reopen(of, || {
                 #[cfg(windows)]
                 {
-                    match retry_through_device_fault(|| {
+                    match guarded_write(self.gate, || {
                         of.try_mark_sparse()?.pwrite_all(offset, buf)
                     }) {
                         Ok(()) => Ok(()),
@@ -234,7 +385,7 @@ impl TorrentStorage for FilesystemStorage {
                                 file_id,
                                 offset, "a positional write was refused; seeking to it instead"
                             );
-                            retry_through_device_fault(|| of.pwrite_all_seeking(offset, buf))
+                            guarded_write(self.gate, || of.pwrite_all_seeking(offset, buf))
                         }
                         Err(e) => Err(e),
                     }
@@ -254,7 +405,7 @@ impl TorrentStorage for FilesystemStorage {
         let of = self.opened_files.get(file_id).context("no such file")?;
         retry_through_reopen(of, || {
             #[cfg(windows)]
-            return retry_through_device_fault(|| {
+            return guarded_write(self.gate, || {
                 of.try_mark_sparse()?.pwrite_all_vectored(offset, bufs)
             });
             #[cfg(not(windows))]
@@ -281,6 +432,8 @@ impl TorrentStorage for FilesystemStorage {
                 .map(|f| f.take_clone())
                 .collect::<anyhow::Result<Vec<_>>>()?,
             output_folder: self.output_folder.clone(),
+            #[cfg(windows)]
+            gate: self.gate,
         }))
     }
 
