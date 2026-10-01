@@ -51,6 +51,16 @@ pub fn drives() -> Result<Vec<Drive>, String> {
         if kind != 2 && kind != 3 {
             continue;
         }
+        // Asked before the drive is, because `GetDiskFreeSpaceExW` against a
+        // volume that has stopped answering does not fail — it sits in the
+        // driver for minutes. Anything showing free space re-reads this list
+        // every half minute, so one dead drive used to leave a blocked thread
+        // behind per refresh, for as long as the app ran. A drive that cannot
+        // say how big it is is left out of the list, the same as one that
+        // answers with an error.
+        if !crate::volume::answers(Path::new(&path)) {
+            continue;
+        }
         let (mut available, mut total, mut free) = (0u64, 0u64, 0u64);
         if unsafe {
             GetDiskFreeSpaceExW(

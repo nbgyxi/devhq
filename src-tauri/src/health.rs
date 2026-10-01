@@ -230,9 +230,9 @@ static WALKED: AtomicBool = AtomicBool::new(false);
 fn main_thread_stack() -> String {
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::Diagnostics::Debug::{
-        GetThreadContext, StackWalk64, SymFunctionTableAccess64, SymGetModuleBase64,
-        SymGetModuleInfoW64, SymInitialize, CONTEXT, CONTEXT_FULL_AMD64, IMAGEHLP_MODULEW64,
-        STACKFRAME64,
+        GetThreadContext, StackWalk64, SymFunctionTableAccess64, SymGetModuleBase64, SymInitialize,
+        SymSetOptions, CONTEXT, CONTEXT_FULL_AMD64, STACKFRAME64, SYMOPT_DEFERRED_LOADS,
+        SYMOPT_LOAD_LINES, SYMOPT_UNDNAME,
     };
     use windows::Win32::System::Threading::{GetCurrentProcess, ResumeThread, SuspendThread};
 
@@ -259,9 +259,21 @@ fn main_thread_stack() -> String {
 
     // dbghelp is set up once, and only ever here: nothing else in the app
     // needs it, and it is not worth its cost until something has gone wrong.
+    //
+    // The options are the difference between a stack and an answer. Without
+    // them a freeze left twenty-four `wint+0x1d464b4` — a module and an offset
+    // nothing on the machine can turn back into a function, because a release
+    // build has no symbols beside it and a dev build's PDB is only read if
+    // dbghelp is asked to. `LOAD_LINES` is what carries the file and line
+    // through, `UNDNAME` turns the mangled name back into a readable one, and
+    // `DEFERRED_LOADS` keeps all of it off the clock until a frame is actually
+    // being named.
     static READY: AtomicBool = AtomicBool::new(false);
     if !READY.swap(true, Ordering::SeqCst) {
-        let _ = unsafe { SymInitialize(process, None, true) };
+        unsafe {
+            SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+            let _ = SymInitialize(process, None, true);
+        }
     }
 
     let mut frames: Vec<u64> = Vec::new();
@@ -308,22 +320,109 @@ fn main_thread_stack() -> String {
     }
     frames
         .iter()
-        .map(|&address| unsafe {
-            let base = SymGetModuleBase64(process, address);
-            let mut info = IMAGEHLP_MODULEW64 {
-                SizeOfStruct: std::mem::size_of::<IMAGEHLP_MODULEW64>() as u32,
-                ..Default::default()
-            };
-            if base != 0 && SymGetModuleInfoW64(process, address, &mut info).is_ok() {
-                let name = String::from_utf16_lossy(&info.ModuleName);
-                let name = name.trim_end_matches('\0');
-                format!("{name}+0x{:x}", address - base)
-            } else {
-                format!("0x{address:x}")
-            }
-        })
+        .map(|&address| unsafe { describe_frame(process, address) })
         .collect::<Vec<_>>()
         .join(" < ")
+}
+
+/// One frame, named as far as the symbols on this machine allow: the function
+/// and the line where there is a PDB, the module and an offset where there is
+/// not, and the bare address where even the module is unknown.
+///
+/// Every step degrades on its own, because the frames that matter most are the
+/// ones least likely to be fully named — a wedge inside the shell or the
+/// webview is all Microsoft modules, and `KERNELBASE+0xde298` with no public
+/// symbols is still worth more than nothing.
+#[cfg(windows)]
+unsafe fn describe_frame(
+    process: windows::Win32::Foundation::HANDLE,
+    address: u64,
+) -> String {
+    use windows::Win32::System::Diagnostics::Debug::{
+        SymFromAddrW, SymGetLineFromAddrW64, SymGetModuleBase64, SymGetModuleInfoW64,
+        IMAGEHLP_LINEW64, IMAGEHLP_MODULEW64, SYMBOL_INFOW,
+    };
+
+    // SYMBOL_INFOW's name is written past the end of the struct, so it is
+    // given a struct with room after it and told how much there is.
+    const NAME_CHARS: usize = 256;
+    #[repr(C)]
+    struct Named {
+        info: SYMBOL_INFOW,
+        rest: [u16; NAME_CHARS],
+    }
+    let mut named = Named {
+        info: SYMBOL_INFOW {
+            SizeOfStruct: std::mem::size_of::<SYMBOL_INFOW>() as u32,
+            MaxNameLen: NAME_CHARS as u32,
+            ..Default::default()
+        },
+        rest: [0; NAME_CHARS],
+    };
+
+    let base = unsafe { SymGetModuleBase64(process, address) };
+    let module = {
+        let mut info = IMAGEHLP_MODULEW64 {
+            SizeOfStruct: std::mem::size_of::<IMAGEHLP_MODULEW64>() as u32,
+            ..Default::default()
+        };
+        if base != 0 && unsafe { SymGetModuleInfoW64(process, address, &mut info) }.is_ok() {
+            let name = String::from_utf16_lossy(&info.ModuleName);
+            Some(name.trim_end_matches('\0').to_string())
+        } else {
+            None
+        }
+    };
+
+    let mut displacement = 0u64;
+    let symbol = if unsafe {
+        SymFromAddrW(
+            process,
+            address,
+            Some(&mut displacement),
+            std::ptr::addr_of_mut!(named.info),
+        )
+    }
+    .is_ok()
+    {
+        // The name runs from the last field of the struct into the room after
+        // it, for as many characters as dbghelp says it wrote.
+        let chars = (named.info.NameLen as usize).min(NAME_CHARS);
+        let start = named.info.Name.as_ptr();
+        let name = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(start, chars) });
+        let name = name.trim_end_matches('\0').to_string();
+        (!name.is_empty()).then_some(name)
+    } else {
+        None
+    };
+
+    let mut line_displacement = 0u32;
+    let mut line = IMAGEHLP_LINEW64 {
+        SizeOfStruct: std::mem::size_of::<IMAGEHLP_LINEW64>() as u32,
+        ..Default::default()
+    };
+    let at = if unsafe { SymGetLineFromAddrW64(process, address, &mut line_displacement, &mut line) }
+        .is_ok()
+        && !line.FileName.is_null()
+    {
+        let file = unsafe { line.FileName.to_string() }.unwrap_or_default();
+        // The full path is a build machine's, not this one's, and the tail is
+        // the part anyone reads.
+        let short = file.rsplit(['\\', '/']).next().unwrap_or(&file).to_string();
+        (!short.is_empty()).then(|| format!(" ({short}:{})", line.LineNumber))
+    } else {
+        None
+    };
+
+    match (module, symbol) {
+        (Some(module), Some(symbol)) => format!(
+            "{module}!{symbol}+0x{displacement:x}{}",
+            at.unwrap_or_default()
+        ),
+        (Some(module), None) => format!("{module}+0x{:x}", address - base),
+        (None, Some(symbol)) => format!("{symbol}+0x{displacement:x}{}", at.unwrap_or_default()),
+        (None, None) => format!("0x{address:x}"),
+    }
 }
 
 /// What Windows itself thinks the drawing thread is doing.
@@ -523,6 +622,22 @@ pub fn watch(app: tauri::AppHandle) {
                             // the stack is the whole answer.
                             if !first && !WALKED.swap(true, Ordering::SeqCst) {
                                 record("stack", main_thread_stack());
+                            }
+                            // The one wedge this thread can do something about
+                            // rather than only write down. A drag holds the
+                            // window's thread for as long as the drop target
+                            // takes, and a drop target waiting on a drive that
+                            // has stopped answering holds it indefinitely.
+                            // Asking the drag to stop lands on its next turn
+                            // through the loop, so the window comes back as
+                            // soon as the call it is in returns instead of
+                            // being handed into the rest of the drag.
+                            if !first && crate::explorer::cancel_drag() {
+                                record(
+                                    "drag",
+                                    "a drag was in the air while the window was stuck — asked \
+                                     Windows to end it",
+                                );
                             }
                         }
                     }

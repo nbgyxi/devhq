@@ -12,6 +12,7 @@ use std::io::{Read, Write};
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use zip::ZipArchive;
 
 #[derive(Serialize, Clone)]
@@ -1521,9 +1522,79 @@ pub fn clipboard_get() -> Result<Option<Clip>, String> {
     Ok(None)
 }
 
+/// Everything a drag needs that can be built away from the window's thread.
+///
+/// A PIDL is plain process heap, not a COM interface: making one parses the
+/// path through the shell namespace, which is the part that touches the disk,
+/// and moving one between threads costs nothing. The shell item array and the
+/// data object are apartment-bound and cannot be handed anywhere, so they stay
+/// on the window's thread where `DoDragDrop` needs them.
+#[cfg(windows)]
+pub struct DragItems {
+    pidls: Vec<*const windows::Win32::UI::Shell::Common::ITEMIDLIST>,
+}
+
+// The only thing in here is a list of pointers into this process's own heap,
+// owned by nothing else and freed by this type alone.
+#[cfg(windows)]
+unsafe impl Send for DragItems {}
+
+#[cfg(windows)]
+impl Drop for DragItems {
+    fn drop(&mut self) {
+        for pidl in self.pidls.drain(..) {
+            unsafe { windows::Win32::UI::Shell::ILFree(Some(pidl)) };
+        }
+    }
+}
+
+/// The half of a drag that must not run on the window's thread: refusing what
+/// cannot be dragged, making sure the drive is still there, and turning the
+/// paths into shell items.
+#[cfg(windows)]
+pub fn drag_prepare(paths: &[String]) -> Result<DragItems, String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::ILCreateFromPathW;
+
+    refuse_zip(paths, "dragged out")?;
+    // A drag off a volume that has stopped answering does not fail, it blocks,
+    // on the one thread that draws the window. See `crate::volume`.
+    crate::volume::all_answer(paths)
+        .map_err(|why| format!("{why} Dragging from it would freeze the window."))?;
+    // ILCreateFromPathW goes through the shell namespace, so this thread needs
+    // an apartment of its own.
+    let _apartment = crate::com::Apartment::single_threaded();
+    let mut items = DragItems { pidls: Vec::new() };
+    for path in paths {
+        let wide: Vec<u16> = std::ffi::OsStr::new(path.as_str())
+            .encode_wide()
+            .chain([0])
+            .collect();
+        let pidl = unsafe { ILCreateFromPathW(PCWSTR(wide.as_ptr())) };
+        if !pidl.is_null() {
+            items.pidls.push(pidl);
+        }
+    }
+    if items.pidls.is_empty() {
+        // Windows could not turn a single one of these into an item it knows.
+        // Saying which one it choked on is the difference between a bug report
+        // and a guess.
+        return Err(format!(
+            "Windows does not recognise any of the {} item(s) asked for. First: {:?}",
+            paths.len(),
+            paths
+                .first()
+                .map(String::as_str)
+                .unwrap_or("<the list was empty>")
+        ));
+    }
+    Ok(items)
+}
+
 /// Hands files to Windows as a real drag, so they can be dropped on Windows
 /// Explorer, the desktop, another Files window or any program that takes
-/// files. Returns once the drop lands.
+/// files. Returns once the drop lands. Takes what `drag_prepare` built,
+/// because everything in here that could have touched the disk already has.
 ///
 /// **Must run on the window's own thread — the one the mouse button is held
 /// on.** This was once moved to a thread of its own to stop a slow drop target
@@ -1539,13 +1610,16 @@ pub fn clipboard_get() -> Result<Option<Clip>, String> {
 /// concerned the drag ran and completed.
 ///
 /// A drag does block this thread for as long as the drop target takes. That is
-/// what `DoDragDrop` is, and Explorer does the same thing: the loop pumps
-/// messages throughout, so the window carries on drawing. What it cannot
-/// survive is the shell itself being wedged underneath it, which is what
-/// `SHELL_THUMBNAIL_LIMIT` is for.
+/// what `DoDragDrop` is, and Explorer does the same thing: the loop pumps its
+/// own messages throughout — but it is running inside the event loop's own
+/// callback, so nothing else the window needs gets a turn while it lasts. A
+/// drop target that blocks on a drive which has stopped answering therefore
+/// takes the window down with it, which is what `drag_prepare` and
+/// `cancel_drag` are for: the first keeps a dead volume out of the drag, the
+/// second ends one that is already in the air.
 #[cfg(windows)]
-pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
-    use windows::core::{implement, BOOL, HRESULT, PCWSTR};
+pub fn drag_run(items: DragItems) -> Result<&'static str, String> {
+    use windows::core::{implement, BOOL, HRESULT};
     use windows::Win32::Foundation::{
         DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, RPC_E_CHANGED_MODE, S_OK,
     };
@@ -1555,15 +1629,17 @@ pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
         DROPEFFECT_MOVE, DROPEFFECT_NONE,
     };
     use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
-    use windows::Win32::UI::Shell::{
-        BHID_DataObject, ILCreateFromPathW, ILFree, SHCreateShellItemArrayFromIDLists,
-    };
+    use windows::Win32::UI::Shell::{BHID_DataObject, SHCreateShellItemArrayFromIDLists};
 
     #[implement(IDropSource)]
     struct Source;
     impl IDropSource_Impl for Source_Impl {
         fn QueryContinueDrag(&self, escape: BOOL, keys: MODIFIERKEYS_FLAGS) -> HRESULT {
-            if escape.as_bool() {
+            // The watchdog's way out. It only lands when the drag loop gets a
+            // turn, so it cannot interrupt a drop target that is still inside
+            // a blocking call — but it ends the drag the moment that call
+            // returns, instead of leaving the window to the next one.
+            if escape.as_bool() || DRAG_CANCEL.load(Ordering::SeqCst) {
                 DRAGDROP_S_CANCEL
             } else if keys.0 & MK_LBUTTON.0 == 0 {
                 DRAGDROP_S_DROP
@@ -1576,7 +1652,6 @@ pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
         }
     }
 
-    refuse_zip(paths, "dragged out")?;
     // DoDragDrop refuses to run on a thread that has not been put into an OLE
     // apartment, and it says so only through its return value - which is why a
     // missing OleInitialize looks exactly like a drag nobody completed: no
@@ -1596,36 +1671,16 @@ pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
                 .into(),
         );
     }
-    let mut pidls = Vec::new();
-    for path in paths {
-        let wide: Vec<u16> = std::ffi::OsStr::new(path.as_str())
-            .encode_wide()
-            .chain([0])
-            .collect();
-        let pidl = unsafe { ILCreateFromPathW(PCWSTR(wide.as_ptr())) };
-        if !pidl.is_null() {
-            pidls.push(pidl as *const _);
-        }
-    }
+    // Marks the drag as in the air for `cancel_drag`, and clears both flags
+    // however this returns.
+    DRAG_CANCEL.store(false, Ordering::SeqCst);
+    DRAG_IN_FLIGHT.store(true, Ordering::SeqCst);
+    let _in_flight = DragInFlight;
     let result = (|| {
-        if pidls.is_empty() {
-            // Windows could not turn a single one of these into an item it
-            // knows. Saying which one it choked on is the difference between
-            // a bug report and a guess.
-            return Err(format!(
-                "Windows does not recognise {} of the {} item(s) asked for. First: {:?}",
-                paths.len(),
-                paths.len(),
-                paths
-                    .first()
-                    .map(String::as_str)
-                    .unwrap_or("<the list was empty>")
-            ));
-        }
-        let items =
-            unsafe { SHCreateShellItemArrayFromIDLists(&pidls) }.map_err(|e| e.to_string())?;
+        let array =
+            unsafe { SHCreateShellItemArrayFromIDLists(&items.pidls) }.map_err(|e| e.to_string())?;
         let data: IDataObject =
-            unsafe { items.BindToHandler(None, &BHID_DataObject) }.map_err(|e| e.to_string())?;
+            unsafe { array.BindToHandler(None, &BHID_DataObject) }.map_err(|e| e.to_string())?;
         let source: IDropSource = Source.into();
         let mut effect = DROPEFFECT_NONE;
         // The drag either ends in a drop or is cancelled. Anything else is
@@ -1645,6 +1700,13 @@ pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
                 hr.0 as u32
             ));
         }
+        if DRAG_CANCEL.load(Ordering::SeqCst) {
+            return Err(
+                "The drag was stopped because the window had stopped answering — the drive it \
+                 came from may not be responding."
+                    .into(),
+            );
+        }
         Ok(if effect.0 & DROPEFFECT_MOVE.0 != 0 {
             "move"
         } else if effect.0 & DROPEFFECT_COPY.0 != 0 {
@@ -1653,10 +1715,51 @@ pub fn drag_out(paths: &[String]) -> Result<&'static str, String> {
             "none"
         })
     })();
-    for pidl in pidls {
-        unsafe { ILFree(Some(pidl)) };
-    }
+    drop(items);
     result
+}
+
+/// Whether a drag is in Windows' hands right now, and whether it has been
+/// asked to stop. Two flags rather than a lock: `QueryContinueDrag` reads one
+/// of them from inside the drag loop, and the watchdog sets it from a thread
+/// of its own while the window is not answering.
+#[cfg(windows)]
+static DRAG_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+static DRAG_CANCEL: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+struct DragInFlight;
+
+#[cfg(windows)]
+impl Drop for DragInFlight {
+    fn drop(&mut self) {
+        DRAG_IN_FLIGHT.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Ask a drag that is in the air to end at the first opportunity. Answers
+/// whether there was one, so the caller can say what it did.
+///
+/// This is the watchdog's lever: a drag holds the thread that draws the
+/// window, and a drop target blocked on a drive that has stopped answering
+/// holds it for as long as the drive takes. The flag is read by
+/// `QueryContinueDrag`, so it lands on the drag loop's next turn — which is
+/// after the blocking call returns, not during it. It cannot unwedge a window
+/// mid-call, and it does stop that window being handed straight back into the
+/// next leg of the same drag.
+#[cfg(windows)]
+pub fn cancel_drag() -> bool {
+    if !DRAG_IN_FLIGHT.load(Ordering::SeqCst) {
+        return false;
+    }
+    DRAG_CANCEL.store(true, Ordering::SeqCst);
+    true
+}
+
+#[cfg(not(windows))]
+pub fn cancel_drag() -> bool {
+    false
 }
 
 #[cfg(test)]

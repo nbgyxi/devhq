@@ -5,7 +5,7 @@ use std::{
 };
 #[cfg(windows)]
 use std::{
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
@@ -186,19 +186,37 @@ const VOLUME_RECOVERY: Duration = Duration::from_secs(60);
 /// How much of a volume WinT is willing to use at once, decided by how the
 /// volume has been behaving.
 ///
-/// A healthy disk is not gated at all - `limit` is `usize::MAX`, the write path
-/// reads one atomic and carries on, and an NVMe never pays for the existence of
-/// this. A volume that answers a write with a device fault is clamped to one
+/// A healthy disk is not gated at all - the write path reads one atomic, finds
+/// it clear and carries on without taking a lock, so an NVMe never pays for the
+/// existence of this. A volume that answers a write with a device fault is
+/// clamped to one
 /// write at a time until it has been quiet for `VOLUME_RECOVERY`, which is the
 /// difference between a drive that is struggling and a torrent that has to be
 /// given up on.
 #[cfg(windows)]
 pub(crate) struct VolumeGate {
-    limit: AtomicUsize,
-    in_flight: parking_lot::Mutex<usize>,
+    /// The fast path, and the only thing a healthy volume's writes read.
+    /// Written under `state`, so it is a hint that is never stale for long and
+    /// never the thing a decision rests on.
+    gated: AtomicBool,
+    state: parking_lot::Mutex<GateState>,
     room: parking_lot::Condvar,
-    faulted_at: parking_lot::Mutex<Option<std::time::Instant>>,
     name: String,
+}
+
+/// The limit and the count it applies to, under one lock.
+///
+/// They were an atomic and a separate mutex once, and that was a lost wakeup
+/// waiting to happen: a waiter read the limit, was pre-empted before it slept,
+/// and the un-clamp - which changed the limit without the lock and then
+/// notified - went past it. Nothing ever notified again, because an ungated
+/// volume takes no permits and so drops none, and that thread held its write
+/// for the life of the process.
+#[cfg(windows)]
+struct GateState {
+    limit: usize,
+    in_flight: usize,
+    faulted_at: Option<std::time::Instant>,
 }
 
 #[cfg(windows)]
@@ -208,10 +226,13 @@ const UNGATED: usize = usize::MAX;
 impl VolumeGate {
     fn new(name: String) -> Self {
         Self {
-            limit: AtomicUsize::new(UNGATED),
-            in_flight: parking_lot::Mutex::new(0),
+            gated: AtomicBool::new(false),
+            state: parking_lot::Mutex::new(GateState {
+                limit: UNGATED,
+                in_flight: 0,
+                faulted_at: None,
+            }),
             room: parking_lot::Condvar::new(),
-            faulted_at: parking_lot::Mutex::new(None),
             name,
         }
     }
@@ -219,25 +240,24 @@ impl VolumeGate {
     /// Wait until this volume has room for one more write. `None` while the
     /// volume is healthy, which is the case that has to stay free.
     fn enter(&self) -> Option<VolumePermit<'_>> {
-        if self.limit.load(Ordering::Relaxed) == UNGATED {
+        if !self.gated.load(Ordering::Relaxed) {
             return None;
         }
-        let mut held = self.in_flight.lock();
-        while *held >= self.limit.load(Ordering::Relaxed) {
-            self.room.wait(&mut held);
+        let mut state = self.state.lock();
+        while state.in_flight >= state.limit {
+            self.room.wait(&mut state);
         }
-        *held += 1;
+        state.in_flight += 1;
         Some(VolumePermit { gate: self })
     }
 
     /// The volume faulted. Clamp it, and start the quiet period again.
     fn note_fault(&self) {
-        *self.faulted_at.lock() = Some(std::time::Instant::now());
-        if self
-            .limit
-            .swap(FAULTED_VOLUME_WRITES, Ordering::Relaxed)
-            == UNGATED
-        {
+        let mut state = self.state.lock();
+        state.faulted_at = Some(std::time::Instant::now());
+        if state.limit == UNGATED {
+            state.limit = FAULTED_VOLUME_WRITES;
+            self.gated.store(true, Ordering::Relaxed);
             warn!(
                 volume = %self.name,
                 "this drive faulted on a write; writing to it one at a time until it settles"
@@ -248,17 +268,22 @@ impl VolumeGate {
     /// A write went through. Let the clamp go once the volume has been quiet
     /// long enough to have earned it.
     fn note_success(&self) {
-        if self.limit.load(Ordering::Relaxed) == UNGATED {
+        if !self.gated.load(Ordering::Relaxed) {
             return;
         }
-        let quiet = {
-            let faulted_at = self.faulted_at.lock();
-            faulted_at.is_none_or(|at| at.elapsed() >= VOLUME_RECOVERY)
-        };
-        if quiet && self.limit.swap(UNGATED, Ordering::Relaxed) != UNGATED {
-            warn!(volume = %self.name, "this drive has been steady for a while; writing to it freely again");
-            self.room.notify_all();
+        let mut state = self.state.lock();
+        if state.limit == UNGATED
+            || !state.faulted_at.is_none_or(|at| at.elapsed() >= VOLUME_RECOVERY)
+        {
+            return;
         }
+        state.limit = UNGATED;
+        state.faulted_at = None;
+        self.gated.store(false, Ordering::Relaxed);
+        warn!(volume = %self.name, "this drive has been steady for a while; writing to it freely again");
+        // Still holding the lock: every waiter wakes to a limit it can only
+        // read under this same lock, so none of them can miss the change.
+        self.room.notify_all();
     }
 }
 
@@ -270,8 +295,8 @@ struct VolumePermit<'a> {
 #[cfg(windows)]
 impl Drop for VolumePermit<'_> {
     fn drop(&mut self) {
-        let mut held = self.gate.in_flight.lock();
-        *held = held.saturating_sub(1);
+        let mut state = self.gate.state.lock();
+        state.in_flight = state.in_flight.saturating_sub(1);
         self.gate.room.notify_one();
     }
 }
@@ -323,7 +348,14 @@ fn guarded_write<T>(
         );
         std::thread::sleep(std::time::Duration::from_millis(*wait_ms));
         match op() {
-            Ok(v) => return Ok(v),
+            // Told to the gate the same as a write that never faulted: a
+            // retried success is still the volume answering, and leaving it
+            // out meant the quiet period could only ever start from a write
+            // that got through first time.
+            Ok(v) => {
+                gate.note_success();
+                return Ok(v);
+            }
             Err(e) => last = e,
         }
     }

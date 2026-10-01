@@ -70,6 +70,8 @@ pub mod tray;
 mod ui_state;
 mod util;
 #[cfg(windows)]
+pub mod volume;
+#[cfg(windows)]
 pub mod vt;
 pub mod wifi;
 pub mod window_geometry;
@@ -2376,7 +2378,7 @@ async fn explorer_clipboard_get() -> Result<Option<explorer::Clip>, String> {
 
 /// The one Files call that runs on the window's thread: a drag belongs to the
 /// thread the mouse is held on, because that is the only thread whose input
-/// queue knows the button is still down. See `explorer::drag_out` for what
+/// queue knows the button is still down. See `explorer::drag_run` for what
 /// running it anywhere else costs. Windows pumps messages throughout, so the
 /// window keeps drawing while the drag is in the air; this command itself only
 /// waits for the answer, off the window's thread like every other one.
@@ -2384,9 +2386,16 @@ async fn explorer_clipboard_get() -> Result<Option<explorer::Clip>, String> {
 async fn explorer_drag_out(app: AppHandle, paths: Vec<String>) -> Result<String, String> {
     #[cfg(windows)]
     {
+        // Everything that touches the disk happens here, off the window's
+        // thread, so the thread that draws the window is only ever handed a
+        // drag that is ready to go. A drive that has stopped answering is
+        // refused at this point rather than wedging the window later.
+        let items = off_thread(move || explorer::drag_prepare(&paths))
+            .await
+            .unwrap_or_else(|| Err("The drag could not be prepared.".into()))?;
         let (tx, rx) = std::sync::mpsc::channel();
         app.run_on_main_thread(move || {
-            let _ = tx.send(explorer::drag_out(&paths));
+            let _ = tx.send(explorer::drag_run(items));
         })
         .map_err(|e| e.to_string())?;
         off_thread(move || {

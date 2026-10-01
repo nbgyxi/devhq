@@ -182,6 +182,13 @@
     historyHours: 24,
     historyAt: 0,
     historyBusy: false,
+    /** Pauses and resumes the engine has been asked for but has not confirmed
+     *  yet, by torrent id: `{ want, at }`. A pause is taken at once but can
+     *  take a moment to show - a torrent part-way through a hash check only
+     *  stops at the next piece, and a disk that has stopped answering can make
+     *  that a long moment. Without this the row goes on saying "Checking
+     *  files" after the click and the button looks dead. See `wantAction`. */
+    pendingAction: new Map(),
     /** Set while a command is in flight, so the buttons can say so. */
     busy: "",
     notice: "",
@@ -292,6 +299,10 @@
     if (row.state === "adding") return { text: "Adding…", tone: "warn" };
     if (row.state === "needs-check") return { text: "File state changed", tone: "warn" };
     if (row.state === "error") return { text: row.error || "Error", tone: "bad" };
+    // What was asked for but has not landed yet, ahead of whatever the engine
+    // still reports: a click has to be visible in the row it was aimed at.
+    const pending = st.pendingAction.get(row.id);
+    if (pending) return { text: pending.want === "pause" ? "Pausing…" : "Resuming…", tone: "warn" };
     if (row.state === "initializing") return { text: "Checking files", tone: "warn" };
     if (row.state === "check-queued") return { text: "Waiting to check", tone: "muted" };
     // Known from the saved torrents, not yet read back into the engine. The
@@ -499,6 +510,7 @@
         if (!st.host?.isConnected) return;
         st.snap = event.payload;
         st.lastSnapshotAt = Date.now();
+        prunePending();
         if (st.quiet) { st.quiet = false; drawBanner(); }
         // Data arriving is proof the engine is up, whatever the page was last
         // told. Ask once for the real status rather than waiting for a tick.
@@ -1379,8 +1391,15 @@ Click to open in Explorer` : "";
     const toggle = pane.querySelector("[data-tr-toggle]");
     if (!toggle) return;
     toggle.hidden = row.state === "needs-check";
-    setText(toggle.querySelector(".ms"), paused ? "play_arrow" : "pause");
-    setText(toggle.querySelector("span:last-child"), paused ? "Resume" : "Pause");
+    // While a pause or a resume is unanswered the button says what was asked
+    // for and takes no second click, rather than inviting one because the row
+    // has not changed yet.
+    const wanted = st.pendingAction.get(row.id);
+    toggle.disabled = !!wanted;
+    setText(toggle.querySelector(".ms"), wanted ? "hourglass_top" : (paused ? "play_arrow" : "pause"));
+    setText(toggle.querySelector("span:last-child"), wanted
+      ? (wanted.want === "pause" ? "Pausing…" : "Resuming…")
+      : (paused ? "Resume" : "Pause"));
     drawFiles();
   }
 
@@ -2649,12 +2668,54 @@ Click to open in Explorer` : "";
     note(added ? `Added ${added} torrent${added === 1 ? "" : "s"}.` : failed || "Nothing was added.");
   }
 
+  /** How long a pause or a resume that no snapshot has confirmed keeps saying
+   *  so. The engine takes the instruction straight away, but a check blocked
+   *  on a drive that has stopped answering can sit there, and a word that
+   *  never goes away is worse than one that gives up. */
+  const ACTION_PENDING_MS = 30000;
+
+  /** Send a pause or a resume, and say so in the same frame.
+   *
+   *  Everything else on this page waits for the next snapshot, which is right
+   *  for a number and wrong for a button: a pause asked for mid-check reaches
+   *  the engine at once but only changes the row once the check stops, so for
+   *  a second or more nothing at all appeared to have happened. */
+  function wantAction(rows, want) {
+    if (!rows.length) return Promise.resolve();
+    const at = Date.now();
+    for (const row of rows) st.pendingAction.set(row.id, { want, at });
+    const verb = want === "pause" ? "Pausing" : "Resuming";
+    note(rows.length === 1 ? `${verb} ${rows[0].name}` : `${verb} ${rows.length} torrents`);
+    drawRows();
+    drawDetail();
+    return Promise.all(rows.map((row) => invoke("torrent_action", { id: row.id, action: want })))
+      .catch((error) => {
+        for (const row of rows) st.pendingAction.delete(row.id);
+        note(String(error));
+        drawRows();
+        drawDetail();
+      });
+  }
+
+  /** Drop the asked-for states the newest snapshot has caught up with, so a
+   *  row goes back to saying what the engine says. */
+  function prunePending() {
+    if (!st.pendingAction.size) return;
+    const byId = new Map((st.snap?.torrents || []).map((row) => [row.id, row]));
+    const now = Date.now();
+    for (const [id, pending] of st.pendingAction) {
+      const row = byId.get(id);
+      const landed = !row
+        || (pending.want === "pause" ? row.state === "paused" : row.state !== "paused");
+      if (landed || now - pending.at > ACTION_PENDING_MS) st.pendingAction.delete(id);
+    }
+  }
+
   function toggleSelected() {
     const rows = selectedRows();
     if (!rows.length) return;
-    const action = rows.every((row) => row.state === "paused" || row.state === "queued") ? "start" : "pause";
-    Promise.all(rows.map((row) => invoke("torrent_action", { id: row.id, action })))
-      .catch((error) => note(String(error)));
+    const want = rows.every((row) => row.state === "paused" || row.state === "queued") ? "start" : "pause";
+    wantAction(rows, want);
   }
 
   /** Pick a failed torrent back up.
@@ -2821,8 +2882,7 @@ Click to open in Explorer` : "";
         return void Promise.all(failed.map((item) => invoke("torrent_action", { id: item.id, action: "retry" })))
           .catch((error) => note(String(error)));
       }
-      if (act === "toggle") return void Promise.all(targets.map((item) => invoke("torrent_action", { id: item.id, action: paused ? "start" : "pause" })))
-        .catch((error) => note(String(error)));
+      if (act === "toggle") return void wantAction(targets, paused ? "start" : "pause");
       if (act === "force") return void Promise.all(targets.map((item) => invoke("torrent_action", { id: item.id, action: allForced ? "start" : "force_start" })))
         .then(() => note(allForced ? `${targets.length} torrent${many ? "s will" : " will"} use the download queue.` : `${targets.length} torrent${many ? "s were" : " was"} force started.`))
         .catch((error) => note(String(error)));

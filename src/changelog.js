@@ -16,6 +16,26 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.177.3",
+      title: "Pause says so the moment you click it",
+      date: "2026-10-01",
+      changes: [
+        ["better", "Pause and Resume now say what they are doing straight away. The row says “Pausing…”, the button says it too and takes no second click, and the status line names the torrent — until the engine confirms it. Everything on that page had waited for the next snapshot, which is right for a number and wrong for a button: a torrent being hash-checked only stops at the next piece, so for a second or more a pause looked like nothing at all had happened."],
+        ["fix", "Pausing a torrent while its files were being checked can no longer be left waiting. The torrent engine's helper kept its one lock held while it asked the disk whether finished torrents' files were still there, and while it moved torrents in and out of the download queue — both of which touch the disk, and both of which take as long as a faulted drive takes to answer. A pause you clicked queued up behind that. The sweeps now take the lock only long enough to read what they need and let go of it before touching the disk."],
+        ["fix", "A torrent paused mid-check is no longer told to pause again every two seconds, each time writing its resume data back to the disk it had just been taken off."],
+      ],
+    },
+    {
+      version: "0.177.2",
+      title: "A drag can no longer take the window down with it",
+      date: "2026-10-01",
+      changes: [
+        ["fix", "Dragging files out of Files while the drive they live on had stopped answering froze the whole window. A drag has to run on the thread that draws the window — that is the only thread Windows will start one from — and it lasts until whatever you drop onto is finished with it, so a drop target waiting on a drive that never answers held the window with it until Windows called WinT hung. Everything a drag needs is now built before the window's thread is handed anything: the files are turned into shell items off the window's thread, and the drive is asked a simple question first. A drive that cannot answer it within three seconds gets a line saying so, instead of a frozen window."],
+        ["better", "The watchdog now ends a drag it finds holding a stuck window, rather than only writing it down. It had been recording the same freeze every five seconds with nothing it could do about it; it now asks Windows to stop the drag, which lands the moment the call it is stuck in returns — so the window comes back at the first opportunity instead of being handed into the rest of the drag."],
+        ["fix", "A torrent writing to a drive that had faulted could stop writing for good. The limit WinT puts on a struggling drive was read in one place and changed in another, so a write waiting its turn could miss the moment the drive was declared healthy again and then wait forever. The limit and the queue it applies to are now one thing. A write that succeeds on a retry also counts towards the drive being considered steady again — before, only writes that never faulted at all did, so a drive that was recovering stayed clamped longer than it had earned."],
+      ],
+    },
+    {
       version: "0.177.1",
       title: "The Store build can tell when it is the browser you chose",
       buildChecksum: "113d67e53df94ee354d9c104b706b62bb6f42eb87f48fa8eec2e6a72d0d5e936",

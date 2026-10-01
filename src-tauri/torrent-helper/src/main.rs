@@ -955,15 +955,20 @@ fn build_snapshot(
             "needs-check"
         } else if missing.contains(&id) {
             "missing"
-        } else if state.queue.paused.contains(&t.info_hash)
+        } else if matches!(
+            stats.state,
+            librqbit::TorrentStatsState::Initializing { paused: true, .. }
+        ) || (state.queue.paused.contains(&t.info_hash)
             && matches!(
                 stats.state,
                 librqbit::TorrentStatsState::Initializing { .. }
-            )
+            ))
         {
             // A pause asked for while a torrent was checking leaves the engine
             // in `Initializing` until the check is picked up again, which for a
-            // paused torrent is never. Say what the user asked for.
+            // paused torrent is never. Say what the user asked for - the
+            // engine's own `paused` flag first, because that is set the moment
+            // the instruction is taken, whatever the saved queue says.
             "paused"
         } else {
             match &stats.state {
@@ -1194,8 +1199,18 @@ fn refresh_dir_entries(files: &[PathBuf]) {
 /// Decide which torrents should be live and move the ones that disagree.
 ///
 /// Returns the ids that are paused only because they are waiting their turn,
-/// so a snapshot can say "queued" rather than "paused" about them.
-async fn reconcile(state: &State, missing: &HashSet<usize>) -> HashSet<usize> {
+/// so a snapshot can say "queued" rather than "paused" about them, together
+/// with the torrents to start (`true`) or pause (`false`).
+///
+/// The deciding is separate from the doing because the caller holds the one
+/// lock every command also needs: telling the engine to pause a torrent writes
+/// the resume data back to disk, and a lock held across that is a lock held
+/// across a disk that may be the very one that has stopped answering. The
+/// user's own click would then wait behind this sweep and appear to do nothing.
+fn plan_queue(
+    state: &State,
+    missing: &HashSet<usize>,
+) -> (HashSet<usize>, Vec<(usize, bool)>) {
     let list = state
         .api
         .api_torrent_list_ext(ApiTorrentListOpts { with_stats: true });
@@ -1227,6 +1242,7 @@ async fn reconcile(state: &State, missing: &HashSet<usize>) -> HashSet<usize> {
 
     let mut slots = state.settings.max_active;
     let mut queued = HashSet::new();
+    let mut actions = Vec::new();
 
     for (id, hash, stats) in items {
         let is_paused = matches!(stats.state, librqbit::TorrentStatsState::Paused);
@@ -1241,6 +1257,14 @@ async fn reconcile(state: &State, missing: &HashSet<usize>) -> HashSet<usize> {
             stats.state,
             librqbit::TorrentStatsState::Initializing { .. }
         );
+        // A check that has already been told to stop needs no further telling.
+        // Without this the sweep asked the engine to pause it again every two
+        // seconds, and each of those writes the resume data back to disk.
+        let pause_taken = is_paused
+            || matches!(
+                stats.state,
+                librqbit::TorrentStatsState::Initializing { paused: true, .. }
+            );
         let errored = matches!(stats.state, librqbit::TorrentStatsState::Error);
         if errored {
             continue;
@@ -1283,18 +1307,24 @@ async fn reconcile(state: &State, missing: &HashSet<usize>) -> HashSet<usize> {
             // Starting a torrent that is already checking is a no-op; starting
             // one whose check a previous pass cancelled is what puts it back in
             // the queue for the hasher.
-            let _ = state
-                .api
-                .api_torrent_action_start(TorrentIdOrHash::Id(id))
-                .await;
-        } else if !should_run && !is_paused {
-            let _ = state
-                .api
-                .api_torrent_action_pause(TorrentIdOrHash::Id(id))
-                .await;
+            actions.push((id, true));
+        } else if !should_run && !pause_taken {
+            actions.push((id, false));
         }
     }
-    queued
+    (queued, actions)
+}
+
+/// Carry out what `plan_queue` decided. Called with no lock held.
+async fn apply_queue(api: &Api, actions: Vec<(usize, bool)>) {
+    for (id, start) in actions {
+        let id = TorrentIdOrHash::Id(id);
+        let _ = if start {
+            api.api_torrent_action_start(id).await
+        } else {
+            api.api_torrent_action_pause(id).await
+        };
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2488,24 +2518,42 @@ async fn main() -> Result<()> {
                 // absent — and only every so often, because it touches disk.
                 if last_missing_check.elapsed() >= MISSING_CHECK_EVERY {
                     last_missing_check = std::time::Instant::now();
-                    let guard = state.lock().await;
-                    let finished: Vec<usize> = guard
-                        .api
-                        .api_torrent_list_ext(ApiTorrentListOpts { with_stats: true })
-                        .torrents
-                        .iter()
-                        .filter(|t| t.stats.as_ref().is_some_and(|s| s.finished))
-                        .filter_map(|t| t.id)
-                        .collect();
-                    let mut found = HashSet::new();
-                    for id in finished {
-                        if let Ok((_, files)) = torrent_paths(&guard.api, TorrentIdOrHash::Id(id)) {
+                    // Every path in this sweep is a disk touch, and on a drive
+                    // that has gone each one can take seconds. The lock is
+                    // taken only long enough to read the file lists out of the
+                    // engine, and dropped before anything asks the disk - that
+                    // lock is also what a pause the user just clicked waits
+                    // for.
+                    let mut lists = Vec::new();
+                    {
+                        let guard = state.lock().await;
+                        let finished: Vec<usize> = guard
+                            .api
+                            .api_torrent_list_ext(ApiTorrentListOpts { with_stats: true })
+                            .torrents
+                            .iter()
+                            .filter(|t| t.stats.as_ref().is_some_and(|s| s.finished))
+                            .filter_map(|t| t.id)
+                            .collect();
+                        for id in finished {
+                            if let Ok((_, files)) =
+                                torrent_paths(&guard.api, TorrentIdOrHash::Id(id))
+                            {
+                                lists.push((id, files));
+                            }
+                        }
+                    }
+                    missing = tokio::task::spawn_blocking(move || {
+                        let mut found = HashSet::new();
+                        for (id, files) in lists {
                             if files_are_missing(&files) {
                                 found.insert(id);
                             }
                         }
-                    }
-                    missing = found;
+                        found
+                    })
+                    .await
+                    .unwrap_or_default();
                 }
 
                 // The same staleness the completion hook fixes, but for a
@@ -2537,8 +2585,13 @@ async fn main() -> Result<()> {
                 since_reconcile += 1;
                 if since_reconcile >= reconcile_every {
                     since_reconcile = 0;
-                    let guard = state.lock().await;
-                    queued = reconcile(&guard, &missing).await;
+                    let (api, actions) = {
+                        let guard = state.lock().await;
+                        let (decided, actions) = plan_queue(&guard, &missing);
+                        queued = decided;
+                        (guard.api.clone(), actions)
+                    };
+                    apply_queue(&api, actions).await;
                 }
             }
         });

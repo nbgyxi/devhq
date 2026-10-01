@@ -141,6 +141,24 @@ pub fn volumes() -> Result<Vec<Volume>, String> {
         if kind != 2 && kind != 3 {
             continue;
         }
+        // A volume that is not answering is exactly the one worth checking, so
+        // unlike the drive list this does not drop it — it lists it without
+        // the details it would have had to block to read. Asking Windows for
+        // the label or the free space on a drive whose controller has stopped
+        // answering takes minutes, and the page would have nothing on it until
+        // every drive had been waited out.
+        if !crate::volume::answers(std::path::Path::new(&root)) {
+            out.push(Volume {
+                letter: format!("{letter}:"),
+                label: String::new(),
+                file_system: String::new(),
+                total_bytes: 0,
+                free_bytes: 0,
+                removable: kind == 2,
+                system: format!("{letter}:").eq_ignore_ascii_case(&system_drive),
+            });
+            continue;
+        }
         let mut label = [0u16; 261];
         let mut fs = [0u16; 261];
         let named = unsafe {
