@@ -24,7 +24,8 @@
     "helper:build": "node scripts/build-torrent-helper.js",
     "test": "node scripts/test.js",
     "test:rust": "node scripts/test.js --rust",
-    "test:front": "node scripts/test.js --front"
+    "test:front": "node scripts/test.js --front",
+    "stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-wint.ps1"
   },
   "devDependencies": {
     "acorn": "^8.15.0",

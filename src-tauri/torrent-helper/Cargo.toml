@@ -18,3 +18,13 @@ serde_json = "1"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+
+# Just enough of Win32 to wait on WinT's process handle, which is how the
+# engine knows WinT has gone when the pipe it would otherwise notice that
+# through has been inherited by some other child and left open. Same version
+# the app uses, so it is already built.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }

@@ -184,7 +184,7 @@
   // runs in an isolated webview with storage of its own, so every change
   // reaches this rail as a `sidebar:settings` event, the moment it is made.
   const DEFAULT_SETTINGS = {
-    slots: { brand: true, start: true, clipboard: true, focus: true, network: true, volume: true, battery: true, language: true, time: true, date: true, windows: true, geometry: true, trayapps: true, tray: true, taskbar: true, edge: true, close: true },
+    slots: { brand: true, start: true, clipboard: true, focus: true, network: true, volume: true, volumerow: true, battery: true, language: true, time: true, date: true, windows: true, geometry: true, trayapps: true, tray: true, taskbar: true, edge: true, close: true },
     textSize: 14,
     iconSize: 14,
     trayIconSize: 14,
@@ -1486,6 +1486,13 @@
   // Everything the menus need is read on a timer and kept here, because a
   // native menu cannot show a spinner or change once it is open.
   const trayBox = document.querySelector("[data-tray-apps]");
+  const volumeRow = document.querySelector("[data-volume-row]");
+  const volumeSlider = volumeRow.querySelector("[data-volume-slider]");
+  const volumeMute = volumeRow.querySelector("[data-volume-mute]");
+  const volumeLevel = volumeRow.querySelector("[data-volume-level]");
+  const volumeDevices = volumeRow.querySelector("[data-volume-devices]");
+  // Read while either the tray tile or the row is there to show it.
+  const volumeWanted = () => settings.slots.volume !== false || settings.slots.volumerow !== false;
   // Only what is drawn is on a timer. The connections and the networks in
   // range are read when the menu that shows them opens and again when it
   // closes, because nothing on the rail displays them — polling them every
@@ -1617,6 +1624,9 @@
   }
 
   function paintTray() {
+    // The row and the tile are two views of one reading, and everything that
+    // changes the reading repaints the tray, so the row is painted with it.
+    paintVolumeRow();
     const showNetwork = settings.slots.network !== false;
     const showApps = settings.slots.trayapps !== false;
     // Each of the three is drawn only once it has been read, and the battery
@@ -1730,7 +1740,7 @@
   let indicatorsLoading = null;
   function refreshIndicators() {
     indicatorsLoading ??= Promise.all([
-      settings.slots.volume === false ? null : invoke("sidebar_volume").then((read) => { volume = read; }, () => {}),
+      !volumeWanted() ? null : invoke("sidebar_volume").then((read) => { volume = read; }, () => {}),
       settings.slots.battery === false ? null : invoke("sidebar_battery").then((read) => { battery = read; }, () => {}),
       settings.slots.language === false ? null : invoke("sidebar_layouts").then((read) => { layouts = read; }, () => {}),
     ]).then(paintTray).finally(() => { indicatorsLoading = null; });
@@ -1884,15 +1894,47 @@
   const settingsItem = (text, page) => act(text, () =>
     invoke("sidebar_open_settings", { page }).catch((error) => say(error)));
 
+  // A slider fires a level per pixel and every write is a trip to the audio
+  // service, so at most one is in flight and it is always followed by the
+  // newest level — fired together, they could land in any order and leave the
+  // device at a level the slider no longer shows.
+  let volumeNext;
+  let volumeSending = false;
+  let volumeUnmute = false;
+  async function sendVolume() {
+    if (volumeSending) return;
+    volumeSending = true;
+    try {
+      while (volumeNext !== undefined || volumeUnmute) {
+        // Moving the level unmutes, the way the tray's own slider does —
+        // setting a level alone leaves Windows muted under a slider that says
+        // otherwise.
+        if (volumeUnmute) {
+          volumeUnmute = false;
+          await invoke("sidebar_set_muted", { muted: false }).catch((error) => say(error));
+        }
+        if (volumeNext === undefined) continue;
+        const level = volumeNext;
+        volumeNext = undefined;
+        await invoke("sidebar_set_volume", { level }).catch((error) => say(error));
+      }
+    } finally {
+      volumeSending = false;
+      // Read back only once the drag is over: a read landing mid-drag is
+      // already older than where the pointer is.
+      if (!volumeDragging) refreshIndicators();
+    }
+  }
+
   /** Set the level and show it at once, so the rail does not wait for the read. */
   function setVolume(level) {
     const wanted = Math.max(0, Math.min(100, Math.round(level)));
+    if (volume?.muted) volumeUnmute = true;
     if (volume) volume = { ...volume, level: wanted, muted: false };
     paintTray();
     say(`Volume ${wanted}%`);
-    invoke("sidebar_set_volume", { level: wanted })
-      .catch((error) => say(error))
-      .finally(refreshIndicators);
+    volumeNext = wanted;
+    sendVolume();
   }
 
   function toggleMute() {
@@ -1904,6 +1946,57 @@
       .catch((error) => say(error))
       .finally(refreshIndicators);
   }
+
+  // ---- the volume row ------------------------------------------------------------
+  // The tile's menu, laid out flat: the slider a menu cannot hold, mute on one
+  // click, and the device switcher one click away in its own window.
+  let volumeDragging = false;
+  function paintVolumeRow() {
+    if (volumeRow.hidden) return;
+    const read = !!volume;
+    const present = !!volume?.present;
+    volumeRow.classList.toggle("loading", !read);
+    volumeRow.classList.toggle("muted", present && volume.muted);
+    volumeSlider.disabled = !present;
+    volumeMute.disabled = !present;
+    // Never moved under a pointer that is holding it.
+    if (present && !volumeDragging && Number(volumeSlider.value) !== volume.level) {
+      volumeSlider.value = String(volume.level);
+    }
+    // No word for muted: the icon and the greyed slider say it in every language.
+    const level = !read ? "--" : !present || volume.muted ? "" : `${volume.level}%`;
+    if (volumeLevel.textContent !== level) volumeLevel.textContent = level;
+    const glyph = volumeGlyph();
+    const glyphBox = volumeMute.firstElementChild;
+    if (glyphBox.textContent !== glyph) glyphBox.textContent = glyph;
+    const muteLabel = !present ? "No playback device" : volume.muted ? "Unmute" : "Mute";
+    volumeMute.title = volumeMute.ariaLabel = muteLabel;
+    volumeRow.title = !read ? "Reading the volume" : volume.device ? `${volumeLabel()} — ${volume.device}` : volumeLabel();
+    volumeSlider.ariaValueText = volumeLabel();
+  }
+
+  volumeSlider.addEventListener("pointerdown", () => { volumeDragging = true; });
+  const endVolumeDrag = () => {
+    if (!volumeDragging) return;
+    volumeDragging = false;
+    if (!volumeSending) refreshIndicators();
+  };
+  volumeSlider.addEventListener("pointerup", endVolumeDrag);
+  volumeSlider.addEventListener("pointercancel", endVolumeDrag);
+  volumeSlider.addEventListener("change", endVolumeDrag);
+  volumeSlider.addEventListener("input", () => setVolume(Number(volumeSlider.value)));
+  volumeMute.addEventListener("click", toggleMute);
+  volumeDevices.addEventListener("click", () => {
+    say("Opening the Sound Device Switcher");
+    openTool("repair-swap");
+  });
+  // Right-click on the row is the tile's own menu: Windows' sound settings
+  // and the device name live there, and the rail's menu has nothing for it.
+  volumeRow.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openVolumeMenu();
+  });
 
   const openVolumeMenu = () => openMenu(async (park) => {
     const items = [await note(volume?.device || "No playback device")];
@@ -2038,11 +2131,13 @@
   // five points a notch, applied straight away and shown before the read comes
   // back. The writes are coalesced, so a long spin is one call per frame, not
   // one per notch.
+  // The volume row takes the wheel the same way, anywhere along it.
   let wheelPending = 0;
-  trayBox.addEventListener("wheel", (event) => {
-    if (!event.target.closest("[data-tray-volume]") || !volume?.present) return;
+  function wheelVolume(event) {
+    if (!volume?.present) return;
     event.preventDefault();
     const level = Math.max(0, Math.min(100, (volume.level ?? 0) + (event.deltaY < 0 ? 5 : -5)));
+    if (volume.muted) volumeUnmute = true;
     volume = { ...volume, level, muted: false };
     paintTray();
     if (wheelPending) return;
@@ -2050,7 +2145,11 @@
       wheelPending = 0;
       setVolume(volume.level);
     });
+  }
+  trayBox.addEventListener("wheel", (event) => {
+    if (event.target.closest("[data-tray-volume]")) wheelVolume(event);
   }, { passive: false });
+  volumeRow.addEventListener("wheel", wheelVolume, { passive: false });
 
   setTimeout(refreshNetwork, 400);
   setTimeout(refreshIndicators, 700);

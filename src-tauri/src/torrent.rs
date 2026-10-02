@@ -50,6 +50,10 @@ const ADD_TIMEOUT: Duration = Duration::from_secs(90);
 /// How often the newest snapshot is forwarded to the webview. The helper's own
 /// interval is a little faster, so this is the rate that actually governs.
 const EMIT_EVERY: Duration = Duration::from_millis(300);
+/// Starting a move is quick — it is a plan, a pause and a forget — but the
+/// forget has to wait for the engine to let go of a torrent that may be in the
+/// middle of a write to a drive that is answering slowly.
+const MOVE_TIMEOUT: Duration = Duration::from_secs(60);
 /// The helper beats once a second. Four missed in a row is a wedged engine.
 const HEARTBEAT_DEAD: Duration = Duration::from_secs(5);
 /// How long a helper may take to say anything at all before it is treated as
@@ -636,6 +640,12 @@ fn start_inner() -> EngineStatus {
         .arg(&dir)
         .arg("--snapshot-ms")
         .arg("300")
+        // So the engine can watch this process directly rather than relying on
+        // its stdin closing. See `watch_parent` in the helper: the pipe is not
+        // a reliable signal, because every other child this app spawns
+        // inherits a handle to it and holds it open.
+        .arg("--parent-pid")
+        .arg(std::process::id().to_string())
         // The engine's own diagnostics, on stderr, drained into the health
         // log. Set in the environment rather than hard-coded in the helper so
         // it can be turned up without a rebuild.
@@ -956,6 +966,16 @@ fn read_lines(generation: u64, mut reader: BufReader<std::process::ChildStdout>)
                     }
                     if event == "ready" || phase_changed {
                         broadcast(&status());
+                    }
+                }
+                // A move's progress goes straight to whoever is looking at the
+                // Torrents page. It is not folded into the snapshot: a move is
+                // one torrent's business, it reports far more often than three
+                // times a second while a file is copying, and the page needs
+                // the failures at the end whether or not a snapshot follows.
+                "move" => {
+                    if let Some(app) = APP.get() {
+                        let _ = app.emit("torrent:move", data);
                     }
                 }
                 _ => {}
@@ -1690,6 +1710,53 @@ pub async fn torrent_action(
             REQUEST_TIMEOUT,
         )
     })
+}
+
+/// Move a torrent's files to another folder, and point it at the new one.
+///
+/// Answers as soon as the engine has made the plan — the moving itself runs
+/// for as long as the files take, and reports through `torrent:move`.
+#[tauri::command]
+pub async fn torrent_move_start(
+    id: u64,
+    destination: String,
+    pause_others: Option<bool>,
+) -> Result<Value, String> {
+    off!(request(
+        "move_start",
+        json!({
+            "id": id,
+            "destination": destination,
+            "pauseOthers": pause_others.unwrap_or(false),
+        }),
+        MOVE_TIMEOUT
+    ))
+}
+
+/// What a move would involve, asked before anything is touched: where it would
+/// go, how much there is, whether it copies or renames, and what else is using
+/// the drives and would have to stand down for it.
+#[tauri::command]
+pub async fn torrent_move_preview(id: u64, destination: String) -> Result<Value, String> {
+    off!(request(
+        "move_preview",
+        json!({ "id": id, "destination": destination }),
+        MOVE_TIMEOUT
+    ))
+}
+
+/// Stop a move that is under way. What has already crossed stays where it is.
+#[tauri::command]
+pub async fn torrent_move_cancel() -> Result<Value, String> {
+    off!(request("move_cancel", json!({}), REQUEST_TIMEOUT))
+}
+
+/// How the last move went. Asked for when the page opens, because the events
+/// it would otherwise have learned this from only go to windows that were
+/// listening at the time.
+#[tauri::command]
+pub async fn torrent_move_status() -> Result<Value, String> {
+    off!(request("move_status", json!({}), REQUEST_TIMEOUT))
 }
 
 /// Which files of a torrent to fetch.

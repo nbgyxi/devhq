@@ -43,9 +43,49 @@ struct State {
     /// Whether an answer has ever come back for this volume.
     known: bool,
     answering: bool,
+    /// Total and free bytes, from the probe. Carried here because the call
+    /// that reads them is the call that blocks: asking again outside the probe
+    /// would be the whole problem over again. See `probe_volume`.
+    space: Option<(u64, u64)>,
     checked: Option<Instant>,
     /// A probe is out. Nothing starts another while this is set.
     probing: bool,
+}
+
+/// The one call that actually touches the device, run only ever on a probe
+/// thread that may be abandoned.
+///
+/// It asks for the free space rather than merely stat-ing the root, because
+/// those are not the same question. A drive whose controller is failing
+/// answers `metadata("E:\\")` from the cache the moment it is asked and leaves
+/// `GetDiskFreeSpaceExW` in the driver for minutes — which is exactly how the
+/// first version of this got it wrong, probing something cheap and then
+/// letting the caller go on to make the expensive call anyway.
+#[cfg(windows)]
+fn probe_volume(root: &Path) -> Option<(u64, u64)> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let mut path = root.to_string_lossy().into_owned();
+    if !path.ends_with(['\\', '/']) {
+        path.push('\\');
+    }
+    let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+    let (mut available, mut total, mut free) = (0u64, 0u64, 0u64);
+    unsafe {
+        GetDiskFreeSpaceExW(
+            PCWSTR(wide.as_ptr()),
+            Some(&mut available),
+            Some(&mut total),
+            Some(&mut free),
+        )
+    }
+    .ok()
+    .map(|()| (total, free))
+}
+
+#[cfg(not(windows))]
+fn probe_volume(root: &Path) -> Option<(u64, u64)> {
+    std::fs::metadata(root).ok().map(|_| (0, 0))
 }
 
 /// The map, and the way a probe says it has finished. One condvar for every
@@ -115,14 +155,14 @@ pub fn answers(root: &Path) -> bool {
     if std::thread::Builder::new()
         .name("wint-volume-probe".into())
         .spawn(move || {
-            // A stat is the smallest thing that still has to reach the device.
-            let answering = std::fs::metadata(&probed).is_ok();
+            let space = probe_volume(&probed);
             let (lock, finished) = states();
             let mut written = lock.lock().unwrap_or_else(|e| e.into_inner());
             let entry = written.entry(probed_key).or_default();
             entry.probing = false;
             entry.known = true;
-            entry.answering = answering;
+            entry.answering = space.is_some();
+            entry.space = space;
             entry.checked = Some(Instant::now());
             // The caller may be long gone — this is the half of the answer
             // that matters for whoever asks next.
@@ -156,6 +196,22 @@ pub fn answers(root: &Path) -> bool {
             .unwrap_or_else(|e| e.into_inner());
         map = guard;
     }
+}
+
+/// The total and free bytes on this volume, or `None` when it would not say
+/// within the deadline.
+///
+/// This is the call anything listing drives should use. The number comes from
+/// the probe thread, so a drive that has stopped answering costs the caller a
+/// deadline once rather than minutes every time the list is refreshed.
+pub fn space(root: &Path) -> Option<(u64, u64)> {
+    if !answers(root) {
+        return None;
+    }
+    let key = root.to_string_lossy().to_uppercase();
+    let (lock, _) = states();
+    let map = lock.lock().unwrap_or_else(|e| e.into_inner());
+    map.get(&key).and_then(|state| state.space)
 }
 
 /// Whether every volume these paths live on is answering, named if one is not.

@@ -16,6 +16,85 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.179.0",
+      title: "A volume row on the sidebar",
+      buildChecksum: "d5c105e3e40c280fcf00f2969430d3a1537985049c3a548938617855c17a6c55",
+      date: "2026-10-02",
+      changes: [
+        ["new", "The sidebar has a volume row of its own across the full width of the rail. It has a real slider, a mute button that works with one click, the level in numbers, and a speaker button that opens the Sound Device Switcher in its own window. The wheel works anywhere along the row, and right-clicking it opens the same menu as the tray icon."],
+        ["better", "The row and the small tray icon are separate switches in the Docked Sidebar settings, so you can keep either one or both. The row is on by default. Until the first reading arrives, its slider shimmers in place instead of showing a level that was never read."],
+        ["better", "The Sound Device Switcher has one mute control per device instead of two. The speaker or microphone icon beside each slider is the switch: click it to mute or unmute, and it turns amber while the device is silenced."],
+        ["better", "The Sound Device Switcher no longer lists Console, Multimedia and Communications under each heading. Those are the three roles Windows tracks separately, but the switcher always sets all three together, so the label had nothing to tell you. Each device now just says Default or Set as default."],
+        ["better", "A muted microphone no longer carries a permanent warning, and its Check input button is no longer greyed out. Click it, and the switcher says the microphone is muted and offers to unmute it and run the check in one go. The result is a plain line under the microphone rather than a grey box."],
+        ["better", "The Sound Device Switcher puts input on the left and output on the right, headed Input / Recording and Output / Playback, so the columns read the same whichever word you know them by."],
+        ["fix", "Clicking the app name on the sidebar player now brings up the browser profile that is actually playing, even when the music is in a background tab. Edge and Chrome often report only their own name for the music, which every profile shares, so the sidebar used to settle for whichever window was in front — usually the default profile. It now looks for the track among the names of every tab in each window."],
+        ["fix", "The sidebar no longer draws a double line above the tool shortcuts. The window list and the section under it each drew their own line, a few pixels apart."],
+        ["fix", "Changing the volume while muted now unmutes the device, the way the Windows slider does. Before, the sidebar showed the sound as on while Windows kept it muted."],
+      ],
+    },
+    {
+      version: "0.178.4",
+      title: "The torrent engine shuts itself down when WinT goes",
+      date: "2026-10-01",
+      changes: [
+        ["fix", "The torrent engine now watches WinT's process directly instead of trusting its pipe. It was meant to stop the moment WinT closed its end of the pipe — but Windows hands a copy of that pipe to every other program WinT starts while the engine is up, and any one of them keeps it open after WinT has gone. The end never arrived, the engine ran on with nothing to serve, and it held its own program file open so the next build could not replace it. It now also waits on WinT itself, which no other process can hold open on its behalf."],
+        ["better", "An engine that outlives WinT now shuts down properly rather than being killed. Waiting on the process means it finds out in time to write down what it has transferred and close the session, instead of being stopped mid-write by the containment that catches it afterwards."],
+      ],
+    },
+    {
+      version: "0.178.3",
+      title: "A move clears the drives for itself",
+      date: "2026-10-01",
+      changes: [
+        ["new", "A move now stands the other torrents on those drives down itself, instead of going ahead at a tenth of the speed. Before it starts, WinT looks at what else is using the drive it is reading from and the one it is writing to, names them, and asks — once. Say yes and they are paused for the length of the move and started again when it finishes, however it finishes. Torrents you had paused yourself are left alone and stay paused: only the ones the move stopped are started again."],
+        ["better", "The reason is given rather than assumed: anything else reading or writing the same drive makes a move many times slower, and on a drive that is already struggling it makes the move give up on files it would otherwise have taken, because they are merely queued behind someone else's read."],
+        ["better", "The move panel says how many torrents it paused for the move, for as long as they are paused. A torrent that has stopped and cannot be accounted for is worse than a slow one."],
+        ["fix", "A move that is interrupted no longer leaves those torrents paused. What it stood down is written to disk before anything is paused, so the next start lets them run again — and it does that before it does anything else, because torrents left paused by a move that died look exactly like torrents somebody meant to pause."],
+      ],
+    },
+    {
+      version: "0.178.2",
+      title: "A torrent being moved stays in the list",
+      date: "2026-10-01",
+      changes: [
+        ["fix", "Moving a torrent no longer takes it out of the list while it happens. The engine had to let go of the torrent before its files could be touched, so for the whole length of a move — hours, on a drive that is struggling — the torrent was simply not there, and if the move stalled or the engine restarted it stayed not there. A move to another drive now copies the files while the torrent is still in the list, paused and visible: copying only needs to read them, which works perfectly well with the engine still holding them open. The torrent leaves the list for the one moment it takes to point it at its new home, and is back by the end of it."],
+        ["fix", "Nothing is deleted until the torrent is back in the list and has accepted the copies. A move that goes wrong now costs a stray copy rather than any data — and only files whose copy completed are removed, so anything that could not be read is still exactly where it was. Empty folders left behind go; anything still holding a file stays."],
+        ["new", "A move within one drive — which must take the files exclusively, so the torrent does have to leave the list for a few seconds — now writes down what it is doing first, with its own copy of the torrent file. If WinT or the engine stops in that moment, the next start reads the note and puts the torrent back at the address it was being moved to rather than leaving it lost."],
+        ["better", "The move panel names the step it is on: copying, renaming, adding it back, removing the originals. They are not interchangeable and they do not take remotely similar amounts of time."],
+      ],
+    },
+    {
+      version: "0.178.1",
+      title: "A move no longer stops on the first unreadable file",
+      date: "2026-10-01",
+      changes: [
+        ["fix", "A move now gives up on a file the drive will not read, instead of waiting for it. A read from a failing disk does not fail — Windows retries it inside the driver, for minutes per sector — so one bad file held the whole move for as long as the drive felt like, and a move of hundreds of files got through one. Each file is now watched while it copies: while bytes keep arriving it is left alone, and when they stop for thirty seconds the file is written off, named in the panel, and downloaded again like any other it could not take."],
+        ["fix", "Reading the list of drives no longer stalls on a drive that has stopped answering. The check added in 0.177.4 asked each drive a cheap question and then went on to make the expensive call anyway — a failing disk answers the first instantly from a cache and leaves the second sitting in the driver for minutes, so the stalls it was meant to prevent carried on happening, fourteen times in one run. The size and the free space now come from that one blocking call itself, made on a thread WinT is willing to abandon."],
+        ["new", "The folder to move a torrent to can now be typed, with browsing as the option rather than the only way. Windows' own folder picker reads the shell's view of the PC, which asks every drive about itself — so on a PC with a drive that has stopped answering, the picker is the one control that cannot be relied on to open, which is exactly when moving a torrent off that drive is most wanted."],
+      ],
+    },
+    {
+      version: "0.178.0",
+      title: "Move a torrent to another drive",
+      date: "2026-10-01",
+      changes: [
+        ["new", "A torrent can now be moved. Pick a folder and WinT takes the torrent's files there, points the torrent at its new home and carries on seeding — no removing and re-adding, and nothing is downloaded again that does not have to be. The torrent keeps its place in the queue, its file selection and whether it was paused."],
+        ["new", "Whatever cannot be moved is simply fetched again. Each file is taken across on its own, and one that will not come — because the drive it is on will not give the data back — is left where it is and recorded. The torrent is hash-checked at its new address on the way in, so every piece that did not arrive is marked as needed and downloaded again. Moving a torrent off a drive that is failing therefore rescues everything still readable and re-fetches only the rest, and the panel lists by name what it could not take."],
+        ["better", "A move to another drive copies, which means it reads every byte — and that is what finds the damage. A move within one drive is a rename, which never reads the data, so it is instant and keeps whatever was already unreadable. The panel says which of the two is happening and how far along it is, file by file, with a running byte count rather than a spinner."],
+        ["better", "A move can be stopped, and stopping it is not destructive: what has already crossed stays at the new address, the torrent is put back together there, and the rest is downloaded again. Closing the Torrents page does not stop a move, and reopening it finds the move still running — or the summary of how the last one went."],
+      ],
+    },
+    {
+      version: "0.177.4",
+      title: "One dead drive stops taking the rest of WinT with it",
+      date: "2026-10-01",
+      changes: [
+        ["fix", "A drive that has stopped answering no longer piles up stuck work in the background. Windows does not fail a call to a drive whose controller has gone away — it simply never answers, for minutes at a time — and the drive list is re-read every half minute by anything showing free space, so one unresponsive drive left a blocked thread behind on every refresh, for as long as WinT ran. Each drive is now asked one small question with a three-second deadline before Windows is asked anything that can block, and that answer is shared across the whole app. A drive that cannot answer is left out of the list until it can."],
+        ["better", "Disk Check still lists a drive that is not answering, because that is the drive you came to check. It appears without its label or its size, rather than holding the whole page up waiting for a drive that will not say."],
+        ["better", "A freeze now names the function it froze in. The log had been recording the stack as a module and an offset — `wint+0x1d464b4` — which nothing on the machine could turn back into anything readable, so the one thing written down to explain a freeze explained nothing. It now resolves the function, with the file and line where those are available."],
+      ],
+    },
+    {
       version: "0.177.3",
       title: "Pause says so the moment you click it",
       date: "2026-10-01",

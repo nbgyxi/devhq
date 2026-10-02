@@ -172,6 +172,10 @@
      *  ever told the number these two produce. */
     pace: null,
     paceState: null,
+    /** The move the engine last reported, running or finished. One at a time:
+     *  two torrents moving at once would be two streams of writes to the same
+     *  pair of drives, which is slower than doing them in turn. */
+    move: null,
     /** Set while the connection is being measured, with how far along it is. */
     measuring: null,
     /** The transfer history behind the Stats tab, and how far back it covers.
@@ -537,7 +541,24 @@
         st.engine = event.payload || st.engine;
         drawBanner();
       }).then((off) => st.unlisten.push(off)).catch(() => {});
+      // A move reports far more often than a snapshot while a large file is
+      // copying, so it comes in on its own and redraws only its own panel.
+      events.listen("torrent:move", (event) => {
+        if (!st.host?.isConnected) return;
+        st.move = event.payload || st.move;
+        drawMove();
+      }).then((off) => st.unlisten.push(off)).catch(() => {});
     } catch { /* no event bridge in this window */ }
+
+    // A move outlives the page that started it: the engine keeps going while
+    // the window is closed, and the events only reach whoever was listening.
+    // This is how a reopened page finds a move already under way, and how it
+    // gets back the list of what was left behind.
+    try {
+      invoke("torrent_move_status")
+        .then((status) => { if (status?.token) { st.move = status; drawMove(); } })
+        .catch(() => {});
+    } catch { /* the engine is not up yet; the next event will do */ }
 
     // Choosing a default happens in Windows' own Settings app, so the only
     // sign that it changed is this window getting the focus back.
@@ -1299,6 +1320,89 @@ Click to open in Explorer` : "";
     if (el && el.textContent !== text) el.textContent = text;
   }
 
+  // -------------------------------------------------------------------- move
+
+  /** The move panel, in the detail pane of whichever torrent is being moved.
+   *
+   *  Drawn on its own and never from the snapshot: while a large file copies
+   *  this updates many times a second, and rebuilding the file list at that
+   *  rate would make the pane unusable. Only the parts that change are
+   *  written, so the Stop button keeps its focus. */
+  function drawMove() {
+    const panel = st.host?.querySelector("[data-tr-move-panel]");
+    if (!panel) return;
+    const move = st.move;
+    const row = (st.snap?.torrents || []).find((t) => t.id === st.selected);
+    // The panel belongs to the torrent being moved. Anything else selected
+    // shows nothing, rather than another torrent's progress.
+    const mine = move && row && move.infoHash === row.infoHash;
+    panel.hidden = !mine;
+    if (!mine) return;
+
+    const title = panel.querySelector("[data-tr-move-title]");
+    const line = panel.querySelector("[data-tr-move-line]");
+    const fill = panel.querySelector("[data-tr-move-fill]");
+    const stop = panel.querySelector("[data-tr-move-stop]");
+    const left = panel.querySelector("[data-tr-move-left]");
+    const failed = move.failed || [];
+
+    const share = move.bytesTotal ? Math.min(1, move.bytesDone / move.bytesTotal) : 0;
+    if (fill) fill.style.width = `${(share * 100).toFixed(1)}%`;
+    if (stop) stop.hidden = !move.running;
+
+    if (title) {
+      // The phase is named, because the steps are not interchangeable: a copy
+      // runs for hours with the torrent still in the list, and the swap at the
+      // end is the only moment it leaves it.
+      title.textContent = move.running
+        ? `${move.phase ? `${move.phase[0].toUpperCase()}${move.phase.slice(1)} — ` : ""}moving to ${move.destination}`
+        : move.error
+          ? `The move did not finish: ${move.error}`
+          : move.cancelled
+            ? `Move stopped — what had already been taken across is in ${move.destination}`
+            : `Moved to ${move.destination}`;
+    }
+    if (line) {
+      // The phase, named, and how far along it is - never a bare spinner. The
+      // torrents it stood down are named too: they are stopped because of this,
+      // and a stopped torrent nobody can account for is worse than a slow one.
+      const stood = (move.pausedOthers || []).length;
+      const alsoStood = stood
+        ? ` · ${stood} other torrent${stood === 1 ? "" : "s"} paused for this`
+        : "";
+      line.textContent = move.running
+        ? `${move.filesDone} / ${move.filesTotal} files · ${bytes(move.bytesDone)} of ${bytes(move.bytesTotal)}${move.current ? ` · ${move.current}` : ""}${alsoStood}`
+        : `${move.filesTotal - failed.length} of ${move.filesTotal} files moved · ${bytes(move.bytesDone)}`;
+    }
+
+    if (left) {
+      left.hidden = failed.length === 0;
+      const head = left.querySelector("[data-tr-move-left-head]");
+      if (head) {
+        head.textContent = move.running
+          ? `${failed.length} could not be moved so far`
+          : `${failed.length} could not be moved — these will be downloaded again`;
+      }
+      const list = left.querySelector("[data-tr-move-left-list]");
+      // Rebuilt only when the count changes: this is the one part of the panel
+      // that is a list, and it grows a handful of times at most.
+      if (list && Number(list.dataset.count || 0) !== failed.length) {
+        list.dataset.count = String(failed.length);
+        list.innerHTML = "";
+        for (const item of failed.slice(0, 50)) {
+          const li = document.createElement("li");
+          li.textContent = `${item.name} — ${item.why}`;
+          list.append(li);
+        }
+        if (failed.length > 50) {
+          const li = document.createElement("li");
+          li.textContent = `…and ${failed.length - 50} more`;
+          list.append(li);
+        }
+      }
+    }
+  }
+
   // ------------------------------------------------------------- detail pane
 
   function drawDetail() {
@@ -1347,7 +1451,25 @@ Click to open in Explorer` : "";
           <div class="tr-dactions">
             <button type="button" class="btn" data-tr-open>${icon("folder")}<span>Open folder</span></button>
             <button type="button" class="btn" data-tr-toggle><span class="ms" aria-hidden="true">pause</span><span>Pause</span></button>
+            <button type="button" class="btn" data-tr-move>${icon("drive_file_move")}<span>Move…</span></button>
             <button type="button" class="btn danger" data-tr-remove>${icon("delete")}<span>Remove</span></button>
+          </div>
+        </div>
+        <div class="tr-move-ask" data-tr-move-ask hidden>
+          <label>Move to<input type="text" data-tr-move-dest placeholder="D:\\Torrents" spellcheck="false"></label>
+          <button type="button" class="btn" data-tr-move-browse>${icon("folder_open")}<span>Browse…</span></button>
+          <button type="button" class="btn primary" data-tr-move-go>${icon("drive_file_move")}<span>Move</span></button>
+        </div>
+        <div class="tr-move" data-tr-move-panel hidden>
+          <div class="tr-move-head">
+            ${icon("drive_file_move")}<strong data-tr-move-title></strong>
+            <button type="button" class="btn" data-tr-move-stop>${icon("stop_circle")}<span>Stop</span></button>
+          </div>
+          <div class="tr-move-bar" data-tr-move-bar><i data-tr-move-fill></i></div>
+          <small data-tr-move-line></small>
+          <div class="tr-move-left" data-tr-move-left hidden>
+            <strong data-tr-move-left-head></strong>
+            <ul data-tr-move-left-list></ul>
           </div>
         </div>
         <div class="tr-derror" data-tr-derror hidden>
@@ -1400,6 +1522,7 @@ Click to open in Explorer` : "";
     setText(toggle.querySelector("span:last-child"), wanted
       ? (wanted.want === "pause" ? "Pausing…" : "Resuming…")
       : (paused ? "Resume" : "Pause"));
+    drawMove();
     drawFiles();
   }
 
@@ -2517,6 +2640,81 @@ Click to open in Explorer` : "";
       const row = (st.snap?.torrents || []).find((item) => item.id === Number(el?.dataset.trId));
       if (row) toggleMark(row, t.checked, event);
       return;
+    }
+
+    // The destination is typed, and browsing for it is the option rather than
+    // the only way. Windows' own folder picker reads the shell namespace, which
+    // asks every drive about itself — so on a PC with one drive that has
+    // stopped answering, the dialog is the one thing that cannot be relied on
+    // to open, and that is exactly when moving a torrent is most wanted.
+    if (t.closest("[data-tr-move]") && !t.closest("[data-tr-move-panel]")) {
+      const ask = st.host.querySelector("[data-tr-move-ask]");
+      if (!ask) return;
+      ask.hidden = !ask.hidden;
+      if (!ask.hidden) ask.querySelector("[data-tr-move-dest]")?.focus();
+      return;
+    }
+
+    if (t.closest("[data-tr-move-browse]")) {
+      // Started at the drive's root rather than the download folder: a picker
+      // pointed into a folder on a sick drive has to read that folder first.
+      return void invoke("pick_folder", { start: null })
+        .then((folder) => {
+          const field = st.host.querySelector("[data-tr-move-dest]");
+          if (folder && field) field.value = folder;
+        })
+        .catch((error) => note(String(error)));
+    }
+
+    if (t.closest("[data-tr-move-go]")) {
+      const row = (st.snap?.torrents || []).find((item) => item.id === st.selected);
+      const field = st.host.querySelector("[data-tr-move-dest]");
+      const destination = (field?.value || "").trim();
+      if (!row) return;
+      if (!destination) {
+        note("Type the folder to move it to.");
+        field?.focus();
+        return;
+      }
+      note(`Working out what moving ${row.name} involves…`);
+      // Asked first, so the cost is known before anything is touched — and so
+      // that standing other torrents down is the user's decision rather than
+      // something that happens to them.
+      return void invoke("torrent_move_preview", { id: row.id, destination })
+        .then((plan) => {
+          const others = plan?.competing || [];
+          if (others.length) {
+            const names = others.slice(0, 8).map((other) => `• ${other.name}`).join("\n");
+            const more = others.length > 8 ? `\n…and ${others.length - 8} more` : "";
+            const ok = confirm(
+              `${others.length} other torrent(s) are using these drives:\n\n${names}${more}\n\n` +
+              "A move has to have the drives to itself — anything else reading or writing " +
+              "them makes it many times slower and can make it give up on files it would " +
+              "otherwise have taken.\n\n" +
+              "They will be paused for the length of the move and started again afterwards. " +
+              "Torrents you paused yourself stay paused.\n\nMove it now?",
+            );
+            if (!ok) return void note("");
+          }
+          note(`Moving ${row.name} to ${plan?.destination || destination}…`);
+          return invoke("torrent_move_start", {
+            id: row.id,
+            destination,
+            pauseOthers: others.length > 0,
+          }).then(() => {
+            const ask = st.host.querySelector("[data-tr-move-ask]");
+            if (ask) ask.hidden = true;
+            note("");
+          });
+        })
+        .catch((error) => note(String(error)));
+    }
+
+    if (t.closest("[data-tr-move-stop]")) {
+      note("Stopping the move…");
+      return void invoke("torrent_move_cancel")
+        .then(() => note(""))
+        .catch((error) => note(String(error)));
     }
 
     if (t.closest("[data-tr-recheck]")) {

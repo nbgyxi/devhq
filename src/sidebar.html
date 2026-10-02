@@ -48,7 +48,9 @@
   .bar-windows {
     flex: 1 1 auto; min-height: 0; overflow: hidden auto; scrollbar-width: none;
     display: flex; flex-direction: column; gap: 2px; padding: 6px 0;
-    border-top: 1px solid var(--line, #262a36); border-bottom: 1px solid var(--line, #262a36);
+    /* Only a top line: every section under the list draws its own, so a
+       bottom one here doubled up with the first of them. */
+    border-top: 1px solid var(--line, #262a36);
   }
   .bar-win.active::before {
     content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px;
@@ -147,6 +149,40 @@
   .bar-stream-mute { display: grid; place-items: center; width: 27px; height: 27px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
   .bar-stream-mute:hover { background: var(--line, #262a36); }
   .bar-stream-mute .ms { width: auto; height: auto; font-size: 17px; line-height: 1; }
+  /* The volume as a whole row: mute, the slider, the level, and the way to the
+     device switcher. The slider is mounted once and only its value is moved,
+     so a drag in progress is never pulled out from under the pointer. */
+  .bar-volume {
+    flex: none; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto;
+    align-items: center; gap: 4px; min-width: 0; padding: 6px 4px 2px;
+    border-top: 1px solid var(--line, #262a36);
+  }
+  .bar-volume button {
+    display: grid; place-items: center; width: 26px; height: 26px; padding: 0;
+    border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer;
+  }
+  .bar-volume button:hover:not(:disabled) { background: var(--hover, #1c2030); }
+  .bar-volume button:disabled { opacity: .4; cursor: default; }
+  .bar-volume .ms { font-size: 18px; line-height: 1; }
+  .bar-volume.muted .bar-volume-mute .ms { color: #e5484d; }
+  .bar-volume-slider {
+    min-width: 0; width: 100%; height: 16px; margin: 0; cursor: pointer;
+    accent-color: var(--accent, #6ea8fe);
+  }
+  .bar-volume.muted .bar-volume-slider { accent-color: var(--muted, #8b93a7); }
+  .bar-volume-slider:disabled { cursor: default; }
+  .bar-volume-level {
+    /* Wide enough for "100%" whatever it holds, so the slider never shifts. */
+    flex: none; width: 4.5ch; text-align: right; font-size: calc(var(--bar-text) - 2px);
+    font-variant-numeric: tabular-nums; color: var(--muted, #8b93a7);
+  }
+  /* Not read yet: the slider shimmers in place rather than showing a made-up zero. */
+  .bar-volume.loading .bar-volume-slider, .bar-volume.loading .bar-volume-level {
+    color: transparent; border-radius: 4px; opacity: 1;
+    background: linear-gradient(90deg, #1c2030 0%, #2a3042 50%, #1c2030 100%);
+    background-size: 400% 100%; animation: shimmer 1.4s ease infinite;
+  }
+  .bar-volume.loading .bar-volume-slider { appearance: none; height: 6px; }
   /* The rail's own notification area: a few icons, then the chevron that
      shows the rest, the way the real tray opens. */
   /* Closed, the tray is a row of icons with no names, wrapping as often as the
@@ -207,6 +243,12 @@
     </div>
     <div class="bar-stream-list" data-audio-stream-list hidden></div>
   </section>
+  <div class="bar-volume loading" data-volume-row data-slot="volumerow" aria-label="Volume">
+    <button class="bar-volume-mute" type="button" data-volume-mute title="Mute" aria-label="Mute" disabled><span class="ms" aria-hidden="true">volume_up</span></button>
+    <input class="bar-volume-slider" type="range" min="0" max="100" step="1" value="0" data-volume-slider aria-label="Volume" disabled>
+    <output class="bar-volume-level" data-volume-level>--</output>
+    <button class="bar-volume-devices" type="button" data-volume-devices title="Sound Device Switcher" aria-label="Open the Sound Device Switcher"><span class="ms" aria-hidden="true">speaker</span></button>
+  </div>
   <div class="bar-tray" data-tray-apps aria-label="Notification area" hidden></div>
   <div class="bar-clock-row" data-clock-row>
     <button class="bar-slot bar-clock" type="button" data-action="time" data-slot="time"><span class="ms" aria-hidden="true">schedule</span><small data-time>--:--</small></button>

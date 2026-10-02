@@ -33,9 +33,7 @@ pub struct SpaceScan {
 #[cfg(windows)]
 pub fn drives() -> Result<Vec<Drive>, String> {
     use windows::core::PCWSTR;
-    use windows::Win32::Storage::FileSystem::{
-        GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives,
-    };
+    use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
     let mask = unsafe { GetLogicalDrives() };
     let mut out = Vec::new();
     for index in 0..26u32 {
@@ -51,29 +49,16 @@ pub fn drives() -> Result<Vec<Drive>, String> {
         if kind != 2 && kind != 3 {
             continue;
         }
-        // Asked before the drive is, because `GetDiskFreeSpaceExW` against a
-        // volume that has stopped answering does not fail — it sits in the
-        // driver for minutes. Anything showing free space re-reads this list
-        // every half minute, so one dead drive used to leave a blocked thread
-        // behind per refresh, for as long as the app ran. A drive that cannot
-        // say how big it is is left out of the list, the same as one that
-        // answers with an error.
-        if !crate::volume::answers(Path::new(&path)) {
+        // The sizes come from the shared probe, which makes this exact call on
+        // a thread it is willing to abandon. Making it here instead is what
+        // used to leave a blocked thread behind on every refresh: against a
+        // volume that has stopped answering `GetDiskFreeSpaceExW` does not
+        // fail, it sits in the driver for minutes. A drive that will not say
+        // how big it is is left out, the same as one that answers with an
+        // error.
+        let Some((total, free)) = crate::volume::space(Path::new(&path)) else {
             continue;
-        }
-        let (mut available, mut total, mut free) = (0u64, 0u64, 0u64);
-        if unsafe {
-            GetDiskFreeSpaceExW(
-                PCWSTR(wide.as_ptr()),
-                Some(&mut available),
-                Some(&mut total),
-                Some(&mut free),
-            )
-        }
-        .is_err()
-        {
-            continue;
-        }
+        };
         out.push(Drive {
             path: path.clone(),
             label: format!("{letter}:"),

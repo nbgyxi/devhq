@@ -289,8 +289,10 @@ fn identity_family(id: &str) -> String {
 ///   reports the bare `Chrome` instead, which belongs to every profile and
 ///   which one profile's window also carries literally, so a bare id counts
 ///   for no more than belonging to that browser at all;
-/// * the track (or artist) appearing in the window title, which is how a
-///   browser window whose playing tab is the one on top gives itself away;
+/// * the track (or artist) appearing in the window title or in the name of
+///   any of its tabs — the tab strip is read through UI Automation, so a
+///   profile playing from a background tab still gives itself away. Without
+///   it, a bare `MSEdge` session landed on whichever window was in front;
 /// * the window belonging to the process tree holding the audio session, which
 ///   still works when the playing tab is a background tab;
 /// * failing all of that, any window of a process that is making sound — still
@@ -301,6 +303,7 @@ fn pick_source_window(
     source_id: &str,
     title: &str,
     artist: &str,
+    read_tabs: bool,
 ) -> Option<crate::appbar::OpenWindow> {
     let wanted = source_id.to_ascii_lowercase();
     let family = identity_family(&wanted);
@@ -345,13 +348,26 @@ fn pick_source_window(
             return candidates.pop().map(|(_, window)| window);
         }
     }
+    // A browser's window title names only the tab in front, and every profile
+    // shares one process, so with the music in a background tab neither the
+    // title nor the sound tells the profiles apart. The tab strip does: it
+    // names every tab, playing or not. Read only when the window is about to
+    // be brought forward, there is a track to look for, and more than one
+    // window it could be in — not on the player's poll, which only wants the
+    // app's name and would be asking every browser every two seconds.
+    let tabs = if read_tabs && (track.len() > 2 || artist.len() > 2) {
+        tab_names(candidates.iter().map(|(_, window)| window.id.as_str()))
+    } else {
+        Default::default()
+    };
     let mut scored: Vec<(u32, crate::appbar::OpenWindow)> = candidates
         .into_iter()
         .map(|(identity, window)| {
-            let seen = comparable(&window.title);
-            let named = if track.len() > 2 && seen.contains(&track) {
+            let mut seen = vec![comparable(&window.title)];
+            seen.extend(tabs.get(&window.id).into_iter().flatten().map(|tab| comparable(tab)));
+            let named = if track.len() > 2 && seen.iter().any(|text| text.contains(&track)) {
                 2
-            } else if artist.len() > 2 && seen.contains(&artist) {
+            } else if artist.len() > 2 && seen.iter().any(|text| text.contains(&artist)) {
                 1
             } else {
                 0
@@ -367,6 +383,58 @@ fn pick_source_window(
         .collect();
     scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
     scored.into_iter().next().map(|(_, window)| window)
+}
+
+/// The name of every tab in each of these windows, through UI Automation —
+/// the same tab strip a screen reader reads. A window with no tab strip, or
+/// one that will not answer, just has no tabs; this is one signal among
+/// several, never a reason to fail.
+fn tab_names<'a>(
+    ids: impl Iterator<Item = &'a str>,
+) -> std::collections::HashMap<String, Vec<String>> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    use windows::Win32::System::Variant::VARIANT;
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, TreeScope_Descendants, UIA_ControlTypePropertyId,
+        UIA_TabItemControlTypeId,
+    };
+    let mut found = std::collections::HashMap::new();
+    let _apartment = crate::com::Apartment::single_threaded();
+    let Ok(automation) = (unsafe {
+        CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+    }) else {
+        return found;
+    };
+    let Ok(is_tab) = (unsafe {
+        automation.CreatePropertyCondition(
+            UIA_ControlTypePropertyId,
+            &VARIANT::from(UIA_TabItemControlTypeId.0),
+        )
+    }) else {
+        return found;
+    };
+    for id in ids {
+        let Ok(raw) = id.parse::<isize>() else {
+            continue;
+        };
+        let Ok(element) = (unsafe { automation.ElementFromHandle(HWND(raw as *mut std::ffi::c_void)) }) else {
+            continue;
+        };
+        let Ok(tabs) = (unsafe { element.FindAll(TreeScope_Descendants, &is_tab) }) else {
+            continue;
+        };
+        let count = unsafe { tabs.Length() }.unwrap_or(0);
+        // A cap keeps a window with hundreds of tabs from costing anything
+        // noticeable; the playing one is rarely that far along.
+        let names: Vec<String> = (0..count.min(200))
+            .filter_map(|index| unsafe { tabs.GetElement(index) }.ok())
+            .filter_map(|tab| unsafe { tab.CurrentName() }.ok())
+            .map(|name| name.to_string())
+            .collect();
+        found.insert(id.to_string(), names);
+    }
+    found
 }
 
 fn source_name(id: &str) -> String {
@@ -448,6 +516,7 @@ pub async fn media_state(app: AppHandle) -> Result<MediaState, String> {
             &source_for_lookup,
             &track,
             &performer,
+            false,
         );
         // The media API exposes an AppUserModelID, not the friendly name the
         // Start menu shows. Ask the shell first (important for packaged and
@@ -593,6 +662,7 @@ pub async fn media_focus(
             &wanted,
             &title,
             &artist,
+            true,
         )
         .map(|window| (window.id, window.active))
     })

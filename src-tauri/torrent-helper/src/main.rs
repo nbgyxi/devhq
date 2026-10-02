@@ -1328,6 +1328,853 @@ async fn apply_queue(api: &Api, actions: Vec<(usize, bool)>) {
 }
 
 // ---------------------------------------------------------------------------
+// Moving a torrent
+// ---------------------------------------------------------------------------
+
+/// How much is copied between progress reports, and between cancellation
+/// checks, when a file has to be copied rather than renamed. Four megabytes is
+/// small enough that a cancel lands promptly and large enough that the
+/// per-chunk bookkeeping is noise next to the disk.
+const MOVE_CHUNK: usize = 4 * 1024 * 1024;
+
+/// How often a copy in progress says how far it has got. Three times a second
+/// is past what anyone can read and well under what the bar itself can show.
+const MOVE_REPORT_EVERY: Duration = Duration::from_millis(300);
+
+/// How long to keep retrying a file the engine has not finished letting go of.
+///
+/// Forgetting a torrent drops its storage, which closes its file handles — but
+/// the engine may still be unwinding a write when the move starts walking the
+/// same files, and Windows refuses to rename a file that is still open. This
+/// is short because it is only ever covering that handover.
+const MOVE_HANDLE_WAIT: Duration = Duration::from_millis(250);
+const MOVE_HANDLE_TRIES: usize = 8;
+
+/// How long a file may produce no bytes at all before the move gives up on it.
+///
+/// A read from a failing drive does not fail, it is retried by the storage
+/// stack for minutes per sector, and a read already inside the driver cannot be
+/// interrupted. Without a limit the first bad file stops the whole move for as
+/// long as the drive feels like — which is exactly what it did. Thirty seconds
+/// is far longer than any healthy disk needs between four-megabyte chunks and
+/// far shorter than the time a dying one will take.
+const MOVE_STALL: Duration = Duration::from_secs(30);
+
+/// The note a rename leaves while the torrent is out of the list, and the
+/// torrent file beside it. In the state folder, so they survive the process
+/// that wrote them — which is the entire point of them.
+const MOVE_JOURNAL: &str = "move-in-progress.json";
+const MOVE_JOURNAL_TORRENT: &str = "move-in-progress.torrent";
+
+/// What a move is doing right now, and what it did. Kept here as well as sent
+/// as an event, because an event may be dropped when the writer is busy and
+/// the summary — which files were left behind — is the part worth asking for
+/// again. See `move_status`.
+static MOVE: OnceLock<StdMutex<MoveState>> = OnceLock::new();
+
+#[derive(Default, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MoveState {
+    /// Counts up per move, so a reply about an older one can be told apart.
+    token: u64,
+    running: bool,
+    cancelled: bool,
+    /// Which step is under way, named rather than implied: copying, renaming,
+    /// adding it back, removing the originals.
+    phase: String,
+    /// Other torrents this move paused to have the drives to itself, by name,
+    /// so the page can say so rather than leaving it to be noticed.
+    paused_others: Vec<String>,
+    /// The torrent being moved, for a page that was not the one that asked.
+    info_hash: String,
+    name: String,
+    destination: String,
+    files_total: usize,
+    files_done: usize,
+    bytes_total: u64,
+    bytes_done: u64,
+    /// The file being worked on, for the line under the progress bar.
+    current: String,
+    /// Files that could not be moved, with the reason. These are the ones the
+    /// torrent will fetch again.
+    failed: Vec<MoveFailure>,
+    /// Set once the torrent is back in the list at its new home.
+    finished: bool,
+    error: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MoveFailure {
+    name: String,
+    why: String,
+}
+
+fn move_state() -> &'static StdMutex<MoveState> {
+    MOVE.get_or_init(Default::default)
+}
+
+/// Read, change and publish the move's state in one go. Every change goes
+/// through here so the event and the stored copy can never disagree.
+fn move_update(writer: &Writer, change: impl FnOnce(&mut MoveState)) -> MoveState {
+    let snapshot = {
+        let mut state = move_state().lock().unwrap_or_else(|e| e.into_inner());
+        change(&mut state);
+        state.clone()
+    };
+    writer.event("move", serde_json::to_value(&snapshot).unwrap_or(Value::Null));
+    snapshot
+}
+
+fn move_cancelled(token: u64) -> bool {
+    let state = move_state().lock().unwrap_or_else(|e| e.into_inner());
+    state.token != token || state.cancelled
+}
+
+/// Everything about a torrent that the move needs after the engine has let go
+/// of it. Gathered under the lock, used without it.
+struct MovePlan {
+    id: TorrentIdOrHash,
+    info_hash: String,
+    name: String,
+    torrent_bytes: Vec<u8>,
+    output_folder: PathBuf,
+    new_output_folder: PathBuf,
+    /// Relative to the output folder, in the torrent's own order, with the
+    /// index each one has in the torrent.
+    files: Vec<(usize, PathBuf, u64)>,
+    only_files: Option<Vec<usize>>,
+    paused: bool,
+    /// Everything else running on either of the two drives. See `Competing`.
+    competing: Vec<Competing>,
+}
+
+/// Whether two paths are on the same volume, which decides whether a file can
+/// be renamed or has to be copied.
+///
+/// This is the difference between a move that takes a moment and one that
+/// reads every byte — and, on a failing disk, between a move that keeps
+/// unreadable data and one that finds it. A rename only rewrites directory
+/// entries, so a file whose data is on bad sectors moves perfectly well and is
+/// still unreadable afterwards. A copy has to read it, and fails on exactly
+/// the files that are damaged, which is what lets them be fetched again.
+/// How a file is taken across, which is decided once for the whole torrent.
+///
+/// The two are not interchangeable, and the difference is what decides the
+/// order of everything else in a move. A copy only needs to *read* the file, so
+/// it works perfectly well while the engine still has it open — which means the
+/// torrent can stay in the list for the hours a copy takes. A rename needs the
+/// file to itself, so the engine has to let go of it first, and the torrent is
+/// out of the list until it is put back.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MoveHow {
+    /// Within one volume: instant, reads nothing, needs exclusive access.
+    Rename,
+    /// Across volumes: reads every byte, and tolerates an open file.
+    Copy,
+}
+
+fn volume_root(path: &Path) -> Option<String> {
+    path.components()
+        .next()
+        .map(|c| c.as_os_str().to_string_lossy().to_uppercase())
+}
+
+fn same_volume(left: &Path, right: &Path) -> bool {
+    match (volume_root(left), volume_root(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// Another torrent that is using one of the drives this move needs.
+///
+/// A move shares the drive with whatever else the engine is doing on it, and on
+/// a drive that is struggling that is not a small effect: a hash check reading
+/// the same disk turns a move that would take minutes into one that takes
+/// hours, and makes the move's own stall detector fire on files that are merely
+/// queued behind someone else. So they are found, named, and — once the user has
+/// said so — paused for the length of the move and started again after it.
+#[derive(Clone)]
+struct Competing {
+    id: usize,
+    info_hash: String,
+    name: String,
+}
+
+/// Move one file, by the cheapest means that is still correct.
+///
+/// `Ok(true)` when it moved, `Ok(false)` when there was nothing there to move,
+/// and an error when the file is there and could not be taken — which is the
+/// case the caller records and the torrent fetches again.
+fn move_one_file(
+    from: &Path,
+    to: &Path,
+    how: MoveHow,
+    token: u64,
+    writer: &Writer,
+    bytes_done: &mut u64,
+    progress: &std::sync::atomic::AtomicU64,
+) -> Result<bool> {
+    if !from.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("cannot make {}", parent.display()))?;
+    }
+
+    // A rename on one volume is a metadata change: no bytes are read, so it
+    // cannot fail on unreadable data and cannot find it either. It is tried a
+    // few times because forgetting a torrent closes its files a moment after
+    // it returns, and Windows will not rename a file that is still open.
+    if how == MoveHow::Rename {
+        for attempt in 0..MOVE_HANDLE_TRIES {
+            if std::fs::rename(from, to).is_ok() {
+                *bytes_done += std::fs::metadata(to).map(|m| m.len()).unwrap_or(0);
+                progress.store(*bytes_done, Ordering::Relaxed);
+                let now = *bytes_done;
+                move_update(writer, move |state| state.bytes_done = now);
+                return Ok(true);
+            }
+            if move_cancelled(token) {
+                bail!("the move was stopped");
+            }
+            if attempt + 1 < MOVE_HANDLE_TRIES {
+                std::thread::sleep(MOVE_HANDLE_WAIT);
+            }
+        }
+        // A rename that will not happen on what looks like one volume is not
+        // worth arguing with — a junction or a mounted folder can put the two
+        // paths on different disks while the drive letters agree. The copy
+        // below works either way.
+    }
+
+    // Across volumes there is no rename, so this reads the file. A read that
+    // fails here is the drive saying it cannot give the data back; the partial
+    // copy is removed so the hash check cannot mistake it for real data, and
+    // the original is left where it is.
+    let mut source =
+        std::fs::File::open(from).with_context(|| format!("cannot read {}", from.display()))?;
+    let copied = (|| -> std::io::Result<()> {
+        let mut target = std::fs::File::create(to)?;
+        let mut buffer = vec![0u8; MOVE_CHUNK];
+        // Progress is reported on a timer, not per chunk. A fast disk turns
+        // over a chunk every few milliseconds, and a line per chunk would be
+        // thousands of events crossing two process boundaries to move a bar by
+        // less than a pixel. The cancellation check stays per chunk, because
+        // that is the one that has to be prompt.
+        let mut last_told = std::time::Instant::now();
+        loop {
+            if move_cancelled(token) {
+                return Err(std::io::Error::other("the move was stopped"));
+            }
+            let read = std::io::Read::read(&mut source, &mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            std::io::Write::write_all(&mut target, &buffer[..read])?;
+            *bytes_done += read as u64;
+            // The watcher reads this to tell a slow copy from a stalled one,
+            // so it is published every chunk however rarely the event is sent.
+            progress.store(*bytes_done, Ordering::Relaxed);
+            if last_told.elapsed() >= MOVE_REPORT_EVERY {
+                last_told = std::time::Instant::now();
+                let now = *bytes_done;
+                move_update(writer, move |state| state.bytes_done = now);
+            }
+        }
+        target.sync_all()
+    })();
+
+    match copied {
+        // The original is deliberately *not* removed here. Nothing is deleted
+        // until the torrent is back in the list at its new address and has
+        // accepted the copies — see `move_steps`. A crash in between then costs
+        // a stray copy, never the data.
+        Ok(()) => Ok(true),
+        Err(error) => {
+            let _ = std::fs::remove_file(to);
+            Err(error.into())
+        }
+    }
+}
+
+/// One file, with a deadline on it: abandoned if the drive stops producing
+/// bytes, rather than waiting on a read that may never come back.
+///
+/// This is the difference between a move and a hang. A read from a failing
+/// drive does not fail — the storage stack retries it, for minutes per
+/// sector — and a `read` already in the driver cannot be interrupted. So the
+/// file is copied on a thread of its own and *watched*: as long as bytes keep
+/// arriving it is left alone, and when they stop for `MOVE_STALL` the file is
+/// written off and the move goes on to the next one. The thread is left to end
+/// whenever the drive answers; one per abandoned file is the price of not
+/// stopping on the first bad one.
+///
+/// A file written off here is a file the torrent fetches again, which is
+/// exactly what was wanted of it.
+async fn move_one_file_watched(
+    from: &Path,
+    to: &Path,
+    how: MoveHow,
+    token: u64,
+    writer: &Writer,
+    bytes_done: &mut u64,
+) -> Result<bool> {
+    let progress = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    {
+        let from = from.to_path_buf();
+        let to = to.to_path_buf();
+        let writer = writer.clone();
+        let progress = progress.clone();
+        let start = *bytes_done;
+        std::thread::Builder::new()
+            .name("wint-torrent-move".into())
+            .spawn(move || {
+                let mut counted = start;
+                let result =
+                    move_one_file(&from, &to, how, token, &writer, &mut counted, &progress);
+                let _ = tx.send((result.map_err(|e| format!("{e:#}")), counted));
+            })
+            .context("could not start the thread to move that file")?;
+    }
+
+    let mut last_seen = progress.load(Ordering::Relaxed);
+    let mut since = std::time::Instant::now();
+    loop {
+        match tokio::time::timeout(MOVE_REPORT_EVERY, &mut rx).await {
+            Ok(Ok((result, counted))) => {
+                *bytes_done = counted;
+                return result.map_err(anyhow::Error::msg);
+            }
+            // The thread is gone without an answer. Nothing can be said about
+            // the file, so it is written off like any other failure.
+            Ok(Err(_)) => bail!("the move of that file stopped unexpectedly"),
+            Err(_) => {
+                let seen = progress.load(Ordering::Relaxed);
+                if seen != last_seen {
+                    last_seen = seen;
+                    since = std::time::Instant::now();
+                    *bytes_done = seen;
+                    move_update(writer, move |state| state.bytes_done = seen);
+                } else if since.elapsed() >= MOVE_STALL {
+                    // Abandoned, with the half-written target removed so the
+                    // hash check cannot mistake it for data that arrived.
+                    let _ = std::fs::remove_file(to);
+                    bail!(
+                        "the drive stopped answering while this was being read — \
+                         it will be downloaded again"
+                    );
+                }
+                if move_cancelled(token) {
+                    bail!("the move was stopped");
+                }
+            }
+        }
+    }
+}
+
+/// Work out what moving this torrent would involve, with the engine's lock
+/// held and nothing touched yet.
+async fn move_plan(state: &Mutex<State>, id: TorrentIdOrHash, destination: &str) -> Result<MovePlan> {
+    let state = state.lock().await;
+    let destination = PathBuf::from(destination.trim());
+    if destination.as_os_str().is_empty() {
+        bail!("no destination folder was given");
+    }
+    let details = state.api.api_torrent_details(id)?;
+    let handle = state.api.mgr_handle(id)?;
+    let metadata = handle
+        .metadata
+        .load_full()
+        .context("that torrent's metadata is not known yet, so it cannot be moved")?;
+    let output_folder = PathBuf::from(&details.output_folder);
+    let name = handle.name().unwrap_or_else(|| "this torrent".to_string());
+
+    // The folder the torrent lives in keeps its name at the new address. A
+    // torrent sitting loose in the shared download folder has no folder of its
+    // own to keep, so it is given one, the same as a new torrent would be.
+    let leaf = if output_folder == Path::new(&state.settings.download_folder) {
+        folder_name_for(Some(name.as_str()))
+    } else {
+        output_folder
+            .file_name()
+            .map(|leaf| leaf.to_string_lossy().into_owned())
+            .unwrap_or_else(|| folder_name_for(Some(name.as_str())))
+    };
+    let new_output_folder = destination.join(leaf);
+    if new_output_folder == output_folder {
+        bail!("that is where this torrent already is");
+    }
+    if new_output_folder.starts_with(&output_folder) {
+        bail!("a torrent cannot be moved into its own folder");
+    }
+
+    let files = details
+        .files
+        .as_ref()
+        .context("that torrent's file list is not known yet")?;
+    let mut planned = Vec::new();
+    let mut only_files = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        if file.included {
+            only_files.push(index);
+        }
+        // Components come from a torrent file, which came from a stranger.
+        // Anything that could climb out of the folder is dropped, exactly as
+        // `torrent_paths` does.
+        let mut relative = PathBuf::new();
+        for part in &file.components {
+            if part.is_empty() || part == "." || part == ".." || part.contains(['/', '\\']) {
+                continue;
+            }
+            relative.push(part);
+        }
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        // Everything on disk is moved, not only what is wanted now: a file
+        // that was deselected is still the user's, and leaving it behind on a
+        // drive they are emptying would be a quiet loss.
+        planned.push((index, relative, file.length));
+    }
+
+    // Who else is on these two drives, and actually doing something. A torrent
+    // that is already paused is not in the way and is left alone — including one
+    // the user paused themselves, which must come back paused.
+    let info_hash = handle.shared().info_hash.as_string();
+    let wanted_volumes: Vec<String> = [
+        volume_root(&output_folder),
+        volume_root(&new_output_folder),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let listed = state
+        .api
+        .api_torrent_list_ext(ApiTorrentListOpts { with_stats: true });
+    let mut competing = Vec::new();
+    for other in &listed.torrents {
+        let Some(other_id) = other.id else { continue };
+        if other.info_hash.eq_ignore_ascii_case(&info_hash) {
+            continue;
+        }
+        let Some(stats) = other.stats.as_ref() else {
+            continue;
+        };
+        if matches!(stats.state, librqbit::TorrentStatsState::Paused) {
+            continue;
+        }
+        let folder = PathBuf::from(&other.output_folder);
+        if !volume_root(&folder).is_some_and(|root| wanted_volumes.contains(&root)) {
+            continue;
+        }
+        competing.push(Competing {
+            id: other_id,
+            info_hash: other.info_hash.clone(),
+            name: other
+                .name
+                .clone()
+                .unwrap_or_else(|| other.info_hash.clone()),
+        });
+    }
+
+    Ok(MovePlan {
+        id,
+        info_hash,
+        name,
+        torrent_bytes: metadata.torrent_bytes.to_vec(),
+        output_folder,
+        new_output_folder,
+        files: planned,
+        only_files: (only_files.len() != files.len()).then_some(only_files),
+        // It comes back the way it was found: a torrent the user had paused
+        // must not start seeding off a new drive because it was moved.
+        paused: matches!(
+            handle.stats().state,
+            librqbit::TorrentStatsState::Paused
+        ),
+        competing,
+    })
+}
+
+/// The move itself: let go of the torrent, take the files across, and put it
+/// back together at the new address.
+///
+/// Nothing here holds the engine's lock while it touches the disk. A move is
+/// minutes to hours of copying, and the lock is what every other torrent
+/// action waits on.
+async fn move_run(state: Arc<Mutex<State>>, writer: Writer, plan: MovePlan, token: u64) {
+    let result = move_steps(&state, &writer, &plan, token).await;
+    move_update(&writer, |current| {
+        if current.token != token {
+            return;
+        }
+        current.running = false;
+        current.finished = true;
+        current.current = String::new();
+        if let Err(error) = &result {
+            current.error = format!("{error:#}");
+        }
+    });
+}
+
+async fn move_steps(
+    state: &Arc<Mutex<State>>,
+    writer: &Writer,
+    plan: &MovePlan,
+    token: u64,
+) -> Result<()> {
+    let how = if same_volume(&plan.output_folder, &plan.new_output_folder) {
+        MoveHow::Rename
+    } else {
+        MoveHow::Copy
+    };
+
+    // Paused first either way, so no peer is still handing it pieces while its
+    // files are being read or taken.
+    {
+        let state = state.lock().await;
+        let _ = state.api.api_torrent_action_pause(plan.id).await;
+    }
+
+    // Then everything else on the two drives, because the move has to have them
+    // to itself to be worth starting. Pausing goes through the queue's own
+    // paused list rather than the engine directly: the supervisor restarts
+    // anything it finds stopped that it thinks should be running, so a torrent
+    // paused behind its back would be going again within seconds. That list is
+    // saved, so these stay paused across a restart — and the journal is what
+    // brings them back if this process does not live to do it.
+    let stood_down = pause_competing(state, plan).await;
+    if !stood_down.is_empty() {
+        let names: Vec<String> = plan
+            .competing
+            .iter()
+            .filter(|other| stood_down.contains(&other.info_hash))
+            .map(|other| other.name.clone())
+            .collect();
+        move_update(writer, move |current| current.paused_others = names);
+    }
+    write_move_journal(state, plan, &stood_down).await;
+
+    // A copy is done with the torrent still in the list.
+    //
+    // This is the whole reason the order is what it is. Copying only reads the
+    // file, which works while the engine has it open, so the hours a copy takes
+    // are hours the torrent is still there to look at, still in the queue, and
+    // still safe if the process dies. Letting go of it first - which is what an
+    // earlier version of this did - meant a torrent that vanished from the list
+    // for the whole move, and vanished for good if the move stalled or the
+    // helper restarted.
+    //
+    // A rename cannot be done that way: it needs the file to itself, so the
+    // engine has to let go first. That window is seconds rather than hours, and
+    // the journal covers it.
+    let mut bytes_done = 0u64;
+    let mut failed: Vec<MoveFailure> = Vec::new();
+    let mut arrived: Vec<PathBuf> = Vec::new();
+
+    if how == MoveHow::Rename {
+        let guard = state.lock().await;
+        guard
+            .api
+            .api_torrent_action_forget(plan.id)
+            .await
+            .context("the engine would not let go of that torrent")?;
+    }
+
+    move_update(writer, |current| {
+        current.phase = match how {
+            MoveHow::Rename => "renaming".into(),
+            MoveHow::Copy => "copying".into(),
+        };
+    });
+
+    for (done, (_, relative, _)) in plan.files.iter().enumerate() {
+        if move_cancelled(token) {
+            break;
+        }
+        let from = plan.output_folder.join(relative);
+        let to = plan.new_output_folder.join(relative);
+        let shown = relative.to_string_lossy().into_owned();
+        move_update(writer, |current| {
+            current.files_done = done;
+            current.current = shown.clone();
+        });
+        match move_one_file_watched(&from, &to, how, token, writer, &mut bytes_done).await {
+            Ok(true) => arrived.push(relative.clone()),
+            // Nothing there to take. Not a failure: a file that was never
+            // downloaded has nothing to move, and the torrent will fetch it at
+            // the new address exactly as it would have at the old one.
+            Ok(false) => {}
+            Err(error) => {
+                failed.push(MoveFailure {
+                    name: shown,
+                    why: format!("{error:#}"),
+                });
+                let latest = failed.clone();
+                move_update(writer, move |current| current.failed = latest);
+            }
+        }
+    }
+    move_update(writer, |current| {
+        current.files_done = plan.files.len();
+        current.current = String::new();
+        current.phase = "adding it back".into();
+    });
+
+    // Back into the list at the new address. `overwrite` is what lets the engine
+    // adopt the files that were just put there instead of refusing to write over
+    // them, and the hash check it runs on the way in is what turns every file
+    // that could not be taken into pieces it will fetch again.
+    //
+    // For a copy this is the first moment the torrent leaves the list, and it is
+    // back by the end of the same step.
+    {
+        let guard = state.lock().await;
+        if how == MoveHow::Copy {
+            guard
+                .api
+                .api_torrent_action_forget(plan.id)
+                .await
+                .context("the engine would not let go of that torrent")?;
+        }
+        let options = AddTorrentOptions {
+            paused: plan.paused,
+            output_folder: Some(plan.new_output_folder.to_string_lossy().into_owned()),
+            only_files: plan.only_files.clone(),
+            overwrite: true,
+            peer_limit: Some(guard.settings.peer_limit),
+            ..Default::default()
+        };
+        if let Ok(mut hashes) = torrents_being_checked().lock() {
+            hashes.insert(plan.info_hash.clone());
+        }
+        let added = guard
+            .api
+            .api_add_torrent(
+                AddTorrent::from_bytes(plan.torrent_bytes.clone()),
+                Some(options),
+            )
+            .await;
+        if added.is_err() {
+            if let Ok(mut hashes) = torrents_being_checked().lock() {
+                hashes.remove(&plan.info_hash);
+            }
+        }
+        added.context("the files were moved, but the torrent could not be added back")?;
+    }
+
+    // Only now are the originals let go of, and only the ones whose copy is
+    // whole. Nothing is deleted while there is any doubt about the copy or about
+    // the torrent being back: a move that goes wrong should cost a stray copy,
+    // never the data.
+    if how == MoveHow::Copy && !arrived.is_empty() {
+        move_update(writer, |current| {
+            current.phase = "removing the originals".into();
+        });
+        for relative in &arrived {
+            let _ = std::fs::remove_file(plan.output_folder.join(relative));
+        }
+        // The folders those files sat in, innermost first. Only empty ones go -
+        // `remove_dir` refuses anything else - so whatever could not be moved,
+        // and anything the user put there, stays exactly where it is.
+        let mut folders: Vec<PathBuf> = arrived
+            .iter()
+            .filter_map(|relative| relative.parent())
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+            .collect();
+        folders.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+        folders.dedup();
+        for folder in folders {
+            let _ = std::fs::remove_dir(plan.output_folder.join(folder));
+        }
+        let _ = std::fs::remove_dir(&plan.output_folder);
+    }
+
+    resume_competing(state, &stood_down).await;
+    clear_move_journal(state).await;
+    move_update(writer, |current| {
+        current.phase = String::new();
+        current.paused_others = Vec::new();
+    });
+    Ok(())
+}
+
+/// Pause everything else on the two drives, and answer with what was actually
+/// paused — which is what has to be started again, no more and no less.
+///
+/// A torrent the user had already paused is not in this list, so it is not
+/// started by the end of the move. That distinction is the whole reason this
+/// returns something rather than being undone from `plan.competing`.
+async fn pause_competing(state: &Arc<Mutex<State>>, plan: &MovePlan) -> Vec<String> {
+    let mut stood_down = Vec::new();
+    let mut guard = state.lock().await;
+    for other in &plan.competing {
+        if guard.queue.paused.contains(&other.info_hash) {
+            continue;
+        }
+        guard.queue.paused.push(other.info_hash.clone());
+        stood_down.push(other.info_hash.clone());
+    }
+    if !stood_down.is_empty() {
+        guard.save_queue();
+        for other in &plan.competing {
+            if stood_down.contains(&other.info_hash) {
+                let _ = guard
+                    .api
+                    .api_torrent_action_pause(TorrentIdOrHash::Id(other.id))
+                    .await;
+            }
+        }
+    }
+    stood_down
+}
+
+/// Let the ones this move stood down run again. They are taken out of the
+/// queue's paused list and left to the supervisor, which is what decides who
+/// actually runs and how many at once — starting them here would put more of
+/// them going at once than the user's download slots allow.
+async fn resume_competing(state: &Arc<Mutex<State>>, stood_down: &[String]) {
+    if stood_down.is_empty() {
+        return;
+    }
+    let mut guard = state.lock().await;
+    guard
+        .queue
+        .paused
+        .retain(|hash| !stood_down.contains(hash));
+    guard.save_queue();
+}
+
+/// A note on disk saying a torrent is mid-rename, with everything needed to put
+/// it back.
+///
+/// Only the rename path writes one, because only the rename path has a moment
+/// where the torrent is out of the list and its files are in two places. If the
+/// helper dies in that moment, the note is what the next one reads to add the
+/// torrent back rather than leave it lost.
+async fn write_move_journal(state: &Arc<Mutex<State>>, plan: &MovePlan, stood_down: &[String]) {
+    let dir = { state.lock().await.state_dir.clone() };
+    let note = json!({
+        "infoHash": plan.info_hash,
+        "name": plan.name,
+        "from": plan.output_folder.to_string_lossy(),
+        "to": plan.new_output_folder.to_string_lossy(),
+        "paused": plan.paused,
+        "onlyFiles": plan.only_files,
+        // The ones this move paused. Without this a crash mid-move would leave
+        // them paused with nothing left that knows they were not paused by the
+        // user, and they would sit there until somebody noticed.
+        "stoodDown": stood_down,
+    });
+    // The torrent bytes go beside it: the engine's own copy belongs to a torrent
+    // that is about to be forgotten, and this has to work without it.
+    let _ = std::fs::write(dir.join(MOVE_JOURNAL_TORRENT), &plan.torrent_bytes);
+    let _ = std::fs::write(dir.join(MOVE_JOURNAL), note.to_string());
+}
+
+async fn clear_move_journal(state: &Arc<Mutex<State>>) {
+    let dir = { state.lock().await.state_dir.clone() };
+    let _ = std::fs::remove_file(dir.join(MOVE_JOURNAL));
+    let _ = std::fs::remove_file(dir.join(MOVE_JOURNAL_TORRENT));
+}
+
+/// Put back a torrent that a previous run was moving when it stopped.
+///
+/// It is added at the new address with `overwrite`, because that is where the
+/// move was going and where whatever already crossed now lives. The hash check
+/// sorts out the rest: files still at the old address read as missing and are
+/// fetched again. Nothing is deleted here - the old folder is left exactly as it
+/// was found, for the user to look at rather than for this to guess about.
+async fn finish_interrupted_move(state: &Arc<Mutex<State>>) {
+    let (dir, peer_limit) = {
+        let state = state.lock().await;
+        (state.state_dir.clone(), state.settings.peer_limit)
+    };
+    let Ok(text) = std::fs::read_to_string(dir.join(MOVE_JOURNAL)) else {
+        return;
+    };
+    let Ok(note) = serde_json::from_str::<Value>(&text) else {
+        let _ = std::fs::remove_file(dir.join(MOVE_JOURNAL));
+        return;
+    };
+    // First, whatever that move had stood down. This happens whether or not the
+    // torrent itself needs adding back: a drive full of torrents the user never
+    // paused, left paused by a move that died, is the worse of the two faults
+    // because nothing about it looks wrong.
+    let stood_down: Vec<String> = note
+        .get("stoodDown")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    if !stood_down.is_empty() {
+        tracing::warn!(
+            count = stood_down.len(),
+            "a move was interrupted; letting the torrents it had paused run again"
+        );
+        resume_competing(state, &stood_down).await;
+    }
+
+    let bytes = std::fs::read(dir.join(MOVE_JOURNAL_TORRENT)).unwrap_or_default();
+    let folder = note.get("to").and_then(Value::as_str).unwrap_or_default();
+    let name = note
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("a torrent");
+    if bytes.is_empty() || folder.is_empty() {
+        let _ = std::fs::remove_file(dir.join(MOVE_JOURNAL));
+        return;
+    }
+    tracing::warn!(
+        name,
+        folder,
+        "a move was interrupted; adding this torrent back at the address it was being moved to"
+    );
+    let options = AddTorrentOptions {
+        paused: note.get("paused").and_then(Value::as_bool).unwrap_or(false),
+        output_folder: Some(folder.to_owned()),
+        only_files: note.get("onlyFiles").and_then(|value| {
+            value.as_array().map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_u64)
+                    .map(|index| index as usize)
+                    .collect::<Vec<_>>()
+            })
+        }),
+        overwrite: true,
+        peer_limit: Some(peer_limit),
+        ..Default::default()
+    };
+    let added = {
+        let guard = state.lock().await;
+        guard
+            .api
+            .api_add_torrent(AddTorrent::from_bytes(bytes), Some(options))
+            .await
+    };
+    match added {
+        Ok(_) => {
+            let _ = std::fs::remove_file(dir.join(MOVE_JOURNAL));
+            let _ = std::fs::remove_file(dir.join(MOVE_JOURNAL_TORRENT));
+        }
+        // The note stays. A torrent that could not be added back is worth trying
+        // again on the next start rather than quietly forgetting.
+        Err(error) => tracing::error!(name, "could not add it back: {error:#}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 
@@ -1439,7 +2286,12 @@ fn details_json(details: &TorrentDetailsResponse) -> Value {
     })
 }
 
-async fn handle(state: &Mutex<State>, op: &str, arg: Value) -> Result<Value> {
+async fn handle(
+    state: &Arc<Mutex<State>>,
+    writer: &Writer,
+    op: &str,
+    arg: Value,
+) -> Result<Value> {
     match op {
         // Who am I, and is anything already running? The app's first call.
         "hello" => {
@@ -1641,6 +2493,115 @@ async fn handle(state: &Mutex<State>, op: &str, arg: Value) -> Result<Value> {
             state.save_queue();
             state.api.api_torrent_action_start(id).await?;
             Ok(json!({}))
+        }
+
+        // Move a torrent's folder, and its files with it.
+        //
+        // Answers as soon as the plan is made, because the moving itself is
+        // minutes to hours: everything after this arrives as `move` events,
+        // and `move_status` has the same thing for a page that missed one.
+        // What moving this torrent would involve, before anything is touched:
+        // where it would go, how much there is, whether it is a copy or a
+        // rename, and what else would have to stand down for it.
+        "move_preview" => {
+            let id = torrent_id(&arg)?;
+            let destination = arg
+                .get("destination")
+                .and_then(Value::as_str)
+                .context("no destination folder was given")?;
+            let plan = move_plan(state, id, destination).await?;
+            Ok(json!({
+                "destination": plan.new_output_folder.to_string_lossy(),
+                "filesTotal": plan.files.len(),
+                "bytesTotal": plan.files.iter().map(|(_, _, len)| len).sum::<u64>(),
+                "copies": !same_volume(&plan.output_folder, &plan.new_output_folder),
+                "competing": plan
+                    .competing
+                    .iter()
+                    .map(|other| json!({ "name": other.name, "infoHash": other.info_hash }))
+                    .collect::<Vec<_>>(),
+            }))
+        }
+
+        "move_start" => {
+            {
+                let running = move_state().lock().unwrap_or_else(|e| e.into_inner());
+                if running.running {
+                    bail!("a torrent is already being moved");
+                }
+            }
+            let id = torrent_id(&arg)?;
+            let destination = arg
+                .get("destination")
+                .and_then(Value::as_str)
+                .context("no destination folder was given")?;
+            let plan = move_plan(state, id, destination).await?;
+            // A move needs the drives to itself, so if anything else is using
+            // them the caller has to have said it may stand them down. The page
+            // asks with `move_preview` and names them; this is the guard that
+            // makes sure the question was actually put.
+            if !plan.competing.is_empty()
+                && !arg
+                    .get("pauseOthers")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            {
+                bail!(
+                    "{} other torrent(s) are using these drives; the move needs them paused first",
+                    plan.competing.len()
+                );
+            }
+            std::fs::create_dir_all(&plan.new_output_folder).with_context(|| {
+                format!("cannot use {}", plan.new_output_folder.display())
+            })?;
+
+            let token = {
+                let mut current = move_state().lock().unwrap_or_else(|e| e.into_inner());
+                let token = current.token + 1;
+                *current = MoveState {
+                    token,
+                    running: true,
+                    info_hash: plan.info_hash.clone(),
+                    name: plan.name.clone(),
+                    destination: plan.new_output_folder.to_string_lossy().into_owned(),
+                    files_total: plan.files.len(),
+                    bytes_total: plan.files.iter().map(|(_, _, len)| len).sum(),
+                    ..Default::default()
+                };
+                token
+            };
+            let started = move_state()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            writer.event(
+                "move",
+                serde_json::to_value(&started).unwrap_or(Value::Null),
+            );
+
+            let spawned = state.clone();
+            let spawned_writer = writer.clone();
+            tokio::spawn(async move { move_run(spawned, spawned_writer, plan, token).await });
+            Ok(json!({ "token": token }))
+        }
+
+        // Stop a move that is under way. What has already been taken across
+        // stays there — the torrent is put back together at the new address
+        // either way, and whatever did not make it is fetched again.
+        "move_cancel" => {
+            let mut current = move_state().lock().unwrap_or_else(|e| e.into_inner());
+            if current.running {
+                current.cancelled = true;
+            }
+            Ok(json!({ "cancelled": current.cancelled }))
+        }
+
+        // The last move, however it ended. An event can be dropped when the
+        // writer is busy, and the list of what was left behind is the part
+        // worth being able to ask for again.
+        "move_status" => {
+            let current = move_state().lock().unwrap_or_else(|e| e.into_inner());
+            Ok(serde_json::to_value(&*current)?)
         }
 
         // Take it off the list. `deleteFiles` says whether what was downloaded
@@ -1953,6 +2914,55 @@ struct Args {
     /// copy of a state folder while the real one is up - the only way to time
     /// a start-up without interrupting the transfers being diagnosed.
     dht_port: Option<u16>,
+    /// WinT's own process id, so the engine can tell when it is gone. See the
+    /// command loop for why end-of-file on stdin is not enough on its own.
+    parent_pid: Option<u32>,
+}
+
+/// A future that resolves when WinT's process ends — or never, when there is
+/// no parent to watch or Windows will not let this one be watched.
+///
+/// The wait happens on a thread of its own because it is a blocking kernel
+/// wait with no async form, and that thread costs nothing: it sleeps until the
+/// one event it cares about, for the life of the engine.
+fn watch_parent(pid: Option<u32>) -> tokio::sync::oneshot::Receiver<()> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let Some(pid) = pid.filter(|pid| *pid != 0) else {
+        // Nothing to watch. The receiver simply never resolves, which leaves
+        // stdin as the only way out, exactly as before.
+        std::mem::forget(tx);
+        return rx;
+    };
+    std::thread::Builder::new()
+        .name("wint-parent-watch".into())
+        .spawn(move || {
+            #[cfg(windows)]
+            {
+                use windows::Win32::Foundation::CloseHandle;
+                use windows::Win32::System::Threading::{
+                    OpenProcess, WaitForSingleObject, INFINITE, PROCESS_ACCESS_RIGHTS,
+                };
+                // SYNCHRONIZE (0x0010_0000) and nothing else: the right to wait
+                // for it to end, not to read it, open it or stop it. Spelled
+                // out because the crate files the named constant under file
+                // access rights, which is not the type `OpenProcess` takes.
+                const SYNCHRONIZE: PROCESS_ACCESS_RIGHTS = PROCESS_ACCESS_RIGHTS(0x0010_0000);
+                let Ok(handle) = (unsafe { OpenProcess(SYNCHRONIZE, false, pid) }) else {
+                    // Already gone, or not ours to watch. Either way there is
+                    // nothing to wait for, and saying so immediately is right
+                    // for the first case and harmless for the second.
+                    let _ = tx.send(());
+                    return;
+                };
+                unsafe {
+                    WaitForSingleObject(handle, INFINITE);
+                    let _ = CloseHandle(handle);
+                }
+            }
+            let _ = tx.send(());
+        })
+        .ok();
+    rx
 }
 
 fn parse_args() -> Args {
@@ -1966,6 +2976,7 @@ fn parse_args() -> Args {
             "--state-dir" => args.state_dir = it.next().map(PathBuf::from),
             "--download-folder" => args.download_folder = it.next(),
             "--dht-port" => args.dht_port = it.next().and_then(|v| v.parse().ok()),
+            "--parent-pid" => args.parent_pid = it.next().and_then(|v| v.parse().ok()),
             "--snapshot-ms" => {
                 args.snapshot_ms = it
                     .next()
@@ -2463,6 +3474,10 @@ async fn main() -> Result<()> {
         let state = state.lock().await;
         state.apply_limits();
     }
+    // Before anything else is announced: a torrent that a previous run was
+    // renaming when it stopped is out of the list and nothing else will ever
+    // put it back. See `finish_interrupted_move`.
+    finish_interrupted_move(&state).await;
     writer.event(
         "ready",
         json!({
@@ -2599,12 +3614,34 @@ async fn main() -> Result<()> {
 
     // Commands. Each runs on its own task, so one slow command — adding a
     // magnet, which waits on the DHT — never holds up the next.
+    //
+    // Two things end this loop, and both are needed.
+    //
+    // stdin closing is the ordinary one, and on its own it is not enough.
+    // Rust marks the pipe handles it creates inheritable and spawns with
+    // `bInheritHandles`, so *any* other child WinT happens to start while the
+    // engine is up — an elevated `cmd.exe` for a disk check, a `taskkill`, a
+    // shell — inherits the write end of this pipe and holds it open. When WinT
+    // then dies, the pipe does not close, no end-of-file ever arrives, and the
+    // engine runs on with nothing to serve. That is where the orphans came
+    // from, and why they survived to hold the exe open and block the next
+    // build.
+    //
+    // So the parent is watched directly as well. A process handle signals when
+    // the process ends, whoever else is holding its pipes.
+    let mut parent_gone = watch_parent(args.parent_pid);
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     loop {
-        let line = match lines.next_line().await {
-            Ok(Some(line)) => line,
-            // stdin closed: WinT is gone, and so is the reason to be running.
-            Ok(None) | Err(_) => break,
+        let line = tokio::select! {
+            read = lines.next_line() => match read {
+                Ok(Some(line)) => line,
+                // stdin closed: WinT is gone, and so is the reason to be running.
+                Ok(None) | Err(_) => break,
+            },
+            _ = &mut parent_gone => {
+                tracing::info!("WinT has gone; shutting the engine down");
+                break;
+            }
         };
         if line.trim().is_empty() {
             continue;
@@ -2624,7 +3661,7 @@ async fn main() -> Result<()> {
         let state = state.clone();
         let writer = writer.clone();
         tokio::spawn(async move {
-            let result = handle(&state, &request.op, request.arg).await;
+            let result = handle(&state, &writer, &request.op, request.arg).await;
             writer.reply(request.id, result);
         });
     }
