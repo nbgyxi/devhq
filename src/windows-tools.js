@@ -12,6 +12,7 @@
     { id: "system", name: "System", icon: "tune", hint: "audit PATH and environment variables", keywords: "system path %path% environment variable variables env envvar user machine system-wide missing broken duplicate order folders directories not recognized command not found diagnostics audit" },
     { id: "log-tail", name: "Log Tail", icon: "subject", hint: "follow the newest lines in any local log file", keywords: "log tail logs follow file live stream watch monitor grep filter search lines output text last newest realtime" },
     { id: "lock-inspector", name: "Lock Inspector", icon: "lock_open", hint: "find processes holding a file or folder", keywords: "lock locked file folder handle handles process who holds using delete remove rename move in use cannot access being used by another sharing violation access denied unlock close restart manager" },
+    { id: "notepad", name: "Notepad", icon: "edit_note", hint: "plain text notes in tabs down the side, saved as you type", keywords: "notepad note notes text plain text txt scratch scratchpad jot write writing memo memos draft editor edit type paste quick note sticky tabs autosave save open file" },
     { id: "clipboard", name: "Clipboard History", icon: "content_paste", hint: "everything you copy, recorded from startup — search, pin, restore, forget", keywords: "clipboard clip clips history copied copy cut paste buffer text links urls code snippets search restore pin forget clear earlier" },
     { id: "stall-watch", name: "Input Stall Watch", icon: "mouse", hint: "catch the moments the mouse or the whole PC freezes, and see what caused them", keywords: "mouse freeze freezes frozen stutter stutters lag laggy hitch hiccup slow pointer cursor jumps jumping sticks sticky input stall stalls latency dpc interrupt isr driver latencymon diagnose diagnostics monitor watch background paging hard faults cpu spike wireless receiver usb power saving hook" },
     { id: "focus-mode", name: "Focus mode", icon: "shield_lock", hint: "one press or shortcut hides the windows you choose - gone from the taskbar, not just minimized - and the next brings them back", keywords: "focus mode panic boss key hide windows hidden taskbar alt tab privacy distraction distractions screen share sharing presentation quick hide stealth chrome discord youtube games" },
@@ -289,6 +290,7 @@
     // The speed meter samples on a timer of its own; leaving the tool has to
     // stop it, not wait for the next tick to notice the page is gone.
     if (active !== "speed-test") window.wintSpeedTest?.unmount?.();
+    if (active !== "notepad") window.wintNotepad?.unmount?.();
     const tool = catalog.find((x) => x.id === active) || catalog[0];
     if (active === "events") renderEvents(tool);
     if (active === "help") renderHelp(tool);
@@ -308,6 +310,7 @@
     if (active === "focus-mode") renderFocusMode(tool);
     if (active === "torrents") renderTorrents(tool);
     if (active === "speed-test") renderSpeedTest(tool);
+    if (active === "notepad") renderNotepad(tool);
     if (active === "browser") renderBrowser(tool);
     if (active === "sidebar") renderSidebar(tool);
     if (active === "repair-swap") renderAudioChooser(tool);
@@ -401,19 +404,54 @@
     if (toolCatalog === null) return '<div class="dock-tool-loading">Reading the list of tools…</div>';
     const selected = new Set(chosen.map((tool) => tool.id));
     const commonRank = (tool) => { const rank = DOCK_COMMON_TOOLS.indexOf(tool.id); return rank < 0 ? DOCK_COMMON_TOOLS.length : rank; };
-    const tools = toolCatalog.filter((tool) => (tool.group || "common") === dockToolFilter).sort((a, b) => Number(selected.has(b.id)) - Number(selected.has(a.id)) || (dockToolFilter === "common" ? commonRank(a) - commonRank(b) : 0) || a.name.localeCompare(b.name));
-    const query = dockToolQuery.trim().toLowerCase();
-    const matches = (tool) => !query || `${tool.name} ${tool.id}`.toLowerCase().includes(query);
-    const cards = tools.map((tool) => `<label class="dock-tool-choice${selected.has(tool.id) ? " on" : ""}" data-dock-tool-card data-tool-search="${esc(`${tool.name} ${tool.id}`.toLowerCase())}"${matches(tool) ? "" : " hidden"}><input type="checkbox" data-dock-tool-choice="${esc(tool.id)}"${selected.has(tool.id) ? " checked" : ""}><span class="dock-tool-icon">${icon(tool.icon || "build")}</span><span>${esc(tool.name || tool.id)}</span>${icon(selected.has(tool.id) ? "check" : "add")}</label>`).join("");
-    return `<div class="dock-tool-picker-head"><label class="dock-tool-search">${icon("search")}<input type="search" placeholder="Find a tool…" value="${esc(dockToolQuery)}" data-dock-tool-search autocomplete="off"></label><span><strong data-dock-tool-count>${chosen.length}</strong> selected</span><button class="btn" type="button" data-dock-tools-clear${chosen.length ? "" : " disabled"}>Clear</button></div><div class="dock-tool-filters"><button type="button" class="${dockToolFilter === "common" ? "on" : ""}" data-dock-tool-filter="common">Common tools</button><button type="button" class="${dockToolFilter === "converters" ? "on" : ""}" data-dock-tool-filter="converters">Converters &amp; utilities</button></div><div class="dock-tool-choices">${cards}</div><p class="dock-empty-tools" data-dock-tool-empty${tools.some(matches) ? " hidden" : ""}>No tools match that search.</p>`;
+    // Every tool is drawn, whichever tab is showing: a search looks through
+    // all of them, and only an empty search is limited to the tab.
+    const tools = toolCatalog.slice().sort((a, b) => Number(selected.has(b.id)) - Number(selected.has(a.id)) || (dockToolFilter === "common" ? commonRank(a) - commonRank(b) : 0) || a.name.localeCompare(b.name));
+    const shown = (tool) => dockToolMatch(tool.group || "common", dockToolText(tool), tool.name) !== null;
+    const cards = tools.map((tool, order) => `<label class="dock-tool-choice${selected.has(tool.id) ? " on" : ""}" data-dock-tool-card data-dock-order="${order}" data-dock-group="${esc(tool.group || "common")}" data-tool-name="${esc(tool.name || tool.id)}" data-tool-search="${esc(dockToolText(tool))}"${shown(tool) ? "" : " hidden"}><input type="checkbox" data-dock-tool-choice="${esc(tool.id)}"${selected.has(tool.id) ? " checked" : ""}><span class="dock-tool-icon">${icon(tool.icon || "build")}</span><span>${esc(tool.name || tool.id)}</span>${icon(selected.has(tool.id) ? "check" : "add")}</label>`).join("");
+    return `<div class="dock-tool-picker-head"><label class="dock-tool-search">${icon("search")}<input type="search" placeholder="Find a tool…" value="${esc(dockToolQuery)}" data-dock-tool-search autocomplete="off"></label><span><strong data-dock-tool-count>${chosen.length}</strong> selected</span><button class="btn" type="button" data-dock-tools-clear${chosen.length ? "" : " disabled"}>Clear</button></div><div class="dock-tool-filters"><button type="button" class="${dockToolFilter === "common" ? "on" : ""}" data-dock-tool-filter="common">Common tools</button><button type="button" class="${dockToolFilter === "converters" ? "on" : ""}" data-dock-tool-filter="converters">Converters &amp; utilities</button></div><div class="dock-tool-choices">${cards}</div><p class="dock-empty-tools" data-dock-tool-empty${tools.some(shown) ? " hidden" : ""}>No tools match that search.</p>`;
+  }
+  const dockToolText = (tool) => tool.search || `${tool.name} ${tool.id}`.toLowerCase();
+  /** Where a tool ranks for the current search, or null when it is hidden.
+   *  Each word is looked for on its own, so "text note" finds Notepad; a
+   *  tool whose name has every word ranks above one that only matched on
+   *  what it does. With no search, the tab decides. */
+  function dockToolMatch(group, text, name) {
+    const words = dockToolQuery.trim().toLowerCase().split(/s+/).filter(Boolean);
+    if (!words.length) return group === dockToolFilter ? 0 : null;
+    if (!words.every((word) => text.includes(word))) return null;
+    const title = String(name || "").toLowerCase();
+    return words.every((word) => title.includes(word)) ? 0 : 1;
+  }
+  /** Applies the search to the cards already drawn, so typing never rebuilds
+   *  the page under the caret. Matches by name move to the top. */
+  function filterDockTools() {
+    const box = host?.querySelector(".dock-tool-choices");
+    if (!box) return;
+    let shown = 0;
+    const ranked = [];
+    for (const card of box.querySelectorAll("[data-dock-tool-card]")) {
+      const rank = dockToolMatch(card.dataset.dockGroup, card.dataset.toolSearch, card.dataset.toolName);
+      card.hidden = rank === null;
+      if (rank !== null) shown++;
+      ranked.push([rank ?? 2, card]);
+    }
+    ranked.sort((a, b) => a[0] - b[0] || a[1].dataset.dockOrder - b[1].dataset.dockOrder);
+    for (const [, card] of ranked) box.appendChild(card);
+    const empty = host.querySelector("[data-dock-tool-empty]");
+    if (empty) empty.hidden = shown !== 0;
   }
   let barKnown = false;
+  // `bar` is only defaults until the saved settings have been read, and saving
+  // it before then would put those defaults over everything the user set.
+  let barLoaded = false;
   async function loadBar() {
     barKnown = true;
     try {
       const saved = await invoke("sidebar_settings");
       bar = { ...bar, ...(saved || {}), slots: { ...(saved?.slots || {}) }, tools: Array.isArray(saved?.tools) ? saved.tools : [] };
-    } catch (_) { return; }
+      barLoaded = true;
+    } catch (_) { barKnown = false; return; }
     if (active === "sidebar") renderSidebar(catalog.find((x) => x.id === "sidebar"));
   }
   // The rail's own taskbar button saves settings too; keep this page in step.
@@ -421,9 +459,11 @@
     const saved = event.payload || {};
     bar = { ...bar, ...saved, slots: { ...(saved.slots || {}) }, tools: Array.isArray(saved.tools) ? saved.tools : [] };
     barKnown = true;
+    barLoaded = true;
     if (active === "sidebar" && !host?.querySelector("input[type=range]:active")) renderSidebar(catalog.find((x) => x.id === "sidebar"));
   });
   function saveBar() {
+    if (!barLoaded) return status("The sidebar settings have not loaded yet - try again in a moment.", "bad");
     invoke("sidebar_settings_set", { settings: bar }).catch(() => { /* the rail keeps what it had */ });
   }
   /** Every sidebar command answers with the whole state, so the page never has
@@ -556,6 +596,12 @@
       if (live) live.innerHTML = `<div class="win-empty">${esc(failure)}</div>`;
     });
     document.head.appendChild(script);
+  }
+
+  // Its own file: the notes are files on disk, and the page only edits them.
+  function renderNotepad(tool) {
+    host.innerHTML = header(tool, '<div data-notepad-host></div>');
+    mountTool("[data-notepad-host]", "notepad.js", "wintNotepad", "Notepad could not load.");
   }
 
   // Its own file, and its engine is a separate process entirely: opening this
@@ -978,7 +1024,7 @@
       ['Network','lan',['ports','network','speed-test','dns','hosts','path-ping','browser','torrents']],
       ['Inside Windows','settings_applications',['registry','system','events','log-tail','disk-space','disk-check','startup','lock-inspector','sidebar']],
       ['Diagnose and protect','shield',['security-audit','stall-watch','health']],
-      ['Every day','bolt',['clipboard','focus-mode','keep-awake','time-tracker']],
+      ['Every day','bolt',['notepad','clipboard','focus-mode','keep-awake','time-tracker']],
     ].map(([name,glyph,ids])=>({name,glyph,items:ids.map(describe).filter(Boolean)}));
     // A tool added to the catalog and never named above still has to show up,
     // or the help screen quietly stops listing part of the app.
@@ -1534,7 +1580,7 @@
   }
   window.wintWindowsTools = {
     catalog: () => catalog.map((x) => ({ ...x })),
-    mount(node) { host = node; host.onclick = click; host.oninput = (event) => { const toolSearch=event.target.closest("[data-dock-tool-search]");if(toolSearch){dockToolQuery=toolSearch.value;const query=dockToolQuery.trim().toLowerCase();let shown=0;host.querySelectorAll("[data-dock-tool-card]").forEach((card)=>{const visible=!query||card.dataset.toolSearch.includes(query);card.hidden=!visible;if(visible)shown++;});const empty=host.querySelector("[data-dock-tool-empty]");if(empty)empty.hidden=shown!==0;return;} const barSize=event.target.closest("[data-dock-size]");if(barSize){const key=barSize.dataset.dockSize;bar={...bar,[key]:Number(barSize.value)};saveBar();host.querySelector(`[data-dock-size-out="${key}"]`)?.replaceChildren(`${barSize.value} px`);return;} const slider=event.target.closest("[data-audio-volume]");if(slider)slider.closest(".audio-volume")?.querySelector("output")?.replaceChildren(`${slider.value}%`); const width=event.target.closest("[data-dock-width]");if(width)host.querySelector("[data-dock-width-out]")?.replaceChildren(`${width.value} dip`); }; host.onchange = (event) => { const toolChoice=event.target.closest("[data-dock-tool-choice]");if(toolChoice){const tool=(toolCatalog||[]).find((x)=>x.id===toolChoice.dataset.dockToolChoice);if(tool){const without=barTools().filter((x)=>x.id!==tool.id);bar={...bar,tools:toolChoice.checked?[...without,{id:tool.id,name:tool.name,icon:tool.icon}]:without};saveBar();renderSidebar(catalog.find((x)=>x.id==="sidebar"));requestAnimationFrame(()=>host.querySelector("[data-dock-tool-search]")?.focus());}return;} const preset=event.target.closest("[data-dock-preset]");if(preset){bar={...bar,iconSize:Number(preset.dataset.iconSize),textSize:Number(preset.dataset.textSize),trayIconSize:Number(preset.dataset.trayIconSize)};return saveBar();} const media=event.target.closest("[data-dock-media]");if(media){bar={...bar,mediaMode:media.value};return saveBar();} const onStart=event.target.closest("[data-dock-on-start]");if(onStart){bar={...bar,dockOnStart:onStart.checked};return saveBar();} const seconds=event.target.closest("[data-dock-clock-seconds]");if(seconds){bar={...bar,clockSeconds:seconds.checked};return saveBar();} const hideBar=event.target.closest("[data-dock-hide-taskbar]");if(hideBar){bar={...bar,hideTaskbar:hideBar.checked};saveBar();host.querySelectorAll("[data-dock-hide-taskbar-completely]").forEach((box)=>{box.disabled=!hideBar.checked;});return dock.docked?dockCall("sidebar_configure",{hideTaskbar:hideBar.checked,hideCompletely:bar.hideTaskbarCompletely===true}):undefined;} const hideAll=event.target.closest("[data-dock-hide-taskbar-completely]");if(hideAll){bar={...bar,hideTaskbarCompletely:hideAll.checked};saveBar();return dock.docked?dockCall("sidebar_configure",{hideCompletely:hideAll.checked}):undefined;} const barSlot=event.target.closest("[data-dock-slot]");if(barSlot){bar={...bar,slots:{...bar.slots,[barSlot.dataset.dockSlot]:barSlot.checked}};return saveBar();} const dockWidth=event.target.closest("[data-dock-width]");if(dockWidth){dock={...dock,width:Number(dockWidth.value)};return dockCall("sidebar_configure",{width:dock.width});} const slider=event.target.closest("[data-audio-volume]");if(slider)return setAudioVolume(slider.dataset.audioVolume,Number(slider.value)); const from=event.target.closest("[data-awake-from]");if(from){const minute=awakeMinutes(from.value);if(minute!==null)saveAwakeSchedule({startMinute:minute});return;} const to=event.target.closest("[data-awake-to]");if(to){const minute=awakeMinutes(to.value);if(minute!==null)saveAwakeSchedule({endMinute:minute});} }; host.onkeydown = (e) => { if (e.key !== "Enter") return; if(e.target.matches("[data-event-text]"))loadEvents();else if(e.target.matches("[data-reg-path]"))loadRegistry();else if(e.target.matches("[data-log-path],[data-log-filter]"))loadLogTail();else if(e.target.matches("[data-lock-path]"))inspectLocks(); }; render(); },
+    mount(node) { host = node; host.onclick = click; host.oninput = (event) => { const toolSearch=event.target.closest("[data-dock-tool-search]");if(toolSearch){dockToolQuery=toolSearch.value;filterDockTools();return;} const barSize=event.target.closest("[data-dock-size]");if(barSize){const key=barSize.dataset.dockSize;bar={...bar,[key]:Number(barSize.value)};saveBar();host.querySelector(`[data-dock-size-out="${key}"]`)?.replaceChildren(`${barSize.value} px`);return;} const slider=event.target.closest("[data-audio-volume]");if(slider)slider.closest(".audio-volume")?.querySelector("output")?.replaceChildren(`${slider.value}%`); const width=event.target.closest("[data-dock-width]");if(width)host.querySelector("[data-dock-width-out]")?.replaceChildren(`${width.value} dip`); }; host.onchange = (event) => { const toolChoice=event.target.closest("[data-dock-tool-choice]");if(toolChoice){const tool=(toolCatalog||[]).find((x)=>x.id===toolChoice.dataset.dockToolChoice);if(tool){const without=barTools().filter((x)=>x.id!==tool.id);bar={...bar,tools:toolChoice.checked?[...without,{id:tool.id,name:tool.name,icon:tool.icon}]:without};saveBar();renderSidebar(catalog.find((x)=>x.id==="sidebar"));requestAnimationFrame(()=>host.querySelector("[data-dock-tool-search]")?.focus());}return;} const preset=event.target.closest("[data-dock-preset]");if(preset){bar={...bar,iconSize:Number(preset.dataset.iconSize),textSize:Number(preset.dataset.textSize),trayIconSize:Number(preset.dataset.trayIconSize)};return saveBar();} const media=event.target.closest("[data-dock-media]");if(media){bar={...bar,mediaMode:media.value};return saveBar();} const onStart=event.target.closest("[data-dock-on-start]");if(onStart){bar={...bar,dockOnStart:onStart.checked};return saveBar();} const seconds=event.target.closest("[data-dock-clock-seconds]");if(seconds){bar={...bar,clockSeconds:seconds.checked};return saveBar();} const hideBar=event.target.closest("[data-dock-hide-taskbar]");if(hideBar){bar={...bar,hideTaskbar:hideBar.checked};saveBar();host.querySelectorAll("[data-dock-hide-taskbar-completely]").forEach((box)=>{box.disabled=!hideBar.checked;});return dock.docked?dockCall("sidebar_configure",{hideTaskbar:hideBar.checked,hideCompletely:bar.hideTaskbarCompletely===true}):undefined;} const hideAll=event.target.closest("[data-dock-hide-taskbar-completely]");if(hideAll){bar={...bar,hideTaskbarCompletely:hideAll.checked};saveBar();return dock.docked?dockCall("sidebar_configure",{hideCompletely:hideAll.checked}):undefined;} const barSlot=event.target.closest("[data-dock-slot]");if(barSlot){bar={...bar,slots:{...bar.slots,[barSlot.dataset.dockSlot]:barSlot.checked}};return saveBar();} const dockWidth=event.target.closest("[data-dock-width]");if(dockWidth){dock={...dock,width:Number(dockWidth.value)};return dockCall("sidebar_configure",{width:dock.width});} const slider=event.target.closest("[data-audio-volume]");if(slider)return setAudioVolume(slider.dataset.audioVolume,Number(slider.value)); const from=event.target.closest("[data-awake-from]");if(from){const minute=awakeMinutes(from.value);if(minute!==null)saveAwakeSchedule({startMinute:minute});return;} const to=event.target.closest("[data-awake-to]");if(to){const minute=awakeMinutes(to.value);if(minute!==null)saveAwakeSchedule({endMinute:minute});} }; host.onkeydown = (e) => { if (e.key !== "Enter") return; if(e.target.matches("[data-event-text]"))loadEvents();else if(e.target.matches("[data-reg-path]"))loadRegistry();else if(e.target.matches("[data-log-path],[data-log-filter]"))loadLogTail();else if(e.target.matches("[data-lock-path]"))inspectLocks(); }; render(); },
     open(id) { if (!catalog.some((x) => x.id === id)) return; active = id; render(); if (id === "events") restoreEventPopout(); resumeHandoff(id); },
     opened() { if (active === "events" && timer) loadEvents(); },
     active: () => active,

@@ -6,7 +6,7 @@ use std::{
     path::{Component, Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -149,6 +149,13 @@ pub struct Session {
     default_storage_factory: Option<BoxStorageFactory>,
     persistence: Option<Arc<dyn SessionPersistenceStore>>,
     trackers: HashSet<url::Url>,
+
+    /// Set once every saved torrent has been tried. See `is_resume_finished`.
+    resume_finished: AtomicBool,
+    /// Saved torrents the resume could not read back in, with the reason. They
+    /// stay in the persistence store - a drive that is not plugged in is no
+    /// reason to forget a torrent - until `forget_saved` takes one out.
+    resume_failures: RwLock<HashMap<TorrentId, String>>,
 
     lsd: Option<LocalServiceDiscovery>,
 
@@ -844,6 +851,8 @@ impl Session {
                 trackers: opts.trackers,
                 disable_trackers: opts.disable_trackers,
                 self_addrs: RwLock::new(HashSet::new()),
+                resume_finished: AtomicBool::new(false),
+                resume_failures: RwLock::new(HashMap::new()),
                 peer_limit: opts.peer_limit,
                 client_name_and_version,
 
@@ -932,6 +941,7 @@ impl Session {
                 Ok(ps) => ps,
                 Err(e) => {
                     error!("error reading the saved torrents: {e:#}");
+                    session.resume_finished.store(true, Ordering::Relaxed);
                     return;
                 }
             };
@@ -944,9 +954,10 @@ impl Session {
                     debug_span!(parent: session.rs(), "add_torrent", info_hash=?info_hash)
                 };
                 tokio::select! {
-                    Some(res) = futs.next(), if !futs.is_empty() => {
+                    Some((id, res)) = futs.next(), if !futs.is_empty() => {
                         if let Err(e) = res {
-                            error!("error adding torrent to session: {e:#}");
+                            error!(?id, "error adding torrent to session: {e:#}");
+                            session.resume_failures.write().insert(id, format!("{e:#}"));
                         }
                     }
                     st = ps.next(), if !added_all => {
@@ -962,10 +973,13 @@ impl Session {
                                     Ok((add_torrent, mut opts)) => {
                                         opts.preferred_id = Some(id);
                                         let fut = session.add_torrent(add_torrent, Some(opts));
-                                        let fut = fut.instrument(span);
+                                        let fut = fut.instrument(span).map(move |res| (id, res));
                                         futs.push(fut);
                                     }
-                                    Err(e) => error!(?id, "error resuming a saved torrent: {e:#}"),
+                                    Err(e) => {
+                                        error!(?id, "error resuming a saved torrent: {e:#}");
+                                        session.resume_failures.write().insert(id, format!("{e:#}"));
+                                    }
                                 }
                             },
                             None => added_all = true
@@ -974,6 +988,33 @@ impl Session {
                 };
             }
         }
+        session.resume_finished.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether every saved torrent has been tried. A saved torrent that is not
+    /// in the session once this is true is one that failed to come back.
+    pub fn is_resume_finished(&self) -> bool {
+        self.resume_finished.load(Ordering::Relaxed)
+    }
+
+    /// The saved torrents the resume could not read back in, and why.
+    pub fn resume_failures(&self) -> HashMap<TorrentId, String> {
+        self.resume_failures.read().clone()
+    }
+
+    /// Take a saved torrent that is not in the session - one the resume could
+    /// not load - out of the persistence store. `delete` cannot: it starts
+    /// from the loaded torrent, and there is none.
+    pub async fn forget_saved(&self, id: TorrentId) -> anyhow::Result<()> {
+        if self.db.read().torrents.contains_key(&id) {
+            bail!("torrent {id} is loaded; remove it the normal way");
+        }
+        self.resume_failures.write().remove(&id);
+        let persistence = self
+            .persistence
+            .as_ref()
+            .context("there is no saved state to remove it from")?;
+        persistence.delete(id).await
     }
 
     async fn check_incoming_connection(

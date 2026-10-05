@@ -359,14 +359,34 @@ unsafe fn place(hwnd: HWND) {
 /// does overlap one is too small a sliver to grab with the mouse. A maximized
 /// window is restored first, because `SetWindowPos` on a maximized window
 /// leaves it in a half-maximized state.
-pub(crate) unsafe fn ensure_on_screen(hwnd: HWND) -> bool {
+///
+/// A window shrunk below `min_wide` x `min_tall` counts as lost as well, and
+/// comes back at `wide` x `tall` - all four in logical pixels, scaled by the
+/// window's own DPI here. A minimized window is left alone: its rectangle is
+/// the parked stub Windows keeps for it, not the box it will restore to, and
+/// "rescuing" that is what used to bring WinT back the size of a stamp.
+pub(crate) unsafe fn ensure_on_screen(
+    hwnd: HWND,
+    wide: i32,
+    tall: i32,
+    min_wide: i32,
+    min_tall: i32,
+) -> bool {
     use windows::Win32::Graphics::Gdi::{
         MonitorFromRect, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, IsZoomed, ShowWindow, SW_RESTORE,
+        GetWindowRect, IsIconic, IsZoomed, ShowWindow, SW_RESTORE,
     };
 
+    if IsIconic(hwnd).as_bool() {
+        return false;
+    }
+    let dpi = match GetDpiForWindow(hwnd) {
+        0 => 96,
+        dpi => dpi as i32,
+    };
+    let scaled = |logical: i32| logical * dpi / 96;
     let mut rect = RECT::default();
     if GetWindowRect(hwnd, &mut rect).is_err() {
         return false;
@@ -382,21 +402,30 @@ pub(crate) unsafe fn ensure_on_screen(hwnd: HWND) -> bool {
     let work = info.rcWork;
     let seen_wide = rect.right.min(work.right) - rect.left.max(work.left);
     let seen_tall = rect.bottom.min(work.bottom) - rect.top.max(work.top);
+    let zoomed = IsZoomed(hwnd).as_bool();
+    let shrunk = !zoomed
+        && (rect.right - rect.left < scaled(min_wide) || rect.bottom - rect.top < scaled(min_tall));
     let lost = MonitorFromRect(&rect, MONITOR_DEFAULTTONULL).is_invalid()
         || seen_wide < 120
-        || seen_tall < 48;
+        || seen_tall < 48
+        || shrunk;
     if !lost {
         return false;
     }
-    if IsZoomed(hwnd).as_bool() {
+    if zoomed {
         let _ = ShowWindow(hwnd, SW_RESTORE);
         if GetWindowRect(hwnd, &mut rect).is_err() {
             return false;
         }
     }
     let (room_wide, room_tall) = (work.right - work.left, work.bottom - work.top);
-    let width = (rect.right - rect.left).clamp(480, room_wide);
-    let height = (rect.bottom - rect.top).clamp(320, room_tall);
+    // Too small to be the size anybody left it at: start over at the default.
+    let (mut width, mut height) = (rect.right - rect.left, rect.bottom - rect.top);
+    if width < scaled(min_wide) || height < scaled(min_tall) {
+        (width, height) = (scaled(wide), scaled(tall));
+    }
+    let width = width.min(room_wide).max(1);
+    let height = height.min(room_tall).max(1);
     let _ = SetWindowPos(
         hwnd,
         None,

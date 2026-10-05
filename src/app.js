@@ -8137,7 +8137,9 @@ async function wireToolPopoutEvents() {
   await listen("sidebar:tool-catalog-request", () => {
     emit("sidebar:tool-catalog", TOOLS
       .filter((tool) => !SHELL_TOOLS.has(tool.id))
-      .map(({ id, name, icon, sidebarGroup }) => ({ id, name, icon, group: sidebarGroup || "common" }))).catch(() => {});
+      // `search` is everything the tool answers to, so the picker finds it by
+      // what it does and not only by its exact name.
+      .map(({ id, name, icon, hint, keywords, sidebarGroup }) => ({ id, name, icon, group: sidebarGroup || "common", search: `${name} ${id} ${hint || ""} ${keywords || ""}`.toLowerCase() }))).catch(() => {});
   });
   await listen("tool:bridge-request", async (event) => {
     const request = event.payload || {};

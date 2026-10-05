@@ -16,6 +16,64 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.181.0",
+      title: "Torrents sort by more than one column",
+      date: "2026-10-05",
+      changes: [
+        ["new", "The torrent list can be sorted by several columns at once. Each heading you click becomes the main sort, and the ones you clicked before it break ties. Click Down and then Completed, and finished torrents are listed by date while the ones still downloading stay ordered by speed. Small numbers on the headings show the order."],
+        ["fix", "A saved torrent the engine cannot load no longer shows \"Waiting for the engine\" forever. It now says \"Could not be loaded\", and hovering the status shows why."],
+        ["fix", "Removing a torrent that could not be loaded no longer fails with \"torrent not found\". A banner over the list also removes all of them in one click. Their files are left where they are."],
+      ],
+    },
+    {
+      version: "0.180.3",
+      title: "The torrent engine always shuts down",
+      date: "2026-10-05",
+      changes: [
+        ["fix", "The torrent engine no longer keeps running after WinT closes when a drive has stopped answering. It used to wait on that drive forever, so it held its files open and could not be stopped even from an admin prompt. Now it gives the drive 10 seconds and then leaves."],
+        ["fix", "When a move gives up on a file because the old drive stopped answering, it now cancels the stuck read instead of leaving it waiting. A read left waiting is what kept the engine from shutting down."],
+      ],
+    },
+    {
+      version: "0.180.2",
+      title: "Moves off a failing drive finish",
+      date: "2026-10-05",
+      changes: [
+        ["fix", "Moving a torrent off a drive that has stopped answering no longer sticks on \"Removing the originals\". The originals are now removed in the background with a count you can watch, and if the old drive goes quiet for 30 seconds the move finishes anyway. The torrent is already running from its new folder by then, and the panel says how many originals were left on the old drive."],
+        ["fix", "A drive that stops answering no longer freezes the Torrents list. The check for missing files used to hold up every update after it, so the list showed the \"no updates have arrived\" warning even though the engine was fine."],
+      ],
+    },
+    {
+      version: "0.180.1",
+      title: "Sidebar settings stay put",
+      date: "2026-10-02",
+      changes: [
+        ["fix", "The docked sidebar no longer forgets its settings when it reloads. With music or a video playing, the rail saved the track it saw before it had read your settings back, and that save put every switch, size and pinned tool back to its default."],
+      ],
+    },
+    {
+      version: "0.180.0",
+      title: "Notepad",
+      date: "2026-10-02",
+      changes: [
+        ["new", "A Notepad tool: plain text, nothing else, with every note as a tab down the left side. Press New and start typing - the note saves itself a moment after you stop, and the tab is named after its first line."],
+        ["new", "Notes are ordinary .txt files, one per note, in a folder you choose under the settings button. It starts as WinT Notes in your Documents folder, and any .txt you drop in that folder shows up as a tab."],
+        ["new", "The open button opens a text file from anywhere. It stays where it is and saves back to its own place, and closing its tab never deletes it. Ctrl+N makes a new note and Ctrl+O opens a file."],
+        ["new", "Hover a tab for its × to delete the note - WinT asks first, and the file goes to the Recycle Bin. On a file opened from elsewhere the × only closes the tab. Right-click a tab to rename its file."],
+        ["new", "Notepad settings have a text formatting section: font family, style and size with a live preview, and a word wrap switch. They apply to every note."],
+        ["fix", "A tool in a window of its own - popped out, or opened from the sidebar - can ask before doing something again. The question was never shown there, so actions that need a yes, like removing a torrent, quietly did nothing."],
+        ["better", "Find a tool… in the Docked Sidebar settings now searches every tool, not just the tab you are on, and finds tools by what they do as well as by name - \"text\" finds Notepad, \"freeze\" finds Input Stall Watch. Each word counts on its own, and tools whose name matches come first."],
+      ],
+    },
+    {
+      version: "0.179.1",
+      title: "WinT comes back full size",
+      date: "2026-10-02",
+      changes: [
+        ["fix", "Bringing WinT back from the taskbar, the tray, the sidebar or a second start no longer opens it as a tiny window. It returns at the size and place you left it, and a window that has somehow ended up smaller than WinT's minimum opens at the normal 1400 × 900 instead."],
+      ],
+    },
+    {
       version: "0.179.0",
       title: "A volume row on the sidebar",
       buildChecksum: "d5c105e3e40c280fcf00f2969430d3a1537985049c3a548938617855c17a6c55",

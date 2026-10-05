@@ -1,0 +1,507 @@
+// Notepad: plain text, one file per note, saved as you type.
+//
+// New notes are `.txt` files in the folder chosen under settings; every
+// `.txt` there is a tab. A file opened from anywhere else is a tab too, but
+// it stays where it is and is saved back to its own path - the folder is only
+// where new notes go. The files are the only copy: nothing is kept in the
+// webview that the next start would need.
+(() => {
+  "use strict";
+  const invoke = window.__TAURI__.core.invoke;
+  const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const icon = (name) => window.wintShell?.icon?.(name) || `<span class="ms" aria-hidden="true">${name}</span>`;
+  const STATE_KEY = "notepad";
+  /** Long enough that a burst of typing is one write, short enough that
+   *  closing the window straight after typing rarely loses anything. */
+  const SAVE_DELAY = 600;
+  /** The fonts every Windows 10 and 11 PC has, monospaced first. */
+  const FONTS = ["Consolas", "Cascadia Mono", "Cascadia Code", "Courier New", "Lucida Console", "Segoe UI", "Arial", "Calibri", "Cambria", "Georgia", "Tahoma", "Times New Roman", "Trebuchet MS", "Verdana"];
+  const STYLES = { Regular: ["normal", 400], Light: ["normal", 300], Italic: ["italic", 400], Bold: ["normal", 700], "Bold Italic": ["italic", 700] };
+  const SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 28, 32, 36];
+  const DEFAULT_FORMAT = { family: "Consolas", style: "Regular", size: 11, wrap: true };
+  const options = (values, chosen) => values.map((v) => `<option${String(v) === String(chosen) ? " selected" : ""}>${esc(v)}</option>`).join("");
+
+  const st = {
+    host: null,
+    prefsLoaded: false,
+    defaultFolder: "",
+    /** Empty means the default, so the default can follow Documents. */
+    chosenFolder: "",
+    opened: [],
+    notes: [],
+    selected: "",
+    loading: true,
+    saving: 0,
+    error: "",
+    /** The tab whose file name is being edited, if any. */
+    renaming: "",
+    loadToken: 0,
+    format: { ...DEFAULT_FORMAT },
+  };
+  const folder = () => st.chosenFolder || st.defaultFolder;
+  const parentOf = (path) => path.replace(/[\\/][^\\/]*$/, "");
+  const fileName = (path) => path.replace(/^.*[\\/]/, "");
+  const samePath = (a, b) => a.replace(/[\\/]+$/, "").toLowerCase() === b.replace(/[\\/]+$/, "").toLowerCase();
+  const isExternal = (note) => !samePath(parentOf(note.path), folder());
+  const current = () => st.notes.find((note) => note.path === st.selected) || null;
+  const q = (selector) => st.host?.querySelector(selector);
+
+  function title(note) {
+    const line = note.text.split(/\r?\n/).map((x) => x.trim()).find(Boolean);
+    if (line) return line.length > 60 ? `${line.slice(0, 60)}…` : line;
+    return isExternal(note) ? fileName(note.path) : "Untitled";
+  }
+
+  function mount(node) {
+    st.host = node;
+    node.innerHTML = `
+      <div class="np">
+        <aside class="np-side">
+          <div class="np-side-head">
+            <button type="button" class="btn primary" data-np-new title="New note">${icon("add")}New</button>
+            <button type="button" class="btn" data-np-open title="Open a text file from anywhere - it stays where it is">${icon("folder_open")}</button>
+            <button type="button" class="btn" data-np-settings title="Where new notes are saved">${icon("settings")}</button>
+          </div>
+          <div class="np-tabs" data-np-tabs></div>
+          <div class="np-error" data-np-status hidden></div>
+        </aside>
+        <section class="np-main">
+          <div class="np-settings" data-np-panel hidden>
+            <h3>Save location</h3>
+            <label>New notes are saved in
+              <input data-np-folder spellcheck="false">
+            </label>
+            <div class="np-settings-row">
+              <button type="button" class="btn" data-np-browse>${icon("folder_open")}Browse…</button>
+              <button type="button" class="btn" data-np-default>Use default</button>
+            </div>
+            <p>Notes save to this folder as you type, one .txt file each. Files you open from elsewhere stay where they are and save back there. Changing the folder leaves the notes already saved in the old one where they are.</p>
+            <h3>Text formatting</h3>
+            <div class="np-format">
+              <label>Family<select data-np-format="family">${options(FONTS, st.format.family)}</select></label>
+              <label>Style<select data-np-format="style">${options(Object.keys(STYLES), st.format.style)}</select></label>
+              <label>Size<select data-np-format="size">${options(SIZES, st.format.size)}</select></label>
+            </div>
+            <div class="np-preview" data-np-preview>The quick brown fox jumps over the lazy dog. 0123456789</div>
+            <div class="np-wrap">
+              <span><strong>Word wrap</strong><small>Fit text within the window</small></span>
+              <button type="button" class="home-bg-switch" role="switch" data-np-wrap><i></i></button>
+            </div>
+          </div>
+          <textarea data-np-text spellcheck="false" placeholder="Type here. It saves by itself."></textarea>
+        </section>
+      </div>`;
+    node.addEventListener("click", onClick);
+    node.addEventListener("keydown", onKey);
+    node.addEventListener("contextmenu", (event) => {
+      const tab = event.target.closest("[data-np-tab]");
+      if (!tab || event.target.closest("[data-np-rename]")) return;
+      event.preventDefault();
+      startRename(tab.dataset.npTab);
+    });
+    const text = q("[data-np-text]");
+    text.addEventListener("input", onInput);
+    text.addEventListener("blur", () => { const note = current(); if (note) saveNote(note); });
+    q("[data-np-folder]").addEventListener("change", (event) => setFolder(event.target.value.trim()));
+    for (const select of node.querySelectorAll("[data-np-format]")) {
+      select.addEventListener("change", () => {
+        const key = select.dataset.npFormat;
+        st.format[key] = key === "size" ? Number(select.value) : select.value;
+        applyFormat();
+        persist();
+      });
+    }
+    drawAll();
+    load();
+  }
+
+  function unmount() {
+    flushAll();
+    st.host = null;
+  }
+
+  async function load() {
+    const token = ++st.loadToken;
+    st.loading = !st.notes.length;
+    drawTabs();
+    window.wintWork?.beginWork("notepad-load", "Reading notes");
+    try {
+      if (!st.prefsLoaded) {
+        const [saved, fallback] = await Promise.all([
+          invoke("ui_state_get", { key: STATE_KEY }).catch(() => null),
+          invoke("notepad_default_folder").catch(() => ""),
+        ]);
+        st.defaultFolder = fallback;
+        st.chosenFolder = saved?.folder || "";
+        st.opened = Array.isArray(saved?.opened) ? saved.opened : [];
+        st.selected = saved?.selected || "";
+        st.format = { ...DEFAULT_FORMAT, ...(saved?.format || {}) };
+        st.prefsLoaded = true;
+      }
+      window.wintWork?.beginWork("notepad-load", `Reading notes in ${folder()}`);
+      await flushAll();
+      const rows = await invoke("notepad_list", { folder: folder(), opened: st.opened });
+      if (token !== st.loadToken) return;
+      // Notes that only exist in memory - new and still empty - are kept.
+      const unsaved = st.notes.filter((note) => !note.saved && !rows.some((row) => row.path === note.path));
+      // A note typed in while the folder was being read is newer than the
+      // copy just read, so the one in memory wins.
+      const typing = (row) => st.notes.find((note) => note.path === row.path && note.dirty);
+      st.notes = [...unsaved, ...rows.sort((a, b) => b.modified - a.modified).map((row) => typing(row) || { ...row, saved: true, dirty: false })];
+      st.opened = st.opened.filter((path) => st.notes.some((note) => samePath(note.path, path)));
+      st.error = "";
+    } catch (error) {
+      if (token !== st.loadToken) return;
+      st.error = String(error);
+    } finally {
+      if (token === st.loadToken) {
+        st.loading = false;
+        window.wintWork?.endWork("notepad-load");
+      }
+    }
+    if (!st.notes.length) st.notes.push(newNote());
+    if (!current()) st.selected = st.notes[0].path;
+    drawAll(true);
+  }
+
+  function newNote() {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}.${pad(d.getMinutes())}.${pad(d.getSeconds())}`;
+    let path = `${folder()}\\Note ${stamp}.txt`;
+    for (let n = 2; st.notes.some((note) => samePath(note.path, path)); n++) path = `${folder()}\\Note ${stamp} (${n}).txt`;
+    return { path, text: "", modified: Date.now(), saved: false, dirty: false };
+  }
+
+  // ---- saving ------------------------------------------------------------
+
+  function onInput(event) {
+    const note = current();
+    if (!note) return;
+    note.text = event.target.value;
+    note.dirty = true;
+    clearTimeout(note.timer);
+    note.timer = setTimeout(() => saveNote(note), SAVE_DELAY);
+    const label = q(`[data-np-tab="${CSS.escape(note.path)}"] strong`);
+    if (label) label.textContent = title(note);
+  }
+
+  /** Saves are chained per note, so two in flight can never land out of
+   *  order and leave the older text on disk. */
+  function saveNote(note) {
+    clearTimeout(note.timer);
+    note.timer = 0;
+    note.chain = (note.chain || Promise.resolve()).then(async () => {
+      if (!note.dirty) return;
+      // A new note nobody has typed in yet is not worth a file.
+      if (!note.saved && !note.text) { note.dirty = false; return; }
+      const text = note.text;
+      note.dirty = false;
+      st.saving++;
+      drawStatus();
+      window.wintWork?.beginWork("notepad-save", `Saving ${fileName(note.path)}`);
+      try {
+        await invoke("notepad_save", { path: note.path, text });
+        note.saved = true;
+        st.error = "";
+      } catch (error) {
+        note.dirty = true;
+        st.error = String(error);
+      } finally {
+        if (--st.saving === 0) window.wintWork?.endWork("notepad-save");
+        drawStatus();
+      }
+    });
+    return note.chain;
+  }
+
+  function flushAll() {
+    return Promise.all(st.notes.filter((note) => note.dirty).map(saveNote));
+  }
+  window.addEventListener("pagehide", flushAll);
+
+  function persist() {
+    invoke("ui_state_set", { key: STATE_KEY, value: { folder: st.chosenFolder, opened: st.opened, selected: st.selected, format: st.format } }).catch(() => {});
+  }
+
+  // ---- actions -----------------------------------------------------------
+
+  function select(path) {
+    const previous = current();
+    if (previous && previous.path !== path) saveNote(previous);
+    st.selected = path;
+    persist();
+    drawAll(true);
+  }
+
+  function onClick(event) {
+    if (event.target.closest("[data-np-rename]")) return;
+    const close = event.target.closest("[data-np-close]");
+    if (close) return removeNote(close.dataset.npClose);
+    const tab = event.target.closest("[data-np-tab]");
+    if (tab) return select(tab.dataset.npTab);
+    if (event.target.closest("[data-np-new]")) {
+      const note = newNote();
+      st.notes.unshift(note);
+      select(note.path);
+      q("[data-np-text]")?.focus();
+      return;
+    }
+    if (event.target.closest("[data-np-open]")) return openFiles();
+    if (event.target.closest("[data-np-settings]")) {
+      const panel = q("[data-np-panel]");
+      panel.hidden = !panel.hidden;
+      q("[data-np-settings]").classList.toggle("on", !panel.hidden);
+      return;
+    }
+    if (event.target.closest("[data-np-wrap]")) { st.format.wrap = !st.format.wrap; applyFormat(); persist(); return; }
+    if (event.target.closest("[data-np-browse]")) return browseFolder();
+    if (event.target.closest("[data-np-default]")) return setFolder("");
+  }
+
+  function onKey(event) {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+    if (event.key === "n") { event.preventDefault(); q("[data-np-new]")?.click(); }
+    if (event.key === "o") { event.preventDefault(); openFiles(); }
+    if (event.key === "s") { event.preventDefault(); const note = current(); if (note) { note.dirty = true; saveNote(note); } }
+  }
+
+  async function openFiles() {
+    window.wintWork?.beginWork("notepad-pick", "Waiting for the file picker");
+    let paths = [];
+    try { paths = await invoke("notepad_pick"); }
+    catch (error) { st.error = String(error); drawStatus(); }
+    finally { window.wintWork?.endWork("notepad-pick"); }
+    if (!paths.length) return;
+    let last = "";
+    for (const path of paths) {
+      const known = st.notes.find((note) => samePath(note.path, path));
+      if (known) { last = known.path; continue; }
+      try {
+        const row = await invoke("notepad_read", { path });
+        const note = { ...row, saved: true, dirty: false };
+        st.notes.unshift(note);
+        if (isExternal(note) && !st.opened.some((p) => samePath(p, note.path))) st.opened.push(note.path);
+        last = note.path;
+      } catch (error) {
+        st.error = String(error);
+      }
+    }
+    if (last) select(last);
+    else drawStatus();
+  }
+
+  async function browseFolder() {
+    window.wintWork?.beginWork("notepad-pick", "Waiting for the folder picker");
+    try {
+      const path = await invoke("pick_folder", { start: folder() });
+      if (path) await setFolder(path);
+    } catch (error) {
+      st.error = String(error);
+      drawStatus();
+    } finally {
+      window.wintWork?.endWork("notepad-pick");
+    }
+  }
+
+  async function setFolder(path) {
+    const next = path && !samePath(path, st.defaultFolder) ? path : "";
+    if (next === st.chosenFolder) { drawSettings(); return; }
+    await flushAll();
+    // Everything typed is on disk now, so the old folder's tabs can simply
+    // go: its notes stay in it, and the new folder is read in their place.
+    st.notes = [];
+    st.chosenFolder = next;
+    st.selected = "";
+    persist();
+    drawSettings();
+    load();
+  }
+
+  /** The x on a tab. A note in the notes folder goes to the Recycle Bin; a
+   *  file opened from elsewhere is only closed. */
+  async function removeNote(path) {
+    const note = st.notes.find((n) => n.path === path);
+    if (!note) return;
+    if (isExternal(note)) {
+      // Closing keeps the file, so what was typed last must reach it first.
+      await saveNote(note);
+    } else if (note.saved || note.text) {
+      const ask = {
+        title: `Delete "${title(note)}"?`,
+        message: `${fileName(note.path)} goes to the Recycle Bin, so it can still be restored from there.`,
+        confirmLabel: "Delete",
+        icon: "delete",
+        tone: "danger",
+      };
+      // Without WinT's own dialog nothing is deleted, and the tab says why
+      // rather than the x quietly doing nothing.
+      if (!window.wintConfirm) { st.error = "Could not ask before deleting, so nothing was deleted."; drawStatus(); return; }
+      const answer = await window.wintConfirm(ask);
+      if (answer !== true) return;
+    }
+    if (note.saved && !isExternal(note)) {
+      window.wintWork?.beginWork("notepad-delete", `Moving ${fileName(note.path)} to the Recycle Bin`);
+      try {
+        await note.chain;
+        await invoke("notepad_delete", { folder: folder(), path: note.path });
+      } catch (error) {
+        st.error = String(error);
+        drawStatus();
+        return;
+      } finally {
+        window.wintWork?.endWork("notepad-delete");
+      }
+    }
+    clearTimeout(note.timer);
+    note.dirty = false;
+    const index = st.notes.indexOf(note);
+    st.notes.splice(index, 1);
+    st.opened = st.opened.filter((p) => !samePath(p, note.path));
+    if (!st.notes.length) st.notes.push(newNote());
+    if (st.selected === note.path || !current()) select(st.notes[Math.min(index, st.notes.length - 1)].path);
+    else { persist(); drawTabs(); }
+  }
+
+  /** Right-click on a tab: its title becomes the file name, ready to edit.
+   *  Enter or clicking away renames, Escape leaves it as it was. */
+  function startRename(path) {
+    const note = st.notes.find((n) => n.path === path);
+    const label = q(`[data-np-tab="${CSS.escape(path)}"] strong`);
+    if (!note || !label) return;
+    st.renaming = path;
+    const input = document.createElement("input");
+    input.className = "np-rename";
+    input.dataset.npRename = "";
+    input.spellcheck = false;
+    input.value = fileName(path);
+    label.replaceWith(input);
+    input.focus();
+    const dot = input.value.lastIndexOf(".");
+    input.setSelectionRange(0, dot > 0 ? dot : input.value.length);
+    let done = false;
+    const finish = (keep) => {
+      if (done) return;
+      done = true;
+      st.renaming = "";
+      if (keep) renameNote(note, input.value.trim());
+      else drawTabs();
+    };
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); finish(true); }
+      if (event.key === "Escape") { event.preventDefault(); finish(false); }
+    });
+    input.addEventListener("blur", () => finish(true));
+  }
+
+  /** Runs in the note's save chain, so a save already on its way lands under
+   *  the old name first and every later one goes to the new name. */
+  function renameNote(note, name) {
+    const old = note.path;
+    if (!name || name === fileName(old)) { drawTabs(); return; }
+    // Typing only a name keeps the extension the file already had.
+    if (!name.includes(".")) name += (fileName(old).match(/.[^.]+$/) || [".txt"])[0];
+    saveNote(note);
+    note.chain = note.chain.then(async () => {
+      window.wintWork?.beginWork("notepad-rename", `Renaming ${fileName(old)} to ${name}`);
+      try {
+        // A note nobody has typed in yet has no file to rename.
+        if (!note.saved) { await invoke("notepad_save", { path: old, text: note.text }); note.saved = true; }
+        const next = await invoke("notepad_rename", { path: old, name });
+        note.path = next;
+        if (st.selected === old) st.selected = next;
+        st.opened = st.opened.map((p) => (samePath(p, old) ? next : p));
+        // Only .txt files are read back from the notes folder, so a note
+        // renamed to anything else is remembered the way an opened file is.
+        if (!/.txt$/i.test(next) && !st.opened.some((p) => samePath(p, next))) st.opened.push(next);
+        st.error = "";
+        persist();
+      } catch (error) {
+        st.error = String(error);
+      } finally {
+        window.wintWork?.endWork("notepad-rename");
+      }
+      drawTabs();
+      drawStatus();
+    });
+  }
+
+  // ---- drawing -----------------------------------------------------------
+
+  function drawAll(editor) {
+    drawTabs();
+    if (editor) drawEditor();
+    drawSettings();
+    drawStatus();
+    applyFormat();
+  }
+
+  function drawTabs() {
+    const list = q("[data-np-tabs]");
+    if (!list) return;
+    if (st.loading) {
+      list.innerHTML = Array.from({ length: 4 }, () => `<div class="np-tab np-tab-skeleton"><span class="sk sk-line"></span></div>`).join("");
+      return;
+    }
+    // A rename in progress is an input inside a tab; redrawing would drop it.
+    if (st.renaming) return;
+    list.innerHTML = st.notes.map((note) => {
+      const external = isExternal(note);
+      const x = external ? "Close - the file stays where it is" : "Delete - the file goes to the Recycle Bin";
+      return `<div class="np-tab${note.path === st.selected ? " on" : ""}" data-np-tab="${esc(note.path)}" title="${esc(note.path)}
+Right-click to rename">
+        <span><strong>${esc(title(note))}</strong>${external ? `<small>${icon("open_in_new")}${esc(parentOf(note.path))}</small>` : ""}</span>
+        <button type="button" class="np-tab-x" data-np-close="${esc(note.path)}" title="${x}" aria-label="${x}">${icon("close")}</button>
+      </div>`;
+    }).join("");
+  }
+
+  /** Only on a change of note: rewriting the value while typing would throw
+   *  away the caret. */
+  function drawEditor() {
+    const text = q("[data-np-text]");
+    if (!text) return;
+    const note = current();
+    text.disabled = !note || st.loading;
+    if (text.value !== (note?.text ?? "")) text.value = note?.text ?? "";
+  }
+
+  function drawSettings() {
+    const input = q("[data-np-folder]");
+    if (input && document.activeElement !== input) input.value = folder();
+    const reset = q("[data-np-default]");
+    if (reset) reset.disabled = !st.chosenFolder;
+  }
+
+  /** Progress and "saved" go to the status bar along the bottom of WinT; only
+   *  a failure is shown here, because a note that did not save must not look
+   *  as if it had. */
+  function drawStatus() {
+    const node = q("[data-np-status]");
+    if (!node) return;
+    node.hidden = !st.error;
+    node.textContent = st.error;
+  }
+
+  function applyFormat() {
+    const [fontStyle, weight] = STYLES[st.format.style] || STYLES.Regular;
+    const css = `font-family:"${st.format.family}",Consolas,monospace;font-style:${fontStyle};font-weight:${weight};font-size:${st.format.size}pt`;
+    const text = q("[data-np-text]");
+    if (text) {
+      text.style.cssText = css;
+      text.wrap = st.format.wrap ? "soft" : "off";
+      text.classList.toggle("nowrap", !st.format.wrap);
+    }
+    const preview = q("[data-np-preview]");
+    if (preview) preview.style.cssText = css;
+    for (const select of st.host?.querySelectorAll("[data-np-format]") || []) select.value = String(st.format[select.dataset.npFormat]);
+    const wrap = q("[data-np-wrap]");
+    if (wrap) {
+      wrap.classList.toggle("on", st.format.wrap);
+      wrap.setAttribute("aria-checked", String(st.format.wrap));
+      wrap.title = st.format.wrap ? "Turn word wrap off" : "Turn word wrap on";
+    }
+  }
+
+  window.wintNotepad = { mount, unmount };
+})();

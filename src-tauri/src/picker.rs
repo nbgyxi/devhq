@@ -182,7 +182,7 @@ pub fn pick_torrent_files(owner: isize) -> Result<Vec<String>, String> {
     unsafe {
         let entered =
             CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_ok();
-        let picked = show_torrents(owner);
+        let picked = show_open_files(owner, "Choose torrent files", "Torrent files", "*.torrent");
         if entered {
             CoUninitialize();
         }
@@ -190,7 +190,26 @@ pub fn pick_torrent_files(owner: isize) -> Result<Vec<String>, String> {
     }
 }
 
-unsafe fn show_torrents(owner: isize) -> Result<Vec<String>, String> {
+/// The open dialog for text files, for the Notepad tool. Same arrangement as
+/// the torrent picker.
+pub fn pick_text_files(owner: isize) -> Result<Vec<String>, String> {
+    unsafe {
+        let entered =
+            CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_ok();
+        let picked = show_open_files(owner, "Open text files", "Text files", "*.txt;*.md;*.log");
+        if entered {
+            CoUninitialize();
+        }
+        picked
+    }
+}
+
+unsafe fn show_open_files(
+    owner: isize,
+    title: &str,
+    kind: &str,
+    pattern: &str,
+) -> Result<Vec<String>, String> {
     use windows::Win32::UI::Shell::FOS_ALLOWMULTISELECT;
 
     let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
@@ -199,15 +218,15 @@ unsafe fn show_torrents(owner: isize) -> Result<Vec<String>, String> {
     let options = dialog.GetOptions().unwrap_or_default();
     let _ =
         dialog.SetOptions(options | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_ALLOWMULTISELECT);
-    let _ = dialog.SetTitle(PCWSTR(HSTRING::from("Choose torrent files").as_ptr()));
+    let _ = dialog.SetTitle(PCWSTR(HSTRING::from(title).as_ptr()));
 
-    let torrents = HSTRING::from("Torrent files");
-    let pattern = HSTRING::from("*.torrent");
+    let kind = HSTRING::from(kind);
+    let pattern = HSTRING::from(pattern);
     let all = HSTRING::from("All files");
     let any = HSTRING::from("*.*");
     let filters = [
         COMDLG_FILTERSPEC {
-            pszName: PCWSTR(torrents.as_ptr()),
+            pszName: PCWSTR(kind.as_ptr()),
             pszSpec: PCWSTR(pattern.as_ptr()),
         },
         COMDLG_FILTERSPEC {

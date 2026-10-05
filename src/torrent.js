@@ -52,7 +52,18 @@
   /** Oldest completion first, which puts everything still running at the
    *  bottom — an unfinished torrent has no date, so it sorts as one still to
    *  come. See `sortedRows`. */
-  const DEFAULT_SORT = { id: "completed", direction: "asc" };
+  const DEFAULT_SORT = [{ id: "completed", direction: "asc" }];
+  /** How many headings the list is sorted by at once. Clicking a heading makes
+   *  it the first; the ones clicked before it stay on behind it to settle ties,
+   *  so "Down" then "Completed" lists the finished ones by date and everything
+   *  still running by speed. The oldest falls off past this many. */
+  const MAX_SORT_KEYS = 3;
+  /** A saved sort, read back: a list of keys now, a single one before that. */
+  function usableSort(saved) {
+    const keys = (Array.isArray(saved) ? saved : saved ? [saved] : [])
+      .filter((key) => key && ALL_COLUMN_IDS.includes(key.id) && ["asc", "desc"].includes(key.direction));
+    return keys.filter((key, at) => keys.findIndex((other) => other.id === key.id) === at).slice(0, MAX_SORT_KEYS);
+  }
   /** The columns to show, in the user's order. A saved layout records which
    *  columns were switched *off*, so a column that did not exist when it was
    *  written is simply one nobody has switched off: it shows, in the place
@@ -85,13 +96,9 @@
         const layout = saved && typeof saved === "object" ? saved : {};
         st.columns = usableColumns(layout.columns, layout.hidden);
         st.columnWidths = layout.widths && typeof layout.widths === "object" ? layout.widths : {};
-        const sort = layout.sort
-          && ALL_COLUMN_IDS.includes(layout.sort.id)
-          && ["asc", "desc"].includes(layout.sort.direction)
-          ? layout.sort : null;
         // Only a table nobody has arranged yet falls back to the default sort;
         // one that was saved without a sort was sorted by nothing on purpose.
-        st.columnSort = sort || (saved ? null : DEFAULT_SORT);
+        st.columnSort = saved ? usableSort(layout.sort) : DEFAULT_SORT;
         if (!saved) saveLayout();
         drawColumns();
         drawRows();
@@ -313,6 +320,9 @@
     // row is real - name, size, folder - but nothing about its progress is
     // known until the engine gets to it.
     if (row.state === "waiting") return { text: "Waiting for the engine", tone: "muted" };
+    // Saved, but the engine tried to read it back in and could not. Nothing
+    // will change that on its own; Remove takes it off the list for good.
+    if (row.state === "unloaded") return { text: "Could not be loaded", tone: "bad" };
     if (row.state === "queued") return { text: "Waiting its turn", tone: "muted" };
     if (row.state === "paused") return { text: "Paused", tone: "muted" };
     if (row.forceStarted && !row.finished) return { text: "Force downloading", tone: "" };
@@ -515,7 +525,8 @@
         st.snap = event.payload;
         st.lastSnapshotAt = Date.now();
         prunePending();
-        if (st.quiet) { st.quiet = false; drawBanner(); }
+        const unloaded = unloadedRows().length;
+        if (st.quiet || unloaded !== st.unloadedCount) { st.quiet = false; st.unloadedCount = unloaded; drawBanner(); }
         // Data arriving is proof the engine is up, whatever the page was last
         // told. Ask once for the real status rather than waiting for a tick.
         if (st.engine?.state !== "running") refreshStatus();
@@ -641,7 +652,7 @@
 
   /** States in which nothing is known about how much of a torrent is already
    *  on disk, because the hash check has not run. See `drawSpace`. */
-  const UNCHECKED_STATES = new Set(["waiting", "adding", "check-queued", "initializing", "needs-check", "missing"]);
+  const UNCHECKED_STATES = new Set(["waiting", "unloaded", "adding", "check-queued", "initializing", "needs-check", "missing"]);
 
   /** Warns when finishing everything on a drive would need more room than the
    *  drive has. Counted per drive, because torrents can be going to several,
@@ -819,6 +830,11 @@
   }
 
   let bannerHtml = null;
+  /** Saved torrents the engine tried and failed to load. See `statusWords`. */
+  function unloadedRows() {
+    return (st.snap?.torrents || []).filter((row) => row.state === "unloaded");
+  }
+
   function setBanner(el, html) {
     if (bannerHtml === html) return;
     bannerHtml = html;
@@ -897,6 +913,20 @@
       } back in - the rows waiting for the engine below. Everything already read back is live, and each shows its own progress while its files are checked.</span>`);
       return;
     }
+    // Saved torrents the engine gave up on. They used to sit there saying they
+    // were waiting for it, which they never stopped doing, and could not be
+    // removed because the engine had no such torrent to remove.
+    const unloaded = unloadedRows();
+    if (unloaded.length && (s.state === "running" || s.state === "starting")) {
+      el.hidden = false;
+      el.className = "tr-banner";
+      setBanner(el, `${icon("warning")}<span>${unloaded.length === 1
+        ? `${esc(unloaded[0].name)} is saved but could not be loaded: ${esc(firstLine(unloaded[0].error || "no reason was given."))}`
+        : `${unloaded.length} saved torrents could not be loaded. Hover their status for the reason.`
+      } Removing ${unloaded.length === 1 ? "it" : "them"} leaves any files where they are.</span>
+        <button type="button" class="btn" data-tr-clean-unloaded>${icon("delete_sweep")}<span>Remove from list</span></button>`);
+      return;
+    }
     if (s.state === "running" || s.state === "starting") {
       el.hidden = true;
       setBanner(el, "");
@@ -930,10 +960,13 @@
       .map((id) => COLUMNS.find(([key]) => key === id))
       .filter(Boolean)
       .map(([id, label]) => {
-        const direction = st.columnSort?.id === id ? st.columnSort.direction : "";
+        const at = st.columnSort.findIndex((key) => key.id === id);
+        const direction = at >= 0 ? st.columnSort[at].direction : "";
+        // Which key it is, once there is more than one to tell apart.
+        const rank = at >= 0 && st.columnSort.length > 1 ? `<sup>${at + 1}</sup>` : "";
         // Name has no handle: it is whatever the other columns leave it.
         const handle = id === "name" ? "" : `<i data-tr-column-resize="${id}" title="Resize ${label}"></i>`;
-        return `<span data-col="${id}" aria-sort="${direction === "asc" ? "ascending" : direction === "desc" ? "descending" : "none"}" title="Sort by ${label}; drag to reorder">${label}<em class="tr-sort-arrow">${direction === "asc" ? "▲" : direction === "desc" ? "▼" : ""}</em>${handle}</span>`;
+        return `<span data-col="${id}" aria-sort="${direction === "asc" ? "ascending" : direction === "desc" ? "descending" : "none"}" title="Sort by ${label}, keeping the earlier sort for ties; drag to reorder">${label}<em class="tr-sort-arrow">${direction === "asc" ? "▲" : direction === "desc" ? "▼" : ""}${rank}</em>${handle}</span>`;
       })
       .join("");
     const picker = host.querySelector("[data-tr-column-picker]");
@@ -1066,9 +1099,9 @@
   }
 
   function sortedRows(rows) {
-    const sort = st.columnSort;
-    if (!sort) return rows;
-    const value = (row) => {
+    const keys = st.columnSort;
+    if (!keys.length) return rows;
+    const value = (row, sort) => {
       if (sort.id === "mark") return st.marks.has(row.infoHash) ? 1 : 0;
       if (sort.id === "name") return row.name || "";
       if (sort.id === "size") return row.totalBytes || 0;
@@ -1089,17 +1122,22 @@
       if (sort.id === "folder") return row.outputFolder || "";
       return 0;
     };
-    const direction = sort.direction === "desc" ? -1 : 1;
-    return rows.map((row, index) => ({ row, index })).sort((a, b) => {
-      const left = value(a.row);
-      const right = value(b.row);
-      // Two values that are equal - including two infinities, whose
-      // difference is not a number - keep the order they came in.
-      if (left === right) return a.index - b.index;
-      const compared = typeof left === "string"
+    // Each key settles only what the ones before it left tied. Two values that
+    // are equal - including two infinities, whose difference is not a
+    // number - go on to the next key, and past the last keep the order they
+    // came in.
+    const compare = (left, right) => {
+      if (left === right) return 0;
+      return typeof left === "string"
         ? left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })
         : left - right;
-      return compared ? compared * direction : a.index - b.index;
+    };
+    return rows.map((row, index) => ({ row, index, values: keys.map((sort) => value(row, sort)) })).sort((a, b) => {
+      for (let i = 0; i < keys.length; i += 1) {
+        const compared = compare(a.values[i], b.values[i]);
+        if (compared) return keys[i].direction === "desc" ? -compared : compared;
+      }
+      return a.index - b.index;
     }).map(({ row }) => row);
   }
 
@@ -1237,7 +1275,7 @@
       el.querySelector(".tr-done small"),
       // Nothing is known about how much of it is on disk until the engine has
       // checked; "0%" would be a claim, and a wrong one for a finished torrent.
-      row.state === "waiting" ? "—" : `${pct.toFixed(pct >= 100 || pct === 0 ? 0 : 1)}%`,
+      row.state === "waiting" || row.state === "unloaded" ? "—" : `${pct.toFixed(pct >= 100 || pct === 0 ? 0 : 1)}%`,
     );
     const statusEl = el.querySelector(".tr-status");
     setText(statusEl.querySelector(":scope > span"), status.text);
@@ -1370,9 +1408,21 @@ Click to open in Explorer` : "";
       const alsoStood = stood
         ? ` · ${stood} other torrent${stood === 1 ? "" : "s"} paused for this`
         : "";
-      line.textContent = move.running
-        ? `${move.filesDone} / ${move.filesTotal} files · ${bytes(move.bytesDone)} of ${bytes(move.bytesTotal)}${move.current ? ` · ${move.current}` : ""}${alsoStood}`
-        : `${move.filesTotal - failed.length} of ${move.filesTotal} files moved · ${bytes(move.bytesDone)}`;
+      // Removing the originals is a step of its own with its own count: the
+      // copy is long finished by then, and on a failing old drive this is the
+      // part that can drag.
+      const removing = move.running && move.toRemove > 0;
+      // Originals the old drive would not let go of before the move stopped
+      // waiting. Harmless - the torrent already runs from the new folder - but
+      // they still take room there, so they are named rather than hidden.
+      const leftBehind = move.leftBehind
+        ? ` · ${move.leftBehind} original${move.leftBehind === 1 ? "" : "s"} left on the old drive, which stopped answering`
+        : "";
+      line.textContent = removing
+        ? `${move.removed || 0} / ${move.toRemove} originals removed${alsoStood}`
+        : move.running
+          ? `${move.filesDone} / ${move.filesTotal} files · ${bytes(move.bytesDone)} of ${bytes(move.bytesTotal)}${move.current ? ` · ${move.current}` : ""}${alsoStood}`
+          : `${move.filesTotal - failed.length} of ${move.filesTotal} files moved · ${bytes(move.bytesDone)}${leftBehind}`;
     }
 
     if (left) {
@@ -2554,9 +2604,12 @@ Click to open in Explorer` : "";
     if (heading && !t.closest("[data-tr-column-resize]")) {
       if (st.columnDragged) return;
       const id = heading.dataset.col;
-      st.columnSort = st.columnSort?.id === id
-        ? { id, direction: st.columnSort.direction === "asc" ? "desc" : "asc" }
-        : { id, direction: "asc" };
+      // The heading already first flips; any other becomes first, and what was
+      // sorted before stays on behind it to settle ties.
+      const [first] = st.columnSort;
+      st.columnSort = first?.id === id
+        ? [{ id, direction: first.direction === "asc" ? "desc" : "asc" }, ...st.columnSort.slice(1)]
+        : [{ id, direction: "asc" }, ...st.columnSort.filter((key) => key.id !== id)].slice(0, MAX_SORT_KEYS);
       saveLayout();
       drawColumns();
       drawRows();
@@ -2610,6 +2663,14 @@ Click to open in Explorer` : "";
         .then(() => note("The troubleshooting details were copied."))
         .catch(() => note("The troubleshooting details could not be copied."));
       return;
+    }
+
+    if (t.closest("[data-tr-clean-unloaded]")) {
+      const rows = unloadedRows();
+      window.wintWork?.beginWork("torrent-clean-unloaded", `Removing ${rows.length} torrent${rows.length === 1 ? "" : "s"} that could not be loaded`);
+      return void (async () => {
+        for (const row of rows) await removeTorrent(row, "keep");
+      })().finally(() => window.wintWork?.endWork("torrent-clean-unloaded"));
     }
 
     if (t.closest("[data-tr-restart]")) {
@@ -2965,6 +3026,9 @@ Click to open in Explorer` : "";
     // in the list, which is the one thing the user definitely asked for.
     let target = null;
     let gone = false;
+    // Never loaded, so the engine cannot say where its files are, and a guess
+    // is not something to delete by. Only the saved entry goes.
+    if (row.state === "unloaded") mode = "keep";
     if (mode !== "keep") {
       try {
         const paths = await invoke("torrent_paths", { id: row.id });

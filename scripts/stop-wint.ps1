@@ -36,21 +36,45 @@ if ($running) {
     Write-Host 'WinT is not running.'
 }
 
+# A process that has been terminated but still has a thread blocked in the
+# kernel (a read or write to a drive that never answered) stays in the process
+# table with HasExited set. Nothing in user mode can finish it off - not even
+# an elevated prompt - so it is told apart from one that is genuinely alive.
+function Get-Live($names) {
+    Get-Process -Name $names -ErrorAction SilentlyContinue | Where-Object { -not $_.HasExited }
+}
+function Get-Stuck($names) {
+    Get-Process -Name $names -ErrorAction SilentlyContinue | Where-Object { $_.HasExited }
+}
+
 $deadline = (Get-Date).AddSeconds($GraceSeconds)
-while ((Get-Process -Name $engine -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {
+while ((Get-Live $engine) -and (Get-Date) -lt $deadline) {
     Write-Host "Waiting for the torrent engine to shut down..."
     Start-Sleep -Seconds 1
 }
 
-$left = Get-Process -Name $engine -ErrorAction SilentlyContinue
+$left = Get-Live $engine
 if ($left) {
-    $left | ForEach-Object { Write-Host "Forcing $($_.Name) ($($_.Id)) - it did not stop within $GraceSeconds s" }
-    $left | Stop-Process -Force -ErrorAction SilentlyContinue
+    $left | ForEach-Object {
+        $p = $_
+        Write-Host "Forcing $($p.Name) ($($p.Id)) - it did not stop within $GraceSeconds s"
+        try { Stop-Process -Id $p.Id -Force -ErrorAction Stop }
+        catch { Write-Warning "Could not stop $($p.Name): $($_.Exception.Message)" }
+        $null = $p.WaitForExit(5000)
+    }
 }
 
-$still = Get-Process -Name ($app + $engine) -ErrorAction SilentlyContinue
+$stuck = Get-Stuck ($app + $engine)
+$stuck | ForEach-Object {
+    Write-Warning ("$($_.Name) ($($_.Id)) has been killed but Windows cannot remove it yet: " +
+        "a thread is still waiting on a drive (often one that was unplugged or stopped answering). " +
+        "It runs no code and goes away once that I/O completes, or on the next restart.")
+}
+
+$still = Get-Live ($app + $engine)
 if ($still) {
-    $still | ForEach-Object { Write-Warning "$($_.Name) ($($_.Id)) is still running - it may belong to another user or need an elevated prompt." }
+    $still | ForEach-Object { Write-Warning "$($_.Name) ($($_.Id)) is still running - it may belong to another user." }
     exit 1
 }
+if ($stuck) { exit 1 }
 Write-Host 'No WinT processes left.'

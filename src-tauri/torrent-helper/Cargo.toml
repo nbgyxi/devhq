@@ -27,4 +27,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
+    # `CancelSynchronousIo`, for a read stuck on a drive that stopped
+    # answering. See `blocked_io`.
+    "Win32_System_IO",
 ] }

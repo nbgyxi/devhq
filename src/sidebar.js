@@ -257,8 +257,30 @@
     }));
   }
 
-  window.__TAURI__.event.listen("sidebar:settings", (event) => applySettings(event.payload));
-  invoke("sidebar_settings").then(applySettings, () => {});
+  // Until the saved settings have been read, `settings` is only the defaults,
+  // and writing it back replaces everything the user set with them. The media
+  // poller starts at once and remembers the track on its first read, so on a
+  // reload with something playing it used to do exactly that - the rail came
+  // back with every switch reset. Nothing is written until the read is in.
+  let settingsReady = false;
+  function persistSettings() {
+    if (!settingsReady) return Promise.reject("The sidebar settings have not loaded yet.");
+    return invoke("sidebar_settings_set", { settings: { ...settings } });
+  }
+
+  window.__TAURI__.event.listen("sidebar:settings", (event) => {
+    settingsReady = true;
+    applySettings(event.payload);
+  });
+  // A read that fails (the backend still starting) is tried again rather than
+  // leaving the rail on its defaults for the rest of the run.
+  function loadSettings() {
+    invoke("sidebar_settings").then((saved) => {
+      settingsReady = true;
+      applySettings(saved);
+    }, () => setTimeout(loadSettings, 1000));
+  }
+  loadSettings();
 
   // ---- media player ----------------------------------------------------------
   // Windows exposes the same active session shown beside the volume flyout, so
@@ -289,16 +311,16 @@
       if (media.available) {
         const remembered = { title: media.title, artist: media.artist, source: media.source, sourceId: media.sourceId, launchTarget: media.launchTarget };
         const key = JSON.stringify(remembered);
-        if (key !== lastMediaSaved) {
+        if (key !== lastMediaSaved && settingsReady) {
           lastMediaSaved = key;
           settings = { ...settings, mediaLast: remembered };
-          invoke("sidebar_settings_set", { settings }).catch(() => {});
+          persistSettings().catch(() => {});
         }
       }
       const fallback = selectedStream ? { title: selectedStream.name, artist: "Active audio", source: selectedStream.name, sourceId: selectedStream.executable, launchTarget: selectedStream.executable } : null;
       if (fallback && !media.available) {
         const key = JSON.stringify(fallback);
-        if (key !== lastMediaSaved) { lastMediaSaved = key; settings = { ...settings, mediaLast: fallback }; invoke("sidebar_settings_set", { settings }).catch(() => {}); }
+        if (key !== lastMediaSaved && settingsReady) { lastMediaSaved = key; settings = { ...settings, mediaLast: fallback }; persistSettings().catch(() => {}); }
       }
       const shown = media.available ? media : (fallback || settings.mediaLast || {});
       const visible = settings.mediaMode === "always" || !!(media.available && media.playing) || !!selectedStream;
@@ -403,7 +425,7 @@
     const hide = !state.taskbarAutoHidden;
     await ask("sidebar_configure", { hideTaskbar: hide, hideCompletely: settings.hideTaskbarCompletely === true });
     applySettings({ ...settings, hideTaskbar: hide });
-    invoke("sidebar_settings_set", { settings }).catch(() => {});
+    persistSettings().catch(() => {});
   }
 
   // ---- open windows ----------------------------------------------------------
@@ -1196,7 +1218,7 @@
    *  waiting for the backend to hand the settings back. */
   function saveSettings(next) {
     applySettings(next);
-    invoke("sidebar_settings_set", { settings: { ...settings } }).catch(say);
+    persistSettings().catch(say);
   }
 
   /** Take a button off the rail. Every slot is a switch on the Docked Sidebar
@@ -1470,7 +1492,7 @@
     settings = { ...settings, clockSeconds };
     timeDrawn = "";
     paintClock();
-    invoke("sidebar_settings_set", { settings: { ...settings } }).catch((error) => say(error));
+    persistSettings().catch((error) => say(error));
   }
 
   function copyClock(text) {

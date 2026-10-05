@@ -43,6 +43,7 @@ mod jump_list;
 mod media_control;
 pub mod net_usage;
 mod netmeter;
+mod notepad;
 pub mod network;
 mod path_ping;
 #[cfg(windows)]
@@ -103,21 +104,29 @@ pub(crate) fn show_main_window(app: &AppHandle) {
     if let Some(tray) = app.tray_by_id("wint-tray") {
         let _ = tray.set_visible(false);
     }
-    if let Some(window) = app.get_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        // Showing is not the same as being seen: a window left where a monitor
-        // used to be is shown perfectly well onto no screen at all. Every path
-        // that brings WinT back - the tray icon, the sidebar, a second start,
-        // the global shortcut - goes through here, so this is the one place
-        // that can guarantee the window the user just asked for is somewhere
-        // they can look at it.
-        #[cfg(windows)]
-        if let Ok(hwnd) = window.hwnd() {
-            unsafe { appbar::ensure_on_screen(hwnd) };
+    // On the thread that owns the window, where `unminimize` and `show` happen
+    // in place. From any other thread - the sidebar, a second start, a command
+    // - they are only queued, and the on-screen check below would measure the
+    // window while it is still minimized: a 160 x 28 stub parked at -32000,
+    // which reads as lost and was "rescued" into a tiny box.
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            // Showing is not the same as being seen: a window left where a
+            // monitor used to be is shown perfectly well onto no screen at
+            // all. Every path that brings WinT back - the tray icon, the
+            // sidebar, a second start, the global shortcut - goes through
+            // here, so this is the one place that can guarantee the window the
+            // user just asked for is somewhere they can look at it.
+            #[cfg(windows)]
+            if let Ok(hwnd) = window.hwnd() {
+                unsafe { appbar::ensure_on_screen(hwnd, 1400, 900, 900, 600) };
+            }
+            let _ = window.set_focus();
         }
-        let _ = window.set_focus();
-    }
+    });
     // The sidebar draws WinT among the tray's apps while it is away, so it is
     // told the moment that changes rather than waiting for its next sweep.
     let _ = app.emit("sidebar:tray", ());
@@ -3543,6 +3552,13 @@ pub fn run() {
             torrent::torrent_details,
             torrent::torrent_peers,
             window_geometry::window_remember_geometry,
+            notepad::notepad_default_folder,
+            notepad::notepad_list,
+            notepad::notepad_read,
+            notepad::notepad_save,
+            notepad::notepad_rename,
+            notepad::notepad_delete,
+            notepad::notepad_pick,
             ui_state::ui_state_get,
             ui_state::ui_state_set,
             torrent::torrent_marks,
@@ -3908,6 +3924,13 @@ pub fn run() {
         git::git_action,
         todos,
         todo_excerpt,
+        notepad::notepad_default_folder,
+        notepad::notepad_list,
+        notepad::notepad_read,
+        notepad::notepad_save,
+        notepad::notepad_rename,
+        notepad::notepad_delete,
+        notepad::notepad_pick,
         dns_lookup,
         dns_compare,
         dns_reverse,

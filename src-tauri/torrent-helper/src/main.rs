@@ -23,6 +23,8 @@
 //! stops reading therefore costs a bounded amount of memory, not an
 //! ever-growing backlog.
 
+mod blocked_io;
+
 use std::any::TypeId;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{IoSlice, Write as StdWrite};
@@ -1010,19 +1012,29 @@ fn build_snapshot(
     // yet, so the list is the whole list from the first snapshot. These rows
     // are replaced by the real ones - same id, same place - as each torrent is
     // resumed, and the last of them goes when the resume finishes.
+    //
+    // One the engine tried and could not load is not waiting for anything,
+    // and must not say so: it is "unloaded", with the engine's reason, and the
+    // only thing that will change it is Remove (or a restart that succeeds).
     {
+        let failures = state.session.resume_failures();
+        let resume_finished = state.session.is_resume_finished();
         if let Ok(saved) = saved_torrents().lock() {
             for torrent in saved.iter() {
                 if session_hashes.contains(&torrent.info_hash) {
                     continue;
                 }
+                let failure = failures.get(&torrent.id).cloned().or_else(|| {
+                    resume_finished
+                        .then(|| "The engine did not load it back in.".to_string())
+                });
                 torrents.push(Row {
                     id: torrent.id,
                     info_hash: torrent.info_hash.clone(),
                     name: torrent.name.clone(),
                     output_folder: torrent.output_folder.clone(),
-                    state: "waiting",
-                    error: None,
+                    state: if failure.is_some() { "unloaded" } else { "waiting" },
+                    error: failure,
                     total_bytes: torrent.total_bytes,
                     progress_bytes: 0,
                     uploaded_bytes: 0,
@@ -1158,6 +1170,7 @@ fn files_are_missing(files: &[PathBuf]) -> bool {
     if files.is_empty() {
         return false;
     }
+    let _work = blocked_io::begin();
     let step = (files.len() / MISSING_CHECK_SAMPLE).max(1);
     files
         .iter()
@@ -1186,6 +1199,7 @@ fn files_are_missing(files: &[PathBuf]) -> bool {
 /// Only files whose entry still says zero are touched, so the sweep does no
 /// work on a folder that is already telling the truth.
 fn refresh_dir_entries(files: &[PathBuf]) {
+    let _work = blocked_io::begin();
     for path in files {
         let stale = std::fs::metadata(path).map(|m| m.len() == 0).unwrap_or(false);
         if stale {
@@ -1398,6 +1412,12 @@ struct MoveState {
     /// Files that could not be moved, with the reason. These are the ones the
     /// torrent will fetch again.
     failed: Vec<MoveFailure>,
+    /// The originals let go of once the copy is whole: how many there are, how
+    /// many are gone, and how many were still there when the old drive stopped
+    /// answering and the move stopped waiting for it.
+    to_remove: usize,
+    removed: usize,
+    left_behind: usize,
     /// Set once the torrent is back in the list at its new home.
     finished: bool,
     error: String,
@@ -1624,6 +1644,7 @@ async fn move_one_file_watched(
 ) -> Result<bool> {
     let progress = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (tx, mut rx) = tokio::sync::oneshot::channel();
+    let (canceller_tx, canceller_rx) = mpsc::channel();
     {
         let from = from.to_path_buf();
         let to = to.to_path_buf();
@@ -1633,6 +1654,8 @@ async fn move_one_file_watched(
         std::thread::Builder::new()
             .name("wint-torrent-move".into())
             .spawn(move || {
+                let work = blocked_io::begin();
+                let _ = canceller_tx.send(work.canceller());
                 let mut counted = start;
                 let result =
                     move_one_file(&from, &to, how, token, &writer, &mut counted, &progress);
@@ -1660,6 +1683,12 @@ async fn move_one_file_watched(
                     *bytes_done = seen;
                     move_update(writer, move |state| state.bytes_done = seen);
                 } else if since.elapsed() >= MOVE_STALL {
+                    // The read it is stuck in is aborted rather than left in
+                    // the driver: a thread blocked there is what kept the
+                    // engine from ever exiting. See `blocked_io`.
+                    if let Ok(canceller) = canceller_rx.try_recv() {
+                        canceller.cancel();
+                    }
                     // Abandoned, with the half-written target removed so the
                     // hash check cannot mistake it for data that arrived.
                     let _ = std::fs::remove_file(to);
@@ -1972,27 +2001,25 @@ async fn move_steps(
     // the torrent being back: a move that goes wrong should cost a stray copy,
     // never the data.
     if how == MoveHow::Copy && !arrived.is_empty() {
+        let total = arrived.len();
         move_update(writer, |current| {
             current.phase = "removing the originals".into();
+            current.to_remove = total;
+            current.removed = 0;
         });
-        for relative in &arrived {
-            let _ = std::fs::remove_file(plan.output_folder.join(relative));
+        let removed =
+            remove_originals_watched(plan.output_folder.clone(), arrived, token, writer).await;
+        if removed < total {
+            tracing::warn!(
+                left = total - removed,
+                folder = %plan.output_folder.display(),
+                "the old drive stopped answering; the rest of the originals stay where they are"
+            );
         }
-        // The folders those files sat in, innermost first. Only empty ones go -
-        // `remove_dir` refuses anything else - so whatever could not be moved,
-        // and anything the user put there, stays exactly where it is.
-        let mut folders: Vec<PathBuf> = arrived
-            .iter()
-            .filter_map(|relative| relative.parent())
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .map(Path::to_path_buf)
-            .collect();
-        folders.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
-        folders.dedup();
-        for folder in folders {
-            let _ = std::fs::remove_dir(plan.output_folder.join(folder));
-        }
-        let _ = std::fs::remove_dir(&plan.output_folder);
+        move_update(writer, |current| {
+            current.removed = removed;
+            current.left_behind = total - removed;
+        });
     }
 
     resume_competing(state, &stood_down).await;
@@ -2002,6 +2029,77 @@ async fn move_steps(
         current.paused_others = Vec::new();
     });
     Ok(())
+}
+
+/// Delete the originals of a finished copy on a thread of its own, watched the
+/// way `move_one_file_watched` watches a copy, and answer with how many are
+/// gone.
+///
+/// The old drive is very often the reason for the move, and a delete on a drive
+/// that has stopped answering does not fail, it waits. Done inline it held a
+/// runtime worker and the move with it, and the page sat on "removing the
+/// originals" for as long as the drive liked. Here the move stops waiting once
+/// `MOVE_STALL` passes without a file going, and finishes: the torrent is
+/// already back at its new home, so what is left is only a stray copy. The
+/// thread carries on and takes the rest if the drive ever answers.
+async fn remove_originals_watched(
+    output_folder: PathBuf,
+    arrived: Vec<PathBuf>,
+    token: u64,
+    writer: &Writer,
+) -> usize {
+    let gone = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+    {
+        let gone = gone.clone();
+        let started = std::thread::Builder::new()
+            .name("wint-torrent-remove".into())
+            .spawn(move || {
+                let _work = blocked_io::begin();
+                for relative in &arrived {
+                    let _ = std::fs::remove_file(output_folder.join(relative));
+                    gone.fetch_add(1, Ordering::Relaxed);
+                }
+                // The folders those files sat in, innermost first. Only empty
+                // ones go - `remove_dir` refuses anything else - so whatever
+                // could not be moved, and anything the user put there, stays
+                // exactly where it is.
+                let mut folders: Vec<PathBuf> = arrived
+                    .iter()
+                    .filter_map(|relative| relative.parent())
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .map(Path::to_path_buf)
+                    .collect();
+                folders.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+                folders.dedup();
+                for folder in folders {
+                    let _ = std::fs::remove_dir(output_folder.join(folder));
+                }
+                let _ = std::fs::remove_dir(&output_folder);
+                let _ = tx.send(());
+            });
+        if started.is_err() {
+            return 0;
+        }
+    }
+
+    let mut last_seen = 0usize;
+    let mut since = std::time::Instant::now();
+    loop {
+        match tokio::time::timeout(MOVE_REPORT_EVERY, &mut rx).await {
+            Ok(_) => return gone.load(Ordering::Relaxed),
+            Err(_) => {
+                let seen = gone.load(Ordering::Relaxed);
+                if seen != last_seen {
+                    last_seen = seen;
+                    since = std::time::Instant::now();
+                    move_update(writer, move |state| state.removed = seen);
+                } else if since.elapsed() >= MOVE_STALL || move_cancelled(token) {
+                    return seen;
+                }
+            }
+        }
+    }
 }
 
 /// Pause everything else on the two drives, and answer with what was actually
@@ -2609,6 +2707,27 @@ async fn handle(
         "remove" => {
             let mut state = state.lock().await;
             let id = torrent_id(&arg)?;
+            // A saved torrent the engine never loaded has no handle to remove
+            // through, only its entry in the state folder. Taking that out is
+            // the whole removal; its files, if any, are left where they are.
+            if state.api.mgr_handle(id).is_err() {
+                let saved = saved_torrents().lock().ok().and_then(|list| {
+                    list.iter()
+                        .find(|t| match id {
+                            librqbit::api::TorrentIdOrHash::Id(n) => t.id == n,
+                            librqbit::api::TorrentIdOrHash::Hash(h) => t.info_hash == h.as_string(),
+                        })
+                        .cloned()
+                });
+                if let Some(saved) = saved {
+                    state.session.forget_saved(saved.id).await?;
+                    if let Ok(mut list) = saved_torrents().lock() {
+                        list.retain(|t| t.id != saved.id);
+                    }
+                    forget_queue_entry(&mut state, &saved.info_hash);
+                    return Ok(json!({ "filesKept": true }));
+                }
+            }
             let hash = state
                 .api
                 .mgr_handle(id)
@@ -2624,14 +2743,7 @@ async fn handle(
                 state.api.api_torrent_action_forget(id).await?;
             }
             if let Some(hash) = hash {
-                state.queue.wanted.retain(|h| *h != hash);
-                state.queue.paused.retain(|h| *h != hash);
-                state.queue.force_started.retain(|h| *h != hash);
-                state.completion_candidates.remove(&hash);
-                if state.completed_at.remove(&hash).is_some() {
-                    state.save_completions();
-                }
-                state.save_queue();
+                forget_queue_entry(&mut state, &hash);
             }
             Ok(json!({}))
         }
@@ -3156,6 +3268,19 @@ fn build_stamp() -> (String, Option<u64>) {
     )
 }
 
+/// Everything WinT itself remembers about a torrent that has just been
+/// removed: its place in the queue and when it completed.
+fn forget_queue_entry(state: &mut State, hash: &str) {
+    state.queue.wanted.retain(|h| h != hash);
+    state.queue.paused.retain(|h| h != hash);
+    state.queue.force_started.retain(|h| h != hash);
+    state.completion_candidates.remove(hash);
+    if state.completed_at.remove(hash).is_some() {
+        state.save_completions();
+    }
+    state.save_queue();
+}
+
 fn saved_torrents() -> &'static StdMutex<Vec<SavedTorrent>> {
     static SAVED: OnceLock<StdMutex<Vec<SavedTorrent>>> = OnceLock::new();
     SAVED.get_or_init(|| StdMutex::new(Vec::new()))
@@ -3499,6 +3624,7 @@ async fn main() -> Result<()> {
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut queued = HashSet::new();
             let mut missing: HashSet<usize> = HashSet::new();
+            let mut missing_sweep: Option<tokio::task::JoinHandle<HashSet<usize>>> = None;
             let mut since_reconcile = 0u32;
             // A reconcile every ~2s; a snapshot every tick.
             let reconcile_every = (2000 / args.snapshot_ms).max(1) as u32;
@@ -3558,17 +3684,28 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
-                    missing = tokio::task::spawn_blocking(move || {
-                        let mut found = HashSet::new();
-                        for (id, files) in lists {
-                            if files_are_missing(&files) {
-                                found.insert(id);
+                    // Not awaited. On a drive that has stopped answering, an
+                    // `exists` waits as long as the drive does, and awaiting it
+                    // here stopped every snapshot after it - the page went
+                    // stale while the engine itself was fine. The answer is
+                    // picked up on whichever tick it is ready by, and no new
+                    // sweep starts while one is still out.
+                    if missing_sweep.is_none() {
+                        missing_sweep = Some(tokio::task::spawn_blocking(move || {
+                            let mut found = HashSet::new();
+                            for (id, files) in lists {
+                                if files_are_missing(&files) {
+                                    found.insert(id);
+                                }
                             }
-                        }
-                        found
-                    })
-                    .await
-                    .unwrap_or_default();
+                            found
+                        }));
+                    }
+                }
+                if missing_sweep.as_ref().is_some_and(|sweep| sweep.is_finished()) {
+                    if let Some(sweep) = missing_sweep.take() {
+                        missing = sweep.await.unwrap_or_default();
+                    }
                 }
 
                 // The same staleness the completion hook fixes, but for a
@@ -3666,13 +3803,32 @@ async fn main() -> Result<()> {
         });
     }
 
-    {
-        // The timer that normally paces these writes is exactly what would
-        // throw away the last half-minute on the way out.
-        let mut state = state.lock().await;
-        state.save_ledger(true);
+    let finish = async {
+        {
+            // The timer that normally paces these writes is exactly what would
+            // throw away the last half-minute on the way out.
+            let mut state = state.lock().await;
+            state.save_ledger(true);
+        }
+        let session = { state.lock().await.session.clone() };
+        session.stop().await;
+    };
+    // Closing a session closes every file it has open, and a close on a drive
+    // that has stopped answering waits as long as the drive does.
+    if tokio::time::timeout(SHUTDOWN_GRACE, finish).await.is_err() {
+        tracing::warn!("the session did not close in time; leaving without it");
     }
-    let session = { state.lock().await.session.clone() };
-    session.stop().await;
-    Ok(())
+
+    // Leaving through `exit` rather than by returning. Returning drops the
+    // runtime, and dropping a runtime waits for every blocking task still out -
+    // a missing-files sweep or a size refresh stuck on a dead drive kept the
+    // engine running for days after WinT had gone. Their I/O is cancelled
+    // first, because a thread blocked in the kernel stops the process being
+    // torn down even after it has exited.
+    blocked_io::cancel_all();
+    std::process::exit(0)
 }
+
+/// How long the session gets to close its files on the way out. Under the
+/// fifteen seconds `stop-wint.ps1` waits before it forces the engine.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);

@@ -138,6 +138,58 @@ function stopStrayHelpers(helpers) {
   // has to be waited on.
   const until = Date.now() + 10000;
   while (!replaceable(EXE) && Date.now() < until) sleep(250);
+  // Only when nothing is left that can still run. A live engine - one an
+  // elevated WinT started, say - is working on the torrents' files, and
+  // building past it would let the next start put a second engine on the same
+  // data. That has to stay a refusal.
+  if (!replaceable(EXE) && !liveHelpers().length) moveAside(EXE);
+}
+
+/** The helpers that are still running code, as opposed to ones that have been
+ *  killed but cannot be removed yet. `tasklist` lists both; only .NET's
+ *  `HasExited` tells them apart. Any doubt counts as live. */
+function liveHelpers() {
+  if (process.platform !== "win32") return [];
+  const asked = spawnSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-Command",
+      "Get-Process -Name wint-torrent-helper -ErrorAction SilentlyContinue | " +
+        "Where-Object { -not $_.HasExited } | ForEach-Object { $_.Id }",
+    ],
+    { encoding: "utf8" },
+  );
+  if (asked.status !== 0) return runningHelpers();
+  return asked.stdout.split(/\s+/).filter(Boolean);
+}
+
+/** Renames a locked exe out of the way so cargo can write a new one.
+ *
+ *  An engine that was killed while a read was stuck on a drive that stopped
+ *  answering never finishes dying: it stays in the task list with one thread
+ *  parked in the kernel, no taskkill or admin prompt can end it, and it keeps
+ *  its exe mapped until that drive answers or Windows restarts. Windows will
+ *  not let anything overwrite a file in that state, but it does let it be
+ *  renamed. The leftovers are cleared on a later build, once they are free. */
+function moveAside(exe) {
+  const dir = path.dirname(exe);
+  const base = path.basename(exe);
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.startsWith(`${base}.old-`)) continue;
+    try { fs.unlinkSync(path.join(dir, name)); } catch { /* still mapped; next time */ }
+  }
+  const aside = `${exe}.old-${Date.now()}`;
+  try {
+    fs.renameSync(exe, aside);
+    console.log(
+      `wint-torrent-helper.exe is held by an engine Windows cannot finish stopping (usually one\n` +
+        `stuck on a drive that stopped answering). Moved it aside to ${path.basename(aside)}\n` +
+        "so this build can write a new one.",
+    );
+  } catch (error) {
+    console.warn(`Could not move the locked wint-torrent-helper.exe aside: ${error.message}`);
+  }
 }
 
 const debug = process.argv.includes("--debug");

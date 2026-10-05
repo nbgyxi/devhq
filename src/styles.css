@@ -5102,7 +5102,7 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-head{padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--line);color:var(--dim2);font-size:10px;text-transform:uppercase;letter-spacing:.4px}
 .tr-head,.tr-scroll{min-width:var(--tr-table-min-width,0)}
 .tr-head>span{position:relative;min-width:0;height:100%;display:flex;align-items:center}
-.tr-head>span[data-col]{cursor:grab;user-select:none}.tr-head>span.dragging{opacity:.38}.tr-reordering-column,.tr-reordering-column *{cursor:grabbing!important;user-select:none!important}.tr-head>span.drop-before::before,.tr-head>span.drop-after::before{content:"";position:absolute;z-index:4;top:-8px;bottom:-8px;width:3px;border-radius:2px;background:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}.tr-head>span.drop-before::before{left:-7px}.tr-head>span.drop-after::before{right:-7px}.tr-sort-arrow{margin-left:4px;color:var(--accent);font-size:7px;font-style:normal}
+.tr-head>span[data-col]{cursor:grab;user-select:none}.tr-head>span.dragging{opacity:.38}.tr-reordering-column,.tr-reordering-column *{cursor:grabbing!important;user-select:none!important}.tr-head>span.drop-before::before,.tr-head>span.drop-after::before{content:"";position:absolute;z-index:4;top:-8px;bottom:-8px;width:3px;border-radius:2px;background:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}.tr-head>span.drop-before::before{left:-7px}.tr-head>span.drop-after::before{right:-7px}.tr-sort-arrow{margin-left:4px;color:var(--accent);font-size:7px;font-style:normal}.tr-sort-arrow sup{margin-left:1px;font-size:8px;font-weight:600;vertical-align:super}
 .tr-head [data-tr-column-resize]{position:absolute;z-index:2;top:-8px;right:-6px;width:11px;height:32px;cursor:col-resize}
 .tr-head [data-tr-column-resize]::after{content:"";position:absolute;top:7px;bottom:7px;left:5px;width:1px;background:transparent}
 .tr-head [data-tr-column-resize]:hover::after,.tr-resizing-column .tr-head [data-tr-column-resize]::after{background:var(--accent)}
@@ -5609,3 +5609,52 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-move-ask>label{flex:1;min-width:220px;display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--dim)}
 .tr-move-ask input{flex:1;min-width:0;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--fg);font-family:var(--mono,ui-monospace,Consolas,monospace);font-size:11.5px}
 .tr-move-ask input:focus{outline:none;border-color:var(--accent,#4aa3ff)}
+
+/* ---------- Notepad: tabs down the left, one plain textarea ---------- */
+/* No boxes: the tabs are separated from the text by one line, and the text
+   runs to the edges of the tool. */
+.win-tool-body:has(.np){display:flex;flex-direction:column;overflow:hidden;padding:0}
+[data-notepad-host]{flex:1;min-height:0;display:flex}
+.np{flex:1;min-height:0;display:grid;grid-template-columns:220px minmax(0,1fr)}
+.np-side,.np-main{min-height:0;display:flex;flex-direction:column}
+.np-main{overflow:hidden;background:var(--bg1)}
+.np-side{background:var(--bg);box-shadow:inset -1px 0 var(--line)}
+.np-side-head{display:flex;gap:6px;padding:8px}
+.np-side-head .btn:first-child{flex:1;justify-content:center}
+.np-side-head .btn.on{background:var(--bg3);color:var(--accent)}
+.np-tabs{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden}
+.np-tab{min-height:38px;display:flex;align-items:center;gap:4px;padding:6px 6px 6px 12px;cursor:pointer}
+.np-tab>span{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.np-tab:hover{background:var(--bg2)}
+/* The same surface as the page it opens (white in light mode), covering the
+   dividing line so the two read as one sheet. */
+.np-tab.on{box-shadow:inset 3px 0 var(--accent);background:var(--bg1)}
+.np-tab strong{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.np-tab small{display:flex;align-items:center;gap:4px;color:var(--dim2);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.np-tab small .ms{font-size:12px}
+.np-tab-skeleton .sk{width:70%}
+.np-tab-x{flex:0 0 auto;width:22px;height:22px;display:grid;place-items:center;border-radius:5px;color:var(--dim);visibility:hidden}
+.np-tab:hover .np-tab-x,.np-tab-x:focus-visible{visibility:visible}
+.np-tab-x:hover{background:var(--bg3);color:var(--red)}
+.np-tab-x .ms{font-size:15px}
+.np-rename{width:100%;padding:3px 6px;border:1px solid var(--accent);border-radius:5px;background:var(--bg);color:var(--text);font:12px ui-monospace,Consolas,monospace;outline:none}
+.np-error{padding:8px 12px;border-top:1px solid var(--line);color:var(--red);font-size:11px;line-height:1.4}
+.np-error[hidden]{display:none}
+.np-settings{display:flex;flex-direction:column;gap:8px;max-height:65%;overflow:auto;padding:12px 16px 14px;border-bottom:1px solid var(--line);background:var(--bg2)}
+.np-settings[hidden]{display:none}
+.np-settings h3{margin:4px 0 0;color:var(--dim);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+.np-settings label{display:flex;flex-direction:column;gap:6px;color:var(--dim);font-size:11px;font-weight:600}
+.np-settings input,.np-settings select{padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--text);font-size:12px}
+.np-settings input{font-family:ui-monospace,Consolas,monospace}
+.np-settings input:focus,.np-settings select:focus{outline:none;border-color:var(--accent)}
+.np-settings-row{display:flex;gap:6px}
+.np-settings p{margin:0;color:var(--dim);font-size:11px;line-height:1.5}
+.np-format{display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px}
+.np-preview{padding:14px;border-radius:7px;background:var(--bg);color:var(--text);text-align:center;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.np-wrap{display:flex;align-items:center;gap:12px}
+.np-wrap>span{flex:1;display:flex;flex-direction:column;gap:2px}
+.np-wrap strong{font-size:12px;font-weight:500}
+.np-wrap small{color:var(--dim);font-size:11px}
+.np-main textarea{flex:1;min-height:0;resize:none;border:0;padding:16px 20px;background:var(--bg1);color:var(--text);line-height:1.6;outline:none}
+.np-main textarea::placeholder{color:var(--dim2)}
+.np-main textarea.nowrap{white-space:pre;overflow-x:auto}
