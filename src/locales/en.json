@@ -4281,5 +4281,8 @@
   "They will be paused for the length of the move and started again afterwards.": "They will be paused for the length of the move and started again afterwards.",
   "Torrents you paused yourself stay paused. Move it now?": "Torrents you paused yourself stay paused. Move it now?",
   "{{expr:1}} other torrent(s) are using these drives:": "{{expr:1}} other torrent(s) are using these drives:",
-  "{{expr:1}} other torrent(s) are using these drives: {{expr:2}}{{expr:3}}": "{{expr:1}} other torrent(s) are using these drives: {{expr:2}}{{expr:3}}"
+  "{{expr:1}} other torrent(s) are using these drives: {{expr:2}}{{expr:3}}": "{{expr:1}} other torrent(s) are using these drives: {{expr:2}}{{expr:3}}",
+  "This window could not load": "This window could not load",
+  "Retry now": "Retry now",
+  "{count} of its files did not arrive. Trying again in {seconds}s.": "{count} of its files did not arrive. Trying again in {seconds}s."
 }

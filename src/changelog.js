@@ -16,6 +16,31 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.182.0",
+      title: "Read text files in the Files preview",
+      date: "2026-10-06",
+      changes: [
+        ["new", "The preview panel in Files now shows what is in text files - .txt, .md, logs, CSV, code, config files, README and dotfiles like .gitignore - including files inside a zip. Very large files show their start, and a file that only looks like text says so instead of showing garbage."],
+      ],
+    },
+    {
+      version: "0.181.2",
+      title: "Find a note's file",
+      date: "2026-10-06",
+      changes: [
+        ["new", "Right-clicking a note in Notepad opens a menu: Rename, Reveal in File Explorer, which opens the note's folder with the file selected, and Reveal in WinT Files, which opens its folder in a new Files window."],
+      ],
+    },
+    {
+      version: "0.181.1",
+      title: "No more black windows",
+      date: "2026-10-06",
+      changes: [
+        ["fix", "A window that comes up without its parts - which can happen just after the PC wakes from sleep - no longer stays black with no way to move or close it. It says it could not load, counts down, and loads itself again. Retry now does it straight away."],
+        ["fix", "The terminal panel opens again, and the default shell and Ctrl+R history settings work again. A file they need had gone missing from the app."],
+      ],
+    },
+    {
       version: "0.181.0",
       title: "Torrents sort by more than one column",
       date: "2026-10-05",

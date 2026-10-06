@@ -2321,6 +2321,13 @@ async fn explorer_thumbnail(path: String, size: u32) -> Result<Option<String>, S
 }
 
 #[tauri::command]
+async fn explorer_text_preview(path: String) -> Result<explorer::TextPreview, String> {
+    off_thread(move || explorer::text_preview(path))
+        .await
+        .unwrap_or_else(|| Err("The file could not be read.".into()))
+}
+
+#[tauri::command]
 async fn explorer_delete(paths: Vec<String>, recycle: bool) -> Result<(), String> {
     off_thread(move || explorer::delete(paths, recycle))
         .await
@@ -3453,6 +3460,7 @@ pub fn run() {
             explorer_layout,
             explorer_layout_set,
             explorer_thumbnail,
+            explorer_text_preview,
             explorer_delete,
             explorer_materialize,
             explorer_rename,
@@ -3899,6 +3907,7 @@ pub fn run() {
         explorer_layout,
         explorer_layout_set,
         explorer_thumbnail,
+        explorer_text_preview,
         explorer_delete,
         explorer_materialize,
         explorer_rename,

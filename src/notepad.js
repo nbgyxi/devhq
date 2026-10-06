@@ -97,7 +97,7 @@
       const tab = event.target.closest("[data-np-tab]");
       if (!tab || event.target.closest("[data-np-rename]")) return;
       event.preventDefault();
-      startRename(tab.dataset.npTab);
+      openMenu(event, tab.dataset.npTab);
     });
     const text = q("[data-np-text]");
     text.addEventListener("input", onInput);
@@ -363,7 +363,62 @@
     else { persist(); drawTabs(); }
   }
 
-  /** Right-click on a tab: its title becomes the file name, ready to edit.
+  // ---- right-click -------------------------------------------------------
+
+  function closeMenu() {
+    document.querySelector(".np-context")?.remove();
+  }
+
+  /** Sent through the main WinT window when this tool runs in a webview of
+   *  its own, where the shell's Files hand-off cannot reach. */
+  function openInWintFiles(path) {
+    if (window.wintShell?.openExplorerWindow && !window.wintExternalToolChrome) return Promise.resolve(window.wintShell.openExplorerWindow(path));
+    const emit = window.__TAURI__?.event?.emit;
+    if (!emit) return Promise.reject(new Error("WinT Files could not be contacted."));
+    return emit("files:open-window", { path });
+  }
+
+  function openMenu(event, path) {
+    closeMenu();
+    const note = st.notes.find((n) => n.path === path);
+    if (!note) return;
+    // A new note nobody has typed in yet has no file for Explorer to point at.
+    const off = note.saved ? "" : ` disabled title="Not saved yet - type something first"`;
+    const menu = document.createElement("div");
+    menu.className = "tr-context np-context";
+    menu.innerHTML = `
+      <button type="button" data-act="rename">${icon("edit")}Rename</button>
+      <hr />
+      <button type="button" data-act="explorer"${off}>${icon("folder_open")}Reveal in File Explorer</button>
+      <button type="button" data-act="files">${icon("dock_to_right")}Reveal in WinT Files</button>`;
+    document.body.appendChild(menu);
+    // Placed once it is in the document, so its size is known and it stays on
+    // screen when the click was near an edge.
+    const box = menu.getBoundingClientRect();
+    menu.style.left = `${Math.min(event.clientX, window.innerWidth - box.width - 8)}px`;
+    menu.style.top = `${Math.min(event.clientY, window.innerHeight - box.height - 8)}px`;
+    const fail = (error) => { st.error = String(error); drawStatus(); };
+    menu.onclick = (click) => {
+      const button = click.target.closest("[data-act]");
+      if (!button || button.disabled) return;
+      closeMenu();
+      const act = button.dataset.act;
+      if (act === "rename") return startRename(note.path);
+      if (act === "explorer") {
+        window.wintWork?.beginWork("notepad-reveal", `Opening File Explorer at ${fileName(note.path)}`);
+        return void invoke("open_in", { path: note.path, target: "reveal", context: null })
+          .catch(fail)
+          .finally(() => window.wintWork?.endWork("notepad-reveal"));
+      }
+      if (act === "files") return void openInWintFiles(parentOf(note.path)).catch(fail);
+    };
+    setTimeout(() => {
+      document.addEventListener("click", closeMenu, { once: true });
+      document.addEventListener("keydown", (key) => { if (key.key === "Escape") closeMenu(); }, { once: true });
+    }, 0);
+  }
+
+  /** Rename from the tab's menu: its title becomes the file name, ready to edit.
    *  Enter or clicking away renames, Escape leaves it as it was. */
   function startRename(path) {
     const note = st.notes.find((n) => n.path === path);
@@ -449,7 +504,7 @@
       const external = isExternal(note);
       const x = external ? "Close - the file stays where it is" : "Delete - the file goes to the Recycle Bin";
       return `<div class="np-tab${note.path === st.selected ? " on" : ""}" data-np-tab="${esc(note.path)}" title="${esc(note.path)}
-Right-click to rename">
+Right-click to rename or reveal">
         <span><strong>${esc(title(note))}</strong>${external ? `<small>${icon("open_in_new")}${esc(parentOf(note.path))}</small>` : ""}</span>
         <button type="button" class="np-tab-x" data-np-close="${esc(note.path)}" title="${x}" aria-label="${x}">${icon("close")}</button>
       </div>`;

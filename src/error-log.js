@@ -86,9 +86,71 @@
     try { return JSON.stringify(value); } catch { return String(value); }
   };
 
+  // A page whose own scripts did not arrive draws nothing at all — not even
+  // the title bar, which is ours too — and leaves a black, immovable window.
+  // That happened on waking from sleep, when the dev server was not answering
+  // yet. Once the page has finished trying, a missing entry script — the last
+  // one on every page, which starts it — means the page is dead: say so on
+  // screen and load it again, backing off while it keeps failing. Any other
+  // missing script is only reported, because covering a page that did start
+  // would be worse than the feature that is missing from it. The attempt count
+  // lives in sessionStorage because it only has to survive the reload it causes.
+  const RELOAD_KEY = "wint.missing-script-reloads";
+  const missing = [];
+  const attempts = () => {
+    try { return Number(sessionStorage.getItem(RELOAD_KEY)) || 0; } catch { return 0; }
+  };
+  const setAttempts = (count) => {
+    try {
+      if (count) sessionStorage.setItem(RELOAD_KEY, String(count));
+      else sessionStorage.removeItem(RELOAD_KEY);
+    } catch {}
+  };
+
+  const recover = () => {
+    const entry = [...document.querySelectorAll("script[src]")].pop()?.src;
+    if (!entry || !missing.includes(entry)) {
+      setAttempts(0);
+      return;
+    }
+    const attempt = attempts() + 1;
+    setAttempts(attempt);
+    const seconds = Math.min(2 ** attempt, 30);
+    const t = (text, values) => window.wintI18n?.t?.(text, values) ?? text.replace(/\{(\w+)\}/g, (_, name) => values?.[name] ?? "");
+    window.wintErrorLog.note(`${missing.length} script(s) failed to load; reloading in ${seconds}s (attempt ${attempt})`);
+
+    // Inline styles only: styles.css may be among what did not arrive.
+    const screen = document.createElement("div");
+    screen.setAttribute("data-tauri-drag-region", "");
+    screen.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;background:#f3f3f3;color:#1b1b1b;font:14px 'Segoe UI',system-ui,sans-serif;text-align:center";
+    const heading = document.createElement("div");
+    heading.style.cssText = "font-size:16px;font-weight:600";
+    heading.textContent = t("This window could not load");
+    const detail = document.createElement("div");
+    const button = document.createElement("button");
+    button.style.cssText = "padding:6px 16px;font:inherit;cursor:pointer";
+    button.textContent = t("Retry now");
+    button.addEventListener("click", () => location.reload());
+    screen.append(heading, detail, button);
+    document.body.append(screen);
+
+    let left = seconds;
+    const tick = () => {
+      if (left <= 0) return location.reload();
+      detail.textContent = t("{count} of its files did not arrive. Trying again in {seconds}s.", { count: missing.length, seconds: left });
+      left -= 1;
+      setTimeout(tick, 1000);
+    };
+    tick();
+  };
+  window.addEventListener("load", recover);
+
   window.addEventListener("error", (event) => {
     // A failed <script>/<img>/<link> fires the same event with no `error`.
     if (event.target && event.target !== window && event.target.tagName) {
+      if (event.target.tagName === "SCRIPT" && event.target.src?.startsWith(location.origin)) {
+        missing.push(event.target.src);
+      }
       return report("resource", `${event.target.tagName.toLowerCase()} failed to load: ${event.target.src || event.target.href || "?"}`);
     }
     const place = event.filename ? `${event.filename}:${event.lineno}:${event.colno}` : "";

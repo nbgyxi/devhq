@@ -3290,6 +3290,9 @@ html[dir="rtl"] .pins-pop{right:auto;left:6px;direction:rtl;text-align:right}
 /* The preview panel: one picture, contained, with what it is underneath. */
 .fx-preview{flex:0 0 var(--fx-preview);width:var(--fx-preview);max-width:var(--fx-preview);min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--bg1)}
 .fx-preview-stage{flex:1;min-height:0;display:grid;place-items:center;padding:14px;overflow:hidden}
+.fx-preview-stage.text{display:flex;padding:0}
+.fx-preview-text{flex:1;min-width:0;margin:0;padding:12px 14px;overflow:auto;color:var(--text);font:11.5px/1.5 Consolas,"Cascadia Mono",monospace;white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4;user-select:text;-webkit-user-select:text}
+.fx-preview-note{display:block;margin-top:10px;color:var(--dim2);font-style:italic}
 .fx-preview-image{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;box-shadow:0 6px 22px #0006}
 .fx-preview-empty{display:flex;flex-direction:column;align-items:center;gap:10px;padding:24px;color:var(--dim2);text-align:center}
 .fx-preview-empty>.ms{font-size:38px;opacity:.55}

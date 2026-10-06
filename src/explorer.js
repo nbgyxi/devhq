@@ -72,7 +72,7 @@ const fx = {
   createdColumn: false,
   /** Focused row plus the complete multi-selection. The focused file, when
    *  there is one, is what the preview pane shows. */
-  selected: "", selectedPaths: new Set(), selectionAnchor: "", previewUrl: "", previewLoading: false,
+  selected: "", selectedPaths: new Set(), selectionAnchor: "", previewUrl: "", previewText: null, previewLoading: false,
   /** After Back/Up, the child folder you came from - selected and scrolled into
    *  view once the list has painted, so a resized window still lands correctly. */
   pendingFocus: "",
@@ -119,6 +119,17 @@ const columnTableWidth = () => visibleColumns().reduce((width, column) => width 
  *  preview row is for seeing which photo is which - a generic first-page
  *  render of a document says less than the type icon it would replace. */
 const PREVIEW_KINDS = new Set(["image"]);
+/** Files the preview pane shows as text: every code type, plus the plain-text
+ *  ones that sit under Documents and Data next to files that are not text. */
+const TEXT_EXTS = new Set([
+  ...KINDS.find((kind) => kind.id === "code").ext.split(" "),
+  ..."txt md markdown log csv tsv nfo srt vtt rst tex properties reg inf gitignore gitattributes editorconfig npmrc lock".split(" "),
+]);
+/** Text files that go without an extension. Dotfiles are here too: a leading
+ *  dot is a name, so `.gitignore` has none. */
+const TEXT_NAMES = /^(\..+|readme|license|licence|changelog|authors|notice|makefile|dockerfile|procfile|gemfile|rakefile)$/i;
+const isTextual = (entry) => !entry.isDir && !entry.isArchive && (TEXT_EXTS.has(entry.ext) || (!entry.ext && TEXT_NAMES.test(entry.name)));
+const previewable = (entry) => !entry.isDir && (PREVIEW_KINDS.has(kindOf(entry)) || isTextual(entry));
 /** Asked for at twice the size it is drawn, so the row thumbnail stays sharp
  *  on a high-DPI screen. Windows serves both out of the same cache. */
 const THUMB_PX = 128;
@@ -333,7 +344,7 @@ async function openFolder(path, { push = true, keepFilter = false, focusPath = n
     fx.scrollTop = fx.scrollMemory.get(normal(path)) || 0;
     fx.scrollRestore = true;
     fx.selected = ""; fx.selectedPaths.clear(); fx.selectionAnchor = "";
-    fx.previewUrl = ""; previewToken += 1;
+    fx.previewUrl = ""; fx.previewText = null; previewToken += 1;
   }
   // Back / Up hand a focusPath: the child you came from. After the list paints,
   // that row is selected and scrolled into view - a pixel scroll would be wrong
@@ -1050,7 +1061,7 @@ function endMarquee() {
   // The release that ends a rectangle is not a click on the row underneath.
   dragJustEnded = Date.now();
   if (fx.previewPane) {
-    fx.previewUrl = "";
+    fx.previewUrl = ""; fx.previewText = null;
     fx.previewLoading = false;
     paintPreview();
     loadPreview();
@@ -1085,13 +1096,13 @@ function select(path, { add = false, range = false } = {}) {
     fx.selectionAnchor = path;
   }
   fx.selected = selection().find((item) => same(item, path)) || selection().slice(-1)[0] || "";
-  fx.previewUrl = "";
+  fx.previewUrl = ""; fx.previewText = null;
   // Selection and preview update in place. A full render would rebuild the
   // list and jump the scroll back to the top - painful in a long zip.
   paintSelection();
   if (fx.previewPane) {
     const entry = (fx.listing?.entries || []).find((item) => same(item.path, path));
-    fx.previewLoading = !!(entry && !entry.isDir && PREVIEW_KINDS.has(kindOf(entry)));
+    fx.previewLoading = !!(entry && previewable(entry));
     paintPreview();
     loadPreview();
   }
@@ -1123,10 +1134,22 @@ async function loadPreview() {
   const path = fx.selected;
   if (!fx.previewPane || !path) return;
   const entry = (fx.listing?.entries || []).find((item) => same(item.path, path));
-  if (!entry || entry.isDir || !PREVIEW_KINDS.has(kindOf(entry))) return;
+  if (!entry || !previewable(entry)) return;
   const token = ++previewToken;
   fx.previewLoading = true;
   paintPreview();
+  if (isTextual(entry)) {
+    window.wintWork?.beginWork("explorer-preview", `Reading ${entry.name}`);
+    let text = null;
+    try { text = await invoke("explorer_text_preview", { path }); }
+    catch (error) { text = { error: String(error) }; }
+    finally { if (token === previewToken) window.wintWork?.endWork("explorer-preview"); }
+    if (token !== previewToken) return;
+    fx.previewText = text;
+    fx.previewLoading = false;
+    paintPreview();
+    return;
+  }
   // Making a preview reads the whole file and rescales it, which on a big
   // picture or a slow drive is long enough to look like nothing happened.
   window.wintWork?.beginWork("explorer-preview", `Making a preview of ${entry.name}`);
@@ -1201,24 +1224,31 @@ function togglePreviewPane() {
   rememberLayout();
   dirty();
   if (fx.previewPane) loadPreview();
-  else { previewToken += 1; fx.previewUrl = ""; }
+  else { previewToken += 1; fx.previewUrl = ""; fx.previewText = null; }
 }
 
 function renderPreviewPane() {
   const entry = (fx.listing?.entries || []).find((item) => same(item.path, fx.selected));
   if (!entry) {
-    return `<aside class="fx-preview" aria-label="Preview"><div class="fx-preview-empty">${icon("imagesmode")}<p>Pick a picture in the list to see it here.</p></div></aside>`;
+    return `<aside class="fx-preview" aria-label="Preview"><div class="fx-preview-empty">${icon("imagesmode")}<p>Pick a picture or a text file in the list to see it here.</p></div></aside>`;
   }
-  const showable = !entry.isDir && PREVIEW_KINDS.has(kindOf(entry));
+  const showable = previewable(entry);
+  const text = fx.previewText;
   const body = !showable
-    ? `<div class="fx-preview-empty">${icon(kindById(kindOf(entry)).icon)}<p>There is no picture to show for this one.</p></div>`
+    ? `<div class="fx-preview-empty">${icon(kindById(kindOf(entry)).icon)}<p>There is no preview for this kind of file.</p></div>`
+    : text?.error
+      ? `<div class="fx-preview-empty">${icon("error")}<p>${esc(text.error)}</p></div>`
+    : text?.binary
+      ? `<div class="fx-preview-empty">${icon("data_object")}<p>This file is not plain text, so there is nothing readable to show.</p></div>`
+    : text
+      ? `<pre class="fx-preview-text">${esc(text.text) || `<span class="fx-preview-note">This file is empty.</span>`}${text.truncated ? `<span class="fx-preview-note">Only the start is shown - the whole file is ${bytes(entry.bytes)}.</span>` : ""}</pre>`
     : fx.previewUrl
       ? `<img class="fx-preview-image" src="${fx.previewUrl}" alt="${esc(entry.name)}">`
       : fx.previewLoading
-        ? `<div class="fx-preview-making"><div class="fx-preview-frame"></div><p>${icon("progress_activity")}Making a preview of <b>${esc(entry.name)}</b>…</p></div>`
+        ? `<div class="fx-preview-making"><div class="fx-preview-frame"></div><p>${icon("progress_activity")}${isTextual(entry) ? "Reading" : "Making a preview of"} <b>${esc(entry.name)}</b>…</p></div>`
         : `<div class="fx-preview-empty">${icon("broken_image")}<p>Could not make a preview of this file.</p></div>`;
   return `<aside class="fx-preview" aria-label="Preview">
-    <div class="fx-preview-stage">${body}</div>
+    <div class="fx-preview-stage${showable && text && !text.error && !text.binary ? " text" : ""}">${body}</div>
     <footer class="fx-preview-meta">
       <strong title="${esc(entry.name)}">${esc(entry.name)}</strong>
       <span>${esc(typeLabel(entry))} · ${bytes(entry.bytes)}</span>
@@ -1828,7 +1858,7 @@ function mount(host) {
       fx.selected = "";
       fx.selectedPaths.clear();
       fx.selectionAnchor = "";
-      fx.previewUrl = "";
+      fx.previewUrl = ""; fx.previewText = null;
       paintSelection();
       paintPreview();
       event.target.closest(".fx-rows")?.focus();

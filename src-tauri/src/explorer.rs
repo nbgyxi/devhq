@@ -1019,6 +1019,93 @@ pub fn thumbnail(raw_path: String, size: u32) -> Result<Option<String>, String> 
     Ok(decode_thumbnail(&path, size)?)
 }
 
+/// The start of a text file for the preview pane.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextPreview {
+    pub text: String,
+    /// The file goes on past what was read.
+    pub truncated: bool,
+    /// It has a text file's name but not a text file's bytes.
+    pub binary: bool,
+}
+
+/// Enough to fill the pane many times over; a 2 GB log is not read whole to
+/// show its first screen.
+const TEXT_PREVIEW_MAX: u64 = 128 * 1024;
+
+/// Reads only the head of the file. UTF-8 and UTF-16 are told apart by their
+/// byte order mark; without one it is taken as UTF-8, which is what almost
+/// every text file written in the last decade is.
+pub fn text_preview(raw_path: String) -> Result<TextPreview, String> {
+    let normalized = raw_path.replace('/', "\\");
+    let path = match split_zip_path(&normalized) {
+        Some((_, inner)) if inner.is_empty() => return Err("A zip is not a text file.".into()),
+        Some((archive, inner)) => materialize_zip_member(&archive, &inner)?,
+        None => PathBuf::from(normalized),
+    };
+    let file = File::open(&path)
+        .map_err(|error| format!("{} could not be opened. {error}", name_of(&path)))?;
+    let size = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+    let mut bytes = Vec::with_capacity(size.min(TEXT_PREVIEW_MAX) as usize);
+    file.take(TEXT_PREVIEW_MAX)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("{} could not be read. {error}", name_of(&path)))?;
+    let truncated = size > bytes.len() as u64;
+    Ok(decode_text(&bytes, truncated))
+}
+
+fn decode_text(bytes: &[u8], truncated: bool) -> TextPreview {
+    let utf16 = |rest: &[u8], le: bool| {
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|pair| {
+                if le {
+                    u16::from_le_bytes([pair[0], pair[1]])
+                } else {
+                    u16::from_be_bytes([pair[0], pair[1]])
+                }
+            })
+            .collect();
+        let mut text = String::from_utf16_lossy(&units);
+        // A cut through a surrogate pair leaves one half, which is not text.
+        if truncated && text.ends_with('\u{FFFD}') {
+            text.pop();
+        }
+        TextPreview {
+            text,
+            truncated,
+            binary: false,
+        }
+    };
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        return utf16(rest, true);
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return utf16(rest, false);
+    }
+    let body = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    // A NUL byte is the one thing UTF-8 text never holds and binaries always do.
+    if body.iter().take(8192).any(|&byte| byte == 0) {
+        return TextPreview {
+            text: String::new(),
+            truncated,
+            binary: true,
+        };
+    }
+    // The read may stop halfway through a character; that half is dropped
+    // rather than shown as a replacement mark at the end.
+    let body = match std::str::from_utf8(body) {
+        Err(error) if truncated && error.error_len().is_none() => &body[..error.valid_up_to()],
+        _ => body,
+    };
+    TextPreview {
+        text: String::from_utf8_lossy(body).into_owned(),
+        truncated,
+        binary: false,
+    }
+}
+
 fn name_of(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
