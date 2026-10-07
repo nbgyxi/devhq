@@ -1,0 +1,98 @@
+{
+  "name": "wint-terminal",
+  "displayName": "WinT Terminal",
+  "description": "WinT's terminal in a VS Code panel: Ctrl+R history search, editor-style selection, box selection and kept scrollback. Runs on its own - WinT does not need to be installed or running.",
+  "version": "0.1.0",
+  "publisher": "gyxi",
+  "license": "SEE LICENSE IN LICENSE",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "os": ["win32"],
+  "categories": ["Other"],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onView:wint.terminal"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "wintTerminal",
+          "title": "WinT Terminal",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "wintTerminal": [
+        {
+          "type": "webview",
+          "id": "wint.terminal",
+          "name": "WinT Terminal"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "wint.terminal.new",
+        "title": "New WinT Terminal",
+        "category": "WinT",
+        "icon": "$(add)"
+      },
+      {
+        "command": "wint.terminal.focus",
+        "title": "Focus WinT Terminal",
+        "category": "WinT"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "wint.terminal.new",
+          "when": "view == wint.terminal",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "WinT Terminal",
+      "properties": {
+        "wintTerminal.defaultShell": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "pwsh", "pwsh-preview", "powershell", "cmd", "git-bash", "wsl", "nu", "claude"],
+          "enumDescriptions": [
+            "PowerShell 7 if it is installed, otherwise Windows PowerShell",
+            "PowerShell 7",
+            "PowerShell Preview",
+            "Windows PowerShell",
+            "Command Prompt",
+            "Git Bash",
+            "WSL",
+            "NuShell",
+            "Claude Code"
+          ],
+          "description": "The shell a new WinT terminal opens with."
+        },
+        "wintTerminal.enhancedHistorySearch": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ctrl+R opens WinT's searchable history instead of the shell's own reverse search."
+        },
+        "wintTerminal.keepScrollback": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reopen the terminals that were open when VS Code closed, with what they printed."
+        },
+        "wintTerminal.keysForVSCode": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["F1", "Ctrl+P", "Ctrl+Shift+P", "Ctrl+J", "Ctrl+B", "Ctrl+Tab", "Ctrl+Shift+Tab", "Ctrl+PageUp", "Ctrl+PageDown", "Ctrl+`", "Ctrl+Shift+`", "Ctrl+Shift+E", "Ctrl+Shift+F", "Ctrl+Shift+G", "Ctrl+Shift+X"],
+          "description": "Keys that go to VS Code instead of the shell while a WinT terminal has focus. Everything else goes to the shell, as in VS Code's own terminal."
+        }
+      }
+    }
+  }
+}

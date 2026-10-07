@@ -16,8 +16,10 @@ pub mod clipboard;
 #[cfg(windows)]
 mod codex;
 pub mod com;
+// The terminal engine lives in `term-core/`, shared with `wint-term-host.exe`;
+// these keep the paths the rest of the app and the examples already use.
 #[cfg(windows)]
-pub mod conpty;
+pub use wint_term::conpty;
 #[cfg(windows)]
 mod copilot;
 #[cfg(windows)]
@@ -73,7 +75,7 @@ mod util;
 #[cfg(windows)]
 pub mod volume;
 #[cfg(windows)]
-pub mod vt;
+pub use wint_term::vt;
 pub mod wifi;
 pub mod window_geometry;
 pub mod windows_tools;
@@ -2730,53 +2732,6 @@ async fn term_close_snapshot(id: String) -> Result<Vec<procs::ProcessIdentity>, 
     .unwrap_or_else(|| Err("Could not close the terminal.".into()))
 }
 
-#[cfg(windows)]
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ShellHistoryEntry {
-    command: String,
-    shell: String,
-}
-
-/// Imports the histories the installed shells already own. This is read on a
-/// worker only when Ctrl+R is first opened; history files can be large and must
-/// never pause the window thread.
-#[cfg(windows)]
-#[tauri::command]
-async fn term_command_history() -> Vec<ShellHistoryEntry> {
-    off_thread(|| {
-        let profile = std::env::var_os("USERPROFILE").map(PathBuf::from);
-        let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
-        let mut sources = Vec::new();
-        if let Some(root) = appdata {
-            sources.push((
-                root.join("Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt"),
-                "pwsh",
-            ));
-            sources.push((root.join("nushell/history.txt"), "nu"));
-        }
-        if let Some(root) = profile {
-            sources.push((root.join(".bash_history"), "bash"));
-        }
-        let mut entries = Vec::new();
-        for (path, shell) in sources {
-            let Ok(text) = std::fs::read_to_string(path) else {
-                continue;
-            };
-            entries.extend(text.lines().rev().take(10_000).filter_map(|line| {
-                let command = line.trim();
-                (!command.is_empty()).then(|| ShellHistoryEntry {
-                    command: command.to_string(),
-                    shell: shell.to_string(),
-                })
-            }));
-        }
-        entries
-    })
-    .await
-    .unwrap_or_default()
-}
-
 #[tauri::command]
 async fn process_survivors(expected: Vec<procs::ProcessIdentity>) -> Vec<procs::ProcessIdentity> {
     off_thread(move || procs::survivors(expected))
@@ -3491,7 +3446,7 @@ pub fn run() {
             port_kill,
             port_sample,
             term_close_snapshot,
-            term_command_history,
+            term::term_command_history,
             term::term_prune_history,
             process_survivors,
             term::term_shell_availability,

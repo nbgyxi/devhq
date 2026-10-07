@@ -4255,5 +4255,6 @@
   "draft": "草稿",
   "error": "错误",
   "folder": "文件夹",
-  "memory": "memory"
+  "memory": "memory",
+  "Delete now": "立即删除"
 }

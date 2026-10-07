@@ -100,11 +100,7 @@ static CANCEL: AtomicBool = AtomicBool::new(false);
 /// Where WinT keeps the programs it manages itself, next to the `wt.exe`
 /// proxy the terminal dock already installs there.
 pub fn runtime_root() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("WinT")
-        .join("runtime")
+    wint_term::shell::runtime_root()
 }
 
 /// Installs are kept under the pinned version, so bumping the pin lands beside

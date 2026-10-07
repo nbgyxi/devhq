@@ -5614,36 +5614,62 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-move-ask input:focus{outline:none;border-color:var(--accent,#4aa3ff)}
 
 /* ---------- Notepad: tabs down the left, one plain textarea ---------- */
-/* No boxes: the tabs are separated from the text by one line, and the text
-   runs to the edges of the tool. */
+/* The list is its own darker column with a real dividing line; the chosen
+   note is a tinted, rounded row inside it rather than a tab that pretends to
+   run into the page, which only read as a white gap. */
 .win-tool-body:has(.np){display:flex;flex-direction:column;overflow:hidden;padding:0}
 [data-notepad-host]{flex:1;min-height:0;display:flex}
-.np{flex:1;min-height:0;display:grid;grid-template-columns:220px minmax(0,1fr)}
+.np{flex:1;min-height:0;display:grid;grid-template-columns:232px minmax(0,1fr)}
 .np-side,.np-main{min-height:0;display:flex;flex-direction:column}
 .np-main{overflow:hidden;background:var(--bg1)}
-.np-side{background:var(--bg);box-shadow:inset -1px 0 var(--line)}
-.np-side-head{display:flex;gap:6px;padding:8px}
+.np-side{background:var(--bg);border-right:1px solid var(--line)}
+.np-side-head{display:flex;gap:6px;padding:10px 10px 8px}
 .np-side-head .btn:first-child{flex:1;justify-content:center}
-.np-side-head .btn.on{background:var(--bg3);color:var(--accent)}
-.np-tabs{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden}
-.np-tab{min-height:38px;display:flex;align-items:center;gap:4px;padding:6px 6px 6px 12px;cursor:pointer}
+.np-side-head .btn:not(:first-child){width:32px;padding-left:0;padding-right:0;justify-content:center}
+.np-side-head .btn.on{background:color-mix(in srgb,var(--accent) 16%,transparent);border-color:color-mix(in srgb,var(--accent) 40%,transparent);color:var(--accent)}
+.np-side-label{padding:6px 18px 4px;color:var(--dim2);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+.np-tabs{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:2px 8px 10px;display:flex;flex-direction:column;gap:2px}
+.np-tab{flex:0 0 auto;min-height:46px;display:flex;align-items:center;gap:4px;padding:7px 6px 7px 10px;border-radius:8px;cursor:pointer;transition:background .12s}
 .np-tab>span{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
 .np-tab:hover{background:var(--bg2)}
-/* The same surface as the page it opens (white in light mode), covering the
-   dividing line so the two read as one sheet. */
-.np-tab.on{box-shadow:inset 3px 0 var(--accent);background:var(--bg1)}
-.np-tab strong{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.np-tab small{display:flex;align-items:center;gap:4px;color:var(--dim2);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.np-tab small .ms{font-size:12px}
-.np-tab-skeleton .sk{width:70%}
+.np-tab.on{background:color-mix(in srgb,var(--accent) 14%,var(--bg))}
+.np-tab.on:hover{background:color-mix(in srgb,var(--accent) 18%,var(--bg))}
+.np-tab strong{font-size:12.5px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.np-tab.on strong{font-weight:600}
+.np-tab small{display:flex;align-items:center;gap:6px;min-width:0;color:var(--dim2);font-size:10.5px;white-space:nowrap}
+.np-tab small>em{flex:0 0 auto;font-style:normal}
+.np-tab small>i{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;font-style:normal}
+.np-tab.on small{color:var(--dim)}
+.np-tab small .ms{flex:0 0 auto;font-size:12px}
+.np-tab-skeleton{cursor:default;flex-direction:column;align-items:stretch;justify-content:center;gap:7px}
+.np-tab-skeleton:hover{background:none}
+.np-tab-skeleton .sk{width:72%}
+.np-tab-skeleton .sk+.sk{width:40%;height:7px}
 .np-tab-x{flex:0 0 auto;width:22px;height:22px;display:grid;place-items:center;border-radius:5px;color:var(--dim);visibility:hidden}
 .np-tab:hover .np-tab-x,.np-tab-x:focus-visible{visibility:visible}
 .np-tab-x:hover{background:var(--bg3);color:var(--red)}
 .np-tab-x .ms{font-size:15px}
-.np-rename{width:100%;padding:3px 6px;border:1px solid var(--accent);border-radius:5px;background:var(--bg);color:var(--text);font:12px ui-monospace,Consolas,monospace;outline:none}
-.np-error{padding:8px 12px;border-top:1px solid var(--line);color:var(--red);font-size:11px;line-height:1.4}
+.np-rename-card{width:min(460px,100%);margin:0}
+.np-rename-card .confirm-copy{min-width:0}
+.np-rename-card .confirm-copy p{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+.np-rename{width:100%;margin-top:12px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:13px ui-monospace,Consolas,monospace;outline:none}
+.np-rename:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent)}
+.np-rename-hint{display:block;margin-top:6px;color:var(--dim2);font-size:11px}
+.np-rename-hint.bad{color:var(--red)}
+.confirm-actions .btn:disabled{opacity:.45;cursor:default}
+/* Which file the page is: its name, and the folder it lives in. */
+.np-head{flex:0 0 auto;display:flex;align-items:center;gap:8px;min-height:38px;padding:0 24px;border-bottom:1px solid var(--line);color:var(--dim2)}
+.np-head .ms{font-size:16px}
+.np-head strong{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-size:12px;font-weight:500}
+.np-head small{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+.np-head-acts{flex:0 0 auto;display:flex;gap:2px;margin-right:-8px}
+.np-head-acts button{width:28px;height:28px;display:grid;place-items:center;border:0;border-radius:6px;background:none;color:var(--dim);cursor:pointer}
+.np-head-acts button:hover{background:var(--bg3);color:var(--text)}
+.np-head-acts button:disabled{opacity:.4;cursor:default;background:none;color:var(--dim)}
+.np-head-acts .ms{font-size:17px}
+.np-error{margin:0 8px 8px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--red) 12%,transparent);color:var(--red);font-size:11px;line-height:1.4}
 .np-error[hidden]{display:none}
-.np-settings{display:flex;flex-direction:column;gap:8px;max-height:65%;overflow:auto;padding:12px 16px 14px;border-bottom:1px solid var(--line);background:var(--bg2)}
+.np-settings{display:flex;flex-direction:column;gap:8px;max-height:65%;overflow:auto;padding:14px 24px 16px;border-bottom:1px solid var(--line);background:var(--bg2)}
 .np-settings[hidden]{display:none}
 .np-settings h3{margin:4px 0 0;color:var(--dim);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
 .np-settings label{display:flex;flex-direction:column;gap:6px;color:var(--dim);font-size:11px;font-weight:600}
@@ -5658,6 +5684,6 @@ body.projects-window #status-term-popout{display:none!important}
 .np-wrap>span{flex:1;display:flex;flex-direction:column;gap:2px}
 .np-wrap strong{font-size:12px;font-weight:500}
 .np-wrap small{color:var(--dim);font-size:11px}
-.np-main textarea{flex:1;min-height:0;resize:none;border:0;padding:16px 20px;background:var(--bg1);color:var(--text);line-height:1.6;outline:none}
+.np-main textarea{flex:1;min-height:0;resize:none;border:0;padding:18px 24px;background:var(--bg1);color:var(--text);line-height:1.6;outline:none}
 .np-main textarea::placeholder{color:var(--dim2)}
 .np-main textarea.nowrap{white-space:pre;overflow-x:auto}

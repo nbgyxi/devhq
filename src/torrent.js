@@ -2999,7 +2999,7 @@ Click to open in Explorer` : "";
     const row = rows[0];
     // Three answers, because there are three: bin the files, leave them where
     // they are, or do nothing. `true` is the confirm button, `"alternate"` the
-    // middle one, `false` cancel. Deleting for good is not offered here — it
+    // middle one, `false` cancel. Deleting outright is not offered here — it
     // is on the right-click menu, where it has to be chosen deliberately.
     const answer = await window.wintConfirm?.({
       title: rows.length === 1 ? `Remove ${row.name}?` : `Remove ${rows.length} torrents?`,
@@ -3041,7 +3041,7 @@ Click to open in Explorer` : "";
     }
 
     // With no paths to work from, the engine's own delete is the fallback for
-    // "delete for good"; it cannot use the Recycle Bin, so a recycle with no
+    // "delete now"; it cannot use the Recycle Bin, so a recycle with no
     // paths keeps the files rather than silently destroying them.
     const engineDeletes = mode === "forever" && !target;
     try {
@@ -3121,8 +3121,8 @@ Click to open in Explorer` : "";
       <button type="button" data-act="force">${icon(allForced ? "playlist_play" : "bolt")}${allForced ? "Use download queue" : "Force start"}${many ? ` ${targets.length} torrents` : ""}</button>
       <hr />
       <button type="button" data-act="keep">${icon("playlist_remove")}Remove, keep the files</button>
-      <button type="button" data-act="recycle">${icon("delete")}Remove, files to Recycle Bin</button>
-      <button type="button" data-act="forever">${icon("delete_forever")}Remove, delete the files for good</button>`;
+      <button type="button" data-act="recycle">${icon("delete")}Move to Recycle Bin</button>
+      <button type="button" data-act="forever">${icon("delete_forever")}Delete now</button>`;
     document.body.appendChild(menu);
 
     // Placed after it is in the document, so its real size is known and it can
@@ -3161,7 +3161,7 @@ Click to open in Explorer` : "";
         message: forGood
           ? "The files are deleted straight away, not sent to the Recycle Bin. This cannot be undone."
           : "The torrent is removed and its files go to the Recycle Bin, where Windows can still bring them back.",
-        confirmLabel: forGood ? "Delete for good" : "Move to Recycle Bin",
+        confirmLabel: forGood ? "Delete now" : "Move to Recycle Bin",
         cancelLabel: "Cancel",
         icon: forGood ? "delete_forever" : "delete",
         tone: "danger",

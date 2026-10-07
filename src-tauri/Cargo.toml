@@ -28,6 +28,8 @@ tauri = { version = "2", features = ["image-png", "tray-icon", "unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 png = "0.17"
+# The terminal engine, shared with `wint-term-host.exe` - see term-core/Cargo.toml.
+wint-term = { path = "term-core" }
 # Fallback when Windows has no shell thumbnail yet: decode the image ourselves.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
 
@@ -116,7 +118,7 @@ debug = "line-tables-only"
 # that librqbit and its transitive tree are linked into the helper executable
 # and never into `wint.exe`. The app talks to it over a pipe; see `torrent.rs`.
 [workspace]
-members = ["torrent-helper"]
+members = ["torrent-helper", "term-core", "term-host"]
 
 [patch.crates-io]
 librqbit = { path = "../vendor/librqbit" }

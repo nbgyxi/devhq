@@ -33,8 +33,6 @@
     loading: true,
     saving: 0,
     error: "",
-    /** The tab whose file name is being edited, if any. */
-    renaming: "",
     loadToken: 0,
     format: { ...DEFAULT_FORMAT },
   };
@@ -62,10 +60,12 @@
             <button type="button" class="btn" data-np-open title="Open a text file from anywhere - it stays where it is">${icon("folder_open")}</button>
             <button type="button" class="btn" data-np-settings title="Where new notes are saved">${icon("settings")}</button>
           </div>
+          <div class="np-side-label">Notes</div>
           <div class="np-tabs" data-np-tabs></div>
           <div class="np-error" data-np-status hidden></div>
         </aside>
         <section class="np-main">
+          <div class="np-head" data-np-head></div>
           <div class="np-settings" data-np-panel hidden>
             <h3>Save location</h3>
             <label>New notes are saved in
@@ -95,7 +95,7 @@
     node.addEventListener("keydown", onKey);
     node.addEventListener("contextmenu", (event) => {
       const tab = event.target.closest("[data-np-tab]");
-      if (!tab || event.target.closest("[data-np-rename]")) return;
+      if (!tab) return;
       event.preventDefault();
       openMenu(event, tab.dataset.npTab);
     });
@@ -182,8 +182,11 @@
     note.dirty = true;
     clearTimeout(note.timer);
     note.timer = setTimeout(() => saveNote(note), SAVE_DELAY);
-    const label = q(`[data-np-tab="${CSS.escape(note.path)}"] strong`);
+    const tab = q(`[data-np-tab="${CSS.escape(note.path)}"]`);
+    const label = tab?.querySelector("strong");
     if (label) label.textContent = title(note);
+    const peek = tab?.querySelector("small>i");
+    if (peek && !isExternal(note)) peek.textContent = snippet(note);
   }
 
   /** Saves are chained per note, so two in flight can never land out of
@@ -202,7 +205,10 @@
       window.wintWork?.beginWork("notepad-save", `Saving ${fileName(note.path)}`);
       try {
         await invoke("notepad_save", { path: note.path, text });
+        // A first save gives the header's Explorer button a file to point at.
+        if (!note.saved && note === current()) { note.saved = true; drawHead(); }
         note.saved = true;
+        note.modified = Date.now();
         st.error = "";
       } catch (error) {
         note.dirty = true;
@@ -235,7 +241,6 @@
   }
 
   function onClick(event) {
-    if (event.target.closest("[data-np-rename]")) return;
     const close = event.target.closest("[data-np-close]");
     if (close) return removeNote(close.dataset.npClose);
     const tab = event.target.closest("[data-np-tab]");
@@ -247,6 +252,8 @@
       q("[data-np-text]")?.focus();
       return;
     }
+    const act = event.target.closest("[data-np-act]");
+    if (act) { const note = current(); if (note && !act.disabled) runAction(act.dataset.npAct, note); return; }
     if (event.target.closest("[data-np-open]")) return openFiles();
     if (event.target.closest("[data-np-settings]")) {
       const panel = q("[data-np-panel]");
@@ -378,6 +385,19 @@
     return emit("files:open-window", { path });
   }
 
+  /** Rename and the two reveals, from a tab's menu or the page's header. */
+  function runAction(act, note) {
+    const fail = (error) => { st.error = String(error); drawStatus(); };
+    if (act === "rename") return startRename(note.path);
+    if (act === "explorer") {
+      window.wintWork?.beginWork("notepad-reveal", `Opening File Explorer at ${fileName(note.path)}`);
+      return void invoke("open_in", { path: note.path, target: "reveal", context: null })
+        .catch(fail)
+        .finally(() => window.wintWork?.endWork("notepad-reveal"));
+    }
+    if (act === "files") return void openInWintFiles(parentOf(note.path)).catch(fail);
+  }
+
   function openMenu(event, path) {
     closeMenu();
     const note = st.notes.find((n) => n.path === path);
@@ -397,20 +417,11 @@
     const box = menu.getBoundingClientRect();
     menu.style.left = `${Math.min(event.clientX, window.innerWidth - box.width - 8)}px`;
     menu.style.top = `${Math.min(event.clientY, window.innerHeight - box.height - 8)}px`;
-    const fail = (error) => { st.error = String(error); drawStatus(); };
     menu.onclick = (click) => {
       const button = click.target.closest("[data-act]");
       if (!button || button.disabled) return;
       closeMenu();
-      const act = button.dataset.act;
-      if (act === "rename") return startRename(note.path);
-      if (act === "explorer") {
-        window.wintWork?.beginWork("notepad-reveal", `Opening File Explorer at ${fileName(note.path)}`);
-        return void invoke("open_in", { path: note.path, target: "reveal", context: null })
-          .catch(fail)
-          .finally(() => window.wintWork?.endWork("notepad-reveal"));
-      }
-      if (act === "files") return void openInWintFiles(parentOf(note.path)).catch(fail);
+      runAction(button.dataset.act, note);
     };
     setTimeout(() => {
       document.addEventListener("click", closeMenu, { once: true });
@@ -418,35 +429,62 @@
     }, 0);
   }
 
-  /** Rename from the tab's menu: its title becomes the file name, ready to edit.
-   *  Enter or clicking away renames, Escape leaves it as it was. */
+  /** Rename in a dialog of its own, drawn in this page rather than the
+   *  shell's, so it is never left behind a tool running in its own webview.
+   *  The file name is ready to edit with the extension left out of the
+   *  selection; Enter renames, Escape or clicking outside leaves it. */
   function startRename(path) {
     const note = st.notes.find((n) => n.path === path);
-    const label = q(`[data-np-tab="${CSS.escape(path)}"] strong`);
-    if (!note || !label) return;
-    st.renaming = path;
-    const input = document.createElement("input");
-    input.className = "np-rename";
-    input.dataset.npRename = "";
-    input.spellcheck = false;
-    input.value = fileName(path);
-    label.replaceWith(input);
-    input.focus();
-    const dot = input.value.lastIndexOf(".");
-    input.setSelectionRange(0, dot > 0 ? dot : input.value.length);
-    let done = false;
-    const finish = (keep) => {
-      if (done) return;
-      done = true;
-      st.renaming = "";
-      if (keep) renameNote(note, input.value.trim());
-      else drawTabs();
+    if (!note || document.querySelector(".np-rename-layer")) return;
+    const layer = document.createElement("div");
+    layer.className = "confirm-layer np-rename-layer";
+    layer.innerHTML = `<form class="confirm-card np-rename-card" role="dialog" aria-modal="true" aria-labelledby="np-rename-title">
+      <span class="confirm-icon">${icon("edit")}</span>
+      <div class="confirm-copy">
+        <h2 id="np-rename-title">Rename note</h2>
+        <p>${esc(parentOf(note.path))}</p>
+        <input class="np-rename" spellcheck="false" autocomplete="off" aria-label="File name">
+        <small class="np-rename-hint" data-np-rename-hint>Leave out the extension to keep ${esc((fileName(note.path).match(/\.[^.]+$/) || [".txt"])[0])}.</small>
+      </div>
+      <div class="confirm-actions">
+        <button class="btn" type="button" data-np-rename-cancel>Cancel</button>
+        <button class="btn primary" type="submit" data-np-rename-ok>Rename</button>
+      </div>
+    </form>`;
+    document.body.appendChild(layer);
+    const input = layer.querySelector("input");
+    const hint = layer.querySelector("[data-np-rename-hint]");
+    const ok = layer.querySelector("[data-np-rename-ok]");
+    const usual = hint.textContent;
+    input.value = fileName(note.path);
+    // Windows refuses these in a file name; saying so here beats an error after.
+    const problem = () => {
+      const name = input.value.trim();
+      if (!name) return "Type a name.";
+      if (/[<>:"/\\|?*]/.test(name)) return `A file name cannot contain < > : " / \\ | ? *`;
+      return "";
     };
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") { event.preventDefault(); finish(true); }
-      if (event.key === "Escape") { event.preventDefault(); finish(false); }
+    const check = () => {
+      const bad = problem();
+      ok.disabled = !!bad;
+      hint.textContent = bad || usual;
+      hint.classList.toggle("bad", !!bad);
+    };
+    const close = (keep) => {
+      layer.remove();
+      if (keep) renameNote(note, input.value.trim());
+      if (note === current()) q("[data-np-text]")?.focus();
+    };
+    input.addEventListener("input", check);
+    layer.querySelector("form").addEventListener("submit", (event) => { event.preventDefault(); if (!problem()) close(true); });
+    layer.querySelector("[data-np-rename-cancel]").addEventListener("click", () => close(false));
+    layer.addEventListener("click", (event) => { if (event.target === layer) close(false); });
+    layer.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); close(false); } });
+    requestAnimationFrame(() => {
+      input.focus();
+      const dot = input.value.lastIndexOf(".");
+      input.setSelectionRange(0, dot > 0 ? dot : input.value.length);
     });
-    input.addEventListener("blur", () => finish(true));
   }
 
   /** Runs in the note's save chain, so a save already on its way lands under
@@ -477,6 +515,7 @@
         window.wintWork?.endWork("notepad-rename");
       }
       drawTabs();
+      drawHead();
       drawStatus();
     });
   }
@@ -495,25 +534,58 @@
     const list = q("[data-np-tabs]");
     if (!list) return;
     if (st.loading) {
-      list.innerHTML = Array.from({ length: 4 }, () => `<div class="np-tab np-tab-skeleton"><span class="sk sk-line"></span></div>`).join("");
+      list.innerHTML = Array.from({ length: 4 }, () => `<div class="np-tab np-tab-skeleton"><span class="sk sk-line"></span><span class="sk sk-line"></span></div>`).join("");
       return;
     }
-    // A rename in progress is an input inside a tab; redrawing would drop it.
-    if (st.renaming) return;
     list.innerHTML = st.notes.map((note) => {
       const external = isExternal(note);
       const x = external ? "Close - the file stays where it is" : "Delete - the file goes to the Recycle Bin";
       return `<div class="np-tab${note.path === st.selected ? " on" : ""}" data-np-tab="${esc(note.path)}" title="${esc(note.path)}
 Right-click to rename or reveal">
-        <span><strong>${esc(title(note))}</strong>${external ? `<small>${icon("open_in_new")}${esc(parentOf(note.path))}</small>` : ""}</span>
+        <span><strong>${esc(title(note))}</strong><small>${external ? `${icon("open_in_new")}<i>${esc(parentOf(note.path))}</i>` : `<em>${esc(when(note.modified))}</em><i>${esc(snippet(note))}</i>`}</small></span>
         <button type="button" class="np-tab-x" data-np-close="${esc(note.path)}" title="${x}" aria-label="${x}">${icon("close")}</button>
       </div>`;
     }).join("");
   }
 
+  /** "14:32" today, "Yesterday", then "3 Oct" - enough to tell notes apart. */
+  function when(ms) {
+    if (!ms) return "";
+    const d = new Date(ms);
+    const now = new Date();
+    const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const days = Math.round((day(now) - day(d)) / 86400000);
+    if (days <= 0) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (days === 1) return "Yesterday";
+    return d.toLocaleDateString([], d.getFullYear() === now.getFullYear() ? { day: "numeric", month: "short" } : { day: "numeric", month: "short", year: "numeric" });
+  }
+
+  /** The line after the title, so a tab shows a little of what is in it. */
+  function snippet(note) {
+    const lines = note.text.slice(0, 2000).split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    return lines[1] || (lines.length ? "" : "Empty");
+  }
+
+  function drawHead() {
+    const head = q("[data-np-head]");
+    if (!head) return;
+    const note = current();
+    if (!note) { head.innerHTML = ""; return; }
+    // The same three as the tab's right-click menu.
+    const off = note.saved ? "" : " disabled";
+    const reveal = note.saved ? "Reveal in File Explorer" : "Not saved yet - type something first";
+    head.innerHTML = `${icon(isExternal(note) ? "open_in_new" : "description")}<strong>${esc(fileName(note.path))}</strong><small title="${esc(parentOf(note.path))}">${esc(parentOf(note.path))}</small>
+      <span class="np-head-acts">
+        <button type="button" data-np-act="rename" title="Rename" aria-label="Rename">${icon("edit")}</button>
+        <button type="button" data-np-act="explorer" title="${reveal}" aria-label="Reveal in File Explorer"${off}>${icon("folder_open")}</button>
+        <button type="button" data-np-act="files" title="Reveal in WinT Files" aria-label="Reveal in WinT Files">${icon("dock_to_right")}</button>
+      </span>`;
+  }
+
   /** Only on a change of note: rewriting the value while typing would throw
    *  away the caret. */
   function drawEditor() {
+    drawHead();
     const text = q("[data-np-text]");
     if (!text) return;
     const note = current();

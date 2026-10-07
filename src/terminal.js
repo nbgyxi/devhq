@@ -661,6 +661,10 @@ class TermView {
   bind() {
     this.host.tabIndex = 0;
     this.host.addEventListener("keydown", (e) => {
+      // A page hosting this view can keep keys for itself - the VS Code panel
+      // lets the editor's own shortcuts through. Returning without stopping
+      // the event is what lets it reach the host.
+      if (window.wintTerminalPassesKey?.(e)) return;
       if (e.key === "Control") this.setLink(this.pointer ? this.linkUnder(this.pointer) : null);
       if (this.exited) return;
       // The IME owns every intermediate key. Only compositionend contains the

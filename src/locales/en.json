@@ -4284,5 +4284,6 @@
   "{{expr:1}} other torrent(s) are using these drives: {{expr:2}}{{expr:3}}": "{{expr:1}} other torrent(s) are using these drives: {{expr:2}}{{expr:3}}",
   "This window could not load": "This window could not load",
   "Retry now": "Retry now",
-  "{count} of its files did not arrive. Trying again in {seconds}s.": "{count} of its files did not arrive. Trying again in {seconds}s."
+  "{count} of its files did not arrive. Trying again in {seconds}s.": "{count} of its files did not arrive. Trying again in {seconds}s.",
+  "Delete now": "Delete now"
 }

@@ -16,6 +16,43 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.183.2",
+      title: "Deleted torrents leave the list",
+      date: "2026-10-07",
+      changes: [
+        ["fix", "A torrent deleted while saved torrents were still being read back in no longer stays in the list as \"Waiting for the engine\", with the banner stuck on reading one more."],
+        ["fix", "A torrent whose files could not all be deleted still leaves the list, instead of coming back as a greyed row."],
+      ],
+    },
+    {
+      version: "0.183.1",
+      title: "A calmer Notepad",
+      date: "2026-10-07",
+      changes: [
+        ["better", "Notepad's note list is now its own column with a clear edge, and the open note is a soft highlighted row instead of a white tab running into the page."],
+        ["better", "Each note in the list shows when it was last saved and a peek at its second line, and the page shows the file name and folder it is saved in."],
+        ["new", "Rename, Reveal in File Explorer and Reveal in WinT Files now sit as buttons in the top right of the open note, as well as on the right-click menu."],
+        ["better", "Renaming a note opens a dialog with the name ready to edit, and it tells you straight away when a name has a character Windows will not accept."],
+      ],
+    },
+    {
+      version: "0.183.0",
+      title: "WinT's terminal in VS Code",
+      date: "2026-10-06",
+      changes: [
+        ["new", "WinT's terminal now also runs as a panel in VS Code, with Ctrl+R history search, editor-style selection, box selection and kept scrollback. It is a separate VS Code extension and works on its own: WinT does not need to be running."],
+      ],
+    },
+    {
+      version: "0.182.1",
+      title: "Removed torrents stay removed",
+      date: "2026-10-06",
+      changes: [
+        ["fix", "Removing a torrent no longer leaves it behind in the list as \"could not be loaded\". If one is already stuck like that, Remove now clears it."],
+        ["better", "The right-click menu on a torrent now says Move to Recycle Bin and Delete now, instead of the wordier \"Remove, files to Recycle Bin\" and \"Remove, delete the files for good\"."],
+      ],
+    },
+    {
       version: "0.182.0",
       title: "Read text files in the Files preview",
       date: "2026-10-06",

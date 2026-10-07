@@ -1,0 +1,29 @@
+[package]
+name = "wint-term"
+version = "0.1.0"
+edition = "2021"
+description = "WinT's terminal engine - pseudoconsole, screen and sessions - with no window attached."
+license = "SEE LICENSE IN ../../LICENSE"
+publish = false
+
+# Shared by `wint.exe` and `wint-term-host.exe`. Nothing in here may depend on
+# Tauri: the host is a console program that a VS Code extension starts, and it
+# has to run on a machine where WinT is not running, or not installed at all.
+[lib]
+name = "wint_term"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+# Same version the app uses, so it is already built.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }

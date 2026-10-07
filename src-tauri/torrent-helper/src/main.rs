@@ -2720,10 +2720,15 @@ async fn handle(
                         .cloned()
                 });
                 if let Some(saved) = saved {
-                    state.session.forget_saved(saved.id).await?;
-                    if let Ok(mut list) = saved_torrents().lock() {
-                        list.retain(|t| t.id != saved.id);
+                    // Already gone from the state folder is the outcome asked
+                    // for, not a failure - it is what a row left over from an
+                    // earlier remove looks like.
+                    if let Err(error) = state.session.forget_saved(saved.id).await {
+                        if !format!("{error:#}").contains("didn't find torrent") {
+                            return Err(error);
+                        }
                     }
+                    forget_saved_entry(&saved.info_hash);
                     forget_queue_entry(&mut state, &saved.info_hash);
                     return Ok(json!({ "filesKept": true }));
                 }
@@ -2733,18 +2738,28 @@ async fn handle(
                 .mgr_handle(id)
                 .map(|h| h.shared().info_hash.as_string())
                 .ok();
-            if arg
+            let result = if arg
                 .get("deleteFiles")
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
             {
-                state.api.api_torrent_action_delete(id).await?;
+                state.api.api_torrent_action_delete(id).await
             } else {
-                state.api.api_torrent_action_forget(id).await?;
-            }
+                state.api.api_torrent_action_forget(id).await
+            };
+            // The startup list still names it, and anything on that list the
+            // session lacks is drawn as a placeholder - "Waiting for the
+            // engine", or "could not be loaded" once the resume is over - so
+            // a removed torrent came back as a row nothing could clear. A
+            // delete whose files would not go has still taken the torrent out
+            // of the session, so the error is no reason to keep the row.
             if let Some(hash) = hash {
-                forget_queue_entry(&mut state, &hash);
+                if state.api.mgr_handle(id).is_err() {
+                    forget_saved_entry(&hash);
+                    forget_queue_entry(&mut state, &hash);
+                }
             }
+            result?;
             Ok(json!({}))
         }
 
@@ -3279,6 +3294,12 @@ fn forget_queue_entry(state: &mut State, hash: &str) {
         state.save_completions();
     }
     state.save_queue();
+}
+
+fn forget_saved_entry(hash: &str) {
+    if let Ok(mut list) = saved_torrents().lock() {
+        list.retain(|t| t.info_hash != hash);
+    }
 }
 
 fn saved_torrents() -> &'static StdMutex<Vec<SavedTorrent>> {
