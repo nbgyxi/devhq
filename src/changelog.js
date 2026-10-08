@@ -16,6 +16,101 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.184.8",
+      title: "Queued deletes say so",
+      date: "2026-10-08",
+      changes: [
+        ["better", "Deleting more in Files while a delete is running now visibly queues it: those rows are struck through at once and tagged Queued, the row being deleted is tagged Deleting…, and the strip says how many more are waiting."],
+      ],
+    },
+    {
+      version: "0.184.7",
+      title: "See every file go when deleting in Files",
+      date: "2026-10-08",
+      changes: [
+        ["new", "Deleting permanently in Files counts the files first, then shows them going: how many of how many, how much of the total size, and the file being deleted right now."],
+        ["new", "A Stop button on the delete strip stops a permanent delete after the file under way and says how far it got."],
+        ["new", "The Delete question offers Delete permanently next to Move to Recycle Bin, and the right-click menu has both."],
+        ["better", "A file that will not go no longer ends a permanent delete; the rest are deleted and the strip names what was left and why."],
+      ],
+    },
+    {
+      version: "0.184.6",
+      title: "Delete and Shift+Delete always answer in Files",
+      date: "2026-10-08",
+      changes: [
+        ["fix", "Delete and Shift+Delete in Files work on whatever is selected even when the keyboard is on the list rather than on one row. Before, the key often did nothing at all — no question, no delete."],
+        ["fix", "Shift+Delete no longer stops at a read-only file inside a folder; whatever it cannot take straight away goes the way Explorer deletes it."],
+        ["fix", "Drives listed under This PC can no longer be offered for deletion."],
+      ],
+    },
+    {
+      version: "0.184.5",
+      title: "Deleting in Files shows how it is going",
+      date: "2026-10-08",
+      changes: [
+        ["new", "Deleting in Files shows a strip above the list while it works: which item, how many of how many, and the seconds ticking on a big folder. What is being deleted greys out in the list and leaves it one at a time."],
+        ["fix", "A delete that Windows refused used to end without a word. The strip now names every item that was not deleted and why, and stays until you close it."],
+        ["better", "Deleting more while a delete is running adds to it instead of starting a second one alongside."],
+      ],
+    },
+    {
+      version: "0.184.4",
+      title: "Removed torrents take their files with them",
+      date: "2026-10-08",
+      changes: [
+        ["fix", "Removing several torrents with their files no longer leaves folders behind on the disk. Each torrent's files are deleted on their own, so one folder that is still in use cannot stop the rest."],
+        ["fix", "Files the torrent engine has only just let go of are tried again for about fifteen seconds instead of one second before giving up."],
+        ["better", "If any files do stay on the disk, the line under the list names them and why, and stays there instead of disappearing after six seconds."],
+        ["fix", "Deleting in Files no longer says it worked when Windows only moved part of a folder to the Recycle Bin."],
+      ],
+    },
+    {
+      version: "0.184.3",
+      title: "Removing many torrents at once",
+      date: "2026-10-08",
+      changes: [
+        ["fix", "Removing or deleting several selected torrents no longer stops after the first one or two. A torrent the engine is slow to let go of gets up to a minute instead of eight seconds."],
+        ["better", "Every torrent being removed says Removing… in its row straight away, and the status bar counts through them (3 / 10)."],
+        ["better", "The files of a multi-remove go to the Recycle Bin in one go at the end, and one line afterwards says how many went and names any that did not."],
+      ],
+    },
+    {
+      version: "0.184.2",
+      title: "Double-click the corner icon to close",
+      date: "2026-10-07",
+      changes: [
+        ["new", "Double-clicking the WinT icon in the top-left corner closes the window the same way the close button does, with the same question about quitting or going to the tray."],
+      ],
+    },
+    {
+      version: "0.184.1",
+      title: "A Folder column for search matches",
+      date: "2026-10-07",
+      changes: [
+        ["better", "Search matches in Files get a Folder column showing where each one was found, starting from the folder you searched. A path too long for the column keeps its end and loses its start, and the column can be sorted and resized."],
+      ],
+    },
+    {
+      version: "0.184.0",
+      title: "Search every folder in Files",
+      date: "2026-10-07",
+      changes: [
+        ["new", "Files can search every folder below the one you are in: type a name in the box and press Enter, or click Search subfolders. From This PC it searches every drive."],
+        ["new", "Matches fill in while the search runs, each with the folder it was found in, and the type chips, extensions, sorting and preview all work on them - one click on Folders keeps only folders."],
+        ["new", "Every word you type must be in the name, and * and ? work as wildcards, so *.pdf finds every PDF. Ctrl+F jumps to the box."],
+        ["better", "Back from a folder you opened out of the matches returns to the matches; Back or Esc from the matches returns to the folder you searched."],
+      ],
+    },
+    {
+      version: "0.183.3",
+      title: "Torrents open in WinT Files again",
+      date: "2026-10-07",
+      changes: [
+        ["fix", "Open in WinT Files, from a torrent's or a file's right-click menu, now opens a Files window when Torrents is in a window of its own, instead of doing nothing."],
+      ],
+    },
+    {
       version: "0.183.2",
       title: "Deleted torrents leave the list",
       date: "2026-10-07",

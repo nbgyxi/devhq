@@ -200,6 +200,10 @@
      *  that a long moment. Without this the row goes on saying "Checking
      *  files" after the click and the button looks dead. See `wantAction`. */
     pendingAction: new Map(),
+    /** Torrents a remove has been asked for and has not finished with. The
+     *  engine handles one remove at a time, so the last of a long selection
+     *  can wait a while — its row says so instead of looking untouched. */
+    removing: new Set(),
     /** Set while a command is in flight, so the buttons can say so. */
     busy: "",
     notice: "",
@@ -306,6 +310,7 @@
   function statusWords(row) {
     // Checked ahead of everything else: a torrent whose files have been
     // deleted must never sit there claiming to seed them.
+    if (st.removing.has(row.id)) return { text: "Removing…", tone: "warn" };
     if (row.state === "missing") return { text: "Files missing", tone: "bad" };
     if (row.state === "adding") return { text: "Adding…", tone: "warn" };
     if (row.state === "needs-check") return { text: "File state changed", tone: "warn" };
@@ -941,12 +946,14 @@
       ${diagnostics()}`);
   }
 
-  function note(text) {
+  /** `stay` keeps a line that names what was left undone until the next
+   *  note replaces it — six seconds is too short to read a list of folders. */
+  function note(text, { stay = false } = {}) {
     st.notice = text;
     const el = st.host?.querySelector("[data-tr-note]");
     if (el) el.textContent = text;
-    if (!text) return;
     clearTimeout(note.timer);
+    if (!text || stay) return;
     note.timer = setTimeout(() => { st.notice = ""; const n = st.host?.querySelector("[data-tr-note]"); if (n) n.textContent = ""; }, 6000);
   }
 
@@ -2666,11 +2673,7 @@ Click to open in Explorer` : "";
     }
 
     if (t.closest("[data-tr-clean-unloaded]")) {
-      const rows = unloadedRows();
-      window.wintWork?.beginWork("torrent-clean-unloaded", `Removing ${rows.length} torrent${rows.length === 1 ? "" : "s"} that could not be loaded`);
-      return void (async () => {
-        for (const row of rows) await removeTorrent(row, "keep");
-      })().finally(() => window.wintWork?.endWork("torrent-clean-unloaded"));
+      return void removeTorrents(unloadedRows(), "keep");
     }
 
     if (t.closest("[data-tr-restart]")) {
@@ -3011,69 +3014,138 @@ Click to open in Explorer` : "";
       tone: "danger",
     });
     if (answer !== true && answer !== "alternate") return;
-    for (const item of rows) await removeTorrent(item, answer === true ? "recycle" : "keep");
+    await removeTorrents(rows, answer === true ? "recycle" : "keep");
   }
 
-  /** Takes a torrent off the list, and does the chosen thing with its files.
+  /** Takes torrents off the list, and does the chosen thing with their files.
    *
-   *  The paths are read **before** the torrent goes, because afterwards the
-   *  engine no longer knows them — and they are the torrent's own paths, never
-   *  the download folder, which a remove must never be able to delete. */
-  async function removeTorrent(row, mode) {
-    // Asking where the files are is allowed to fail — an older backend may
-    // not know the question, and files the user already deleted by hand have
-    // no paths left to find. Neither is a reason to leave the torrent sitting
-    // in the list, which is the one thing the user definitely asked for.
-    let target = null;
-    let gone = false;
+   *  One at a time through the engine, which handles a remove under its one
+   *  lock anyway. The files go after all the removes, still one torrent per
+   *  call: a single Recycle Bin trip for everything stopped at the first item
+   *  Windows would not move, and every folder after it stayed on disk. The
+   *  whole run is on the status bar with a count, each row says "Removing…"
+   *  until it goes, and whatever was left behind is named in a line that
+   *  stays until the next thing happens. */
+  async function removeTorrents(rows, mode) {
+    rows = rows.filter((row) => !st.removing.has(row.id));
+    if (!rows.length) return;
+    const key = `torrent-remove-${Date.now()}`;
+    const total = rows.length;
+    const label = total === 1 ? `Removing ${rows[0].name}` : `Removing ${total} torrents`;
+    for (const row of rows) st.removing.add(row.id);
+    drawRows();
+    window.wintWork?.beginWork(key, label);
+
+    const removed = [];
+    const failed = [];
+    const toDelete = [];
+    const kept = [];
+    let engineDeleted = 0;
+    try {
+      for (const [index, row] of rows.entries()) {
+        window.wintWork?.updateWork(key, `${index + 1} / ${total} · ${row.name}`);
+        if (total > 1) note(`Removing ${index + 1} / ${total}: ${row.name}`);
+        try {
+          const outcome = await removeFromEngine(row, mode);
+          removed.push(row);
+          if (outcome.target) toDelete.push({ row, paths: outcome.target });
+          if (outcome.engineDeletes) engineDeleted++;
+          if (outcome.unknown) kept.push(`${row.name}: where its files are could not be worked out`);
+        } catch (error) {
+          failed.push(`${row.name}: ${error}`);
+        } finally {
+          st.removing.delete(row.id);
+        }
+      }
+
+      let deleted = 0;
+      for (const [index, item] of toDelete.entries()) {
+        window.wintWork?.updateWork(key, `${mode === "recycle" ? "Recycle Bin" : "Deleting files"} ${index + 1} / ${toDelete.length} · ${item.row.name}`);
+        if (toDelete.length > 1) note(`${mode === "recycle" ? "Sending files to the Recycle Bin" : "Deleting files"} ${index + 1} / ${toDelete.length}: ${item.row.name}`);
+        const error = await deleteFiles(item.paths, mode === "recycle");
+        if (error) kept.push(`${item.row.name}: ${error}`);
+        else deleted++;
+      }
+      note(removeSummary({ mode, total, removed, failed, deleted, engineDeleted, kept }),
+        { stay: failed.length > 0 || kept.length > 0 });
+    } catch (error) {
+      note(`Removing stopped part-way: ${error}`, { stay: true });
+    } finally {
+      for (const row of rows) st.removing.delete(row.id);
+      window.wintWork?.endWork(key);
+      drawRows();
+    }
+  }
+
+  /** One torrent out of the engine. Its paths are read **before** it goes,
+   *  because afterwards the engine no longer knows them — and they are the
+   *  torrent's own paths, never the download folder, which a remove must
+   *  never be able to delete. Throws only when the torrent stayed. */
+  async function removeFromEngine(row, mode) {
     // Never loaded, so the engine cannot say where its files are, and a guess
     // is not something to delete by. Only the saved entry goes.
     if (row.state === "unloaded") mode = "keep";
+    // Asking where the files are is allowed to fail — an older backend may
+    // not know the question, and files the user already deleted by hand have
+    // no paths left to find. Neither is a reason to leave the torrent sitting
+    // in the list, which is the one thing the user definitely asked for. It
+    // is asked twice, though: an engine still busy with the previous remove
+    // can miss the first, and that alone used to leave the files behind.
+    let target = null;
+    let gone = false;
     if (mode !== "keep") {
-      try {
-        const paths = await invoke("torrent_paths", { id: row.id });
-        target = paths?.root ? [paths.root] : (paths?.files || []);
-        gone = paths?.root ? paths.rootExists === false : false;
-        if (!target.length) target = null;
-      } catch {
-        target = null;
+      for (let attempt = 0; attempt < 2 && !target && !gone; attempt++) {
+        if (attempt) await new Promise((done) => setTimeout(done, 1000));
+        try {
+          const paths = await invoke("torrent_paths", { id: row.id });
+          target = paths?.root ? [paths.root] : (paths?.files || []);
+          gone = paths?.root ? paths.rootExists === false : false;
+          if (!target.length || gone) target = null;
+        } catch {
+          target = null;
+        }
       }
     }
-
     // With no paths to work from, the engine's own delete is the fallback for
     // "delete now"; it cannot use the Recycle Bin, so a recycle with no
     // paths keeps the files rather than silently destroying them.
-    const engineDeletes = mode === "forever" && !target;
-    try {
-      await invoke("torrent_action", { id: row.id, action: "remove", deleteFiles: engineDeletes });
-    } catch (error) {
-      return note(`${row.name} could not be removed: ${error}`);
-    }
+    const engineDeletes = mode === "forever" && !target && !gone;
+    await invoke("torrent_action", { id: row.id, action: "remove", deleteFiles: engineDeletes });
     st.selectedIds.delete(row.id);
     if (st.selected === row.id) {
       st.selected = st.selectedIds.values().next().value ?? null;
       drawDetail();
     }
+    return { target, engineDeletes, unknown: mode !== "keep" && !target && !gone && !engineDeletes };
+  }
 
-    if (mode === "keep") return note(`Removed ${row.name}. The files were left where they are.`);
-    if (gone) return note(`Removed ${row.name}. Its files were already gone.`);
-    if (engineDeletes) return note(`Removed ${row.name} and deleted what was on disk.`);
-    if (!target) return note(`Removed ${row.name}, but where its files were could not be worked out — they were left alone.`);
-
-    // The engine has only just let go of these files, and Windows can still be
-    // holding a handle for a moment after. A couple of retries covers that
-    // without making the user do it.
-    for (let attempt = 0; attempt < 3; attempt++) {
+  /** One torrent's files. The engine has only just let go of them, and a
+   *  file it was seeding can stay open for a few seconds after the remove
+   *  answers, so the retries back off over about fifteen seconds rather than
+   *  giving up after one. Answers the last error, or "" when they went. */
+  async function deleteFiles(paths, recycle) {
+    const waits = [500, 1000, 2000, 4000, 8000];
+    for (let attempt = 0; ; attempt++) {
       try {
-        await invoke("explorer_delete", { paths: target, recycle: mode === "recycle" });
-        return note(mode === "recycle"
-          ? `Removed ${row.name} and sent its files to the Recycle Bin.`
-          : `Removed ${row.name} and deleted its files.`);
+        await invoke("explorer_delete", { paths, recycle });
+        return "";
       } catch (error) {
-        if (attempt === 2) return note(`Removed ${row.name}, but its files could not be deleted: ${error}`);
-        await new Promise((done) => setTimeout(done, 500));
+        if (attempt === waits.length) return String(error);
+        await new Promise((done) => setTimeout(done, waits[attempt]));
       }
     }
+  }
+
+  function removeSummary({ mode, total, removed, failed, deleted, engineDeleted, kept }) {
+    if (!removed.length) return `Nothing was removed — ${failed.join("; ")}`;
+    const parts = [total === 1 ? `Removed ${removed[0].name}.` : `Removed ${removed.length} of ${total} torrents.`];
+    if (mode === "keep") parts.push(`${total === 1 ? "Its" : "Their"} files were left where they are.`);
+    else if (deleted) parts.push(`${total === 1 ? "Its files" : `Files of ${deleted}`} ${mode === "recycle" ? "went to the Recycle Bin" : "were deleted"}.`);
+    else if (!engineDeleted && !kept.length) parts.push("There were no files left to delete.");
+    if (engineDeleted) parts.push(`${engineDeleted === 1 && total === 1 ? "Its files were" : `Files of ${engineDeleted} were`} deleted by the engine itself.`);
+    if (kept.length) parts.push(`Files left on disk — ${kept.join("; ")}.`);
+    if (failed.length) parts.push(`Not removed — ${failed.join("; ")}.`);
+    return parts.join(" ");
   }
 
   /** Where this torrent lives, for opening rather than deleting. Falls back to
@@ -3087,9 +3159,12 @@ Click to open in Explorer` : "";
     }
   }
 
+  /** Sent through the main WinT window when this tool runs in a webview of
+   *  its own: the shell stub there only reaches a Files page loaded in the
+   *  same window, so it quietly did nothing from Torrents. */
   function openInWintFiles(path) {
     if (!path) return Promise.reject(new Error("That folder could not be worked out."));
-    if (window.wintShell?.openExplorerWindow) return window.wintShell.openExplorerWindow(path);
+    if (window.wintShell?.openExplorerWindow && !window.wintExternalToolChrome) return Promise.resolve(window.wintShell.openExplorerWindow(path));
     const emit = window.__TAURI__?.event?.emit;
     if (!emit) return Promise.reject(new Error("WinT Files could not be contacted."));
     return emit("files:open-window", { path });
@@ -3148,10 +3223,7 @@ Click to open in Explorer` : "";
       if (act === "force") return void Promise.all(targets.map((item) => invoke("torrent_action", { id: item.id, action: allForced ? "start" : "force_start" })))
         .then(() => note(allForced ? `${targets.length} torrent${many ? "s will" : " will"} use the download queue.` : `${targets.length} torrent${many ? "s were" : " was"} force started.`))
         .catch((error) => note(String(error)));
-      if (act === "keep") {
-        for (const item of targets) await removeTorrent(item, "keep");
-        return;
-      }
+      if (act === "keep") return void removeTorrents(targets, "keep");
 
       const forGood = act === "forever";
       const ok = await window.wintConfirm?.({
@@ -3166,9 +3238,7 @@ Click to open in Explorer` : "";
         icon: forGood ? "delete_forever" : "delete",
         tone: "danger",
       });
-      if (ok === true) {
-        for (const item of targets) await removeTorrent(item, forGood ? "forever" : "recycle");
-      }
+      if (ok === true) await removeTorrents(targets, forGood ? "forever" : "recycle");
     };
     setTimeout(() => document.addEventListener("click", closeMenu, { once: true }), 0);
   }

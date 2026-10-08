@@ -36,6 +36,8 @@ const kindOf = (entry) => {
 
 const COLUMNS = [
   { id: "name", label: "Name" },
+  // Only while a search is showing: where each match was found.
+  { id: "where", label: "Folder" },
   { id: "type", label: "Type" },
   { id: "size", label: "Size" },
   { id: "modified", label: "Modified" },
@@ -56,6 +58,8 @@ const fx = {
   tree: new Map(),
   open: new Set(),
   path: "", listing: null, loading: false, error: "",
+  /** The delete under way or just finished; see `runDelete`. */
+  op: null, opTimer: 0,
   history: [], forward: [],
   filter: "", kinds: new Set(), exts: new Set(),
   sort: "name", desc: false, showHidden: false, typesOpen: false,
@@ -68,7 +72,7 @@ const fx = {
    *  left. Remembered across windows the same way bookmarks are. */
   sideWidth: 268, previewWidth: 320,
   windowWidth: 960, windowHeight: 720,
-  columnWidths: { name: 320, type: 130, size: 92, modified: 148, created: 148 },
+  columnWidths: { name: 320, where: 260, type: 130, size: 92, modified: 148, created: 148 },
   createdColumn: false,
   /** Focused row plus the complete multi-selection. The focused file, when
    *  there is one, is what the preview pane shows. */
@@ -102,7 +106,23 @@ const fx = {
    *  first, and a short list clamps the scroller to the top, so by the time
    *  the rows come back there is nothing left to put the view back to. */
   scrollTop: 0,
+  /** A search through everything under the folder that is open. While it is
+   *  set, the list shows its matches instead of the folder, and the chips,
+   *  sorting, selection and preview all work on those. `null` is browsing.
+   *  { query, roots, label, token, entries, running, folders, current, summary } */
+  search: null,
+  /** The search a result was opened from, so Back from that folder comes
+   *  back to the matches instead of the bare folder they were found under. */
+  searchReturn: null,
 };
+
+/** What the list is made of right now: the matches of a search, or the
+ *  folder. Everything that looks a row up by path goes through here, so a row
+ *  found three folders down acts exactly like one in the folder itself. */
+const listed = () => (fx.search ? fx.search.entries : fx.listing?.entries || []);
+/** Skeleton rows belong to a folder being read. A search draws its own
+ *  progress and keeps its rows on screen whatever the folder underneath does. */
+const readingFolder = () => fx.loading && !fx.search;
 
 const SIDE_MIN = 64;
 const SIDE_MAX = 1200;
@@ -110,7 +130,7 @@ const PREVIEW_MIN = 64;
 const PREVIEW_MAX = 1200;
 const MAIN_MIN = 96;
 const SPLIT_W = 5;
-const visibleColumns = () => COLUMNS.filter((column) => column.id !== "created" || fx.createdColumn);
+const visibleColumns = () => COLUMNS.filter((column) => (column.id !== "created" || fx.createdColumn) && (column.id !== "where" || fx.search));
 const columnTemplate = () => visibleColumns().map((column) => `${fx.columnWidths[column.id]}px`).join(" ");
 const columnTableWidth = () => visibleColumns().reduce((width, column) => width + fx.columnWidths[column.id], 0)
   + Math.max(0, visibleColumns().length - 1) * 10 + 48;
@@ -324,9 +344,15 @@ const tidyPath = (value) => {
   return unc ? `\\${collapsed}` : collapsed;
 };
 
-async function openFolder(path, { push = true, keepFilter = false, focusPath = null, quiet = false } = {}) {
+async function openFolder(path, { push = true, keepFilter = false, focusPath = null, quiet = false, keepSearch = false } = {}) {
   if (path == null) return;
   path = tidyPath(path);
+  // Going anywhere ends a search; going into one of its matches keeps it for Back.
+  if (fx.search && !keepSearch) {
+    rememberSearch(path);
+    stopSearch();
+    fx.search = null;
+  }
   if (push && fx.path !== path && !same(fx.path, path)) { fx.history.push(fx.path); fx.forward = []; }
   const token = ++listToken;
   const leaving = fx.path;
@@ -377,7 +403,7 @@ async function openFolder(path, { push = true, keepFilter = false, focusPath = n
     if (token !== listToken) return;
     if (quiet && sameListing(fx.listing, listing)) { unchanged = true; return; }
     fx.listing = listing;
-    const present = new Set(listing.entries.map((entry) => entry.path.toLowerCase()));
+    const present = new Set(listed().map((entry) => entry.path.toLowerCase()));
     fx.selectedPaths = new Set(selection().filter((selected) => present.has(selected.toLowerCase())));
     if (fx.selected && !present.has(fx.selected.toLowerCase())) fx.selected = selection()[0] || "";
     fx.tree.set(listing.path, { entries: listing.entries.filter((entry) => entry.isDir), error: "", loading: false });
@@ -437,10 +463,14 @@ function toggleBranch(path) {
 }
 
 function goBack() {
+  // A search sits on top of the folder it was made in, so Back is that folder.
+  if (fx.search) return closeSearch();
   if (!fx.history.length) return;
   const child = fx.path;
   fx.forward.push(child);
-  openFolder(fx.history.pop(), { push: false, focusPath: child });
+  const back = fx.history.pop();
+  if (fx.searchReturn && same(back, fx.searchReturn.root)) return restoreSearch(child);
+  openFolder(back, { push: false, focusPath: child });
 }
 
 function goForward() {
@@ -450,12 +480,16 @@ function goForward() {
 }
 
 function goUp() {
+  if (fx.search) return closeSearch();
   if (fx.path === THIS_PC) return;
   const child = fx.path;
   openFolder(fx.listing?.parent ?? THIS_PC, { focusPath: child });
 }
 
 function refresh({ quiet = false } = {}) {
+  // A search is asked again by hand; a file changing in the folder it started
+  // from says nothing about the thousands of folders below it.
+  if (fx.search) return quiet ? undefined : startSearch(fx.search.query);
   if (fx.path === THIS_PC) {
     fx.roots = [];
     loadRoots();
@@ -463,6 +497,207 @@ function refresh({ quiet = false } = {}) {
   }
   fx.tree.delete(fx.path);
   openFolder(fx.path, { push: false, keepFilter: true, quiet });
+}
+
+// ----------------------------------------------------------------- search
+
+/** Who this window is to the search registry in Rust: a new search here stops
+ *  this window's last one, and never another Files window's. */
+const SEARCH_OWNER = mintInstance();
+let searchTimer = 0;
+
+/** A search starts where you are: the open folder, or every drive from This
+ *  PC. A zip is not walked - its members are not files Windows can find. */
+const searchRoots = () => (fx.path === THIS_PC ? fx.roots.map((root) => root.path) : [fx.path]);
+const canSearch = () => (fx.path === THIS_PC ? fx.roots.length > 0 : writable(fx.path) && !isZipRoot(fx.path));
+const searchPlace = () => (fx.path === THIS_PC ? "This PC" : nameOf(fx.path));
+/** The drive list stands in for the folder at This PC - unless a search is
+ *  showing its matches there instead. */
+const atDrives = () => fx.path === THIS_PC && !fx.search;
+
+function searchDetail(search) {
+  const found = search.entries.length;
+  return `${search.folders.toLocaleString()} folder${search.folders === 1 ? "" : "s"} read · ${found.toLocaleString()} found`;
+}
+
+function startSearch(query = fx.filter) {
+  const text = String(query || "").trim();
+  if (!text) return focusSearchBox();
+  if (!canSearch()) return note(fx.path === THIS_PC ? "The drives are still being read" : "This place cannot be searched");
+  clearTimeout(searchTimer);
+  if (fx.search?.running) invoke("explorer_search_cancel", { owner: SEARCH_OWNER }).catch(() => {});
+  const token = mintInstance();
+  const roots = searchRoots();
+  const place = searchPlace();
+  fx.search = { query: text, roots, place, token, entries: [], running: true, folders: 0, current: "", summary: null };
+  fx.searchReturn = null;
+  fx.filter = text;
+  fx.typesOpen = false;
+  fx.rename = null;
+  fx.selected = ""; fx.selectedPaths.clear(); fx.selectionAnchor = "";
+  fx.previewUrl = ""; fx.previewText = null; previewToken += 1;
+  fx.scrollTop = 0; fx.scrollRestore = true;
+  window.wintWork?.beginWork("explorer-search", `Searching ${place} for “${text}”`, "Starting");
+  invoke("explorer_search", {
+    owner: SEARCH_OWNER, token, roots, query: text,
+    showHidden: fx.showHidden, includeCreated: fx.createdColumn,
+  }).catch((error) => searchDone({ token, summary: { error: String(error) } }));
+  dirty();
+}
+
+/** Every keystroke in the box during a search asks again, once typing pauses. */
+function searchSoon() {
+  clearTimeout(searchTimer);
+  if (!fx.filter.trim()) return;
+  searchTimer = setTimeout(() => {
+    if (fx.search && fx.filter.trim() !== fx.search.query) startSearch(fx.filter);
+  }, 400);
+}
+
+function searchBatch(payload) {
+  const search = fx.search;
+  if (!search || payload?.token !== search.token) return;
+  search.folders = payload.folders || search.folders;
+  if (payload.current) search.current = payload.current;
+  if (search.running) window.wintWork?.updateWork("explorer-search", searchDetail(search));
+  if (payload.entries?.length) {
+    // A new array, not a push: the visible-rows cache is keyed on it.
+    search.entries = search.entries.concat(payload.entries);
+    dirty();
+  } else paintSearchStatus();
+}
+
+function searchDone(payload) {
+  const search = fx.search;
+  if (!search || payload?.token !== search.token) return;
+  const summary = payload.summary || {};
+  search.summary = { ...summary, cancelled: summary.cancelled || !search.running };
+  search.folders = summary.folders ?? search.folders;
+  search.current = "";
+  if (search.running) {
+    search.running = false;
+    window.wintWork?.endWork("explorer-search");
+    if (summary.error) note(summary.error);
+    else note(`Found ${search.entries.length.toLocaleString()} under ${search.place} for “${search.query}”`);
+  }
+  dirty();
+  loadThumbs();
+}
+
+function stopSearch() {
+  clearTimeout(searchTimer);
+  if (!fx.search?.running) return;
+  invoke("explorer_search_cancel", { owner: SEARCH_OWNER }).catch(() => {});
+  // Stopped as far as the window is concerned; whatever the walk had already
+  // found still arrives in its last batch and is kept.
+  fx.search.running = false;
+  fx.search.summary = { folders: fx.search.folders, cancelled: true };
+  window.wintWork?.endWork("explorer-search");
+  dirty();
+}
+
+/** Back to the folder the search was made in, as it is now. */
+function closeSearch() {
+  if (!fx.search) return;
+  stopSearch();
+  fx.search = null;
+  fx.searchReturn = null;
+  if (fx.sort === "where") { fx.sort = "name"; fx.desc = false; }
+  fx.filter = ""; fx.kinds.clear(); fx.exts.clear(); fx.typesOpen = false;
+  fx.selected = ""; fx.selectedPaths.clear(); fx.selectionAnchor = "";
+  fx.previewUrl = ""; fx.previewText = null; previewToken += 1;
+  fx.scrollTop = fx.scrollMemory.get(normal(fx.path)) || 0; fx.scrollRestore = true;
+  fx.focusList = true;
+  // Files may have moved while the matches were on screen.
+  if (fx.path !== THIS_PC) openFolder(fx.path, { push: false, keepFilter: true, quiet: !!fx.listing });
+  dirty();
+}
+
+/** Leaving the matches for a folder found among them keeps them, so Back
+ *  from there lands on the list again rather than on the bare folder. */
+function rememberSearch(next) {
+  if (!fx.search || same(next, fx.path)) return;
+  fx.searchReturn = {
+    root: fx.path, search: fx.search,
+    kinds: [...fx.kinds], exts: [...fx.exts], scrollTop: fx.scrollTop,
+  };
+}
+
+function restoreSearch(child) {
+  const back = fx.searchReturn;
+  fx.searchReturn = null;
+  // The folder underneath is read quietly, ready for when the search closes.
+  openFolder(back.root, { push: false, keepSearch: true, quiet: true });
+  fx.search = back.search;
+  fx.filter = back.search.query;
+  fx.kinds = new Set(back.kinds); fx.exts = new Set(back.exts);
+  fx.scrollTop = back.scrollTop; fx.scrollRestore = true;
+  fx.pendingFocus = child;
+  fx.focusList = true;
+  dirty();
+}
+
+/** Rows renamed or deleted from the matches change in place, since nothing
+ *  re-reads a search the way a folder is re-read. */
+function patchSearch(gone, renamed = new Map()) {
+  if (!fx.search) return;
+  const drop = new Set(gone.map(normal));
+  fx.search.entries = fx.search.entries
+    .filter((entry) => !drop.has(normal(entry.path)))
+    .map((entry) => {
+      const next = renamed.get(normal(entry.path));
+      if (!next) return entry;
+      const name = nameOf(next);
+      const dot = name.lastIndexOf(".");
+      return { ...entry, path: next, name, ext: entry.isDir || dot <= 0 ? entry.ext : name.slice(dot + 1).toLowerCase() };
+    });
+}
+
+function focusSearchBox() {
+  const box = fx.host?.querySelector(".fx-search input");
+  if (!box) return;
+  box.focus();
+  box.select();
+}
+
+/** The folder a match sits in, starting from the folder that was searched -
+ *  `Projects\src\lib` rather than the whole path from the drive - so the
+ *  Folder column spends its width on the part that differs. From This PC the
+ *  searched folder is a drive, and the path is shown whole. */
+function whereOf(path) {
+  const parent = parentOf(path);
+  if (!fx.search || fx.path === THIS_PC) return parent;
+  const base = String(fx.search.roots[0] || "").replace(/\\+$/, "");
+  if (!base || !parent.toLowerCase().startsWith(base.toLowerCase())) return parent;
+  return nameOf(base) + parent.slice(base.length);
+}
+
+function searchStatus() {
+  const search = fx.search;
+  if (!search) return "";
+  const found = search.entries.length.toLocaleString();
+  const summary = search.summary || {};
+  if (search.running) {
+    return `<i class="fx-spin">${icon("progress_activity")}</i><span>Searching <b>${esc(search.place)}</b> · ${esc(searchDetail(search))}</span>`;
+  }
+  if (summary.error) return `${icon("error")}<span>${esc(summary.error)}</span>`;
+  const read = `${(summary.folders ?? search.folders).toLocaleString()} folders`;
+  if (summary.capped) return `${icon("warning")}<span>Stopped at ${found} matches in ${read} · add a word to narrow it</span>`;
+  if (summary.cancelled) return `${icon("stop_circle")}<span>Stopped · ${found} found in ${read}</span>`;
+  const took = summary.elapsedMs >= 1000 ? ` · ${(summary.elapsedMs / 1000).toFixed(1)} s` : "";
+  const skipped = summary.skipped ? ` · ${summary.skipped.toLocaleString()} could not be read` : "";
+  return `${icon("check_circle")}<span>${found} found in ${read} under <b>${esc(search.place)}</b>${took}${skipped}</span>`;
+}
+
+/** The count of folders read moves far more often than matches arrive, and
+ *  repainting the whole tool for a number is exactly what this app avoids. */
+function paintSearchStatus() {
+  const slot = fx.host?.querySelector("[data-fx-search-status]");
+  if (slot) slot.innerHTML = searchStatus();
+  const empty = fx.host?.querySelector("[data-fx-search-empty]");
+  if (empty && fx.search) empty.textContent = searchDetail(fx.search);
+  const current = fx.host?.querySelector("[data-fx-search-current]");
+  if (current && fx.search) current.textContent = fx.search.current;
 }
 
 // -------------------------------------------------------------- filtering
@@ -506,8 +741,11 @@ function visibleCacheKey() {
 
 function visible() {
   const key = visibleCacheKey();
-  if (visibleCache && visibleCache.listing === fx.listing && visibleKey === key) return visibleCache.value;
-  visibleCache = { listing: fx.listing, value: computeVisible() };
+  // Keyed on the array itself: a search replaces it with every batch, so new
+  // matches are a different list even though the knobs did not move.
+  const source = listed();
+  if (visibleCache && visibleCache.source === source && visibleKey === key) return visibleCache.value;
+  visibleCache = { source, value: computeVisible() };
   visibleKey = key;
   // A different list means the rows on screen are stale whatever the scroll says.
   virtualStart = -1;
@@ -515,8 +753,10 @@ function visible() {
 }
 
 function computeVisible() {
-  const all = (fx.listing?.entries || []).filter((entry) => fx.showHidden || !entry.hidden);
-  const needle = fx.filter.trim().toLowerCase();
+  const all = listed().filter((entry) => fx.showHidden || !entry.hidden);
+  // During a search the box holds the query, which Rust has already applied -
+  // and a wildcard like "*.pdf" would match nothing as a plain substring.
+  const needle = fx.search ? "" : fx.filter.trim().toLowerCase();
   const named = needle ? all.filter((entry) => entry.name.toLowerCase().includes(needle)) : all;
   const typed = named.filter((entry) => {
     if (fx.kinds.size && !fx.kinds.has(kindOf(entry))) return false;
@@ -532,6 +772,7 @@ function computeVisible() {
     if (fx.sort === "size") return direction * (a.bytes - b.bytes) || byName(a, b);
     if (fx.sort === "modified") return direction * (a.modified - b.modified) || byName(a, b);
     if (fx.sort === "created") return direction * (a.created - b.created) || byName(a, b);
+    if (fx.sort === "where" && fx.search) return direction * whereOf(a.path).localeCompare(whereOf(b.path), undefined, { numeric: true, sensitivity: "base" }) || byName(a, b);
     if (fx.sort === "type") return direction * (a.ext || "").localeCompare(b.ext || "") || byName(a, b);
     return direction * byName(a, b);
   });
@@ -637,11 +878,11 @@ function toggleBookmark(path) {
 let thumbToken = 0;
 
 async function loadThumbs() {
-  if (!fx.thumbsOn || fx.path === THIS_PC) return;
+  if (!fx.thumbsOn || atDrives()) return;
   const token = ++thumbToken;
   if (fx.thumbs.size > 600) fx.thumbs.clear();
   const painted = new Set([...fx.host?.querySelectorAll(".fx-row[data-fx-item]") || []].map((row) => row.dataset.fxItem));
-  const wanted = (fx.listing?.entries || [])
+  const wanted = listed()
     .filter((entry) => !entry.isDir && PREVIEW_KINDS.has(kindOf(entry)) && !fx.thumbs.has(entry.path))
     // What is on screen is useful now. Everything else continues behind it so
     // a later scroll normally finds its pictures waiting in the cache.
@@ -687,6 +928,11 @@ function paintThumb(path, url) {
 async function askDelete(paths, permanent = false) {
   const targets = paths.filter(Boolean);
   if (!targets.length) return;
+  // This PC lists drives as rows, and a drive is never something to delete.
+  if (targets.some((path) => /^[a-z]:\\?$/i.test(String(path).trim()) || same(path, THIS_PC))) {
+    note("A whole drive cannot be deleted here.");
+    return;
+  }
   if (targets.some((path) => isInsideZip(path))) {
     window.wintWork?.beginWork("explorer-delete", "Files inside a zip cannot be deleted here");
     setTimeout(() => window.wintWork?.endWork("explorer-delete"), 4000);
@@ -695,38 +941,229 @@ async function askDelete(paths, permanent = false) {
   const what = targets.length === 1
     ? segments(targets[0]).slice(-1)[0]?.name || targets[0]
     : `${targets.length} items`;
-  const folders = targets.filter((path) => (fx.listing?.entries || []).some((entry) => same(entry.path, path) && entry.isDir && !entry.isArchive));
-  const answer = await (window.wintConfirm
-    ? window.wintConfirm({
-        title: permanent ? `Permanently delete ${what}?` : `Move ${what} to the Recycle Bin?`,
-        message: permanent
-          ? `${folders.length ? `${what} ${targets.length === 1 ? "is a folder, so everything inside it will be deleted too. " : "includes folders, so everything inside them will be deleted too. "}` : ""}This cannot be undone.`
-          : `${folders.length ? `${what} ${targets.length === 1 ? "is a folder, so everything inside it will move too. " : "includes folders, so everything inside them will move too. "}` : ""}You can restore ${targets.length === 1 ? "it" : "them"} from the Recycle Bin.`,
-        confirmLabel: permanent ? "Delete permanently" : "Move to Recycle Bin",
-        cancelLabel: "Cancel",
-        icon: permanent ? "delete_forever" : "delete",
-        tone: "danger",
-      })
-    : Promise.resolve(window.confirm(permanent
-      ? `Permanently delete ${what}? This cannot be undone.`
-      : `Move ${what} to the Recycle Bin?`)));
-  if (!answer) return;
-  const recycle = !permanent;
-  window.wintWork?.beginWork("explorer-delete", recycle ? `Moving ${what} to the Recycle Bin` : `Deleting ${what}`);
-  try {
-    await invoke("explorer_delete", { paths: targets, recycle });
-    // A bookmark pointing at a folder that has just gone is a dead row, so it
-    // leaves with the folder rather than waiting to fail on the next click.
-    const orphaned = fx.bookmarks.filter((mark) => targets.some((path) => same(path, mark)));
-    if (orphaned.length) setBookmarks(fx.bookmarks.filter((mark) => !orphaned.includes(mark)));
-    for (const path of targets) { fx.thumbs.delete(path); fx.tree.delete(path); fx.open.delete(path); }
-    announce(targets.map(parentOf));
-  } catch (error) {
-    fx.error = String(error);
+  const folders = targets.filter((path) => listed().some((entry) => same(entry.path, path) && entry.isDir && !entry.isArchive));
+  // The Recycle Bin question also offers the other answer, so the trash
+  // button and the menu can delete outright without a second trip through
+  // Shift+Delete. `true` is the confirm button, "alternate" the middle one.
+  const answer = await window.wintConfirm?.({
+    title: permanent ? `Permanently delete ${what}?` : `Delete ${what}?`,
+    message: permanent
+      ? `${folders.length ? `${what} ${targets.length === 1 ? "is a folder, so everything inside it will be deleted too. " : "includes folders, so everything inside them will be deleted too. "}` : ""}This cannot be undone.`
+      : `${folders.length ? `${what} ${targets.length === 1 ? "is a folder, so everything inside it goes too. " : "includes folders, so everything inside them goes too. "}` : ""}The Recycle Bin can give ${targets.length === 1 ? "it" : "them"} back; deleting permanently cannot, but shows each file as it goes.`,
+    confirmLabel: permanent ? "Delete permanently" : "Move to Recycle Bin",
+    alternateLabel: permanent ? undefined : "Delete permanently",
+    cancelLabel: "Cancel",
+    icon: permanent ? "delete_forever" : "delete",
+    tone: "danger",
+  });
+  if (answer === true) await runDelete(targets, !permanent);
+  else if (answer === "alternate" && !permanent) await runDelete(targets, false);
+}
+
+/** The delete under way, or the one that just finished, drawn as a strip
+ *  above the list. The work runs in Rust and streams how far it has got: a
+ *  permanent delete counts each folder's files first and then reports them
+ *  going one by one, with the file under way; the Recycle Bin takes a folder
+ *  whole, so there it is item by item. A failure, which used to land nowhere
+ *  visible, stays in the strip until it is dismissed. */
+async function runDelete(targets, recycle) {
+  const op = fx.op?.running ? fx.op : null;
+  const pending = new Set((op?.items || []).filter((item) => !item.done).map((item) => normal(item.path)));
+  const fresh = targets
+    .filter((path) => !pending.has(normal(path)))
+    .map((path) => ({ path, name: nameOf(path), recycle, done: false, error: "" }));
+  if (!fresh.length) return;
+  // A delete asked for while another runs joins its queue rather than racing
+  // it; the loop below sends it once the current batch is done.
+  if (op) {
+    op.items.push(...fresh);
+    paintOp();
     dirty();
-  } finally {
-    window.wintWork?.endWork("explorer-delete");
+    return;
   }
+  clearTimeout(fx.opTimer);
+  const run = fx.op = {
+    running: true,
+    items: fresh,
+    sent: 0,
+    batchStart: 0,
+    index: 0,
+    token: "",
+    progress: null,
+    stopping: false,
+    stopped: false,
+    startedAt: Date.now(),
+    itemStartedAt: Date.now(),
+    resolve: null,
+  };
+  const key = "explorer-delete";
+  window.wintWork?.beginWork(key, "Deleting");
+  dirty();
+  // The seconds are what show a long Recycle Bin move is still alive. They
+  // patch the strip, never the whole tool.
+  const tick = setInterval(paintOp, 1000);
+  try {
+    while (run.sent < run.items.length && !run.stopping) {
+      const batch = run.items.slice(run.sent);
+      run.batchStart = run.sent;
+      run.sent = run.items.length;
+      run.index = run.batchStart;
+      run.itemStartedAt = Date.now();
+      run.progress = null;
+      run.token = mintInstance();
+      const outcome = await new Promise((resolve) => {
+        run.resolve = resolve;
+        invoke("explorer_delete_start", { token: run.token, items: batch.map(({ path, recycle: bin }) => ({ path, recycle: bin })) })
+          .catch((error) => resolve({ results: batch.map((item) => ({ path: item.path, error: String(error) })), stopped: false }));
+      });
+      run.resolve = null;
+      (outcome.results || []).forEach((result, offset) => {
+        const item = run.items[run.batchStart + offset];
+        if (!item) return;
+        item.done = true;
+        item.error = result.error || "";
+        if (!item.error) forgetDeleted(item.path);
+      });
+      if (outcome.stopped) run.stopped = true;
+      dirty();
+    }
+  } finally {
+    clearInterval(tick);
+    for (const item of run.items) {
+      if (!item.done) { item.done = true; item.error = item.error || "Stopped before it started."; }
+    }
+    run.running = false;
+    run.finishedAt = Date.now();
+    window.wintWork?.endWork(key);
+    announce(run.items.map((item) => parentOf(item.path)));
+    dirty();
+  }
+  // A clean run says so briefly and gets out of the way; one that left
+  // something behind stays until it is dismissed, because that is the line
+  // the user needs to read.
+  if (!run.items.some((item) => item.error)) {
+    fx.opTimer = setTimeout(() => { if (fx.op === run) { fx.op = null; dirty(); } }, 5000);
+  }
+}
+
+function deleteProgress(payload) {
+  const run = fx.op;
+  if (!run?.running || payload?.token !== run.token) return;
+  const index = run.batchStart + (payload.item || 0);
+  // A new item moves the "Deleting…" tag in the list, which only a repaint
+  // can do; everything else in a progress event is the strip's alone.
+  if (index !== run.index) { run.index = index; run.itemStartedAt = Date.now(); dirty(); }
+  run.progress = payload;
+  const item = run.items[run.index];
+  if (item) window.wintWork?.updateWork("explorer-delete", opWorkLine(run, item, payload));
+  paintOp();
+}
+
+function deleteDone(payload) {
+  const run = fx.op;
+  if (!run?.resolve || payload?.token !== run.token) return;
+  run.resolve(payload);
+}
+
+function stopDelete() {
+  const run = fx.op;
+  if (!run?.running || run.stopping) return;
+  run.stopping = true;
+  if (run.token) invoke("explorer_delete_cancel", { token: run.token }).catch(() => {});
+  paintOp();
+}
+
+/** A bookmark pointing at a folder that has just gone is a dead row, so it
+ *  leaves with the folder rather than waiting to fail on the next click. */
+function forgetDeleted(path) {
+  const orphaned = fx.bookmarks.filter((mark) => same(path, mark));
+  if (orphaned.length) setBookmarks(fx.bookmarks.filter((mark) => !orphaned.includes(mark)));
+  fx.thumbs.delete(path); fx.tree.delete(path); fx.open.delete(path);
+  patchSearch([path]);
+  if (fx.listing?.entries) fx.listing.entries = fx.listing.entries.filter((entry) => !same(entry.path, path));
+}
+
+/** Paths a running delete has not finished with. */
+function deletingNow() {
+  const run = fx.op;
+  if (!run?.running) return new Map();
+  // Everything after the item under way is waiting, whether it was in the
+  // first request or added while it ran - the row has to say which, or a
+  // second delete looks like it was never taken.
+  return new Map(run.items
+    .map((item, index) => [item, index])
+    .filter(([item]) => !item.done)
+    .map(([item, index]) => [normal(item.path), index === run.index ? "now" : "queued"]));
+}
+
+const many = (n) => Number(n || 0).toLocaleString();
+
+/** What the status bar says, which has room for one short line. */
+function opWorkLine(run, item, p) {
+  const of = run.items.length > 1 ? `${run.index + 1} / ${run.items.length} · ` : "";
+  if (item.recycle) return `${of}${item.name} to the Recycle Bin`;
+  if (p?.phase === "counting") return `${of}Counting ${item.name} · ${many(p.filesTotal)} files`;
+  if (p?.filesTotal) return `${of}${item.name} · ${many(p.filesDone)} / ${many(p.filesTotal)} files`;
+  return `${of}${item.name}`;
+}
+
+/** The file under way, from the item's own folder down, so the column spends
+ *  its width on the part that changes. */
+function opCurrent(item, current) {
+  if (!current) return "";
+  const base = String(item.path).replace(/\\+$/, "");
+  return current.toLowerCase().startsWith(base.toLowerCase()) ? item.name + current.slice(base.length) : current;
+}
+
+function opStatus() {
+  const run = fx.op;
+  if (!run) return "";
+  const total = run.items.length;
+  const dismiss = `<button class="fx-chip clear" type="button" data-fx-op-dismiss title="Dismiss">${icon("close")}</button>`;
+  if (run.running) {
+    const item = run.items[run.index] || run.items[0];
+    const p = run.progress && run.batchStart + (run.progress.item || 0) === run.index ? run.progress : null;
+    const seconds = Math.floor((Date.now() - run.itemStartedAt) / 1000);
+    const elapsed = seconds >= 2 ? ` · ${seconds} s` : "";
+    const of = total > 1 ? `<b>${run.index + 1} / ${total}</b> · ` : "";
+    let line;
+    let share = 0;
+    if (item.recycle) {
+      line = `${of}Moving <b>${esc(item.name)}</b> to the Recycle Bin${elapsed}`;
+    } else if (!p || p.phase === "counting") {
+      line = `${of}Counting files in <b>${esc(item.name)}</b>${p?.filesTotal ? ` · ${many(p.filesTotal)} so far` : ""}`;
+    } else {
+      share = p.bytesTotal ? p.bytesDone / p.bytesTotal : p.filesTotal ? p.filesDone / p.filesTotal : 0;
+      line = `${of}Deleting <b>${esc(item.name)}</b> · <b>${many(p.filesDone)} / ${many(p.filesTotal)}</b> files${p.bytesTotal ? ` · ${bytes(p.bytesDone)} of ${bytes(p.bytesTotal)}` : ""}`;
+    }
+    const pct = Math.min(100, Math.round((run.index + share) / total * 100));
+    const waiting = run.items.filter((other, index) => !other.done && index > run.index).length;
+    if (waiting) line += ` · <b>${many(waiting)} more queued</b>`;
+    const current = opCurrent(item, p?.current);
+    const stop = run.stopping
+      ? `<button class="fx-chip clear" type="button" disabled>${icon("hourglass_top")}Stopping…</button>`
+      : `<button class="fx-chip clear" type="button" data-fx-op-stop title="Stop after the file under way">${icon("stop_circle")}Stop</button>`;
+    return `<i class="fx-op-fill" style="width:${pct}%"></i><i class="fx-spin">${icon("progress_activity")}</i>
+      <span class="fx-op-text"><span>${line}</span>${current ? `<small class="fx-op-current mono" title="${esc(p.current)}"><bdi>${esc(current)}</bdi></small>` : ""}</span>${stop}`;
+  }
+  const failed = run.items.filter((item) => item.error);
+  const ok = run.items.filter((item) => !item.error);
+  const binned = ok.filter((item) => item.recycle).length;
+  const gone = ok.length - binned;
+  const took = (run.finishedAt - run.startedAt) >= 1000 ? ` · ${((run.finishedAt - run.startedAt) / 1000).toFixed(1)} s` : "";
+  const what = [
+    binned ? `${total === 1 ? `<b>${esc(ok[0].name)}</b>` : many(binned)} moved to the Recycle Bin` : "",
+    gone ? `${total === 1 ? `<b>${esc(ok[0].name)}</b>` : many(gone)} deleted` : "",
+  ].filter(Boolean).join(", ");
+  if (!failed.length) return `${icon("check_circle")}<span>${what}${took}</span>${dismiss}`;
+  const lines = failed.map((item) => `<b>${esc(item.name)}</b> — ${esc(item.error)}`).join("<br>");
+  const head = run.stopped ? "Stopped. " : "";
+  return `${icon(run.stopped ? "stop_circle" : "error")}<span class="fx-op-why">${head}${what ? `${what}. ` : ""}${failed.length === 1 ? "Not deleted:" : `${failed.length} not deleted:`}<br>${lines}</span>${dismiss}`;
+}
+
+function paintOp() {
+  const slot = fx.host?.querySelector("[data-fx-op]");
+  if (slot) slot.innerHTML = opStatus();
 }
 
 // ------------------------------------------------- rename, copy, move, drag
@@ -753,6 +1190,7 @@ function announce(dirs) {
 
 function changed(dirs) {
   for (const dir of dirs) fx.tree.delete(dir);
+  if (fx.search) return dirty();
   if (fx.path !== THIS_PC && dirs.some((dir) => same(dir, fx.path))) {
     // Quietly: this folder is already on screen, and something moving in or
     // out of it is no reason to blank the list back to skeletons - the rows
@@ -762,12 +1200,12 @@ function changed(dirs) {
 }
 
 function startRename(path) {
-  if (!writable(path) || !(fx.listing?.entries || []).some((entry) => same(entry.path, path))) return;
+  if (!writable(path) || !listed().some((entry) => same(entry.path, path))) return;
   const targets = selection().filter(writable);
   const batch = targets.length > 1 && targets.some((item) => same(item, path))
     ? [path, ...targets.filter((item) => !same(item, path))]
     : [path];
-  const entry = (fx.listing?.entries || []).find((item) => same(item.path, path));
+  const entry = listed().find((item) => same(item.path, path));
   const original = nameOf(path);
   const dot = entry && !entry.isDir ? original.lastIndexOf(".") : -1;
   fx.rename = { path, paths: batch, draft: batch.length > 1 && dot > 0 ? original.slice(0, dot) : original, fresh: true };
@@ -792,6 +1230,7 @@ async function commitRename() {
     fx.selectedPaths = new Set(renamedPaths);
     fx.selected = renamed;
     for (const path of rename.paths) fx.thumbs.delete(path);
+    patchSearch([], new Map(rename.paths.map((path, index) => [normal(path), renamedPaths[index]]).filter(([, next]) => next)));
     fx.pendingFocus = renamed;
     announce([...new Set(rename.paths.map(parentOf))]);
   } catch (error) {
@@ -803,7 +1242,7 @@ async function commitRename() {
 }
 
 async function newFolder() {
-  if (!writable(fx.path)) return;
+  if (!writable(fx.path) || fx.search) return;
   window.wintWork?.beginWork("explorer-new-folder", "Making a new folder");
   try {
     const path = await invoke("explorer_new_folder", { dir: fx.path });
@@ -834,6 +1273,7 @@ async function toClipboard(paths, cut) {
 }
 
 async function paste(dest = fx.path) {
+  if (fx.search && same(dest, fx.path)) return note("Open a folder to paste into it");
   if (!writable(dest)) return;
   let clip = null;
   try { clip = await invoke("explorer_clipboard_get"); } catch (error) { return note(String(error)); }
@@ -865,14 +1305,14 @@ function dropTarget(x, y) {
   const hit = document.elementFromPoint(x, y);
   if (!hit || !fx.host?.contains(hit)) return null;
   const row = hit.closest('[data-fx-item][data-fx-dir="true"]');
-  if (row && !(fx.listing?.entries || []).some((entry) => same(entry.path, row.dataset.fxItem) && entry.isArchive)) {
+  if (row && !listed().some((entry) => same(entry.path, row.dataset.fxItem) && entry.isArchive)) {
     return { el: row, path: row.dataset.fxItem };
   }
   const node = hit.closest("[data-fx-open]");
   if (node && writable(asPath(node.dataset.fxOpen)) && !isZipRoot(asPath(node.dataset.fxOpen))) {
     return { el: node, path: asPath(node.dataset.fxOpen) };
   }
-  return writable(fx.path) && !isZipRoot(fx.path) ? { el: null, path: fx.path } : null;
+  return writable(fx.path) && !isZipRoot(fx.path) && !fx.search ? { el: null, path: fx.path } : null;
 }
 
 function paintDrop(target) {
@@ -947,7 +1387,7 @@ function rowBodyTop(rows) {
 }
 
 function watchMarquee(event) {
-  if (event.button !== 0 || !fx.host || fx.path === THIS_PC || fx.rename) return;
+  if (event.button !== 0 || !fx.host || atDrives() || fx.rename) return;
   if (event.target.closest("button, input, .fx-rename, .fx-row.head")) return;
   const rows = fx.host.querySelector(".fx-rows");
   // Anywhere in the scroller counts, including the blank space under the
@@ -1101,7 +1541,7 @@ function select(path, { add = false, range = false } = {}) {
   // list and jump the scroll back to the top - painful in a long zip.
   paintSelection();
   if (fx.previewPane) {
-    const entry = (fx.listing?.entries || []).find((item) => same(item.path, path));
+    const entry = listed().find((item) => same(item.path, path));
     fx.previewLoading = !!(entry && previewable(entry));
     paintPreview();
     loadPreview();
@@ -1133,7 +1573,7 @@ let previewToken = 0;
 async function loadPreview() {
   const path = fx.selected;
   if (!fx.previewPane || !path) return;
-  const entry = (fx.listing?.entries || []).find((item) => same(item.path, path));
+  const entry = listed().find((item) => same(item.path, path));
   if (!entry || !previewable(entry)) return;
   const token = ++previewToken;
   fx.previewLoading = true;
@@ -1173,16 +1613,21 @@ function paintSelection() {
     row.tabIndex = same(row.dataset.fxItem, fx.selected) ? 0 : -1;
   }
   const summary = fx.host.querySelector("[data-fx-summary]");
-  if (summary && fx.path !== THIS_PC && !fx.loading) {
-    const { shown, total } = visible();
-    summary.textContent = `${shown.length}${shown.length === total ? "" : ` of ${total}`} item${shown.length === 1 ? "" : "s"}${selection().length ? ` · ${selection().length} selected` : ""}`;
+  if (summary && !atDrives() && !readingFolder()) {
+    summary.textContent = summaryText();
   }
+}
+
+function summaryText() {
+  const { shown, total } = visible();
+  const noun = fx.search ? (shown.length === 1 ? "match" : "matches") : (shown.length === 1 ? "item" : "items");
+  return `${shown.length.toLocaleString()}${shown.length === total ? "" : ` of ${total.toLocaleString()}`} ${noun}${selection().length ? ` · ${selection().length} selected` : ""}`;
 }
 
 /** Select a row by path and scroll it into view. Used when Back/Up returns to
  *  a folder: the child you had opened is the anchor, not a pixel offset. */
 function applyPendingFocus() {
-  if (!fx.pendingFocus || !fx.host || fx.loading) return;
+  if (!fx.pendingFocus || !fx.host || readingFolder()) return;
   const path = fx.pendingFocus;
   const shown = visible().shown;
   // By index, not by element: in a long folder the row is very likely one of
@@ -1228,7 +1673,7 @@ function togglePreviewPane() {
 }
 
 function renderPreviewPane() {
-  const entry = (fx.listing?.entries || []).find((item) => same(item.path, fx.selected));
+  const entry = listed().find((item) => same(item.path, fx.selected));
   if (!entry) {
     return `<aside class="fx-preview" aria-label="Preview"><div class="fx-preview-empty">${icon("imagesmode")}<p>Pick a picture or a text file in the list to see it here.</p></div></aside>`;
   }
@@ -1283,7 +1728,8 @@ function toggleExt(ext) {
 function clearFilters() {
   fx.kinds.clear();
   fx.exts.clear();
-  fx.filter = "";
+  // During a search the box is the query, not a filter on top of it.
+  if (!fx.search) fx.filter = "";
   dirty();
 }
 
@@ -1372,10 +1818,10 @@ function renderChips(counts) {
     const on = fx.kinds.has(kind.id);
     return `<button class="fx-chip${on ? " on" : ""}" type="button" data-fx-kind="${kind.id}" aria-pressed="${on}">${icon(kind.icon)}${kind.name}<b>${counts.kinds.get(kind.id)}</b></button>`;
   }).join("");
-  if (chips) return chips;
+  if (chips || fx.search) return chips;
   // While the folder is still being read there is nothing to count yet, and
   // saying "empty" would be a lie that corrects itself a moment later.
-  if (fx.loading) return `<span class="fx-chip-none">${icon("progress_activity")}Reading this folder…</span>`;
+  if (readingFolder()) return `<span class="fx-chip-none">${icon("progress_activity")}Reading this folder…</span>`;
   return `<span class="fx-chip-none">Nothing to filter — this folder is empty.</span>`;
 }
 
@@ -1389,8 +1835,8 @@ function renderTypes(counts) {
         <span class="fx-tick">${on ? icon("check") : ""}</span>${icon(kind.icon)}<strong>${ext === "—" ? "No extension" : `.${esc(ext)}`}</strong><b>${count}</b></button>`;
     }).join("");
   return `<div class="fx-types" role="group" aria-label="Filter by file extension">
-    <header>Every extension in this folder<button class="fx-type-clear" type="button" data-fx-clear-ext ${fx.exts.size ? "" : "disabled"}>Clear</button></header>
-    <div class="fx-type-list">${rows || `<p class="fx-type-empty">${fx.loading ? "Reading this folder…" : "This folder holds no files, only folders."}</p>`}</div>
+    <header>Every extension ${fx.search ? "among the matches" : "in this folder"}<button class="fx-type-clear" type="button" data-fx-clear-ext ${fx.exts.size ? "" : "disabled"}>Clear</button></header>
+    <div class="fx-type-list">${rows || `<p class="fx-type-empty">${readingFolder() ? "Reading this folder…" : "This folder holds no files, only folders."}</p>`}</div>
   </div>`;
 }
 
@@ -1415,15 +1861,48 @@ function driveRows() {
   }).join("");
 }
 
+/** A search with nothing to show yet says what it is doing, or - once it is
+ *  done - that the name really is not there, and what else to try. */
+function searchEmpty() {
+  const search = fx.search;
+  if (search.running) {
+    const ghosts = Array.from({ length: 4 }, (_, index) => `<div class="fx-row skeleton" style="--i:${index}"><span class="fx-cell name"><i></i></span><span class="fx-cell where"><i></i></span><span class="fx-cell type"><i></i></span><span class="fx-cell size"><i></i></span><span class="fx-cell modified"><i></i></span>${fx.createdColumn ? '<span class="fx-cell created"><i></i></span>' : ""}</div>`).join("");
+    return `${ghosts}<div class="fx-empty compact">${icon("manage_search")}<strong>Looking for “${esc(search.query)}” in every folder under ${esc(search.place)}</strong><p data-fx-search-empty>${esc(searchDetail(search))}</p></div>`;
+  }
+  if (search.entries.length) {
+    return `<div class="fx-empty">${icon("filter_alt_off")}<strong>None of the ${search.entries.length.toLocaleString()} matches is of that type</strong><button class="btn" type="button" data-fx-clear>${icon("close")}Clear the type filter</button></div>`;
+  }
+  if (search.summary?.error) {
+    return `<div class="fx-empty">${icon("error")}<strong>${esc(search.summary.error)}</strong><button class="btn" type="button" data-fx-close-search>${icon("arrow_back")}Back to the folder</button></div>`;
+  }
+  const hint = fx.showHidden ? "" : " Hidden and system folders were skipped - show hidden items to search them too.";
+  return `<div class="fx-empty">${icon("search_off")}<strong>Nothing under ${esc(search.place)} is called “${esc(search.query)}”</strong><p>Every word you type must be in the name; * and ? match any text and any one letter.${hint}</p><button class="btn" type="button" data-fx-close-search>${icon("arrow_back")}Back to the folder</button></div>`;
+}
+
+/** The box filters the open folder as you type; Enter or the button beside it
+ *  turns the same words into a search of every folder below. */
+function renderSearch() {
+  const search = fx.search;
+  const tip = "Type to filter this folder. Enter searches every folder below it. Every word must be in the name; * and ? are wildcards. Ctrl+F";
+  const placeholder = fx.path === THIS_PC ? "Search every drive" : "Filter · Enter searches below";
+  const button = !search
+    ? `<button class="fx-chip find" type="button" data-fx-find ${canSearch() ? "" : "disabled"} title="Find this name in every folder under ${esc(searchPlace())} (Enter)">${icon("manage_search")}${fx.path === THIS_PC ? "Search drives" : "Search subfolders"}</button>`
+    : search.running
+      ? `<button class="fx-chip find" type="button" data-fx-stop-search title="Stop searching and keep what was found">${icon("stop_circle")}Stop</button>`
+      : `<button class="fx-chip find" type="button" data-fx-find title="Search ${esc(search.place)} again">${icon("refresh")}Again</button>`;
+  return `<label class="fx-search${search ? " searching" : ""}" title="${tip}">${icon("search")}<input type="text" placeholder="${placeholder}" aria-label="Filter or search by name"></label>${button}`;
+}
+
 function renderRows(shown, scrollTop = 0, viewport = 700) {
-  if (fx.path === THIS_PC) return driveRows();
-  if (fx.loading) {
+  if (atDrives()) return driveRows();
+  if (readingFolder()) {
     return Array.from({ length: 10 }, (_, index) => `<div class="fx-row skeleton" style="--i:${index}"><span class="fx-cell name"><i></i></span><span class="fx-cell type"><i></i></span><span class="fx-cell size"><i></i></span><span class="fx-cell modified"><i></i></span>${fx.createdColumn ? '<span class="fx-cell created"><i></i></span>' : ""}</div>`).join("");
   }
-  if (fx.error) {
+  if (fx.search && !shown.length) return searchEmpty();
+  if (fx.error && !fx.search) {
     return `<div class="fx-empty">${icon("lock")}<strong>${esc(fx.error)}</strong><p>Pick another folder on the left, or hand this one to Windows Explorer.</p><button class="btn" type="button" data-fx-reveal="${esc(revealPath(fx.path))}">${icon("folder_open")}Open in Windows Explorer</button></div>`;
   }
-  if (!fx.path) {
+  if (!fx.path && !fx.search) {
     return `<div class="fx-empty">${icon("folder_open")}<strong>Pick a folder on the left</strong><p>Files shows one folder at a time, with a filter that already knows every type it holds.</p></div>`;
   }
   if (!shown.length) {
@@ -1441,20 +1920,28 @@ function renderRows(shown, scrollTop = 0, viewport = 700) {
   // rebuilt inside the loop - a whole-list scan per row, per frame.
   const picks = new Set(selection().map(normal));
   const cuts = new Set(fx.cut.map(normal));
+  const deleting = deletingNow();
   const rows = shown.slice(start, end).map((entry, offset) => {
     const kind = kindOf(entry);
     const thumb = fx.thumbs.get(entry.path);
     const slot = fx.thumbsOn && !entry.isDir && PREVIEW_KINDS.has(kind)
       ? `<span class="fx-thumb${thumb ? " has-image" : ""}"${thumb ? ` style="background-image:url('${thumb}')"` : ""}>${thumb ? "" : icon(kindById(kind).icon)}</span>`
       : icon(entry.isArchive ? "folder_zip" : entry.isDir ? "folder" : kindById(kind).icon);
-    const canDelete = !isInsideZip(fx.path);
+    const canDelete = !isInsideZip(entry.path);
+    const doom = deleting.get(normal(entry.path));
     const renaming = same(fx.rename?.path, entry.path);
     const name = renaming
       ? `<input class="fx-rename" type="text" spellcheck="false" aria-label="New name for ${esc(entry.name)}">`
-      : `<strong>${esc(entry.name)}</strong>`;
+      : `<strong>${esc(entry.name)}</strong>${doom ? `<em class="fx-doom">${doom === "now" ? "Deleting…" : "Queued"}</em>` : ""}`;
+    // The end of the path is the part that tells two matches apart, so a
+    // folder too long for its column loses its start, not its end.
+    const where = fx.search ? whereOf(entry.path) : null;
+    const whereCell = where == null ? ""
+      : `<span class="fx-cell where" title="${esc(parentOf(entry.path))}"><bdi>${esc(where)}</bdi></span>`;
     const picked = picks.has(normal(entry.path));
-    return `<div class="fx-row${entry.isDir ? " dir" : ""}${entry.hidden || cuts.has(normal(entry.path)) ? " dim" : ""}${picked ? " picked" : ""}${canDelete ? " has-del" : ""}" tabindex="${same(fx.selected, entry.path) ? "0" : "-1"}" role="row" aria-selected="${picked}" data-fx-index="${start + offset}" data-fx-item="${esc(entry.path)}" data-fx-dir="${entry.isDir}" title="${esc(entry.path)}">
+    return `<div class="fx-row${entry.isDir ? " dir" : ""}${doom ? ` deleting ${doom}` : ""}${entry.hidden || cuts.has(normal(entry.path)) ? " dim" : ""}${picked ? " picked" : ""}${canDelete ? " has-del" : ""}" tabindex="${same(fx.selected, entry.path) ? "0" : "-1"}" role="row" aria-selected="${picked}" data-fx-index="${start + offset}" data-fx-item="${esc(entry.path)}" data-fx-dir="${entry.isDir}" title="${esc(entry.path)}">
     <span class="fx-cell name">${slot}${name}</span>
+    ${whereCell}
     <span class="fx-cell type">${esc(typeLabel(entry))}</span>
     <span class="fx-cell size">${entry.isDir && !entry.isArchive ? "" : bytes(entry.bytes)}</span>
     <span class="fx-cell modified">${esc(when(entry.modified))}</span>
@@ -1485,7 +1972,7 @@ function virtualStartFor(shown, scrollTop) {
 }
 
 function paintVirtualRows(rows, { now = false } = {}) {
-  if (!rows || fx.path === THIS_PC || fx.loading || fx.rename) return;
+  if (!rows || atDrives() || readingFolder() || fx.rename) return;
   const shown = visible().shown;
   if (shown.length <= VIRTUAL_AFTER) return;
   cancelAnimationFrame(virtualFrame);
@@ -1561,7 +2048,7 @@ function render() {
   const oldRows = fx.host.querySelector(".fx-rows");
   // While a remembered offset is being put back, the scroller still holds the
   // folder being left, so reading it would overwrite the place we are going to.
-  const rowsScroll = fx.scrollRestore || fx.loading || !oldRows ? fx.scrollTop : (fx.scrollTop = oldRows.scrollTop);
+  const rowsScroll = fx.scrollRestore || readingFolder() || !oldRows ? fx.scrollTop : (fx.scrollTop = oldRows.scrollTop);
   const rowsViewport = oldRows?.clientHeight || 700;
   const treeScroll = fx.host.querySelector(".fx-tree")?.scrollTop ?? 0;
   const marksScroll = fx.host.querySelector(".fx-marks")?.scrollTop ?? 0;
@@ -1569,7 +2056,7 @@ function render() {
   const counts = facets(named);
   // The rows below are written fresh, so the virtual window starts over.
   virtualStart = -1;
-  const filtering = fx.filter || fx.kinds.size || fx.exts.size;
+  const filtering = (fx.filter && !fx.search) || fx.kinds.size || fx.exts.size;
   fx.host.innerHTML = `<header class="tool-head"><button class="btn back tool-back" type="button" data-open-tool="overview">${icon("arrow_back")}Back</button><span class="tool-plate">${icon("folder_open")}</span><span class="tool-title"><strong>Files</strong><small>browse a folder and filter it by type in one click</small></span><button class="tool-popout" type="button" data-popout-tool="explorer"></button><button class="tool-pin" type="button" data-pin-tool="explorer"></button><button class="tool-close" type="button" data-open-tool="overview">${icon("close")}</button></header>
   <div class="fx-body${fx.previewPane ? " with-preview" : ""}">
     <aside class="fx-side">
@@ -1579,35 +2066,36 @@ function render() {
     <div class="fx-split" data-fx-split="side" role="separator" aria-orientation="vertical" aria-label="Resize the folder tree" title="Drag to resize the folder tree"></div>
     <section class="fx-main">
       <div class="fx-bar">
-        <button class="fx-nav" type="button" data-fx-back title="Back" aria-label="Back" ${fx.history.length ? "" : "disabled"}>${icon("arrow_back")}</button>
+        <button class="fx-nav" type="button" data-fx-back title="${fx.search ? "Back to the folder" : "Back"}" aria-label="Back" ${fx.history.length || fx.search ? "" : "disabled"}>${icon("arrow_back")}</button>
         <button class="fx-nav" type="button" data-fx-forward title="Forward" aria-label="Forward" ${fx.forward.length ? "" : "disabled"}>${icon("arrow_forward")}</button>
-        <button class="fx-nav" type="button" data-fx-up title="Up one folder" aria-label="Up one folder" ${fx.path === THIS_PC ? "disabled" : ""}>${icon("arrow_upward")}</button>
-        <button class="fx-nav" type="button" data-fx-refresh title="${fx.path === THIS_PC ? "Read the drives again" : "Read this folder again"}" aria-label="Refresh">${icon("refresh")}</button>
+        <button class="fx-nav" type="button" data-fx-up title="Up one folder" aria-label="Up one folder" ${atDrives() ? "disabled" : ""}>${icon("arrow_upward")}</button>
+        <button class="fx-nav" type="button" data-fx-refresh title="${fx.search ? "Search again" : fx.path === THIS_PC ? "Read the drives again" : "Read this folder again"}" aria-label="Refresh">${icon("refresh")}</button>
         <button class="fx-nav" type="button" data-fx-new-window title="Open this folder in a new window" aria-label="New window">${icon("tab_duplicate")}</button>
         ${renderAddress()}
         <button class="fx-nav${fx.thumbsOn ? " on" : ""}" type="button" data-fx-thumbs aria-pressed="${fx.thumbsOn}" title="${fx.thumbsOn ? "Back to plain rows" : "Show a picture on every image row"}" aria-label="Thumbnails">${icon("photo_library")}</button>
         <button class="fx-nav${fx.previewPane ? " on" : ""}" type="button" data-fx-preview aria-pressed="${fx.previewPane}" title="${fx.previewPane ? "Close the preview panel" : "Open a preview panel beside the list"}" aria-label="Preview panel">${icon("preview")}</button>
         <button class="fx-nav${fx.showHidden ? " on" : ""}" type="button" data-fx-hidden aria-pressed="${fx.showHidden}" title="${fx.showHidden ? "Hide hidden and system items" : "Show hidden and system items"}" aria-label="Hidden items">${icon(fx.showHidden ? "visibility" : "visibility_off")}</button>
       </div>
-      ${fx.path === THIS_PC ? "" : `<div class="fx-chips">${renderChips(counts)}
-        <label class="fx-search">${icon("search")}<input type="text" placeholder="Filter by name" aria-label="Filter by name"></label>
+      ${fx.op ? `<div class="fx-op-bar${fx.op.running ? " running" : fx.op.items.some((item) => item.error) ? " bad" : " good"}" role="status" aria-live="polite" data-fx-op>${opStatus()}</div>` : ""}
+      ${atDrives() ? `<div class="fx-chips">${renderSearch()}</div>` : `${fx.search ? `<div class="fx-search-bar"><span class="fx-search-status" data-fx-search-status>${searchStatus()}</span><button class="fx-chip clear" type="button" data-fx-close-search title="Back to the folder (Esc)">${icon("close")}Close search</button></div>` : ""}<div class="fx-chips">${renderChips(counts)}
+        ${renderSearch()}
         <button class="fx-chip more${fx.typesOpen ? " on" : ""}${fx.exts.size ? " picked" : ""}" type="button" data-fx-types aria-expanded="${fx.typesOpen}">${icon("filter_alt")}${fx.exts.size ? `${fx.exts.size} extension${fx.exts.size === 1 ? "" : "s"}` : "By extension"}${icon(fx.typesOpen ? "expand_less" : "expand_more")}</button>
         ${filtering ? `<button class="fx-chip clear" type="button" data-fx-clear>${icon("close")}Clear</button>` : ""}
       </div>`}
-      ${fx.typesOpen && fx.path !== THIS_PC ? renderTypes(counts) : ""}
+      ${fx.typesOpen && !atDrives() ? renderTypes(counts) : ""}
       <div class="fx-list${fx.thumbsOn ? " preview" : ""}" style="--fx-columns:${columnTemplate()};--fx-table-width:${columnTableWidth()}px">
         <div class="fx-rows" role="grid" aria-multiselectable="true" tabindex="0">
-          <div class="fx-row head${fx.path === THIS_PC ? " static" : ""}" role="row">${visibleColumns().map((column) => `<button class="fx-cell ${column.id} sort${fx.sort === column.id ? " on" : ""}" type="button" data-fx-sort="${column.id}">${column.label}${fx.sort === column.id ? icon(fx.desc ? "arrow_downward" : "arrow_upward") : ""}<i class="fx-col-grip" data-fx-column-resize="${column.id}" aria-hidden="true"></i></button>`).join("")}</div>
+          <div class="fx-row head${atDrives() ? " static" : ""}" role="row">${visibleColumns().map((column) => `<button class="fx-cell ${column.id} sort${fx.sort === column.id ? " on" : ""}" type="button" data-fx-sort="${column.id}">${column.label}${fx.sort === column.id ? icon(fx.desc ? "arrow_downward" : "arrow_upward") : ""}<i class="fx-col-grip" data-fx-column-resize="${column.id}" aria-hidden="true"></i></button>`).join("")}</div>
           <div class="fx-row-body" role="rowgroup">${renderRows(shown, rowsScroll, rowsViewport)}</div>
         </div>
       </div>
       <footer class="fx-foot">
-        <span data-fx-summary>${fx.path === THIS_PC
+        <span data-fx-summary>${atDrives()
           ? `${fx.roots.length} drive${fx.roots.length === 1 ? "" : "s"}`
-          : fx.loading ? `${icon("progress_activity")}Reading this folder…`
-          : `${shown.length}${shown.length === total ? "" : ` of ${total}`} item${shown.length === 1 ? "" : "s"}${selection().length ? ` · ${selection().length} selected` : ""}`}</span>
-        ${fx.listing?.skipped ? `<span title="Windows would not report these">${icon("warning")}${fx.listing.skipped} could not be read</span>` : ""}
-        <span class="fx-foot-hint">${icon("mouse")}${isInsideZip(fx.path) ? "Inside a zip · read-only" : "Double-click to open · drag a box to select · right-click for more"}</span>
+          : readingFolder() ? `${icon("progress_activity")}Reading this folder…`
+          : esc(summaryText())}</span>
+        ${fx.search ? `<span class="fx-foot-current mono" data-fx-search-current title="The folder being read">${esc(fx.search.current)}</span>` : fx.listing?.skipped ? `<span title="Windows would not report these">${icon("warning")}${fx.listing.skipped} could not be read</span>` : ""}
+        <span class="fx-foot-hint">${icon("mouse")}${fx.search ? "Double-click to open · Back returns to the folder" : isInsideZip(fx.path) ? "Inside a zip · read-only" : "Double-click to open · drag a box to select · right-click for more"}</span>
       </footer>
     </section>
     ${fx.previewPane ? `<div class="fx-split" data-fx-split="preview" role="separator" aria-orientation="vertical" aria-label="Resize the preview" title="Drag to resize the preview"></div>${renderPreviewPane()}` : ""}
@@ -1655,7 +2143,7 @@ function render() {
     if (fx.rename.fresh) {
       // Like Explorer: the name is selected, the extension is left alone.
       const dot = fx.rename.draft.lastIndexOf(".");
-      const isDir = (fx.listing?.entries || []).some((entry) => same(entry.path, fx.rename.path) && entry.isDir);
+      const isDir = listed().some((entry) => same(entry.path, fx.rename.path) && entry.isDir);
       renameBox.setSelectionRange(0, dot > 0 && !isDir ? dot : fx.rename.draft.length);
       fx.rename.fresh = false;
     } else if (renameSel) renameBox.setSelectionRange(renameSel[0], renameSel[1]);
@@ -1667,7 +2155,7 @@ function render() {
   if (tree) tree.scrollTop = treeScroll;
   const marks = fx.host.querySelector(".fx-marks");
   if (marks) marks.scrollTop = marksScroll;
-  if (!fx.loading) fx.scrollRestore = false;
+  if (!readingFolder()) fx.scrollRestore = false;
   applyPendingFocus();
   giveListFocus();
 }
@@ -1679,7 +2167,7 @@ function render() {
  *  nothing focused, or the focus sitting on something Files has just
  *  rewritten, counts as free. */
 function giveListFocus() {
-  if (!fx.focusList || !fx.host || fx.loading) return;
+  if (!fx.focusList || !fx.host || readingFolder()) return;
   const rows = fx.host.querySelector(".fx-rows");
   if (!rows) return;
   fx.focusList = false;
@@ -1695,7 +2183,7 @@ function giveListFocus() {
 // ----------------------------------------------------------------- wiring
 
 function activate(path, isDir) {
-  const entry = (fx.listing?.entries || []).find((item) => same(item.path, path));
+  const entry = listed().find((item) => same(item.path, path));
   if (isDir || entry?.isArchive) {
     openFolder(path);
     return;
@@ -1783,7 +2271,8 @@ function openColumnMenu(event) {
     if (!fx.createdColumn && fx.sort === "created") { fx.sort = "name"; fx.desc = false; }
     rememberLayout();
     menu.remove();
-    if (fx.path === THIS_PC) dirty();
+    if (fx.search) startSearch(fx.search.query);
+    else if (fx.path === THIS_PC) dirty();
     else openFolder(fx.path, { push: false, keepFilter: true });
   });
   document.body.appendChild(menu);
@@ -1807,7 +2296,7 @@ function mount(host) {
     const crumb = event.target.closest("[data-fx-crumb]");
     if (crumb) {
       const path = asPath(crumb.dataset.fxCrumb);
-      if (same(path, fx.path)) return;
+      if (same(path, fx.path)) return fx.search ? closeSearch() : undefined;
       return void openFolder(path);
     }
     if (event.target.closest("[data-fx-address]")) return editAddress();
@@ -1826,6 +2315,11 @@ function mount(host) {
     if (sort) return sortBy(sort.dataset.fxSort);
     const reveal = event.target.closest("[data-fx-reveal]");
     if (reveal) return void invoke("open_in", { path: reveal.dataset.fxReveal, target: "explorer" }).catch(() => {});
+    if (event.target.closest("[data-fx-find]")) return startSearch(fx.filter);
+    if (event.target.closest("[data-fx-stop-search]")) return stopSearch();
+    if (event.target.closest("[data-fx-close-search]")) return closeSearch();
+    if (event.target.closest("[data-fx-op-dismiss]")) { clearTimeout(fx.opTimer); fx.op = null; return dirty(); }
+    if (event.target.closest("[data-fx-op-stop]")) return stopDelete();
     if (event.target.closest("[data-fx-back]")) return goBack();
     if (event.target.closest("[data-fx-forward]")) return goForward();
     if (event.target.closest("[data-fx-up]")) return goUp();
@@ -1837,6 +2331,9 @@ function mount(host) {
     if (event.target.closest("[data-fx-hidden]")) {
       fx.showHidden = !fx.showHidden;
       rememberLayout();
+      // Hidden folders are not walked unless they are shown, so the matches
+      // depend on this switch and have to be looked for again.
+      if (fx.search) return startSearch(fx.search.query);
       return dirty();
     }
     if (event.target.closest("[data-fx-thumbs]")) return toggleThumbs();
@@ -1868,7 +2365,7 @@ function mount(host) {
     const column = event.target.closest("[data-fx-column-resize]")?.dataset.fxColumnResize;
     if (column) {
       event.preventDefault(); event.stopPropagation();
-      fx.columnWidths[column] = { name: 320, type: 130, size: 92, modified: 148, created: 148 }[column];
+      fx.columnWidths[column] = { name: 320, where: 260, type: 130, size: 92, modified: 148, created: 148 }[column];
       rememberLayout(); dirty();
       return;
     }
@@ -1905,6 +2402,21 @@ function mount(host) {
     if (event.key === "F2" && current) {
       event.preventDefault();
       return startRename(current);
+    }
+    if (event.ctrlKey && !event.altKey && !event.shiftKey && key === "f") {
+      event.preventDefault();
+      return focusSearchBox();
+    }
+    if (event.target.closest(".fx-search")) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        return startSearch(event.target.value);
+      }
+      if (event.key === "Escape" && fx.search) {
+        event.preventDefault();
+        event.stopPropagation();
+        return closeSearch();
+      }
     }
     if (event.ctrlKey && !event.altKey && key === "l") {
       event.preventDefault();
@@ -1954,7 +2466,7 @@ function mount(host) {
     // from a text box, a selected row is enough to keep walking the list.
     const grid = row
       || (event.target.classList?.contains("fx-rows") ? event.target : null)
-      || (!typingText && fx.selected && fx.path !== THIS_PC ? fx.host.querySelector(".fx-rows") : null);
+      || (!typingText && fx.selected && !atDrives() ? fx.host.querySelector(".fx-rows") : null);
     if (grid && ["ArrowDown", "ArrowUp", "Home", "End", "PageDown", "PageUp"].includes(event.key)) {
       event.preventDefault();
       const shown = visible().shown;
@@ -1974,7 +2486,15 @@ function mount(host) {
       focusRowAt(next, { range: event.shiftKey, keep: event.ctrlKey });
       return;
     }
-    if (row && event.key === "Delete") {
+    // Not only from a focused row: a click or a repaint often leaves the
+    // keyboard on the list itself, and Delete then did nothing at all - no
+    // question, no strip - which looked exactly like a delete that failed.
+    // Whatever is selected in the list is what goes, unless the key came
+    // from a text box or the folder tree, which are about something else.
+    const inList = row
+      || event.target.classList?.contains("fx-rows")
+      || (!typingText && !event.target.closest(".fx-tree, .fx-marks") && selection().length > 0);
+    if (event.key === "Delete" && inList && targets.length && !atDrives()) {
       event.preventDefault();
       askDelete(targets, event.shiftKey);
       return;
@@ -1989,13 +2509,14 @@ function mount(host) {
     if (event.target.closest(".fx-address")) { fx.addressDraft = event.target.value; return; }
     if (!event.target.closest(".fx-search")) return;
     fx.filter = event.target.value;
+    if (fx.search) return searchSoon();
     dirty();
   });
   host.addEventListener("scroll", (event) => {
     if (!event.target.classList?.contains("fx-rows")) return;
     // A paint of its own, or the clamp a shorter list forces, is not the user
     // scrolling - remembering either would throw away where they were.
-    if (!painting && !fx.loading) fx.scrollTop = event.target.scrollTop;
+    if (!painting && !readingFolder()) fx.scrollTop = event.target.scrollTop;
     paintVirtualRows(event.target);
   }, true);
   // Clicking away from the rename box keeps the new name, as in Explorer.
@@ -2095,7 +2616,7 @@ function mount(host) {
       if (event.button !== 3 && event.button !== 4) return;
       // With no folder to go back to, leave Back unclaimed so the shell
       // returns to wherever Files was opened from.
-      if (event.button === 3 && !fx.history.length) return;
+      if (event.button === 3 && !fx.history.length && !fx.search) return;
       event.preventDefault();
       if (type !== "mouseup") return;
       if (event.button === 3) goBack();
@@ -2105,7 +2626,7 @@ function mount(host) {
   host.addEventListener("contextmenu", (event) => {
     if (event.target.closest(".fx-row.head")) return openColumnMenu(event);
     const target = event.target.closest("[data-fx-item], [data-fx-open]");
-    const blank = !target && !!event.target.closest(".fx-rows") && writable(fx.path) && !isZipRoot(fx.path);
+    const blank = !target && !!event.target.closest(".fx-rows") && writable(fx.path) && !isZipRoot(fx.path) && !fx.search;
     if (!target && !blank) return;
     event.preventDefault();
     const path = target ? asPath(target.dataset.fxItem || target.dataset.fxOpen) : fx.path;
@@ -2145,7 +2666,7 @@ function mount(host) {
           item("reveal", "frame_inspect", nested ? "Show archive in Windows Explorer" : "Show in Windows Explorer"),
           nested ? "" : item("terminal", "terminal", "Open a shell here"),
           isDir && !nested ? item("bookmark", marked ? "bookmark_remove" : "bookmark_add", marked ? "Remove from bookmarks" : "Add to bookmarks") : "",
-          writable(path) && !isZipRoot(path) ? "<hr>" + item("delete", "delete", "Delete…", inList ? "Del" : "", true) : "",
+          writable(path) && !isZipRoot(path) ? "<hr>" + item("delete", "delete", "Move to Recycle Bin…", inList ? "Del" : "", true) + item("delete-forever", "delete_forever", "Delete permanently…", inList ? "Shift+Del" : "", true) : "",
         ].join("");
     menu.addEventListener("click", (click) => {
       const action = click.target.closest("[data-do]")?.dataset.do;
@@ -2157,7 +2678,7 @@ function mount(host) {
       else if (action === "terminal") {
         const shellAt = isZipRoot(path)
           ? path.replace(/\\[^\\]+$/i, "") || path
-          : (isDir ? path : fx.path);
+          : (isDir ? path : parentOf(path));
         invoke("open_in", { path: isInsideZip(shellAt) ? revealPath(shellAt) : shellAt, target: "terminal" }).catch(() => {});
       }
       else if (action === "copy") navigator.clipboard?.writeText(path).catch(() => {});
@@ -2168,6 +2689,7 @@ function mount(host) {
       else if (action === "refresh") refresh();
       else if (action === "bookmark") toggleBookmark(path);
       else if (action === "delete") askDelete(contextPaths);
+      else if (action === "delete-forever") askDelete(contextPaths, true);
     });
     document.body.appendChild(menu);
     // Keep the menu on screen near the bottom and right edges.
@@ -2183,7 +2705,14 @@ function mount(host) {
     clearTimeout(externalChangeTimer);
     externalChangeTimer = setTimeout(() => refresh({ quiet: true }), 750);
   })?.catch?.(() => {});
-  window.addEventListener("beforeunload", () => watchFolder(THIS_PC), { once: true });
+  window.__TAURI__.event?.listen?.("explorer-search:batch", ({ payload }) => searchBatch(payload))?.catch?.(() => {});
+  window.__TAURI__.event?.listen?.("explorer-search:done", ({ payload }) => searchDone(payload))?.catch?.(() => {});
+  window.__TAURI__.event?.listen?.("explorer-delete:progress", ({ payload }) => deleteProgress(payload))?.catch?.(() => {});
+  window.__TAURI__.event?.listen?.("explorer-delete:done", ({ payload }) => deleteDone(payload))?.catch?.(() => {});
+  window.addEventListener("beforeunload", () => {
+    watchFolder(THIS_PC);
+    invoke("explorer_search_cancel", { owner: SEARCH_OWNER }).catch(() => {});
+  }, { once: true });
   render();
 }
 

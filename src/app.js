@@ -5538,7 +5538,7 @@ function mountShell() {
     <div class="titlebar">
       <div class="loading" id="loadbar" hidden><i></i></div>
       <div class="drag">
-        <div class="brand"><img src="wint-icon.png" alt="" /><span>WinT</span>
+        <div class="brand"><img class="brand-close" src="wint-icon.png" alt="" title="Double-click to close WinT" /><span>WinT</span>
           <span class="sub" id="brand-sub"></span></div>
       </div>
       <button class="title-home" id="title-home" type="button"
@@ -7617,6 +7617,15 @@ function wireShell() {
       appWindow.toggleMaximize().then(() => syncMaximizeButton()).catch(() => {});
     } else requestAppClose();
   };
+  // Double clicking the icon in the corner closes the window, the way double
+  // clicking a Windows system menu always has - through the same question the
+  // close button asks. A handler property, so the Projects window can replace
+  // it the way it replaces the click handler above.
+  document.querySelector(".titlebar").ondblclick = (e) => {
+    if (!e.target.closest(".brand-close")) return;
+    e.preventDefault();
+    requestAppClose();
+  };
   // Alt+F4 and the native frame's close button arrive here instead.
   // A popped-out Projects window registers its own close handler instead.
   if (!PROJECTS_WINDOW) {
@@ -8337,6 +8346,12 @@ async function startProjectsWindow() {
   followDemoMode();
   const titlebar = document.querySelector(".titlebar");
   titlebar.querySelector(".brand span").textContent = "Projects";
+  titlebar.querySelector(".brand-close")?.setAttribute("title", "Double-click to close this window");
+  titlebar.ondblclick = (event) => {
+    if (!event.target.closest(".brand-close")) return;
+    event.preventDefault();
+    emit("tool:closed", { id: "projects", instance: null }).catch(() => {}).finally(() => appWindow.destroy());
+  };
   // The title bar here closes and docks this window only. Its own handler is
   // replaced: the main window's closes the whole app.
   titlebar.onclick = (event) => {

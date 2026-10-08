@@ -2234,6 +2234,161 @@ async fn explorer_watch(window: tauri::Window, path: String) -> Result<(), Strin
     Ok(())
 }
 
+/// The stop flag of the search each Files window has running. Keyed by an id
+/// the page mints for itself, so a new search in one window stops that
+/// window's last one and never another window's.
+type SearchStops = Mutex<std::collections::HashMap<String, std::sync::Arc<AtomicBool>>>;
+
+fn explorer_searches() -> &'static SearchStops {
+    static SEARCHES: std::sync::OnceLock<SearchStops> = std::sync::OnceLock::new();
+    SEARCHES.get_or_init(Default::default)
+}
+
+fn explorer_search_stop(owner: &str) {
+    if let Ok(mut held) = explorer_searches().lock() {
+        if let Some(flag) = held.remove(owner) {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ExplorerSearchBatch {
+    token: String,
+    entries: Vec<explorer::Entry>,
+    folders: u64,
+    current: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ExplorerSearchDone {
+    token: String,
+    summary: explorer::SearchSummary,
+}
+
+/// Starts a search under `roots` and returns at once. The walk runs on its own
+/// thread and streams `explorer-search:batch` events as it goes, then one
+/// `explorer-search:done`; `token` tells the page which search they belong to.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn explorer_search(
+    app: AppHandle,
+    owner: String,
+    token: String,
+    roots: Vec<String>,
+    query: String,
+    show_hidden: bool,
+    include_created: bool,
+) {
+    explorer_search_stop(&owner);
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    if let Ok(mut held) = explorer_searches().lock() {
+        held.insert(owner.clone(), stop.clone());
+    }
+    std::thread::spawn(move || {
+        let batch_app = app.clone();
+        let batch_token = token.clone();
+        let summary = explorer::search(
+            roots,
+            &query,
+            show_hidden,
+            include_created,
+            &stop,
+            |entries, folders, current| {
+                let _ = batch_app.emit(
+                    "explorer-search:batch",
+                    ExplorerSearchBatch {
+                        token: batch_token.clone(),
+                        entries,
+                        folders,
+                        current: current.to_string(),
+                    },
+                );
+            },
+        );
+        if let Ok(mut held) = explorer_searches().lock() {
+            if held.get(&owner).is_some_and(|flag| std::sync::Arc::ptr_eq(flag, &stop)) {
+                held.remove(&owner);
+            }
+        }
+        let _ = app.emit("explorer-search:done", ExplorerSearchDone { token, summary });
+    });
+}
+
+#[tauri::command]
+fn explorer_search_cancel(owner: String) {
+    explorer_search_stop(&owner);
+}
+
+/// The stop flag of each delete under way, keyed by the token its page minted.
+fn explorer_deletes() -> &'static SearchStops {
+    static DELETES: std::sync::OnceLock<SearchStops> = std::sync::OnceLock::new();
+    DELETES.get_or_init(Default::default)
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ExplorerDeleteProgress {
+    token: String,
+    #[serde(flatten)]
+    progress: explorer::DeleteProgress,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ExplorerDeleteDone {
+    token: String,
+    results: Vec<explorer::DeleteResult>,
+    stopped: bool,
+}
+
+/// Starts deleting `items` and returns at once. The work runs on its own
+/// thread and streams `explorer-delete:progress` - which item, how many files
+/// of how many, the file under way - then one `explorer-delete:done` with
+/// what became of each item.
+#[tauri::command]
+fn explorer_delete_start(app: AppHandle, token: String, items: Vec<explorer::DeleteItem>) {
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    if let Ok(mut held) = explorer_deletes().lock() {
+        held.insert(token.clone(), stop.clone());
+    }
+    std::thread::spawn(move || {
+        let progress_app = app.clone();
+        let progress_token = token.clone();
+        let (results, stopped) = explorer::delete_with_progress(items, &stop, |progress| {
+            let _ = progress_app.emit(
+                "explorer-delete:progress",
+                ExplorerDeleteProgress {
+                    token: progress_token.clone(),
+                    progress: progress.clone(),
+                },
+            );
+        });
+        if let Ok(mut held) = explorer_deletes().lock() {
+            held.remove(&token);
+        }
+        let _ = app.emit(
+            "explorer-delete:done",
+            ExplorerDeleteDone {
+                token,
+                results,
+                stopped,
+            },
+        );
+    });
+}
+
+#[tauri::command]
+fn explorer_delete_cancel(token: String) {
+    if let Ok(held) = explorer_deletes().lock() {
+        if let Some(flag) = held.get(&token) {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
 #[tauri::command]
 async fn explorer_bookmarks(app: AppHandle) -> Vec<String> {
     let Ok(dir) = app.path().app_data_dir() else {
@@ -3417,6 +3572,8 @@ pub fn run() {
             explorer_thumbnail,
             explorer_text_preview,
             explorer_delete,
+            explorer_delete_start,
+            explorer_delete_cancel,
             explorer_materialize,
             explorer_rename,
             explorer_rename_many,
@@ -3426,6 +3583,8 @@ pub fn run() {
             explorer_clipboard_set,
             clipboard_copy_text,
             explorer_clipboard_get,
+            explorer_search,
+            explorer_search_cancel,
             disk_space_drives,
             disk_space_scan,
             disk_space_scan_start,
@@ -3864,6 +4023,8 @@ pub fn run() {
         explorer_thumbnail,
         explorer_text_preview,
         explorer_delete,
+        explorer_delete_start,
+        explorer_delete_cancel,
         explorer_materialize,
         explorer_rename,
         explorer_rename_many,
@@ -3872,6 +4033,8 @@ pub fn run() {
         explorer_drag_out,
         explorer_clipboard_set,
         explorer_clipboard_get,
+        explorer_search,
+        explorer_search_cancel,
         disk_space_drives,
         disk_space_scan,
         disk_space_scan_start,

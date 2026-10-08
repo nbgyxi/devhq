@@ -54,6 +54,10 @@ const EMIT_EVERY: Duration = Duration::from_millis(300);
 /// forget has to wait for the engine to let go of a torrent that may be in the
 /// middle of a write to a drive that is answering slowly.
 const MOVE_TIMEOUT: Duration = Duration::from_secs(60);
+/// A remove is that same forget, so it gets the same patience. At the plain
+/// request timeout a selection of busy torrents came back "did not answer"
+/// one after another while the engine was still letting go of the first.
+const REMOVE_TIMEOUT: Duration = MOVE_TIMEOUT;
 /// The helper beats once a second. Four missed in a row is a wedged engine.
 const HEARTBEAT_DEAD: Duration = Duration::from_secs(5);
 /// How long a helper may take to say anything at all before it is treated as
@@ -1707,7 +1711,11 @@ pub async fn torrent_action(
         request(
             op,
             json!({ "id": id, "deleteFiles": delete_files.unwrap_or(false) }),
-            REQUEST_TIMEOUT,
+            if op == "remove" {
+                REMOVE_TIMEOUT
+            } else {
+                REQUEST_TIMEOUT
+            },
         )
     })
 }

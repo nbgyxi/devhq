@@ -218,6 +218,7 @@ fn default_window_height() -> u32 {
 fn default_column_widths() -> BTreeMap<String, u32> {
     [
         ("name", 320),
+        ("where", 260),
         ("type", 130),
         ("size", 92),
         ("modified", 148),
@@ -686,42 +687,11 @@ fn list_dir(path: PathBuf, dirs_only: bool, include_created: bool) -> Result<Lis
             skipped += 1;
             continue;
         };
-        let is_dir = meta.is_dir();
         let name = entry.file_name().to_string_lossy().into_owned();
-        let is_archive = !is_dir && is_zip_name(&name);
-        if dirs_only && !is_dir && !is_archive {
+        if dirs_only && !meta.is_dir() && !is_zip_name(&name) {
             continue;
         }
-        let (hidden, readonly) = flags(&meta);
-        let child = entry.path();
-        out.push(Entry {
-            ext: if is_archive {
-                "zip".into()
-            } else {
-                extension(&name, is_dir)
-            },
-            // Never open every child directory while listing its parent. On a
-            // network share that turns one click into hundreds of round trips.
-            // A folder is expanded lazily; an empty branch simply opens empty.
-            has_children: is_dir || is_archive,
-            path: child.to_string_lossy().into_owned(),
-            name,
-            is_dir: is_dir || is_archive,
-            is_archive,
-            bytes: if is_dir && !is_archive { 0 } else { meta.len() },
-            modified: modified_ms(&meta),
-            created: if include_created {
-                meta.created()
-                    .ok()
-                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|duration| duration.as_millis() as u64)
-                    .unwrap_or(0)
-            } else {
-                0
-            },
-            hidden,
-            readonly: readonly || is_archive,
-        });
+        out.push(entry_of(name, entry.path(), &meta, include_created));
     }
     // Folders first, then by name. Every other order the front end offers is a
     // re-sort of this list, so the default arrives already correct.
@@ -739,6 +709,211 @@ fn list_dir(path: PathBuf, dirs_only: bool, include_created: bool) -> Result<Lis
         entries: out,
         skipped,
     })
+}
+
+/// One row of a listing or a search, built from what `read_dir` already
+/// returned - on Windows that metadata comes out of the directory scan itself,
+/// so no file is opened to make it.
+fn entry_of(name: String, child: PathBuf, meta: &std::fs::Metadata, include_created: bool) -> Entry {
+    let is_dir = meta.is_dir();
+    let is_archive = !is_dir && is_zip_name(&name);
+    let (hidden, readonly) = flags(meta);
+    Entry {
+        ext: if is_archive {
+            "zip".into()
+        } else {
+            extension(&name, is_dir)
+        },
+        // Never open every child directory while listing its parent. On a
+        // network share that turns one click into hundreds of round trips.
+        // A folder is expanded lazily; an empty branch simply opens empty.
+        has_children: is_dir || is_archive,
+        path: child.to_string_lossy().into_owned(),
+        name,
+        is_dir: is_dir || is_archive,
+        is_archive,
+        bytes: if is_dir && !is_archive { 0 } else { meta.len() },
+        modified: modified_ms(meta),
+        created: if include_created {
+            meta.created()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or(0)
+        } else {
+            0
+        },
+        hidden,
+        readonly: readonly || is_archive,
+    }
+}
+
+/// Past this many matches a search stops and says so. A query that matches
+/// more than this is a query that needs another word, and a list this long
+/// is already more than anyone reads.
+const SEARCH_MAX_MATCHES: usize = 5000;
+/// How often a running search hands over what it has, matches or not, so the
+/// count of folders read keeps moving even through a stretch with no hits.
+const SEARCH_BATCH_MS: u128 = 120;
+
+/// What a finished (or stopped) search reports alongside its last batch.
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchSummary {
+    pub folders: u64,
+    pub matches: u64,
+    /// Folders Windows would not open. Counted, never silently left out.
+    pub skipped: u64,
+    /// The search stopped at `SEARCH_MAX_MATCHES` rather than at the bottom.
+    pub capped: bool,
+    pub cancelled: bool,
+    pub elapsed_ms: u64,
+    pub error: Option<String>,
+}
+
+/// A query is words, every one of which must be in the name: `invoice 2024`
+/// finds `Invoice March 2024.pdf`. A word with `*` or `?` in it is a wildcard
+/// that has to match the whole name instead, so `*.pdf` means what it says.
+struct NameQuery {
+    words: Vec<String>,
+    globs: Vec<Vec<char>>,
+}
+
+impl NameQuery {
+    fn new(query: &str) -> Self {
+        let mut words = Vec::new();
+        let mut globs = Vec::new();
+        for word in query.split_whitespace().map(str::to_lowercase) {
+            if word.contains(['*', '?']) {
+                globs.push(word.chars().collect());
+            } else {
+                words.push(word);
+            }
+        }
+        NameQuery { words, globs }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.words.is_empty() && self.globs.is_empty()
+    }
+
+    fn matches(&self, name: &str) -> bool {
+        let lower = name.to_lowercase();
+        if !self.words.iter().all(|word| lower.contains(word.as_str())) {
+            return false;
+        }
+        if self.globs.is_empty() {
+            return true;
+        }
+        let chars: Vec<char> = lower.chars().collect();
+        self.globs.iter().all(|glob| wildcard(glob, &chars))
+    }
+}
+
+/// `*` and `?` over a whole name, without backtracking blow-up: the classic
+/// two-pointer walk that remembers only the last star.
+fn wildcard(pattern: &[char], text: &[char]) -> bool {
+    let (mut p, mut t) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while t < text.len() {
+        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == text[t]) {
+            p += 1;
+            t += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some((p, t));
+            p += 1;
+        } else if let Some((sp, st)) = star {
+            p = sp + 1;
+            t = st + 1;
+            star = Some((sp, st + 1));
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|c| *c == '*')
+}
+
+/// Every file and folder under `roots` whose name matches `query`.
+///
+/// Breadth first, so what sits near the top of the tree - usually what is
+/// being looked for - is found in the first moments instead of after the walk
+/// has been to the bottom of the first deep branch. Matches go out in batches
+/// through `on_batch` together with how many folders have been read and which
+/// one is being read now, so the window can fill in while the walk continues.
+///
+/// Links and junctions are listed but never followed: they lead back into the
+/// tree (or into another drive) and would turn the walk into a loop. Hidden
+/// and system folders are only entered when the window is showing them, which
+/// also keeps `.git` and friends out of the walk.
+pub fn search(
+    roots: Vec<String>,
+    query: &str,
+    show_hidden: bool,
+    include_created: bool,
+    stop: &AtomicBool,
+    mut on_batch: impl FnMut(Vec<Entry>, u64, &str),
+) -> SearchSummary {
+    let started = std::time::Instant::now();
+    let query = NameQuery::new(query);
+    let mut summary = SearchSummary::default();
+    if query.is_empty() {
+        summary.error = Some("Type part of a name to search for.".into());
+        return summary;
+    }
+    let mut queue: std::collections::VecDeque<PathBuf> = roots
+        .iter()
+        .map(|root| PathBuf::from(root.replace('/', "\\")))
+        .filter(|root| root.is_dir())
+        .collect();
+    if queue.is_empty() {
+        summary.error = Some("That folder is no longer available.".into());
+        return summary;
+    }
+    let mut batch = Vec::new();
+    let mut last_sent = std::time::Instant::now();
+    'walk: while let Some(dir) = queue.pop_front() {
+        if stop.load(Ordering::Relaxed) {
+            summary.cancelled = true;
+            break;
+        }
+        let Ok(children) = std::fs::read_dir(&dir) else {
+            summary.skipped += 1;
+            continue;
+        };
+        summary.folders += 1;
+        for child in children.flatten() {
+            let Ok(file_type) = child.file_type() else {
+                continue;
+            };
+            let Ok(meta) = child.metadata() else {
+                continue;
+            };
+            let (hidden, _) = flags(&meta);
+            if hidden && !show_hidden {
+                continue;
+            }
+            let path = child.path();
+            if file_type.is_dir() && !file_type.is_symlink() {
+                queue.push_back(path.clone());
+            }
+            let name = child.file_name().to_string_lossy().into_owned();
+            if query.matches(&name) {
+                batch.push(entry_of(name, path, &meta, include_created));
+                summary.matches += 1;
+                if summary.matches as usize >= SEARCH_MAX_MATCHES {
+                    summary.capped = true;
+                    break 'walk;
+                }
+            }
+        }
+        if last_sent.elapsed().as_millis() >= SEARCH_BATCH_MS {
+            on_batch(std::mem::take(&mut batch), summary.folders, &dir.to_string_lossy());
+            last_sent = std::time::Instant::now();
+        }
+    }
+    on_batch(batch, summary.folders, "");
+    summary.elapsed_ms = started.elapsed().as_millis() as u64;
+    summary
 }
 
 /// Windows' own words for a failed `read_dir` are "Access is denied. (os error
@@ -1112,6 +1287,19 @@ fn name_of(path: &Path) -> String {
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
+/// A drive or anything else with no parent is never a delete target, whatever
+/// the page asked for: This PC shows drives as rows, and a Shift+Delete on one
+/// would otherwise have been a `remove_dir_all` of the whole drive.
+fn refuse_roots(paths: &[String]) -> Result<(), String> {
+    match paths
+        .iter()
+        .find(|path| Path::new(path.trim()).parent().is_none())
+    {
+        Some(path) => Err(format!("{path} is a whole drive and cannot be deleted.")),
+        None => Ok(()),
+    }
+}
+
 fn delete_outright(paths: &[&String]) -> Result<(), String> {
     for path in paths {
         let item = Path::new(path.as_str());
@@ -1138,6 +1326,7 @@ pub fn delete(paths: Vec<String>, recycle: bool) -> Result<(), String> {
         SHFILEOPSTRUCTW,
     };
 
+    refuse_roots(&paths)?;
     if let Some(path) = paths.iter().find(|path| inside_zip(path)) {
         return Err(format!(
             "{} is inside a zip — delete the archive itself, not the files in it.",
@@ -1151,8 +1340,23 @@ pub fn delete(paths: Vec<String>, recycle: bool) -> Result<(), String> {
     if targets.is_empty() {
         return Ok(());
     }
+    // Deleting for good tries `std::fs` first, whose errors say what went
+    // wrong in words. It stops dead at a read-only file, though, which the
+    // shell does not, so whatever it could not take goes to the shell next -
+    // the same call as the Recycle Bin, without FOF_ALLOWUNDO.
+    let mut first_error = None;
     if !recycle {
-        return delete_outright(&targets);
+        match delete_outright(&targets) {
+            Ok(()) => return Ok(()),
+            Err(error) => first_error = Some(error),
+        }
+    }
+    let targets: Vec<&String> = targets
+        .into_iter()
+        .filter(|path| Path::new(path.as_str()).exists())
+        .collect();
+    if targets.is_empty() {
+        return Ok(());
     }
     // SHFileOperation takes the whole list in one double-null-terminated
     // buffer, so one answer covers one trip to the Recycle Bin.
@@ -1162,16 +1366,22 @@ pub fn delete(paths: Vec<String>, recycle: bool) -> Result<(), String> {
         from.push(0);
     }
     from.push(0);
+    // FOF_ALLOWUNDO is the Recycle Bin: without it the shell deletes outright.
+    let mut flags = FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+    if recycle {
+        flags |= FOF_ALLOWUNDO;
+    }
     let mut op = SHFILEOPSTRUCTW {
         wFunc: FO_DELETE,
         pFrom: PCWSTR(from.as_ptr()),
-        // FOF_ALLOWUNDO is the Recycle Bin: without it the shell deletes
-        // outright, which is the other branch of this function.
-        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI).0 as u16,
+        fFlags: flags.0 as u16,
         ..Default::default()
     };
     let code = unsafe { SHFileOperationW(std::ptr::addr_of_mut!(op)) };
     if code != 0 {
+        if let Some(error) = first_error {
+            return Err(error);
+        }
         return Err(format!(
             "Windows would not move {} to the Recycle Bin (error {code}).",
             if targets.len() == 1 {
@@ -1184,11 +1394,23 @@ pub fn delete(paths: Vec<String>, recycle: bool) -> Result<(), String> {
     if op.fAnyOperationsAborted.as_bool() {
         return Err("The delete was stopped before it finished.".into());
     }
+    // Success from the shell is not proof: with error UI turned off it can
+    // answer 0 having moved only part of a folder whose files were still open.
+    // A caller that retries needs to hear that, not a quiet "done".
+    if let Some(left) = targets.iter().find(|path| Path::new(path.as_str()).exists()) {
+        return Err(first_error.unwrap_or_else(|| {
+            format!(
+                "{} is still there — something may still have it open.",
+                name_of(Path::new(left.as_str()))
+            )
+        }));
+    }
     Ok(())
 }
 
 #[cfg(not(windows))]
 pub fn delete(paths: Vec<String>, _recycle: bool) -> Result<(), String> {
+    refuse_roots(&paths)?;
     if let Some(path) = paths.iter().find(|path| inside_zip(path)) {
         return Err(format!(
             "{} is inside a zip — delete the archive itself, not the files in it.",
@@ -1200,6 +1422,245 @@ pub fn delete(paths: Vec<String>, _recycle: bool) -> Result<(), String> {
         .filter(|path| Path::new(path.as_str()).exists())
         .collect();
     delete_outright(&targets)
+}
+
+/// One thing to delete, and whether it goes to the Recycle Bin.
+#[derive(serde::Deserialize, Clone)]
+pub struct DeleteItem {
+    pub path: String,
+    pub recycle: bool,
+}
+
+/// How far a delete has got, sent to the page while it runs.
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteProgress {
+    /// `counting` while a folder is being walked, `deleting` after.
+    pub phase: &'static str,
+    /// Which of the items asked for is being worked on.
+    pub item: usize,
+    pub files_done: u64,
+    pub files_total: u64,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    /// The file being deleted, or the folder being counted.
+    pub current: String,
+}
+
+/// What became of one item: no error when it is gone.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteResult {
+    pub path: String,
+    pub error: Option<String>,
+}
+
+/// A link or junction is deleted as itself, never walked into: what it
+/// points at belongs somewhere else.
+fn is_link(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || meta.file_type().is_symlink()
+    }
+    #[cfg(not(windows))]
+    {
+        meta.file_type().is_symlink()
+    }
+}
+
+/// Removes one file, or one link as itself. A read-only file is made
+/// writable and tried again, which is what Explorer's delete does too.
+#[allow(clippy::permissions_set_readonly_false)]
+fn remove_leaf(path: &Path, meta: &std::fs::Metadata) -> std::io::Result<()> {
+    let remove = || {
+        if meta.is_dir() {
+            std::fs::remove_dir(path)
+        } else {
+            std::fs::remove_file(path)
+        }
+    };
+    match remove() {
+        Err(error)
+            if error.kind() == std::io::ErrorKind::PermissionDenied
+                && meta.permissions().readonly() =>
+        {
+            let mut permissions = meta.permissions();
+            permissions.set_readonly(false);
+            std::fs::set_permissions(path, permissions)?;
+            remove()
+        }
+        other => other,
+    }
+}
+
+/// Deletes `items` one at a time and says how it is going.
+///
+/// A permanent delete walks each folder itself - counting first, so there is
+/// a total to report against - and then deletes file by file, which is what
+/// lets the page show `1,240 / 3,910 files` and the file under way. A file
+/// that will not go is noted and the rest carry on; whatever is left at the
+/// end is handed to the shell once, as Explorer's own Shift+Delete would.
+///
+/// The Recycle Bin is a single shell call per item: Windows moves a folder
+/// there whole and says nothing from inside it.
+///
+/// Answers what became of each item, and whether the run was stopped.
+pub fn delete_with_progress(
+    items: Vec<DeleteItem>,
+    stop: &AtomicBool,
+    mut report: impl FnMut(&DeleteProgress),
+) -> (Vec<DeleteResult>, bool) {
+    const EVERY: std::time::Duration = std::time::Duration::from_millis(120);
+    let stopped = || stop.load(Ordering::Relaxed);
+    let mut results = Vec::with_capacity(items.len());
+    let mut last;
+
+    for (index, item) in items.into_iter().enumerate() {
+        if stopped() {
+            results.push(DeleteResult {
+                path: item.path,
+                error: Some("Stopped before it started.".into()),
+            });
+            continue;
+        }
+        let mut progress = DeleteProgress {
+            phase: "deleting",
+            item: index,
+            ..Default::default()
+        };
+        report(&progress);
+        last = std::time::Instant::now();
+
+        if item.recycle {
+            let error = delete(vec![item.path.clone()], true).err();
+            results.push(DeleteResult {
+                path: item.path,
+                error,
+            });
+            continue;
+        }
+        let one = std::slice::from_ref(&item.path);
+        if let Err(error) = refuse_roots(one).and_then(|()| refuse_zip(one, "deleted")) {
+            results.push(DeleteResult {
+                path: item.path,
+                error: Some(error),
+            });
+            continue;
+        }
+        let root = PathBuf::from(&item.path);
+        let Ok(root_meta) = std::fs::symlink_metadata(&root) else {
+            // Already gone is what was asked for.
+            results.push(DeleteResult {
+                path: item.path,
+                error: None,
+            });
+            continue;
+        };
+
+        // Count. Files and links go in `leaves`; folders go in `dirs` in the
+        // order they are met, so walking `dirs` backwards empties the deepest
+        // first.
+        let mut leaves: Vec<(PathBuf, std::fs::Metadata)> = Vec::new();
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        let mut stack = Vec::new();
+        if root_meta.is_dir() && !is_link(&root_meta) {
+            stack.push(root.clone());
+        } else {
+            progress.files_total = 1;
+            progress.bytes_total = root_meta.len();
+            leaves.push((root.clone(), root_meta));
+        }
+        progress.phase = "counting";
+        while let Some(dir) = stack.pop() {
+            if stopped() {
+                break;
+            }
+            if last.elapsed() >= EVERY {
+                progress.current = dir.to_string_lossy().into_owned();
+                report(&progress);
+                last = std::time::Instant::now();
+            }
+            if let Ok(read) = std::fs::read_dir(&dir) {
+                for entry in read.flatten() {
+                    let Ok(meta) = entry.metadata() else { continue };
+                    if meta.is_dir() && !is_link(&meta) {
+                        stack.push(entry.path());
+                    } else {
+                        progress.files_total += 1;
+                        if !meta.is_dir() {
+                            progress.bytes_total += meta.len();
+                        }
+                        leaves.push((entry.path(), meta));
+                    }
+                }
+            }
+            dirs.push(dir);
+        }
+
+        // Delete, file by file.
+        progress.phase = "deleting";
+        progress.current.clear();
+        report(&progress);
+        let mut first_error: Option<String> = None;
+        for (path, meta) in &leaves {
+            if stopped() {
+                break;
+            }
+            if last.elapsed() >= EVERY {
+                progress.current = path.to_string_lossy().into_owned();
+                report(&progress);
+                last = std::time::Instant::now();
+            }
+            match remove_leaf(path, meta) {
+                Ok(()) => {
+                    progress.files_done += 1;
+                    if !meta.is_dir() {
+                        progress.bytes_done += meta.len();
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    progress.files_done += 1
+                }
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(readable(&path.to_string_lossy(), error));
+                    }
+                }
+            }
+        }
+        for dir in dirs.iter().rev() {
+            let _ = std::fs::remove_dir(dir);
+        }
+        progress.current.clear();
+        report(&progress);
+        if stopped() && root.exists() {
+            results.push(DeleteResult {
+                path: item.path,
+                error: Some(format!(
+                    "Stopped after {} of {} files.",
+                    progress.files_done, progress.files_total
+                )),
+            });
+            continue;
+        }
+        // Whatever would not go one at a time gets one try from the shell,
+        // which knows tricks `std::fs` does not. If that fails too, the error
+        // worth reading is the first one met, which names the file.
+        let error = if root.exists() {
+            delete(vec![item.path.clone()], false)
+                .err()
+                .map(|shell| first_error.clone().unwrap_or(shell))
+        } else {
+            None
+        };
+        results.push(DeleteResult {
+            path: item.path,
+            error,
+        });
+    }
+    (results, stopped())
 }
 
 fn refuse_zip(paths: &[String], what: &str) -> Result<(), String> {
@@ -1852,6 +2313,43 @@ pub fn cancel_drag() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn name_query_words_and_wildcards() {
+        let words = NameQuery::new("invoice 2024");
+        assert!(words.matches("Invoice March 2024.pdf"));
+        assert!(!words.matches("Invoice March 2023.pdf"));
+        assert!(NameQuery::new("xasan").matches("Xasan"));
+        let pdf = NameQuery::new("*.pdf");
+        assert!(pdf.matches("report.PDF"));
+        assert!(!pdf.matches("report.pdf.bak"));
+        assert!(NameQuery::new("r?port*").matches("Report final.docx"));
+        assert!(NameQuery::new("   ").is_empty());
+    }
+
+    #[test]
+    fn search_walks_below_and_streams_matches() {
+        let root = std::env::temp_dir().join(format!("wint-search-{}", std::process::id()));
+        let deep = root.join("a").join("b").join("Xasan");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("notes.txt"), "x").unwrap();
+        std::fs::write(root.join("a").join("xasan.txt"), "x").unwrap();
+        let stop = AtomicBool::new(false);
+        let mut found = Vec::new();
+        let summary = search(
+            vec![root.to_string_lossy().into_owned()],
+            "xasan",
+            false,
+            false,
+            &stop,
+            |batch, _, _| found.extend(batch),
+        );
+        std::fs::remove_dir_all(&root).ok();
+        assert_eq!(summary.matches, 2);
+        assert!(found.iter().any(|entry| entry.name == "Xasan" && entry.is_dir));
+        assert!(found.iter().any(|entry| entry.name == "xasan.txt" && !entry.is_dir));
+        assert!(!summary.capped && !summary.cancelled && summary.error.is_none());
+    }
 
     /// The whole GDI path in one go: a real PNG on disk must come back as a
     /// data URL that decodes to a PNG. It is the only way to check the
