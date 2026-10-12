@@ -16,6 +16,16 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.185.0",
+      title: "See torrents and their files go",
+      date: "2026-10-12",
+      changes: [
+        ["new", "Removing torrents in Torrents shows a progress bar above the list: which torrent it is on, then its files going — how many of how many, how much of the size, and the file being deleted right now."],
+        ["new", "Closing or docking the Torrents window while a remove is still running asks first, and says what would be left: torrents not reached stay in the list, and files not reached stay on disk."],
+        ["better", "A torrent whose files are still held open says it is waiting and trying again, instead of looking stuck."],
+      ],
+    },
+    {
       version: "0.184.8",
       title: "Queued deletes say so",
       date: "2026-10-08",

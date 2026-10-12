@@ -5638,6 +5638,11 @@ body.projects-window #status-term-popout{display:none!important}
    the torrent's own file sizes before the first byte moves. */
 .tr-move-bar{height:4px;margin:0 11px;border-radius:3px;background:rgba(127,127,127,.22);overflow:hidden}
 .tr-move-bar>i{display:block;height:100%;width:0;border-radius:3px;background:var(--accent,#4aa3ff);transition:width .18s linear}
+/* A remove reuses the move panel's look, above the list. The one exception to
+   the rule above: a Recycle Bin trip, or a folder still being counted, has no
+   proportion to show, so the bar sweeps instead of standing still at zero. */
+.tr-removal{margin:0}
+.tr-move-bar.busy>i{width:38% !important;animation:sweep 1.05s ease-in-out infinite}
 .tr-move>small{display:block;padding:7px 11px 9px;color:var(--dim);font-size:11px;line-height:1.5;overflow-wrap:anywhere}
 .tr-move-left{border-top:1px solid rgba(242,84,91,.25);padding:8px 11px 9px;background:rgba(242,84,91,.07)}
 .tr-move-left[hidden]{display:none}

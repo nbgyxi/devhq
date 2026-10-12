@@ -160,8 +160,39 @@
     return null;
   };
 
+  // A tool with work that only this page is driving - Torrents part-way
+  // through removing a selection and deleting its files - registers a check
+  // in `wintCloseGuards`. Closing or docking destroys this page, and with it
+  // whatever was not reached yet, so that is asked about first rather than
+  // discovered later as torrents still listed and files still on disk.
+  let askingToClose = false;
+  const mayClose = async () => {
+    const guard = (window.wintCloseGuards || [])
+      .map((check) => { try { return check(); } catch { return null; } })
+      .find(Boolean);
+    if (!guard || !window.wintConfirm) return true;
+    if (askingToClose) return false;
+    askingToClose = true;
+    try {
+      await win.unminimize?.().catch(() => {});
+      await win.setFocus?.().catch(() => {});
+      const answer = await window.wintConfirm({
+        title: guard.title,
+        message: guard.message,
+        confirmLabel: guard.closeLabel || "Close anyway",
+        cancelLabel: guard.keepLabel || "Keep it open",
+        icon: guard.icon || "warning",
+        tone: "danger",
+      });
+      return answer === true;
+    } finally {
+      askingToClose = false;
+    }
+  };
+
   const finishClose = async () => {
     if (handedOver || closed) return;
+    if (!(await mayClose()) || handedOver || closed) return;
     closed = true;
     await emit("tool:closed", { id, instance }).catch(() => {});
     await win.destroy().catch(() => {});
@@ -169,6 +200,7 @@
 
   const handOver = async () => {
     if (handedOver || closed) return;
+    if (!(await mayClose()) || handedOver || closed) return;
     await window.wintToolState?.send?.(id);
     handedOver = true;
     await emit("tool:docked", { id, instance }).catch(() => {});

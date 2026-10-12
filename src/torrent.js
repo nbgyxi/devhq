@@ -138,6 +138,10 @@
    *  blank space before the next frame. */
   const OVERSCAN = 6;
 
+  /** How long to wait between tries at a removed torrent's files. See
+   *  `deleteFiles`. */
+  const DELETE_WAITS = [500, 1000, 2000, 4000, 8000];
+
   const st = {
     host: null,
     tab: "transfers",
@@ -204,6 +208,15 @@
      *  engine handles one remove at a time, so the last of a long selection
      *  can wait a while — its row says so instead of looking untouched. */
     removing: new Set(),
+    /** Each remove under way, drawn as the strip above the list: which step
+     *  it is on, which torrent, and how far the file delete has got. */
+    removals: new Set(),
+    /** File deletes waiting for their `explorer-delete:done`, by token. */
+    deleteWaits: new Map(),
+    deleteSeq: 0,
+    /** Whether the delete events are being listened for. Without them a
+     *  streamed delete could never be heard finishing, so it is not used. */
+    deleteEvents: false,
     /** Set while a command is in flight, so the buttons can say so. */
     busy: "",
     notice: "",
@@ -385,6 +398,11 @@
 
         <section class="tr-view" data-tr-view="transfers">
           <div class="tr-banner bad tr-space" data-tr-space hidden></div>
+          <div class="tr-move tr-removal" data-tr-removal hidden>
+            <div class="tr-move-head">${icon("delete")}<strong data-tr-removal-title></strong></div>
+            <div class="tr-move-bar" data-tr-removal-bar><i data-tr-removal-fill></i></div>
+            <small data-tr-removal-line></small>
+          </div>
           <div class="tr-work">
             <div class="tr-list" data-tr-list>
               <div class="tr-head" data-tr-head></div>
@@ -441,6 +459,12 @@
     }, true);
     node.querySelector("[data-tr-scroll]").addEventListener("scroll", () => drawRows(), { passive: true });
     watchSize(node.querySelector("[data-tr-scroll]"), drawRows);
+
+    // The tool window asks before it closes or docks while a remove is still
+    // running; see `closeGuard`.
+    window.wintCloseGuards = window.wintCloseGuards || [];
+    if (!window.wintCloseGuards.includes(closeGuard)) window.wintCloseGuards.push(closeGuard);
+    drawRemoval();
 
     drawColumns();
     loadLayout();
@@ -564,6 +588,21 @@
         st.move = event.payload || st.move;
         drawMove();
       }).then((off) => st.unlisten.push(off)).catch(() => {});
+      // The files of a removed torrent go through the same streamed delete
+      // as Files, so the strip can count them going rather than sit still
+      // through a folder of thousands.
+      events.listen("explorer-delete:progress", (event) => {
+        const run = [...st.removals].find((item) => item.token && item.token === event.payload?.token);
+        if (!run) return;
+        run.progress = event.payload;
+        drawRemoval();
+      }).then((off) => st.unlisten.push(off)).catch(() => {});
+      events.listen("explorer-delete:done", (event) => {
+        const done = st.deleteWaits.get(event.payload?.token);
+        if (!done) return;
+        st.deleteWaits.delete(event.payload.token);
+        done(event.payload);
+      }).then((off) => { st.unlisten.push(off); st.deleteEvents = true; }).catch(() => {});
     } catch { /* no event bridge in this window */ }
 
     // A move outlives the page that started it: the engine keeps going while
@@ -3033,8 +3072,11 @@ Click to open in Explorer` : "";
     const total = rows.length;
     const label = total === 1 ? `Removing ${rows[0].name}` : `Removing ${total} torrents`;
     for (const row of rows) st.removing.add(row.id);
+    const run = { key, mode, total, phase: "engine", index: 0, count: total, name: rows[0].name, token: "", progress: null, retry: 0 };
+    st.removals.add(run);
     drawRows();
     window.wintWork?.beginWork(key, label);
+    drawRemoval();
 
     const removed = [];
     const failed = [];
@@ -3043,8 +3085,8 @@ Click to open in Explorer` : "";
     let engineDeleted = 0;
     try {
       for (const [index, row] of rows.entries()) {
-        window.wintWork?.updateWork(key, `${index + 1} / ${total} · ${row.name}`);
-        if (total > 1) note(`Removing ${index + 1} / ${total}: ${row.name}`);
+        Object.assign(run, { index, name: row.name });
+        drawRemoval();
         try {
           const outcome = await removeFromEngine(row, mode);
           removed.push(row);
@@ -3060,9 +3102,9 @@ Click to open in Explorer` : "";
 
       let deleted = 0;
       for (const [index, item] of toDelete.entries()) {
-        window.wintWork?.updateWork(key, `${mode === "recycle" ? "Recycle Bin" : "Deleting files"} ${index + 1} / ${toDelete.length} · ${item.row.name}`);
-        if (toDelete.length > 1) note(`${mode === "recycle" ? "Sending files to the Recycle Bin" : "Deleting files"} ${index + 1} / ${toDelete.length}: ${item.row.name}`);
-        const error = await deleteFiles(item.paths, mode === "recycle");
+        Object.assign(run, { phase: "files", index, count: toDelete.length, name: item.row.name, token: "", progress: null, retry: 0 });
+        drawRemoval();
+        const error = await deleteFiles(item.paths, mode === "recycle", run);
         if (error) kept.push(`${item.row.name}: ${error}`);
         else deleted++;
       }
@@ -3072,9 +3114,83 @@ Click to open in Explorer` : "";
       note(`Removing stopped part-way: ${error}`, { stay: true });
     } finally {
       for (const row of rows) st.removing.delete(row.id);
+      st.removals.delete(run);
       window.wintWork?.endWork(key);
       drawRows();
+      drawRemoval();
     }
+  }
+
+  /** The strip above the list while a remove runs. Two steps, each with its
+   *  own count: taking the torrents out of the engine, which is quick, and
+   *  then their files, which on a big folder is the long part - so there the
+   *  bar follows the files as they go. The Recycle Bin takes a folder whole
+   *  and says nothing from inside it, so that step can only show that it is
+   *  working, not how far along. Written in place, never rebuilt. */
+  function drawRemoval() {
+    const panel = st.host?.querySelector("[data-tr-removal]");
+    if (!panel) return;
+    const run = [...st.removals].pop();
+    panel.hidden = !run;
+    if (!run) return;
+    const binning = run.mode === "recycle";
+    const p = run.progress;
+    const of = run.count > 1 ? ` — ${run.index + 1} / ${run.count}` : "";
+    let title;
+    let line;
+    let share;
+    let busy = false;
+    if (run.phase === "engine") {
+      share = run.total ? run.index / run.total : 0;
+      title = run.total === 1 ? `Removing ${run.name}` : `Removing ${run.total} torrents${of}`;
+      line = run.mode === "keep"
+        ? `${run.name} · taking it off the list; the files stay where they are`
+        : `${run.name} · taking it off the list, then its files ${binning ? "go to the Recycle Bin" : "are deleted"}`;
+    } else {
+      // A torrent's paths are sent together; `item` says which of them is
+      // under way, and the files inside it fill in the rest.
+      const paths = Math.max(1, run.paths || 1);
+      const inner = p?.phase === "deleting" && p.filesTotal ? p.filesDone / p.filesTotal : 0;
+      share = (run.index + ((p?.item || 0) + inner) / paths) / run.count;
+      busy = !p || p.phase === "counting" || (binning && !p.filesTotal);
+      title = `${binning ? "Sending files to the Recycle Bin" : "Deleting files"}${of}`;
+      line = !p
+        ? `${run.name} · starting`
+        : p.phase === "counting"
+          ? `${run.name} · counting files${p.filesTotal ? ` · ${p.filesTotal.toLocaleString()} so far` : ""}`
+          : p.filesTotal
+            ? `${run.name} · ${p.filesDone.toLocaleString()} / ${p.filesTotal.toLocaleString()} files · ${bytes(p.bytesDone)} of ${bytes(p.bytesTotal)}${p.current ? ` · ${p.current}` : ""}`
+            : `${run.name} · Windows moves it in one go, so there is no count to show`;
+      if (run.retry) line += ` · still held open, try ${run.retry + 1} of ${DELETE_WAITS.length + 1}`;
+    }
+    const others = st.removals.size - 1;
+    if (others) line += ` · ${others} more remove${others === 1 ? "" : "s"} under way`;
+    panel.querySelector("[data-tr-removal-title]").textContent = title;
+    panel.querySelector("[data-tr-removal-line]").textContent = line;
+    panel.querySelector("[data-tr-removal-bar]").classList.toggle("busy", busy);
+    panel.querySelector("[data-tr-removal-fill]").style.width = `${(Math.min(1, share) * 100).toFixed(1)}%`;
+    window.wintWork?.updateWork(run.key, `${title} · ${line}`);
+  }
+
+  /** Asked by the tool window before it closes or docks: closing destroys
+   *  this page, and the remove loop lives in it. What is being deleted that
+   *  moment finishes in the backend; nothing after it is ever started. */
+  function closeGuard() {
+    if (!st.removals.size) return null;
+    const runs = [...st.removals];
+    const files = runs.some((run) => run.mode !== "keep");
+    const many = runs.reduce((sum, run) => sum + run.total, 0) > 1;
+    const them = many ? "torrents" : "a torrent";
+    const stay = many ? "stay" : "stays";
+    return {
+      title: files ? "Torrents are still being deleted" : "Torrents are still being removed",
+      message: files
+        ? `Closing now stops the remove part-way. Whatever is being deleted this moment finishes, but nothing after it is started: ${them} not reached yet ${stay} in the list, and files of torrents already taken off it stay on disk.`
+        : `Closing now stops the remove part-way: ${them} not reached yet ${stay} in the list.`,
+      closeLabel: "Close anyway",
+      keepLabel: "Keep it open",
+      icon: files ? "delete" : "playlist_remove",
+    };
   }
 
   /** One torrent out of the engine. Its paths are read **before** it goes,
@@ -3123,17 +3239,35 @@ Click to open in Explorer` : "";
    *  file it was seeding can stay open for a few seconds after the remove
    *  answers, so the retries back off over about fifteen seconds rather than
    *  giving up after one. Answers the last error, or "" when they went. */
-  async function deleteFiles(paths, recycle) {
-    const waits = [500, 1000, 2000, 4000, 8000];
+  async function deleteFiles(paths, recycle, run) {
     for (let attempt = 0; ; attempt++) {
-      try {
-        await invoke("explorer_delete", { paths, recycle });
-        return "";
-      } catch (error) {
-        if (attempt === waits.length) return String(error);
-        await new Promise((done) => setTimeout(done, waits[attempt]));
-      }
+      const error = await deleteOnce(paths, recycle, run);
+      if (!error) return "";
+      if (attempt === DELETE_WAITS.length) return error;
+      if (run) { run.retry = attempt + 1; drawRemoval(); }
+      await new Promise((done) => setTimeout(done, DELETE_WAITS[attempt]));
     }
+  }
+
+  /** One try at a torrent's files, streamed: the backend counts them, then
+   *  reports them going, which is what the strip draws. Falls back to the
+   *  plain delete when the events are not being heard. Answers the first
+   *  error, or "". */
+  function deleteOnce(paths, recycle, run) {
+    if (!st.deleteEvents) {
+      return invoke("explorer_delete", { paths, recycle }).then(() => "", (error) => String(error));
+    }
+    const token = `torrent-delete-${Date.now()}-${++st.deleteSeq}`;
+    if (run) Object.assign(run, { token, progress: null, paths: paths.length });
+    return new Promise((resolve) => {
+      st.deleteWaits.set(token, resolve);
+      invoke("explorer_delete_start", { token, items: paths.map((path) => ({ path, recycle })) })
+        .catch((error) => { st.deleteWaits.delete(token); resolve({ results: [{ error: String(error) }] }); });
+    }).then((outcome) => {
+      const errors = (outcome?.results || []).map((result) => result.error).filter(Boolean);
+      if (!errors.length) return "";
+      return errors.length === 1 ? errors[0] : `${errors[0]} (and ${errors.length - 1} more)`;
+    });
   }
 
   function removeSummary({ mode, total, removed, failed, deleted, engineDeleted, kept }) {
