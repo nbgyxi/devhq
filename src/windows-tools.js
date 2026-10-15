@@ -14,6 +14,7 @@
     { id: "lock-inspector", name: "Lock Inspector", icon: "lock_open", hint: "find processes holding a file or folder", keywords: "lock locked file folder handle handles process who holds using delete remove rename move in use cannot access being used by another sharing violation access denied unlock close restart manager" },
     { id: "notepad", name: "Notepad", icon: "edit_note", hint: "plain text notes in tabs down the side, saved as you type", keywords: "notepad note notes text plain text txt scratch scratchpad jot write writing memo memos draft editor edit type paste quick note sticky tabs autosave save open file" },
     { id: "clipboard", name: "Clipboard History", icon: "content_paste", hint: "everything you copy, recorded from startup — search, pin, restore, forget", keywords: "clipboard clip clips history copied copy cut paste buffer text links urls code snippets search restore pin forget clear earlier" },
+    { id: "screenshot", name: "Screenshot", icon: "screenshot_region", hint: "one shortcut, drag over part of the screen, and it is on the clipboard - or open it to crop, add arrows, circles, highlights and text", keywords: "screenshot screen shot capture snip snipping tool snip and sketch print screen prtscn printscreen grab region area select selection crop clipboard copy paste image picture png annotate annotation markup mark up arrow circle ellipse highlight highlighter marker text label editor edit draw greenshot sharex lightshot snagit" },
     { id: "stall-watch", name: "Input Stall Watch", icon: "mouse", hint: "catch the moments the mouse or the whole PC freezes, and see what caused them", keywords: "mouse freeze freezes frozen stutter stutters lag laggy hitch hiccup slow pointer cursor jumps jumping sticks sticky input stall stalls latency dpc interrupt isr driver latencymon diagnose diagnostics monitor watch background paging hard faults cpu spike wireless receiver usb power saving hook" },
     { id: "focus-mode", name: "Focus mode", icon: "shield_lock", hint: "one press or shortcut hides the windows you choose - gone from the taskbar, not just minimized - and the next brings them back", keywords: "focus mode panic boss key hide windows hidden taskbar alt tab privacy distraction distractions screen share sharing presentation quick hide stealth chrome discord youtube games" },
     { id: "keep-awake", name: "Keep Awake", icon: "coffee", hint: "keep Windows and the display awake for as long as you need", keywords: "keep awake stay awake sleep no sleep power display screen monitor timeout screensaver lock idle prevent caffeine caffeinate insomnia presentation meeting build download transfer render chat presence away status active green jiggle nudge mouse mover pointer idle timer stay active schedule scheduled hours weekdays weekends working hours 9 to 5 automatic recurring daily" },
@@ -291,6 +292,7 @@
     // stop it, not wait for the next tick to notice the page is gone.
     if (active !== "speed-test") window.wintSpeedTest?.unmount?.();
     if (active !== "notepad") window.wintNotepad?.unmount?.();
+    if (active !== "screenshot") shotLeave();
     const tool = catalog.find((x) => x.id === active) || catalog[0];
     if (active === "events") renderEvents(tool);
     if (active === "help") renderHelp(tool);
@@ -308,6 +310,7 @@
     if (active === "health") renderAppHealth(tool);
     if (active === "startup") renderStartupTray(tool);
     if (active === "focus-mode") renderFocusMode(tool);
+    if (active === "screenshot") renderScreenshot(tool);
     if (active === "torrents") renderTorrents(tool);
     if (active === "speed-test") renderSpeedTest(tool);
     if (active === "notepad") renderNotepad(tool);
@@ -538,6 +541,168 @@
 
   // Its own file too; the hiding itself is done by the backend, so the
   // shortcut and the sidebar button work whether this page was ever opened.
+  /* --------------------------------------------------------- Screenshot */
+
+  // Screenshot is a set of shortcuts more than a page: this shows what they
+  // are, lets each one be picked, and offers the same two things as buttons.
+  // The hotkeys themselves belong to the shell; picking one here asks it to
+  // make the change, and the new slots come back through screenshot:bindings.
+  let shotState = { slots: [], printScreenTaken: false };
+  let shotRecording = null;
+  let shotListening = false;
+  const SHOT_SUGGESTIONS = ["PrintScreen", "Ctrl+PrintScreen", "Shift+PrintScreen", "Ctrl+Alt+S", "Ctrl+Shift+S", "Ctrl+Alt+Shift+S"];
+  const shotKeyName = (part) => (part === "PrintScreen" ? "Print Screen" : part);
+
+  function shotSetRecording(id) {
+    shotRecording = id;
+    // While waiting, a screenshot shortcut that is already registered is
+    // reported back as a key instead of taking a screenshot: Windows gives
+    // those keys to WinT and never to this page.
+    invoke("screenshot_recording", { on: Boolean(id) }).catch(() => {});
+  }
+  function shotPick(id, binding) {
+    shotSetRecording(null);
+    invoke("screenshot_binding_request", { id, binding }).catch(() => {});
+    // Drawn straight away; the shell's answer redraws it with the real state.
+    shotState.slots = shotState.slots.map((slot) => ({
+      ...slot,
+      binding: slot.id === id ? binding : (binding && slot.binding === binding ? "" : slot.binding),
+      error: slot.id === id ? "" : slot.error,
+    }));
+    if (active === "screenshot" && host) renderScreenshot(catalog.find((x) => x.id === "screenshot"));
+  }
+  function shotFromEvent(event) {
+    if (["Control", "Shift", "Alt", "Meta"].includes(event.key)) return "";
+    const parts = [];
+    if (event.ctrlKey) parts.push("Ctrl");
+    if (event.altKey) parts.push("Alt");
+    if (event.shiftKey) parts.push("Shift");
+    const names = { " ": "Space", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" };
+    let key = names[event.key] || (event.key.length === 1 ? event.key.toUpperCase() : event.key);
+    if (key === "+") key = "Plus";
+    if (!key) return "";
+    // A plain letter or digit would fire every time it is typed anywhere.
+    if (parts.length === 0 && key.length === 1) return "";
+    parts.push(key);
+    return parts.join("+");
+  }
+  function shotOnKey(event) {
+    if (!shotRecording || active !== "screenshot") return;
+    // Print Screen arrives as a key-up only; everything else on key-down.
+    if (event.type === "keyup" && event.key !== "PrintScreen") return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      shotSetRecording(null);
+      renderScreenshot(catalog.find((x) => x.id === "screenshot"));
+      return;
+    }
+    const binding = shotFromEvent(event);
+    if (binding) shotPick(shotRecording, binding);
+  }
+  function shotListen() {
+    if (shotListening) return;
+    shotListening = true;
+    const listen = window.__TAURI__.event.listen;
+    listen("screenshot:bindings", (event) => {
+      shotState = event.payload || shotState;
+      if (active === "screenshot" && host) renderScreenshot(catalog.find((x) => x.id === "screenshot"));
+    }).catch(() => {});
+    listen("screenshot:recorded-key", (event) => {
+      if (shotRecording && active === "screenshot") shotPick(shotRecording, String(event.payload || ""));
+    }).catch(() => {});
+    document.addEventListener("keydown", shotOnKey, true);
+    document.addEventListener("keyup", shotOnKey, true);
+  }
+  /** Leaving the page must not leave the native handler swallowing presses. */
+  function shotLeave() {
+    if (shotRecording) shotSetRecording(null);
+  }
+
+  function renderScreenshot(tool) {
+    shotListen();
+    const combo = (binding) => `<span class="shot-combo">${binding.split("+").map((part) => `<kbd>${esc(shotKeyName(part))}</kbd>`).join("")}</span>`;
+    const slotRow = (slot, index) => {
+      const recording = shotRecording === slot.id;
+      const used = (binding) => shotState.slots.find((other) => other.id !== slot.id && other.binding === binding);
+      const suggestions = recording ? `<div class="shot-suggest"><small>Press the keys now, or pick one:</small>${SHOT_SUGGESTIONS.filter((binding) => binding !== slot.binding).map((binding) => `<button type="button" data-shot-pick="${esc(slot.id)}" data-binding="${esc(binding)}" title="${used(binding) ? "Moves it here from the other slot" : ""}">${combo(binding)}${used(binding) ? '<span class="shot-moves">in use</span>' : ""}</button>`).join("")}<button type="button" class="shot-cancel" data-shot-cancel>Cancel</button></div>` : "";
+      const refused = slot.binding && slot.error
+        ? `<div class="shot-refused" title="${esc(slot.error)}">${icon("block")}<span>Windows would not give WinT this shortcut - another program holds it, such as Greenshot, ShareX or Snipping Tool. Close that program or change its shortcut, or pick another here.</span></div>`
+        : "";
+      return `<div class="shot-slot${recording ? " recording" : ""}${refused ? " refused" : ""}"><span class="shot-slot-label">Shortcut ${index + 1}</span>
+        <button type="button" class="shot-binding" data-shot-record="${esc(slot.id)}" title="Click, then press the keys">${recording ? '<span class="shot-waiting">Press keys…</span>' : slot.binding ? combo(slot.binding) : '<span class="shot-unbound">Add shortcut</span>'}</button>
+        ${slot.binding && !recording ? `<button type="button" class="shot-clear" data-shot-clear="${esc(slot.id)}" title="Remove this shortcut">${icon("close")}</button>` : ""}
+        ${suggestions}${refused}</div>`;
+    };
+    const slots = (edit) => shotState.slots.filter((slot) => slot.edit === edit).map(slotRow).join("") || '<div class="shot-unbound">Loading shortcuts…</div>';
+    const usesPrintScreen = shotState.slots.some((slot) => String(slot.binding || "").split("+").includes("PrintScreen"));
+    host.innerHTML = header(tool, `<style>
+      .shot-page{max-width:760px;margin:0 auto;padding:28px 24px;display:grid;gap:14px}
+      .shot-card{display:grid;grid-template-columns:auto 1fr auto;gap:6px 16px;padding:18px 20px;border:1px solid var(--line);border-radius:12px;background:var(--bg1)}
+      .shot-card>.ms{font-size:28px;color:var(--accent);grid-row:span 2}
+      .shot-card strong{display:block;font-size:14px;margin-bottom:4px}
+      .shot-card>div>small{display:block;color:var(--dim);font-size:12.5px;line-height:1.45}
+      .shot-card>.btn{align-self:start}
+      .shot-slots{grid-column:2/-1;display:grid;gap:6px;margin-top:8px}
+      .shot-slot{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;background:var(--bg2)}
+      .shot-slot.refused{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--red) 55%,transparent)}
+      .shot-slot-label{width:80px;font-size:12px;color:var(--dim2)}
+      .shot-binding{min-width:170px;min-height:28px;display:inline-flex;align-items:center;padding:3px 10px;border:1px solid var(--line);border-radius:7px;background:var(--bg1);color:var(--text);cursor:pointer}
+      .shot-binding:hover{border-color:var(--accent)}
+      .shot-slot.recording .shot-binding{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent)}
+      .shot-waiting{font-size:12.5px;color:var(--accent);animation:shot-blink 1s ease-in-out infinite}
+      @keyframes shot-blink{50%{opacity:.45}}
+      .shot-clear{display:grid;place-items:center;width:26px;height:26px;border-radius:6px;color:var(--dim)}
+      .shot-clear:hover{background:var(--bg3);color:var(--text)}
+      .shot-clear .ms{font-size:16px}
+      .shot-combo{display:inline-flex;gap:3px}
+      .shot-page kbd{font:11.5px ui-monospace,Consolas,monospace;padding:2px 6px;border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;background:var(--bg2);color:var(--text)}
+      .shot-unbound{font-size:12px;color:var(--dim2)}
+      .shot-suggest{flex-basis:100%;display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:4px 0 2px 88px}
+      .shot-suggest small{flex-basis:100%;font-size:12px;color:var(--dim)}
+      .shot-suggest button{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg1);cursor:pointer}
+      .shot-suggest button:hover{border-color:var(--accent)}
+      .shot-moves{font-size:11px;color:var(--amber)}
+      .shot-cancel{font-size:12px;color:var(--dim)}
+      .shot-refused{flex-basis:100%;display:flex;gap:6px;align-items:flex-start;padding:2px 0 2px 88px;font-size:12px;line-height:1.4;color:var(--red)}
+      .shot-refused .ms{font-size:15px}
+      .shot-note{color:var(--dim);font-size:12.5px;line-height:1.5}
+      .shot-warn{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:12px;padding:12px 16px;border:1px solid color-mix(in srgb,var(--amber) 45%,var(--line));border-radius:12px;background:color-mix(in srgb,var(--amber) 8%,var(--bg1));font-size:12.5px;line-height:1.45}
+      .shot-warn>.ms{color:var(--amber);font-size:22px}
+      @media (max-width:560px){.shot-card,.shot-warn{grid-template-columns:auto 1fr}.shot-card>.btn,.shot-warn .btn{grid-column:1/-1}.shot-slots{grid-column:1/-1}.shot-suggest,.shot-refused{padding-left:0}}
+    </style><div class="shot-page">
+      <section class="shot-card">${icon("screenshot_region")}<div><strong>Screenshot to the clipboard</strong><small>Drag over the part you want and let go - it is on the clipboard, ready to paste. A click without dragging takes the whole screen; Esc or a right-click cancels.</small></div><button class="btn" type="button" data-shot="clip">${icon("content_copy")}Take one</button><div class="shot-slots">${slots(false)}</div></section>
+      <section class="shot-card">${icon("edit")}<div><strong>Screenshot and edit</strong><small>The same drag, then the picture opens in an editor: crop it, point at things with arrows and circles, highlight, add text - then Copy or Save to Pictures\\Screenshots.</small></div><button class="btn" type="button" data-shot="edit">${icon("edit")}Take and edit</button><div class="shot-slots">${slots(true)}</div></section>
+      ${usesPrintScreen && shotState.printScreenTaken ? `<section class="shot-warn">${icon("warning")}<span>Windows is set to open its own Snipping Tool on Print Screen. If Print Screen opens that instead of WinT, turn off <strong>Use the Print screen key to open screen capture</strong>.</span><button class="btn" type="button" data-shot-settings>${icon("open_in_new")}Open setting</button></section>` : ""}
+      <p class="shot-note">Click a shortcut to change it. Every shortcut works from anywhere, with WinT in front or not, and also shows under Settings → Hotkeys. Two programs cannot share a shortcut: whichever claims it first keeps it.</p>
+    </div>`);
+    for (const button of host.querySelectorAll("[data-shot]")) {
+      button.addEventListener("click", () => invoke("screenshot_start", { edit: button.dataset.shot === "edit", delayMs: 250 }).catch(() => {}));
+    }
+    for (const button of host.querySelectorAll("[data-shot-record]")) {
+      button.addEventListener("click", () => {
+        shotSetRecording(shotRecording === button.dataset.shotRecord ? null : button.dataset.shotRecord);
+        renderScreenshot(tool);
+        host.querySelector(".shot-slot.recording .shot-binding")?.focus();
+      });
+    }
+    for (const button of host.querySelectorAll("[data-shot-pick]")) {
+      button.addEventListener("click", () => shotPick(button.dataset.shotPick, button.dataset.binding));
+    }
+    for (const button of host.querySelectorAll("[data-shot-clear]")) {
+      button.addEventListener("click", () => shotPick(button.dataset.shotClear, ""));
+    }
+    host.querySelector("[data-shot-cancel]")?.addEventListener("click", () => { shotSetRecording(null); renderScreenshot(tool); });
+    host.querySelector("[data-shot-settings]")?.addEventListener("click", () => invoke("screenshot_open_print_screen_setting").catch(() => {}));
+    if (!shotState.slots.length) {
+      invoke("screenshot_bindings").then((value) => {
+        if (!value?.slots?.length) return;
+        shotState = value;
+        if (active === "screenshot" && host) renderScreenshot(tool);
+      }).catch(() => {});
+    }
+  }
+
   function renderFocusMode(tool) {
     host.innerHTML = header(tool, '<div data-focus-host></div>');
     const node = host.querySelector("[data-focus-host]");

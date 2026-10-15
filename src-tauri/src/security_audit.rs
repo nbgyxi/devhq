@@ -695,6 +695,68 @@ pub async fn audit_repair() -> Result<Repair, String> {
     .unwrap_or_else(|_| Err("The check could not be run.".into()))
 }
 
+/* ------------------------------------------ signing an agent back in */
+
+/// Opens the agent's own sign-in in a console window of its own.
+///
+/// An expired or missing login is the one failure the audit cannot get past
+/// itself: the agent runs headless, and signing in ends in a browser with the
+/// person's account. So WinT does everything up to that point - finds the CLI,
+/// starts it with its login command, and puts the window in front of them -
+/// and the window stays open (`/k`) so what the CLI answered can be read.
+/// Claude Code and Antigravity sign in from inside their interactive session,
+/// so for those the window opens the CLI itself and its title says what to do.
+#[tauri::command]
+pub async fn audit_sign_in(agent: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        let (title, line) = match agent.as_str() {
+            "claude" => {
+                let path = crate::term::claude_program().ok_or("Claude Code is not installed.")?;
+                ("Claude Code - type /login and press Enter", quote(&path))
+            }
+            "codex" => {
+                let path = crate::codex::codex_path().ok_or("Codex is not installed.")?;
+                ("Sign in to Codex", format!("{} login", quote(&path)))
+            }
+            "gemini" => {
+                let path = crate::gemini::gemini_path().ok_or("Antigravity CLI is not installed.")?;
+                ("Antigravity - follow the sign-in, or type /auth", quote(&path))
+            }
+            "copilot" => {
+                let path =
+                    crate::copilot::copilot_path().ok_or("GitHub Copilot CLI is not installed.")?;
+                ("Sign in to GitHub Copilot", format!("{} login", quote(&path)))
+            }
+            "cursor" => {
+                // Cursor's own line already runs in `cmd /k "..."`; only its
+                // inside is wanted, since this window is that `cmd` already.
+                let line = crate::cursor::login_command()?;
+                let inner = line.strip_prefix("cmd.exe /d /k ").map_or(line.as_str(), |rest| {
+                    rest.strip_prefix('"').and_then(|r| r.strip_suffix('"')).unwrap_or(rest)
+                });
+                ("Sign in to Cursor Agent", inner.to_string())
+            }
+            _ => return Err("That agent is not one the audit knows.".into()),
+        };
+        // One visible `cmd /k`: it titles the window, runs `.cmd` shims as well
+        // as `.exe`s, and stays open after the CLI exits. `/k "..."` drops the
+        // outer quotes only, so the quoted paths inside survive.
+        Command::new("cmd.exe")
+            .raw_arg(format!("/d /k \"title {title}&& {line}\""))
+            .current_dir(std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_else(std::env::temp_dir))
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Could not open the sign-in window: {e}"))
+    })
+    .await
+    .unwrap_or_else(|_| Err("The sign-in window could not be opened.".into()))
+}
+
 /// A folder handed back by the front end, accepted only if it is one of ours.
 fn audit_dir(dir: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(dir);

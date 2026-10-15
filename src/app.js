@@ -4601,13 +4601,41 @@ function runSearchCommand(index) {
 
 /* ------------------------------------------------------------- hotkeys */
 
+/** Every shortcut slot that takes a screenshot. Each is a row of its own in
+ *  Hotkeys, so a mode can answer to several keys at once - the Ctrl+Alt pair
+ *  for keyboards without a Print Screen key, and Print Screen for the rest.
+ *  The third copy slot is left empty for whatever the user wants. */
+const SCREENSHOT_SHORTCUTS = [
+  { id: "command:screenshot", edit: false, binding: "Ctrl+Alt+S" },
+  { id: "command:screenshot-2", edit: false, binding: "PrintScreen" },
+  { id: "command:screenshot-3", edit: false, binding: "" },
+  { id: "command:screenshot-edit", edit: true, binding: "Ctrl+Alt+Shift+S" },
+  { id: "command:screenshot-edit-2", edit: true, binding: "Ctrl+PrintScreen" },
+  { id: "command:screenshot-edit-3", edit: true, binding: "Shift+PrintScreen" },
+];
+const SCREENSHOT_IDS = new Set(SCREENSHOT_SHORTCUTS.map((slot) => slot.id));
+
 const HOTKEY_DEFAULTS = {
   "command:palette": "Ctrl+K", "command:rescan": "F5", "command:terminal-panel": "Ctrl+`",
   "tool:ports": "Ctrl+Shift+P", "tool:network": "Ctrl+Shift+N",
   "tool:registry": "Ctrl+Shift+R", "tool:clipboard": "Ctrl+Shift+V",
   "tool:github": "Ctrl+Shift+G", "tool:git": "Ctrl+Alt+G",
   "command:focus-mode": "Ctrl+Alt+H", "command:repair-shell": "Ctrl+Alt+R",
+  ...Object.fromEntries(SCREENSHOT_SHORTCUTS.filter((slot) => slot.binding).map((slot) => [slot.id, slot.binding])),
 };
+
+/** Shortcuts that only make sense from outside WinT, so they are always
+ *  system-wide and their checkbox cannot be cleared. */
+const ALWAYS_GLOBAL = new Set(["command:focus-mode", "command:repair-shell", ...SCREENSHOT_IDS]);
+
+/** A screenshot from inside WinT: long enough for the palette or the button
+ *  that started it to get out of the picture first. */
+function startScreenshot(edit) {
+  invoke("screenshot_start", { edit, delayMs: 250 }).catch((error) => {
+    beginWork("screenshot", `Screenshot failed: ${String(error)}`);
+    setTimeout(() => endWork("screenshot"), 5000);
+  });
+}
 
 function hotkeyCatalog() {
   const projectCommands = [];
@@ -4643,6 +4671,16 @@ function hotkeyCatalog() {
     // is the one thing a broken shell makes hard. Always system-wide, because
     // a shortcut that needs WinT in front is no use at that point.
     { id: "command:repair-shell", kind: "global", name: "Restart Explorer and purge shell caches", icon: "desktop_windows", hint: "Runs the Clean Shell & Cache Purger straight away, after a three second countdown you can cancel. Also pulls windows stranded off-screen back into view. Always system-wide.", action: () => runShellRepair() },
+    // Handled natively, like the clipboard picker: the screen is frozen the
+    // moment the key goes down, with no window brought forward first.
+    ...SCREENSHOT_SHORTCUTS.map((slot, index, all) => {
+      const nth = all.slice(0, index).filter((other) => other.edit === slot.edit).length;
+      const name = `${slot.edit ? "Screenshot and edit" : "Screenshot to the clipboard"}${nth ? ` — shortcut ${nth + 1}` : ""}`;
+      const hint = slot.edit
+        ? "Drag over part of the screen and it opens in an editor to crop, add arrows, circles, highlights and text. Always system-wide."
+        : "Drag over part of the screen and it is on the clipboard. A click takes the whole screen. Always system-wide.";
+      return { id: slot.id, kind: "global", name, icon: slot.edit ? "edit" : "screenshot_region", hint: nth ? `Another key for the same thing. ${hint}` : hint, action: () => startScreenshot(slot.edit) };
+    }),
     { id: "command:rescan", kind: "global", name: "Rescan projects", icon: "refresh", hint: "Scan every configured project folder again", action: () => rescan() },
     { id: "command:terminal-panel", kind: "global", name: "Toggle terminal panel", icon: "terminal", hint: "Show or hide docked terminals", action: () => setDockOpen(!window.termsState.open) },
     // The popped-out variant: a shell in a window of its own, with no dock and
@@ -4699,7 +4737,7 @@ function hotkeyConflicts() {
 // global: Focus mode, and the Explorer restart you reach for when the shell
 // has stopped answering and nothing can be clicked.
 function isGlobalHotkey(id) {
-  return id === "command:focus-mode" || id === "command:repair-shell" || state.hotkeyGlobals.has(id);
+  return ALWAYS_GLOBAL.has(id) || state.hotkeyGlobals.has(id);
 }
 
 /** The Clean Shell & Cache Purger, run without its tool. The countdown is the
@@ -4741,6 +4779,39 @@ async function runShellRepair() {
 }
 
 const globalHotkeyErrors = new Map();
+
+/** Tells the native handler which presses are screenshots, and the Screenshot
+ *  page what every slot holds and whether Windows refused it. */
+async function sendScreenshotSlots() {
+  const slots = SCREENSHOT_SHORTCUTS.map((slot) => ({
+    id: slot.id, edit: slot.edit, binding: hotkeyBinding(slot.id), error: globalHotkeyErrors.get(slot.id) || "",
+  }));
+  await invoke("screenshot_global_bindings_set", { slots, theme: state.theme === "light" ? "light" : "dark" }).catch((error) => {
+    // One line for every binding that would not parse; each goes on its own row.
+    const text = String(error);
+    for (const slot of slots) {
+      if (slot.binding && text.includes(`${slot.binding} is not`)) globalHotkeyErrors.set(slot.id, text);
+    }
+  });
+}
+
+/** A shortcut picked on the Screenshot page. Hotkeys belong to the shell, so
+ *  the page asks and this makes the change exactly as Settings would. A key
+ *  already used by another screenshot slot moves rather than doubling up. */
+listen("screenshot:set-binding", (event) => {
+  const { id, binding } = event.payload || {};
+  if (!SCREENSHOT_IDS.has(id)) return;
+  const value = String(binding || "");
+  if (value) {
+    for (const slot of SCREENSHOT_SHORTCUTS) {
+      if (slot.id !== id && hotkeyBinding(slot.id) === value) state.hotkeys[slot.id] = "";
+    }
+  }
+  state.hotkeys[id] = value;
+  savePrefs();
+  syncGlobalHotkeys();
+  if (state.activeView === "settings" && state.settingsSection === "hotkeys") renderHotkeys(el["settings-host"]);
+});
 async function syncGlobalHotkeys() {
   renderSearchHint();
   const api = window.__TAURI__?.globalShortcut;
@@ -4764,6 +4835,7 @@ async function syncGlobalHotkeys() {
   await invoke("clipboard_global_binding_set", { binding: clipboardBinding }).catch((error) => {
     globalHotkeyErrors.set("tool:clipboard", String(error));
   });
+  await sendScreenshotSlots();
   for (const command of catalog) {
     if (!isGlobalHotkey(command.id)) continue;
     const binding = hotkeyBinding(command.id);
@@ -4778,6 +4850,8 @@ async function syncGlobalHotkeys() {
           openClipboardPicker({ activate: false });
           return;
         }
+        // The native handler has already started it.
+        if (SCREENSHOT_IDS.has(command.id)) return;
         // The native palette is intentionally usable without surfacing the
         // main window. Other global commands still bring their working context
         // forward before executing.
@@ -4792,6 +4866,10 @@ async function syncGlobalHotkeys() {
       globalHotkeyErrors.set(command.id, String(error));
     }
   }
+  // Again now that Windows has answered: a shortcut another program holds
+  // (Greenshot on Ctrl+Print Screen, say) was refused, and the Screenshot
+  // page shows which.
+  if (SCREENSHOT_SHORTCUTS.some((slot) => globalHotkeyErrors.has(slot.id))) await sendScreenshotSlots();
   if (state.activeView === "settings" && state.settingsSection === "hotkeys") {
     const conflicts = hotkeyConflicts();
     for (const command of hotkeyCatalog()) {
@@ -4830,7 +4908,7 @@ function renderHotkeys(host) {
       const keys = binding ? binding.split("+").map((part) => `<kbd>${esc(part)}</kbd>`).join("") : "Unbound";
       const global = isGlobalHotkey(command.id);
       const error = globalHotkeyErrors.get(command.id);
-      return `<div class="hotkey-row${conflicts.has(command.id) || error ? " conflict" : ""}"><span class="hotkey-command">${icon(command.icon)}<span><strong>${esc(command.name)}</strong><small>${esc(error || command.hint)}</small></span></span><span class="hotkey-scope">${command.kind === "tool" ? "Tool" : "Action"}</span><button type="button" class="hotkey-binding${recording ? " recording" : ""}" data-hotkey-record="${esc(command.id)}">${recording ? "Press a shortcut…" : keys}</button><label class="hotkey-global" title="Make this shortcut work while WinT is unfocused"><input type="checkbox" data-hotkey-global="${esc(command.id)}"${global ? " checked" : ""}${binding && command.id !== "command:focus-mode" ? "" : " disabled"}><span>Global</span></label><button type="button" class="hotkey-clear" data-hotkey-clear="${esc(command.id)}" title="Clear binding" ${binding ? "" : "disabled"}>${icon("backspace")}</button></div>`;
+      return `<div class="hotkey-row${conflicts.has(command.id) || error ? " conflict" : ""}"><span class="hotkey-command">${icon(command.icon)}<span><strong>${esc(command.name)}</strong><small>${esc(error || command.hint)}</small></span></span><span class="hotkey-scope">${command.kind === "tool" ? "Tool" : "Action"}</span><button type="button" class="hotkey-binding${recording ? " recording" : ""}" data-hotkey-record="${esc(command.id)}">${recording ? "Press a shortcut…" : keys}</button><label class="hotkey-global" title="Make this shortcut work while WinT is unfocused"><input type="checkbox" data-hotkey-global="${esc(command.id)}"${global ? " checked" : ""}${binding && !ALWAYS_GLOBAL.has(command.id) ? "" : " disabled"}><span>Global</span></label><button type="button" class="hotkey-clear" data-hotkey-clear="${esc(command.id)}" title="Clear binding" ${binding ? "" : "disabled"}>${icon("backspace")}</button></div>`;
     }).join("") : `<div class="hotkey-empty">${icon("search_off")}Nothing matches this view.</div>`}</div>`;
 }
 
@@ -8036,6 +8114,18 @@ function typingSomewhereElse(target) {
   return Boolean(node.closest("input, textarea, select, [contenteditable=''], [contenteditable='true']"));
 }
 
+// Windows hands the webview Print Screen as a key-up only - the key-down goes
+// to the system - so recording it has to listen for the release.
+document.addEventListener("keyup", (e) => {
+  if (!state.hotkeyRecording || e.key !== "PrintScreen") return;
+  e.preventDefault();
+  state.hotkeys[state.hotkeyRecording] = hotkeyFromEvent(e);
+  state.hotkeyRecording = null;
+  savePrefs();
+  syncGlobalHotkeys();
+  renderHotkeys(el["settings-host"]);
+});
+
 document.addEventListener("keydown", (e) => {
   if (state.hotkeyRecording) {
     e.preventDefault();
@@ -8266,6 +8356,14 @@ async function wireToolPopoutEvents() {
     } catch { /* an unparseable link still opened somewhere */ }
     beginWork("browser-routed", `Opened ${host || "a link"} in ${where}`);
     setTimeout(() => endWork("browser-routed"), 2600);
+  });
+  // A screenshot runs outside any window, so the status bar is where it says
+  // what it is doing: waiting for the drag, then where the picture went.
+  listen("screenshot:status", (event) => {
+    const { phase, line } = event.payload || {};
+    if (!line) return;
+    beginWork("screenshot", line);
+    if (phase !== "selecting") setTimeout(() => { if (work.get("screenshot")?.label === line) endWork("screenshot"); }, phase === "failed" ? 6000 : 3000);
   });
   listen("tool:closed", (event) => {
     const id = event.payload?.id;

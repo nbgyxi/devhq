@@ -16,8 +16,58 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.186.2",
+      title: "PC Detective helps you sign back in",
+      date: "2026-10-15",
+      changes: [
+        ["better", "PC Detective: when the coding agent is signed out (\"OAuth session expired\", \"not logged in\", \"invalid API key\"), it now says so plainly and explains that asking again will fail the same way until you sign in."],
+        ["new", "PC Detective: a Sign in button opens a Command Prompt with the agent's own sign-in already started and says what to do there - type /login for Claude Code; Codex, Copilot and Cursor start their login straight away. Sign in, come back and press Ask again."],
+        ["better", "PC Detective: an audit running as administrator also points out that a different administrator account needs its own sign-in."],
+      ],
+    },
+    {
+      version: "0.186.1",
+      title: "Terminal editing that behaves",
+      date: "2026-10-14",
+      changes: [
+        ["fix", "Terminal: Up and Down through PowerShell history always show the whole command. The end of the previous line used to be left hanging off the new one - after a command long enough to wrap, after typing quickly before pressing Up, or when PowerShell was showing a grey suggestion."],
+        ["fix", "Terminal: commands run in this terminal come back on Up exactly as they ran. A command typed quickly, or corrected with the arrow keys, used to be remembered cut short or mangled."],
+        ["better", "Terminal: Up also brings back commands just run in other terminals - PowerShell's history is read again after each command instead of only when WinT started."],
+        ["fix", "Terminal: going back down past the newest command restores what was typed, without PowerShell's grey suggestion added to it."],
+        ["fix", "Terminal: with part of the command selected, Ctrl+V, Delete, Backspace and typing now replace the selection the way a text editor does. The selection was often lost as soon as the shell redrew the line, so the paste landed next to it and Delete did nothing."],
+        ["fix", "Terminal: clicking into the command and then deleting or pasting straight away no longer removes the wrong letters."],
+        ["fix", "Terminal: a triple-clicked line, or a drag that runs past the end of the command, can now be pasted over or deleted too."],
+        ["better", "Terminal: double-clicking a word selects just the word, not the space after it, so pasting over it no longer runs into the next word."],
+      ],
+    },
+    {
+      version: "0.186.0",
+      title: "Screenshots on a shortcut",
+      date: "2026-10-13",
+      changes: [
+        ["new", "Screenshot: press Ctrl+Alt+S anywhere, drag over part of the screen, and that part is on the clipboard. The screen is frozen the moment the key goes down, so menus and tooltips stay in the shot. A click without dragging takes the whole screen; Esc or a right-click cancels."],
+        ["new", "Ctrl+Alt+Shift+S does the same drag and opens the picture in a small editor: crop it, add arrows, circles, highlights and text, undo anything, then Copy it or Save it to Pictures\\Screenshots."],
+        ["new", "Everything added in the screenshot editor stays editable: pick it with Select (V) to move it, drag its handles to resize it, or press Delete. New items come out selected, so they can be adjusted at once; arrow keys nudge, and colour and size buttons change whatever is selected."],
+        ["new", "Text in the screenshot editor can be typed into again with a double-click or Enter, and has its own settings: font, size, background colour, padding around it, a border and a shadow. They change the selected text and are what the next text starts with."],
+        ["new", "The screenshot editor switches between Fit, which shows the whole picture, and Full, which shows it at its real size - one picture pixel to one screen pixel - and scrolls whatever does not fit. Use the tabs at the end of the toolbar or the Tab key."],
+        ["new", "Print Screen copies a screenshot too, and Ctrl+Print Screen or Shift+Print Screen opens one in the editor. Each kind of screenshot can answer to up to three shortcuts, each its own row under Settings → Hotkeys, and there is a free slot for one more copy shortcut."],
+        ["new", "Pick the shortcuts right on the Screenshot tool page: click one and press the keys, or choose from suggestions like Print Screen and Ctrl+Print Screen. A key already on another screenshot moves rather than doubling up, and × removes one."],
+        ["new", "When another program such as Greenshot already holds a shortcut, the Screenshot page marks it in red and says so - two programs cannot share one, and whichever claims it first keeps it. If Windows is set to open its Snipping Tool on Print Screen, the page offers the setting that turns that off."],
+        ["new", "Shortcuts are always system-wide; the status bar says when a screenshot is waiting for the drag and where it went."],
+      ],
+    },
+    {
+      version: "0.185.1",
+      title: "Grab windows by the top edge",
+      date: "2026-10-13",
+      changes: [
+        ["fix", "Every WinT window can now be resized from its top edge and top corners as easily as from the sides. The grab strip along the top used to be only a few pixels tall, and the title bar right under it moved the window instead."],
+      ],
+    },
+    {
       version: "0.185.0",
       title: "See torrents and their files go",
+      buildChecksum: "3d924a6e82a6fd6214cbb0df0678236477de2dee1f3fce09649bc9faa67286d5",
       date: "2026-10-12",
       changes: [
         ["new", "Removing torrents in Torrents shows a progress bar above the list: which torrent it is on, then its files going — how many of how many, how much of the size, and the file being deleted right now."],

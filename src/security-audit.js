@@ -956,6 +956,53 @@ Then verify it worked. Put the finding in "resolved" if it did, or update it wit
     ];
   }
 
+  /** An agent that is signed out says so in its own words — "OAuth session
+   *  expired", "not logged in", "invalid API key" — and asking again fails the
+   *  same way until the person signs in. That cannot be done for them (it ends
+   *  in a browser with their account), but WinT can open the window it happens
+   *  in and say exactly what to do there. */
+  const SIGNED_OUT = /failed to authenticate|oauth (session|token)|(session|token|credentials?|login) (has )?(expired|revoked)|not (logged|signed) in|please (run \/login|log ?in|sign in)|run \/login|invalid api key|authentication (failed|required|error)|login required/i;
+
+  /** What to do in the sign-in window, per agent — the CLIs differ. */
+  const SIGN_IN_STEPS = {
+    claude: "A Command Prompt opens with Claude Code in it. Type /login, press Enter, and finish signing in in the browser it opens. Then type /exit.",
+    codex: "A Command Prompt opens running codex login. Finish signing in in the browser it opens, then close the window.",
+    gemini: "A Command Prompt opens with Antigravity in it. Follow its sign-in (or type /auth), finish in the browser, then type /quit.",
+    copilot: "A Command Prompt opens running copilot login. Enter the code it shows at the GitHub page it opens, then close the window.",
+    cursor: "A Command Prompt opens running Cursor's login. Finish signing in in the browser it opens, then close the window.",
+  };
+
+  function signInGuide(text) {
+    // A long answer is the agent talking about the PC, where "not logged in"
+    // may well be a finding; a sign-in failure is one short line.
+    if (text.trim().length > 1500 || !SIGNED_OUT.test(text)) return null;
+    const steps = [
+      ["login", `Sign ${agentName()} in again`, SIGN_IN_STEPS[st.agent] || "Open a Command Prompt, start the agent's CLI and sign in there."],
+      ["refresh", "Then ask again", "Come back here and press Ask again. The scan picks up where it stopped."],
+    ];
+    if (st.ranAsAdmin) steps.splice(1, 0, ["admin_panel_settings", "Signed in, still failing?",
+      "This audit runs as administrator. If the administrator is a different Windows account from yours, it has its own sign-in: open the Command Prompt with Run as administrator and sign in there, or turn Run as administrator off."]);
+    return steps;
+  }
+
+  async function signIn() {
+    if (st.signingIn) return;
+    st.signingIn = true;
+    work(`PC Detective · opening ${agentName()} sign-in`);
+    dirty();
+    try {
+      await invoke("audit_sign_in", { agent: st.agent });
+      note(`PC Detective: opened ${agentName()} sign-in in a Command Prompt`);
+      if (st.reply) st.reply.signInOpened = true;
+    } catch (err) {
+      if (st.reply) st.reply.signInError = String(err);
+      note(`PC Detective: could not open ${agentName()} sign-in`);
+    }
+    st.signingIn = false;
+    work(null);
+    dirty();
+  }
+
   /** The guide's Fix button. None of this needs the agent, which is the whole
    *  point: the agent is exactly what cannot start yet. WinT puts back the
    *  folders a program has to be started in and proves each one by starting a
@@ -1007,9 +1054,12 @@ Then verify it worked. Put the finding in "resolved" if it did, or update it wit
     const block = parseBlock(turn.text || turn.pending || "");
 
     if (!block) {
+      const said = `${str(error)}\n${turn.text || turn.pending || ""}`;
+      const signedOut = !turn.cancelled && signInGuide(said);
       const reason = turn.cancelled ? "Stopped before the agent answered."
+        : signedOut ? `${agentName()} is not signed in, so it could not answer. ${prose(turn.text || turn.pending || error).split("\n")[0]}`.trim()
         : str(error).trim() || (turn.text || turn.pending ? "The agent answered without the JSON block WinT reads." : `The agent stopped without an answer (exit code ${code}).`);
-      st.reply = { summary: reason, failed: true, guide: startGuide(reason), raw: turn.text || turn.pending, retry: turn };
+      st.reply = { summary: reason, failed: true, guide: signedOut ? null : startGuide(reason), signIn: signedOut || null, raw: turn.text || turn.pending, retry: turn };
       if (turn.kind === "Trace") delete st.traces[turn.finding];
       if (turn.kind === "Agent") { const thread = st.threads[turn.finding]; if (thread?.length) thread[thread.length - 1].reply = { summary: reason, failed: true }; }
       return dirty();
@@ -1402,6 +1452,10 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
       ${(r.guide || []).length ? `<div class="sa-guide"><span>${icon("troubleshoot")}Nothing on this PC can start an agent until one of these is fixed</span>${r.guide.map(([g, title, detail]) => `<div class="sa-guide-step">${icon(g)}<div><strong>${esc(title)}</strong><small>${esc(detail)}</small></div></div>`).join("")}
         <div class="sa-row-actions"><button type="button" class="btn small primary" data-sa="repair"${st.repair?.busy ? " disabled" : ""}>${icon("build")}${st.repair ? "Check again" : "Check and fix this PC"}</button></div>
         ${repairHtml()}</div>` : ""}
+      ${(r.signIn || []).length ? `<div class="sa-guide"><span>${icon("key")}Asking again will fail the same way until ${esc(agentName())} is signed in</span>${r.signIn.map(([g, title, detail]) => `<div class="sa-guide-step">${icon(g)}<div><strong>${esc(title)}</strong><small>${esc(detail)}</small></div></div>`).join("")}
+        <div class="sa-row-actions"><button type="button" class="btn small primary" data-sa="signin"${st.signingIn ? " disabled" : ""}>${icon("terminal")}${st.signingIn ? "Opening the Command Prompt…" : r.signInOpened ? "Open the sign-in again" : `Sign in to ${esc(agentName())}`}</button></div>
+        ${r.signInError ? `<div class="sa-guide-result"><span class="bad">${icon("error")}${esc(r.signInError)}</span></div>`
+          : r.signInOpened ? `<div class="sa-guide-result"><div class="sa-guide-step ok">${icon("check_circle")}<div><strong>The Command Prompt is open</strong><small>It may be behind this window. When you have signed in there, press Ask again.</small></div></div></div>` : ""}</div>` : ""}
       ${r.failed && r.showRaw && r.raw ? `<pre class="sa-raw">${esc(r.raw)}</pre>` : ""}
       ${r.failed ? `<div class="sa-row-actions sa-reply-actions">${r.raw ? `<button type="button" class="btn small" data-sa="raw">${icon("notes")}${r.showRaw ? "Hide what the agent said" : "What the agent said"}</button>` : ""}<button type="button" class="btn small" data-sa="retry">${icon("refresh")}Ask again</button><button type="button" class="btn small" data-sa="dismiss">${icon("close")}Back to the scan</button></div>` : ""}
     </div>`;
@@ -1654,6 +1708,7 @@ ${r.text}` : [`## ${r.time} · ${r.source} · ${r.status}`, r.why ? `Why: ${r.wh
       case "raw": st.reply.showRaw = !st.reply.showRaw; return dirty();
       case "dismiss": st.reply = null; return dirty();
       case "repair": return repairPc();
+      case "signin": return signIn();
       case "retry": {
         const last = st.reply?.retry;
         if (!last) return;

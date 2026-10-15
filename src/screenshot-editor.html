@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Screenshot</title>
+<link rel="icon" type="image/png" href="wint-icon.png" />
+<script src="error-log.js"></script><script src="window-edge.js"></script>
+<script>document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") === "light" ? "light" : "dark";</script>
+<link rel="stylesheet" href="styles.css?v=0.53.1" />
+<link rel="stylesheet" href="screenshot-editor.css?v=4" />
+</head>
+<body class="shot-window">
+  <header class="shot-head" data-drag-region>
+    <span class="ms shot-logo">screenshot_region</span>
+    <strong>Screenshot</strong>
+    <span class="shot-size mono" id="size"></span>
+    <span class="shot-spacer"></span>
+    <button class="btn shot-action" id="copy" type="button" title="Copy to the clipboard (Ctrl+C)"><span class="ms">content_copy</span>Copy</button>
+    <button class="btn shot-action" id="save" type="button" title="Save to Pictures\Screenshots (Ctrl+S)"><span class="ms">save</span>Save</button>
+    <div class="win-btns">
+      <button class="win-btn" id="min" type="button" title="Minimize"><span class="ms">remove</span></button>
+      <button class="win-btn" id="max" type="button" title="Maximize"><span class="ms">crop_square</span></button>
+      <button class="win-btn close" id="close" type="button" title="Close (Ctrl+W)"><span class="ms">close</span></button>
+    </div>
+  </header>
+  <nav class="shot-tools" aria-label="Tools">
+    <div class="shot-group" id="tools">
+      <button type="button" data-tool="select" title="Select - click an item to move, resize or delete it (V)"><span class="ms">arrow_selector_tool</span><span>Select</span></button>
+      <button type="button" data-tool="crop" title="Crop - drag over the part to keep (C)"><span class="ms">crop</span><span>Crop</span></button>
+      <button type="button" data-tool="arrow" title="Arrow (A)"><span class="ms">arrow_outward</span><span>Arrow</span></button>
+      <button type="button" data-tool="ellipse" title="Circle - hold Shift for a perfect circle (O)"><span class="ms">circle</span><span>Circle</span></button>
+      <button type="button" data-tool="highlight" title="Highlight (H)"><span class="ms">ink_highlighter</span><span>Highlight</span></button>
+      <button type="button" data-tool="text" title="Text (T)"><span class="ms">title</span><span>Text</span></button>
+    </div>
+    <span class="shot-sep"></span>
+    <div class="shot-group shot-colors" id="colors"></div>
+    <span class="shot-sep"></span>
+    <div class="shot-group shot-sizes" id="sizes">
+      <button type="button" data-size="0" title="Thin"><i style="--d:5px"></i></button>
+      <button type="button" data-size="1" title="Medium"><i style="--d:9px"></i></button>
+      <button type="button" data-size="2" title="Thick"><i style="--d:13px"></i></button>
+    </div>
+    <span class="shot-sep"></span>
+    <div class="shot-group">
+      <button type="button" id="undo" title="Undo (Ctrl+Z)"><span class="ms">undo</span></button>
+      <button type="button" id="redo" title="Redo (Ctrl+Y)"><span class="ms">redo</span></button>
+      <button type="button" id="delete" title="Delete the selected item (Delete)"><span class="ms">delete</span></button>
+    </div>
+    <span class="shot-spacer"></span>
+    <div class="shot-tabs" id="view" role="tablist" aria-label="Fit">
+      <button type="button" role="tab" data-view="fit" title="Show the whole picture, smaller if it has to be (Tab switches)"><span class="ms">fit_screen</span><span>Fit</span></button>
+      <button type="button" role="tab" data-view="full" title="Real size - one picture pixel to one screen pixel, scroll the rest (Tab switches)"><span class="ms">zoom_out_map</span><span>Full</span></button>
+    </div>
+  </nav>
+  <!-- Shown for the Text tool and whenever a text is selected or being typed.
+       It changes that text, and is what the next new text starts with. -->
+  <div class="shot-textbar" id="textbar" hidden>
+    <span class="shot-textbar-title"><span class="ms">title</span>Text</span>
+    <label>Font <select id="t-font"></select></label>
+    <label>Size <input id="t-size" type="number" min="6" max="300" step="1"></label>
+    <span class="shot-textbar-label">Background</span>
+    <div class="shot-group shot-colors" id="t-bg"></div>
+    <label>Padding <input id="t-pad" type="number" min="0" max="100" step="1"></label>
+    <span class="shot-textbar-label">Border</span>
+    <div class="shot-group shot-seg" id="t-border">
+      <button type="button" data-border="0" title="No border">None</button>
+      <button type="button" data-border="1" title="Thin border">1</button>
+      <button type="button" data-border="2" title="Medium border">2</button>
+      <button type="button" data-border="4" title="Thick border">4</button>
+    </div>
+    <label class="shot-check"><input id="t-shadow" type="checkbox"> Shadow</label>
+  </div>
+  <main class="shot-stage" id="stage">
+    <div class="shot-canvas-wrap" id="wrap">
+      <canvas id="canvas"></canvas>
+    </div>
+    <div class="shot-loading" id="loading"><span class="shot-skeleton"></span>Loading the screenshot</div>
+  </main>
+  <footer class="shot-status" id="status">Ready</footer>
+  <script src="screenshot-editor.js?v=4"></script>
+</body>
+</html>

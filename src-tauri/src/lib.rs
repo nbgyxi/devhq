@@ -55,6 +55,8 @@ mod recent;
 #[cfg(windows)]
 mod reg;
 #[cfg(windows)]
+mod screenshot;
+#[cfg(windows)]
 mod security_audit;
 #[cfg(windows)]
 mod shells;
@@ -3342,7 +3344,10 @@ pub fn run() {
                         .and_then(|value| *value);
                     if clipboard_id == Some(shortcut.id) {
                         tool_window::focus_clipboard_from_global(app);
+                        return;
                     }
+                    #[cfg(windows)]
+                    screenshot::handle_hotkey(app, shortcut.id);
                 })
                 .build(),
         )
@@ -3528,6 +3533,16 @@ pub fn run() {
     let builder = builder
         .invoke_handler(tauri::generate_handler![
             scan,
+            screenshot::screenshot_global_bindings_set,
+            screenshot::screenshot_bindings,
+            screenshot::screenshot_start,
+            screenshot::screenshot_image,
+            screenshot::screenshot_copy,
+            screenshot::screenshot_save,
+            screenshot::screenshot_reveal,
+            screenshot::screenshot_binding_request,
+            screenshot::screenshot_recording,
+            screenshot::screenshot_open_print_screen_setting,
             minimize_to_tray,
             tray_set_recent_tools,
             take_startup_tool,
@@ -3737,6 +3752,7 @@ pub fn run() {
             security_audit::audit_cancel,
             security_audit::audit_end,
             security_audit::audit_repair,
+            security_audit::audit_sign_in,
             security_audit::audit_repo_preflight,
             workspace::workspace_browser_show,
             workspace::workspace_browser_hide,
@@ -4175,6 +4191,7 @@ pub fn run() {
         security_audit::audit_cancel,
         security_audit::audit_end,
         security_audit::audit_repair,
+        security_audit::audit_sign_in,
         security_audit::audit_repo_preflight,
         workspace::workspace_browser_show,
         workspace::workspace_browser_hide,
