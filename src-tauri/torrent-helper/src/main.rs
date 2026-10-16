@@ -2976,16 +2976,22 @@ async fn handle(
                 .collect();
             // Names come from the session, because the ledger only keeps
             // hashes — it has to outlive the torrent being removed.
-            let names: HashMap<String, String> = state.session.with_torrents(|torrents| {
+            // The size rides along because the ratio is measured against it:
+            // what the ledger booked as downloaded misses whatever was already
+            // on disk when the torrent was added.
+            let names: HashMap<String, (String, u64)> = state.session.with_torrents(|torrents| {
                 torrents
                     .map(|(_, t)| {
                         (
                             t.info_hash().as_string(),
-                            t.metadata
-                                .load()
-                                .as_ref()
-                                .map(|m| m.info.name().unwrap_or_default().to_string())
-                                .unwrap_or_default(),
+                            (
+                                t.metadata
+                                    .load()
+                                    .as_ref()
+                                    .map(|m| m.info.name().unwrap_or_default().to_string())
+                                    .unwrap_or_default(),
+                                t.stats().total_bytes,
+                            ),
                         )
                     })
                     .collect()
@@ -2995,9 +3001,11 @@ async fn handle(
                 .totals
                 .iter()
                 .map(|(hash, moved)| {
+                    let (name, size) = names.get(hash).cloned().unwrap_or_default();
                     json!({
                         "infoHash": hash,
-                        "name": names.get(hash).cloned().unwrap_or_default(),
+                        "name": name,
+                        "size": size,
                         "uploaded": moved.uploaded,
                         "downloaded": moved.downloaded,
                         // A torrent still in the session can be pointed at

@@ -16,6 +16,40 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.187.2",
+      title: "Print Screen works from anywhere",
+      date: "2026-10-16",
+      changes: [
+        ["fix", "Screenshot: Print Screen now takes a screenshot whatever window is in front. Windows keeps a bare Print Screen for its own screen copy and Snipping Tool, so it only reached WinT while WinT had focus; WinT now catches the key before Windows does. Print Screen with Ctrl, Shift or Alt is caught the same way."],
+      ],
+    },
+    {
+      version: "0.187.1",
+      title: "Torrent ratio measured against the size",
+      date: "2026-10-16",
+      changes: [
+        ["fix", "Torrents: the ratio is now uploaded divided by the torrent's size, on the Stats tab and in the list's Ratio column. It used to divide by what WinT itself had downloaded, so a torrent whose files were already on disk showed a ratio far above what its uploaded GB could account for."],
+      ],
+    },    {
+      version: "0.187.0",
+      title: "A magnifier for pixel-exact screenshots",
+      date: "2026-10-16",
+      changes: [
+        ["new", "Screenshot: while you select, a magnifier follows the pointer and shows the pixels around it close up, with the exact pixel under the pointer framed and its screen position below - so the edge of a selection lands exactly where you want it. It moves aside near the edge of the screen and works on every monitor."],
+        ["new", "The magnifier can be switched off on the Screenshot page, under Magnifier while selecting. The choice is kept across restarts."],
+      ],
+    },
+    {
+      version: "0.186.3",
+      title: "Screenshot shortcuts stay put",
+      date: "2026-10-16",
+      changes: [
+        ["fix", "Screenshot shortcuts and other system-wide hotkeys no longer drop out after a scan. Every finished scan used to release and re-claim every global shortcut, and at startup several of those could run over each other; now only a shortcut that actually changed is touched."],
+        ["fix", "A shortcut Windows refused - Print Screen while the previous WinT was still closing, say - is asked for again every ten seconds, instead of staying dead until the next scan or a trip to Settings."],
+        ["fix", "Popping Projects out into its own window no longer takes the system-wide shortcuts away from WinT, and closing it no longer leaves them doing nothing."],
+      ],
+    },
+    {
       version: "0.186.2",
       title: "PC Detective helps you sign back in",
       date: "2026-10-15",

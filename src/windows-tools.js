@@ -667,12 +667,18 @@
       .shot-refused{flex-basis:100%;display:flex;gap:6px;align-items:flex-start;padding:2px 0 2px 88px;font-size:12px;line-height:1.4;color:var(--red)}
       .shot-refused .ms{font-size:15px}
       .shot-note{color:var(--dim);font-size:12.5px;line-height:1.5}
+      .shot-option{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:6px 16px;padding:14px 20px;border:1px solid var(--line);border-radius:12px;background:var(--bg1);cursor:pointer}
+      .shot-option>.ms{font-size:24px;color:var(--accent)}
+      .shot-option strong{display:block;font-size:13.5px;margin-bottom:2px}
+      .shot-option small{display:block;color:var(--dim);font-size:12.5px;line-height:1.45}
+      .shot-option input{width:18px;height:18px;accent-color:var(--accent);cursor:pointer}
       .shot-warn{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:12px;padding:12px 16px;border:1px solid color-mix(in srgb,var(--amber) 45%,var(--line));border-radius:12px;background:color-mix(in srgb,var(--amber) 8%,var(--bg1));font-size:12.5px;line-height:1.45}
       .shot-warn>.ms{color:var(--amber);font-size:22px}
       @media (max-width:560px){.shot-card,.shot-warn{grid-template-columns:auto 1fr}.shot-card>.btn,.shot-warn .btn{grid-column:1/-1}.shot-slots{grid-column:1/-1}.shot-suggest,.shot-refused{padding-left:0}}
     </style><div class="shot-page">
       <section class="shot-card">${icon("screenshot_region")}<div><strong>Screenshot to the clipboard</strong><small>Drag over the part you want and let go - it is on the clipboard, ready to paste. A click without dragging takes the whole screen; Esc or a right-click cancels.</small></div><button class="btn" type="button" data-shot="clip">${icon("content_copy")}Take one</button><div class="shot-slots">${slots(false)}</div></section>
       <section class="shot-card">${icon("edit")}<div><strong>Screenshot and edit</strong><small>The same drag, then the picture opens in an editor: crop it, point at things with arrows and circles, highlight, add text - then Copy or Save to Pictures\\Screenshots.</small></div><button class="btn" type="button" data-shot="edit">${icon("edit")}Take and edit</button><div class="shot-slots">${slots(true)}</div></section>
+      <label class="shot-option">${icon("zoom_in")}<div><strong>Magnifier while selecting</strong><small>A close-up of the pixels under the pointer follows it while you select, with the exact pixel framed, so an edge can be hit to the pixel.</small></div><input type="checkbox" data-shot-magnifier${shotState.magnifier !== false ? " checked" : ""}></label>
       ${usesPrintScreen && shotState.printScreenTaken ? `<section class="shot-warn">${icon("warning")}<span>Windows is set to open its own Snipping Tool on Print Screen. If Print Screen opens that instead of WinT, turn off <strong>Use the Print screen key to open screen capture</strong>.</span><button class="btn" type="button" data-shot-settings>${icon("open_in_new")}Open setting</button></section>` : ""}
       <p class="shot-note">Click a shortcut to change it. Every shortcut works from anywhere, with WinT in front or not, and also shows under Settings → Hotkeys. Two programs cannot share a shortcut: whichever claims it first keeps it.</p>
     </div>`);
@@ -694,6 +700,16 @@
     }
     host.querySelector("[data-shot-cancel]")?.addEventListener("click", () => { shotSetRecording(null); renderScreenshot(tool); });
     host.querySelector("[data-shot-settings]")?.addEventListener("click", () => invoke("screenshot_open_print_screen_setting").catch(() => {}));
+    host.querySelector("[data-shot-magnifier]")?.addEventListener("change", (event) => {
+      const on = event.target.checked;
+      shotState = { ...shotState, magnifier: on };
+      // Saved by the backend, which answers with screenshot:bindings; a failed
+      // save puts the box back so it never claims a setting that did not stick.
+      invoke("screenshot_magnifier_set", { on }).catch(() => {
+        shotState = { ...shotState, magnifier: !on };
+        if (active === "screenshot" && host) renderScreenshot(tool);
+      });
+    });
     if (!shotState.slots.length) {
       invoke("screenshot_bindings").then((value) => {
         if (!value?.slots?.length) return;

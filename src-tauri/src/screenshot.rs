@@ -36,6 +36,55 @@ static RECORDING: AtomicBool = AtomicBool::new(false);
 /// Set the first time a Print Screen shortcut reaches WinT, which settles
 /// whether Windows' own Snipping Tool switch is in the way.
 static PRINT_SCREEN_SEEN: AtomicBool = AtomicBool::new(false);
+/// The app, for the keyboard hook, which Windows calls with nothing else.
+static APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
+static HOOK: std::sync::Once = std::sync::Once::new();
+/// Whether the selection shows a magnified view of the pixels under the
+/// pointer. On unless switched off on the Screenshot page; `None` until
+/// screenshot.json has been read.
+static MAGNIFIER: Mutex<Option<bool>> = Mutex::new(None);
+
+/// What the Screenshot page lets the user change besides the shortcuts.
+#[derive(Serialize, Deserialize)]
+struct Settings {
+    #[serde(default = "on")]
+    magnifier: bool,
+}
+
+fn on() -> bool {
+    true
+}
+
+fn settings_file() -> Option<std::path::PathBuf> {
+    let local = std::env::var_os("LOCALAPPDATA")?;
+    Some(std::path::PathBuf::from(local).join("WinT").join("screenshot.json"))
+}
+
+/// Reads screenshot.json the first time it is asked, so never on the thread
+/// that draws the window.
+fn magnifier_on() -> bool {
+    let Ok(mut cached) = MAGNIFIER.lock() else {
+        return true;
+    };
+    if let Some(on) = *cached {
+        return on;
+    }
+    let on = settings_file()
+        .and_then(|file| std::fs::read_to_string(file).ok())
+        .and_then(|text| serde_json::from_str::<Settings>(&text).ok())
+        .map_or(true, |settings| settings.magnifier);
+    *cached = Some(on);
+    on
+}
+
+fn save_settings(settings: &Settings) -> Result<(), String> {
+    let file = settings_file().ok_or("Windows did not say where WinT keeps its settings.")?;
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    }
+    let text = serde_json::to_string(settings).map_err(|e| e.to_string())?;
+    std::fs::write(&file, text).map_err(|e| format!("Could not save {}: {e}", file.display()))
+}
 
 /// One screenshot shortcut slot, as the shell's Hotkeys settings hold it.
 #[derive(Clone, Serialize, Deserialize)]
@@ -100,6 +149,39 @@ pub fn handle_hotkey(app: &AppHandle, id: u32) -> bool {
     true
 }
 
+fn is_print_screen(binding: &str) -> bool {
+    binding
+        .split('+')
+        .any(|part| part.trim().eq_ignore_ascii_case("PrintScreen"))
+}
+
+/// The keyboard hook saw Print Screen go down with these modifiers held, as
+/// the shell writes a binding (`Ctrl+Shift+PrintScreen`). True when that is a
+/// screenshot shortcut, which the hook then keeps from reaching anything else.
+fn print_screen_pressed(binding: &str) -> bool {
+    let slot = match BINDINGS.lock() {
+        Ok(bindings) => bindings
+            .slots
+            .iter()
+            .find(|slot| slot.binding.trim() == binding)
+            .cloned(),
+        Err(_) => return false,
+    };
+    let Some(slot) = slot else {
+        return false;
+    };
+    let Some(app) = APP.get() else {
+        return false;
+    };
+    PRINT_SCREEN_SEEN.store(true, Ordering::Relaxed);
+    if RECORDING.load(Ordering::Relaxed) {
+        let _ = app.emit("screenshot:recorded-key", slot.binding);
+        return true;
+    }
+    start(app.clone(), slot.edit, 0);
+    true
+}
+
 #[derive(Clone, Serialize)]
 pub struct BindingState {
     slots: Vec<Slot>,
@@ -108,13 +190,24 @@ pub struct BindingState {
     /// yet - the one case where it is worth saying the key may be taken.
     #[serde(rename = "printScreenTaken")]
     print_screen_taken: bool,
+    /// Whether the selection shows the magnifier.
+    magnifier: bool,
 }
 
-fn binding_state(snipping_on: bool) -> BindingState {
+fn binding_state(snipping_on: bool, magnifier: bool) -> BindingState {
     BindingState {
         slots: BINDINGS.lock().map(|b| b.slots.clone()).unwrap_or_default(),
         print_screen_taken: snipping_on && !PRINT_SCREEN_SEEN.load(Ordering::Relaxed),
+        magnifier,
     }
+}
+
+/// Windows' Print Screen switch and the magnifier setting, both read from
+/// disk, so both off the thread that draws the window.
+async fn page_state() -> (bool, bool) {
+    crate::off_thread(|| (win::print_screen_opens_snipping(), magnifier_on()))
+        .await
+        .unwrap_or((false, true))
 }
 
 /// The shell hands over every screenshot slot whenever the hotkeys change.
@@ -151,11 +244,18 @@ pub async fn screenshot_global_bindings_set(
         bindings.slots = slots;
         bindings.ids = ids;
         bindings.light = theme.as_deref() == Some("light");
+        // A bare Print Screen registered as a hotkey reaches WinT only while
+        // WinT has focus - Windows keeps the key for its own screen copy and
+        // Snipping Tool. A low-level hook sees it first, whatever is in front.
+        if bindings.slots.iter().any(|slot| is_print_screen(&slot.binding)) {
+            let _ = APP.set(app.clone());
+            HOOK.call_once(|| {
+                std::thread::spawn(win::print_screen_hook);
+            });
+        }
     }
-    let snipping_on = crate::off_thread(win::print_screen_opens_snipping)
-        .await
-        .unwrap_or(false);
-    let _ = app.emit("screenshot:bindings", binding_state(snipping_on));
+    let (snipping_on, magnifier) = page_state().await;
+    let _ = app.emit("screenshot:bindings", binding_state(snipping_on, magnifier));
     if errors.is_empty() {
         Ok(())
     } else {
@@ -166,10 +266,25 @@ pub async fn screenshot_global_bindings_set(
 /// The slots as the user bound them, for the tool page to show.
 #[tauri::command]
 pub async fn screenshot_bindings() -> BindingState {
-    let snipping_on = crate::off_thread(win::print_screen_opens_snipping)
-        .await
-        .unwrap_or(false);
-    binding_state(snipping_on)
+    let (snipping_on, magnifier) = page_state().await;
+    binding_state(snipping_on, magnifier)
+}
+
+/// The Screenshot page switched the magnifier on or off. It takes effect on
+/// the next selection, and every open page hears the new state.
+#[tauri::command]
+pub async fn screenshot_magnifier_set(app: AppHandle, on: bool) -> Result<(), String> {
+    if let Ok(mut cached) = MAGNIFIER.lock() {
+        *cached = Some(on);
+    }
+    let (snipping_on, saved) = crate::off_thread(move || {
+        let saved = save_settings(&Settings { magnifier: on });
+        (win::print_screen_opens_snipping(), saved)
+    })
+    .await
+    .ok_or("Saving the screenshot settings did not finish.")?;
+    let _ = app.emit("screenshot:bindings", binding_state(snipping_on, on));
+    saved
 }
 
 /// The tool page picked a shortcut for a slot. The shell owns the hotkey
@@ -232,7 +347,7 @@ fn start(app: AppHandle, edit: bool, delay_ms: u64) {
                 "Screenshot: drag over the part to copy - Esc cancels"
             },
         );
-        let result = win::select();
+        let result = win::select(magnifier_on());
         BUSY.store(false, Ordering::Release);
         match result {
             Ok(Some(shot)) => finish(&app, shot, edit),
@@ -469,7 +584,8 @@ mod win {
         BeginPaint, BitBlt, CombineRgn, CreateCompatibleDC, CreateDIBSection, CreateFontW,
         CreateRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect,
         FrameRect, GetDC, GetMonitorInfoW, GetUpdateRgn, InvalidateRgn, MonitorFromPoint,
-        ReleaseDC, SelectClipRgn, SelectObject, SetBkMode, SetTextColor, BITMAPINFO,
+        ReleaseDC, SelectClipRgn, SelectObject, SetBkMode, SetStretchBltMode, SetTextColor,
+        StretchBlt, BITMAPINFO, COLORONCOLOR,
         BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
         DEFAULT_CHARSET, DIB_RGB_COLORS, DT_CALCRECT, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE,
         DT_VCENTER, FW_SEMIBOLD, HBITMAP, HDC, HRGN, MONITORINFO, MONITOR_DEFAULTTONEAREST,
@@ -480,8 +596,78 @@ mod win {
         GetDpiForWindow, SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, ReleaseCapture, SetCapture, SetFocus, VK_ESCAPE,
+        GetAsyncKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_ESCAPE, VK_LWIN,
+        VK_MENU, VK_RWIN, VK_SHIFT, VK_SNAPSHOT,
     };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL,
+        WM_SYSKEYDOWN,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Set when the hook kept a Print Screen press, so its key-up is kept too.
+    static SWALLOWED: AtomicBool = AtomicBool::new(false);
+
+    /// Runs for the life of the app on a thread that does nothing else, so
+    /// the hook always answers well inside the time Windows allows it.
+    pub fn print_screen_hook() {
+        unsafe {
+            let hook = match SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0) {
+                Ok(hook) => hook,
+                Err(e) => {
+                    crate::health::record("shot", format!("Print Screen hook refused: {e}"));
+                    return;
+                }
+            };
+            let mut message = MSG::default();
+            while GetMessageW(&mut message, None, 0, 0).0 > 0 {
+                let _ = TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+            let _ = UnhookWindowsHookEx(hook);
+        }
+    }
+
+    fn held(key: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY) -> bool {
+        unsafe { GetAsyncKeyState(key.0 as i32) as u16 & 0x8000 != 0 }
+    }
+
+    /// Every other key goes straight on; only Print Screen is looked at.
+    unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if code >= 0 {
+            let info = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+            if info.vkCode == VK_SNAPSHOT.0 as u32 {
+                let message = wparam.0 as u32;
+                if message == WM_KEYDOWN || message == WM_SYSKEYDOWN {
+                    // Held down, the key repeats; the selection is already up.
+                    if SWALLOWED.load(Ordering::Relaxed) {
+                        return LRESULT(1);
+                    }
+                    let mut parts = Vec::new();
+                    if held(VK_CONTROL) {
+                        parts.push("Ctrl");
+                    }
+                    if held(VK_MENU) {
+                        parts.push("Alt");
+                    }
+                    if held(VK_SHIFT) {
+                        parts.push("Shift");
+                    }
+                    if held(VK_LWIN) || held(VK_RWIN) {
+                        parts.push("Meta");
+                    }
+                    parts.push("PrintScreen");
+                    if super::print_screen_pressed(&parts.join("+")) {
+                        SWALLOWED.store(true, Ordering::Relaxed);
+                        return LRESULT(1);
+                    }
+                } else if SWALLOWED.swap(false, Ordering::Relaxed) {
+                    return LRESULT(1);
+                }
+            }
+        }
+        unsafe { CallNextHookEx(None, code, wparam, lparam) }
+    }
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos,
         GetMessageW, GetSystemMetrics, KillTimer, LoadCursorW, PostQuitMessage, RegisterClassW,
@@ -495,6 +681,12 @@ mod win {
     const ESC_TIMER: usize = 1;
     /// WinT's accent, as GDI wants it (0x00BBGGRR).
     const ACCENT: COLORREF = COLORREF(0x00FF_8B6D);
+    /// The dark behind the hint and the labels.
+    const PILL: COLORREF = COLORREF(0x0020_1A18);
+    /// Screen pixels across the magnifier: odd, so one sits in the middle.
+    const LOUPE_SPAN: i32 = 15;
+    /// How big each of those pixels is drawn, at 96 DPI.
+    const LOUPE_CELL: i32 = 8;
 
     /// A 32-bit top-down DIB section selected into a DC of its own.
     struct Surface {
@@ -579,6 +771,8 @@ mod win {
         pointer: (i32, i32),
         result: Option<RECT>,
         finished: bool,
+        /// Whether the magnified view of the pixels under the pointer is shown.
+        magnifier: bool,
     }
 
     thread_local! {
@@ -596,7 +790,7 @@ mod win {
 
     /// Freeze the screen, let the user pick part of it, and hand back that
     /// part. `None` when the selection was cancelled.
-    pub fn select() -> Result<Option<Shot>, String> {
+    pub fn select(magnifier: bool) -> Result<Option<Shot>, String> {
         unsafe {
             // Physical pixels throughout, on every monitor, whatever its scale.
             SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -659,6 +853,7 @@ mod win {
                     pointer: (cursor.x - x, cursor.y - y),
                     result: None,
                     finished: false,
+                    magnifier,
                 })
             });
 
@@ -887,6 +1082,42 @@ mod win {
         cross: Option<(i32, i32)>,
         pill: RECT,
         text: String,
+        /// The magnifier, image and label together.
+        loupe: Option<RECT>,
+    }
+
+    fn loupe_cell(scale: i32) -> i32 {
+        (LOUPE_CELL * scale / 96).max(LOUPE_CELL)
+    }
+
+    fn loupe_label_height(scale: i32) -> i32 {
+        22 * scale / 96
+    }
+
+    /// Down and to the right of the pointer, flipped to the other side near
+    /// the edge of its monitor so it is never cut off and never under it.
+    fn loupe_rect(overlay: &Overlay, bounds: RECT) -> RECT {
+        let scale = overlay.scale;
+        let w = LOUPE_SPAN * loupe_cell(scale) + 2;
+        let h = w + loupe_label_height(scale);
+        let gap = 24 * scale / 96;
+        let (px, py) = overlay.pointer;
+        let mut left = px + gap;
+        if left + w > bounds.right {
+            left = px - gap - w;
+        }
+        let mut top = py + gap;
+        if top + h > bounds.bottom {
+            top = py - gap - h;
+        }
+        let left = left.clamp(bounds.left, (bounds.right - w).max(bounds.left));
+        let top = top.clamp(bounds.top, (bounds.bottom - h).max(bounds.top));
+        RECT {
+            left,
+            top,
+            right: left + w,
+            bottom: top + h,
+        }
     }
 
     fn decor(overlay: &Overlay) -> Decor {
@@ -938,6 +1169,7 @@ mod win {
                 bottom: top + h,
             },
             text,
+            loupe: overlay.magnifier.then(|| loupe_rect(overlay, bounds)),
         }
     }
 
@@ -958,6 +1190,9 @@ mod win {
                     right: s.right + 1,
                     bottom: s.bottom + 1,
                 });
+            }
+            if let Some(l) = decor.loupe {
+                add(l);
             }
             if let Some((x, y)) = decor.cross {
                 add(RECT {
@@ -998,6 +1233,13 @@ mod win {
                     CombineRgn(Some(region), Some(region), Some(outer), RGN_OR);
                     let _ = DeleteObject(outer.into());
                     let _ = DeleteObject(inner.into());
+                }
+                // What the magnifier shows moves with the pointer, so it is
+                // redrawn whole even where it stayed put.
+                if let Some(l) = decor.loupe {
+                    let part = CreateRectRgn(l.left, l.top, l.right, l.bottom);
+                    CombineRgn(Some(region), Some(region), Some(part), RGN_OR);
+                    let _ = DeleteObject(part.into());
                 }
                 CombineRgn(Some(changed), Some(changed), Some(region), RGN_OR);
                 let _ = DeleteObject(region.into());
@@ -1069,7 +1311,7 @@ mod win {
                 );
             }
             let _ = DeleteObject(brush.into());
-            let pill_brush = CreateSolidBrush(COLORREF(0x0020_1A18));
+            let pill_brush = CreateSolidBrush(PILL);
             FillRect(back, &decor.pill, pill_brush);
             let _ = DeleteObject(pill_brush.into());
             let mut wide: Vec<u16> = decor.text.encode_utf16().collect();
@@ -1080,11 +1322,105 @@ mod win {
                 &mut text_rect,
                 DT_SINGLELINE | DT_NOPREFIX | DT_CENTER | DT_VCENTER,
             );
+            if let Some(loupe) = decor.loupe {
+                draw_loupe(back, overlay, loupe);
+            }
             SelectClipRgn(back, None);
 
             let _ = BitBlt(target, 0, 0, w, h, Some(back), 0, 0, SRCCOPY);
             let _ = EndPaint(window, &ps);
             let _ = DeleteObject(dirty.into());
+        }
+    }
+
+    /// The pixels around the pointer, blown up square by square, with the one
+    /// under it framed: that pixel is the corner a click or a drag ends on.
+    /// Drawn from the undimmed copy, so the colours are the real ones.
+    fn draw_loupe(dc: HDC, overlay: &Overlay, loupe: RECT) {
+        let cell = loupe_cell(overlay.scale);
+        let size = LOUPE_SPAN * cell;
+        let half = LOUPE_SPAN / 2;
+        let (px, py) = overlay.pointer;
+        let source = &overlay.bright;
+        let image = RECT {
+            left: loupe.left + 1,
+            top: loupe.top + 1,
+            right: loupe.left + 1 + size,
+            bottom: loupe.top + 1 + size,
+        };
+        unsafe {
+            // Past the edge of the screen is black, not whatever StretchBlt
+            // would make of pixels that are not there.
+            let black = CreateSolidBrush(COLORREF(0));
+            FillRect(dc, &image, black);
+            let _ = DeleteObject(black.into());
+            let x0 = (px - half).max(0);
+            let y0 = (py - half).max(0);
+            let x1 = (px + half + 1).min(source.width);
+            let y1 = (py + half + 1).min(source.height);
+            if x1 > x0 && y1 > y0 {
+                SetStretchBltMode(dc, COLORONCOLOR);
+                let _ = StretchBlt(
+                    dc,
+                    image.left + (x0 - (px - half)) * cell,
+                    image.top + (y0 - (py - half)) * cell,
+                    (x1 - x0) * cell,
+                    (y1 - y0) * cell,
+                    Some(source.dc),
+                    x0,
+                    y0,
+                    x1 - x0,
+                    y1 - y0,
+                    SRCCOPY,
+                );
+            }
+
+            // Accent just outside the pixel and dark outside that, so the
+            // frame shows on a white page and a black terminal alike.
+            let accent = CreateSolidBrush(ACCENT);
+            let dark = CreateSolidBrush(PILL);
+            let centre = RECT {
+                left: image.left + half * cell - 1,
+                top: image.top + half * cell - 1,
+                right: image.left + (half + 1) * cell + 1,
+                bottom: image.top + (half + 1) * cell + 1,
+            };
+            FrameRect(dc, &centre, accent);
+            let around = RECT {
+                left: centre.left - 1,
+                top: centre.top - 1,
+                right: centre.right + 1,
+                bottom: centre.bottom + 1,
+            };
+            FrameRect(dc, &around, dark);
+            let border = RECT {
+                left: loupe.left,
+                top: loupe.top,
+                right: loupe.right,
+                bottom: image.bottom + 1,
+            };
+            FrameRect(dc, &border, accent);
+            let _ = DeleteObject(accent.into());
+
+            // Where the pointer is, in the screen pixels a ruler in any other
+            // program would use.
+            let label = RECT {
+                left: loupe.left,
+                top: image.bottom + 1,
+                right: loupe.right,
+                bottom: loupe.bottom,
+            };
+            FillRect(dc, &label, dark);
+            let _ = DeleteObject(dark.into());
+            let text = format!("{}, {}", px + overlay.origin.0, py + overlay.origin.1);
+            let mut wide: Vec<u16> = text.encode_utf16().collect();
+            let mut text_rect = label;
+            DrawTextW(
+                dc,
+                &mut wide,
+                &mut text_rect,
+                DT_SINGLELINE | DT_NOPREFIX | DT_CENTER | DT_VCENTER,
+            );
         }
     }
 

@@ -3535,6 +3535,7 @@ pub fn run() {
             scan,
             screenshot::screenshot_global_bindings_set,
             screenshot::screenshot_bindings,
+            screenshot::screenshot_magnifier_set,
             screenshot::screenshot_start,
             screenshot::screenshot_image,
             screenshot::screenshot_copy,

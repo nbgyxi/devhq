@@ -4812,12 +4812,94 @@ listen("screenshot:set-binding", (event) => {
   syncGlobalHotkeys();
   if (state.activeView === "settings" && state.settingsSection === "hotkeys") renderHotkeys(el["settings-host"]);
 });
-async function syncGlobalHotkeys() {
+/** Binding -> command id, for every shortcut Windows has given WinT. Only
+ *  what changed is registered or released: tearing everything down on each
+ *  sync left a gap after every scan in which a screenshot key did nothing,
+ *  and two syncs overlapping at startup could interleave inside it. */
+const globalRegistered = new Map();
+let globalHotkeysCleared = false;
+let hotkeySync = Promise.resolve();
+let hotkeySyncQueued = false;
+
+/** One sync at a time; calls that arrive while one is waiting join it. */
+function syncGlobalHotkeys() {
   renderSearchHint();
+  // System-wide shortcuts belong to the main window. A popped-out Projects
+  // window runs this same file, and its syncs released the main window's
+  // shortcuts and claimed them with callbacks that died with it.
+  if (PROJECTS_WINDOW) return Promise.resolve();
+  if (hotkeySyncQueued) return hotkeySync;
+  hotkeySyncQueued = true;
+  hotkeySync = hotkeySync.then(() => {
+    hotkeySyncQueued = false;
+    return syncGlobalHotkeysNow();
+  }).catch(() => {});
+  return hotkeySync;
+}
+
+async function onGlobalHotkey(binding, event) {
+  if (event.state && event.state !== "Pressed") return;
+  const id = globalRegistered.get(binding);
+  // The native handler has already started it.
+  if (!id || SCREENSHOT_IDS.has(id)) return;
+  const command = hotkeyCatalog().find((item) => item.id === id);
+  if (!command) return;
+  // Registration is still done here, but the native callback owns this
+  // picker so the main window never steals focus and repeated presses
+  // can advance the selection synchronously.
+  if (id === "tool:clipboard") {
+    openClipboardPicker({ activate: false });
+    return;
+  }
+  // The native palette is intentionally usable without surfacing the
+  // main window. Other global commands still bring their working context
+  // forward before executing.
+  if (id !== "command:palette" && id !== "command:focus-mode" && id !== "command:terminal-window") {
+    await appWindow.show().catch(() => {});
+    await appWindow.unminimize().catch(() => {});
+    await appWindow.setFocus().catch(() => {});
+  }
+  command.action();
+}
+
+/** A refused shortcut is asked for again every few seconds. The holder is
+ *  often only passing through - the previous WinT still closing at startup -
+ *  and a key refused once used to stay dead until something else happened to
+ *  sync the hotkeys. Any key that is won back redraws the full state. */
+let hotkeyRetryTimer = 0;
+function scheduleHotkeyRetry(wanted) {
+  clearTimeout(hotkeyRetryTimer);
+  const missing = [...wanted].filter(([binding]) => !globalRegistered.has(binding));
+  if (!missing.length) return;
+  hotkeyRetryTimer = setTimeout(() => {
+    hotkeySync = hotkeySync.then(async () => {
+      const api = window.__TAURI__?.globalShortcut;
+      if (!api) return;
+      let claimed = false;
+      for (const [binding, id] of missing) {
+        if (globalRegistered.has(binding) || hotkeyBinding(id) !== binding || !isGlobalHotkey(id)) continue;
+        try {
+          await api.register(binding, (event) => onGlobalHotkey(binding, event));
+          globalRegistered.set(binding, id);
+          claimed = true;
+        } catch { /* still held elsewhere */ }
+      }
+      if (claimed) syncGlobalHotkeys();
+      else scheduleHotkeyRetry(wanted);
+    }).catch(() => {});
+  }, 10000);
+}
+
+async function syncGlobalHotkeysNow() {
   const api = window.__TAURI__?.globalShortcut;
   if (!api) return;
   globalHotkeyErrors.clear();
-  try { await api.unregisterAll(); } catch { /* nothing registered yet */ }
+  // Once per page: a reloaded page finds the old page's shortcuts still held,
+  // with callbacks that lead nowhere.
+  if (!globalHotkeysCleared) {
+    globalHotkeysCleared = true;
+    try { await api.unregisterAll(); } catch { /* nothing registered yet */ }
+  }
   const catalog = hotkeyCatalog();
   const paletteBinding = state.hotkeyGlobals.has("command:palette") ? hotkeyBinding("command:palette") : "";
   const clipboardBinding = state.hotkeyGlobals.has("tool:clipboard") ? hotkeyBinding("tool:clipboard") : "";
@@ -4836,40 +4918,35 @@ async function syncGlobalHotkeys() {
     globalHotkeyErrors.set("tool:clipboard", String(error));
   });
   await sendScreenshotSlots();
+  const wanted = new Map();
   for (const command of catalog) {
     if (!isGlobalHotkey(command.id)) continue;
     const binding = hotkeyBinding(command.id);
-    if (!binding) continue;
+    if (binding && !wanted.has(binding)) wanted.set(binding, command.id);
+  }
+  for (const binding of [...globalRegistered.keys()]) {
+    if (wanted.has(binding)) continue;
+    try { await api.unregister(binding); } catch { /* already gone */ }
+    globalRegistered.delete(binding);
+  }
+  for (const [binding, id] of wanted) {
+    // Still held: only which command it runs may have changed.
+    if (globalRegistered.has(binding)) {
+      globalRegistered.set(binding, id);
+      continue;
+    }
     try {
-      await api.register(binding, async (event) => {
-        if (event.state && event.state !== "Pressed") return;
-        // Registration is still done here, but the native callback owns this
-        // picker so the main window never steals focus and repeated presses
-        // can advance the selection synchronously.
-        if (command.id === "tool:clipboard") {
-          openClipboardPicker({ activate: false });
-          return;
-        }
-        // The native handler has already started it.
-        if (SCREENSHOT_IDS.has(command.id)) return;
-        // The native palette is intentionally usable without surfacing the
-        // main window. Other global commands still bring their working context
-        // forward before executing.
-        if (command.id !== "command:palette" && command.id !== "command:focus-mode" && command.id !== "command:terminal-window") {
-          await appWindow.show().catch(() => {});
-          await appWindow.unminimize().catch(() => {});
-          await appWindow.setFocus().catch(() => {});
-        }
-        command.action();
-      });
+      await api.register(binding, (event) => onGlobalHotkey(binding, event));
+      globalRegistered.set(binding, id);
     } catch (error) {
-      globalHotkeyErrors.set(command.id, String(error));
+      globalHotkeyErrors.set(id, String(error));
     }
   }
   // Again now that Windows has answered: a shortcut another program holds
   // (Greenshot on Ctrl+Print Screen, say) was refused, and the Screenshot
   // page shows which.
   if (SCREENSHOT_SHORTCUTS.some((slot) => globalHotkeyErrors.has(slot.id))) await sendScreenshotSlots();
+  scheduleHotkeyRetry(wanted);
   if (state.activeView === "settings" && state.settingsSection === "hotkeys") {
     const conflicts = hotkeyConflicts();
     for (const command of hotkeyCatalog()) {

@@ -307,6 +307,16 @@
     return `${n < 10 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
   }
 
+  /** Uploaded over the torrent's size — how many whole copies have been
+   *  handed out. Not over what was downloaded: a torrent added on top of files
+   *  already on disk downloads next to nothing, and dividing by that turned a
+   *  few hundred MB shared into a ratio in the hundreds. The download is only
+   *  the fallback for a torrent whose size is not known yet. */
+  function shareRatio(uploaded, size, downloaded) {
+    const base = Number(size) || Number(downloaded) || 0;
+    return base ? (Number(uploaded) || 0) / base : null;
+  }
+
   function speed(n) {
     return Number(n) > 0 ? `${bytes(n)}/s` : "—";
   }
@@ -1163,7 +1173,7 @@
       if (sort.id === "remaining") return Math.max(0, (row.totalBytes || 0) - (row.progressBytes || 0));
       if (sort.id === "eta") return row.etaSeconds ?? Number.MAX_SAFE_INTEGER;
       if (sort.id === "uploaded") return row.uploadedTotal || 0;
-      if (sort.id === "ratio") return row.downloadedTotal ? (row.uploadedTotal || 0) / row.downloadedTotal : 0;
+      if (sort.id === "ratio") return shareRatio(row.uploadedTotal, row.totalBytes, row.downloadedTotal) ?? 0;
       if (sort.id === "known") return (row.peers || 0) + (row.peersQueued || 0);
       if (sort.id === "folder") return row.outputFolder || "";
       return 0;
@@ -1343,8 +1353,8 @@
     // again from zero every time it restarts, which made both of these
     // columns read nought however long a torrent had been seeding.
     setText(el.querySelector('[data-col="uploaded"]'), bytes(row.uploadedTotal));
-    setText(el.querySelector('[data-col="ratio"]'),
-      row.downloadedTotal ? (row.uploadedTotal / row.downloadedTotal).toFixed(2) : "—");
+    const ratio = shareRatio(row.uploadedTotal, row.totalBytes, row.downloadedTotal);
+    setText(el.querySelector('[data-col="ratio"]'), ratio === null ? "—" : ratio.toFixed(2));
     setText(el.querySelector('[data-col="known"]'), row.state === "live" ? String(row.peers + row.peersQueued) : "—");
     // The tail of the path, which is the part that tells two downloads apart;
     // the whole thing is on the title, and a click opens it.
@@ -2210,7 +2220,7 @@ Click to open in Explorer` : "";
           <span class="tr-topname" title="${esc(row.name || row.infoHash)}">${esc(row.name || row.infoHash.slice(0, 16))}</span>
           <span class="tr-topbar"><i style="width:${Math.round((row.uploaded / peak) * 100)}%"></i></span>
           <span class="tr-topup">${bytes(row.uploaded)}</span>
-          <span class="tr-topratio">${row.downloaded ? (row.uploaded / row.downloaded).toFixed(2) : "—"}</span>
+          <span class="tr-topratio">${shareRatio(row.uploaded, row.size, row.downloaded)?.toFixed(2) ?? "—"}</span>
         </div>`).join("")}</div>
     </section>`;
   }
