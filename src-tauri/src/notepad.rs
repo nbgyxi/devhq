@@ -11,18 +11,38 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
-/// Past this a file is not a note somebody typed, and reading every one of
-/// them on each open would be the tool's slowest step.
-const MAX_NOTE_BYTES: u64 = 2 * 1024 * 1024;
+/// Past this a file is more than a textarea can hold.
+const MAX_NOTE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_NOTES: usize = 500;
+/// What a tab is drawn from and what the editor shows at once: many screens
+/// of text, read in a moment however large the file is.
+const HEAD_BYTES: u64 = 128 * 1024;
+/// The rest of a large file comes in pieces this size, so its progress can
+/// be shown and no single answer holds anything up.
+const PART_BYTES: u64 = 1024 * 1024;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Note {
     /// The full path, which is also the note's id.
     pub path: String,
+    /// The start of the file - all of it once `next` has reached `size`.
     pub text: String,
     /// Milliseconds since the epoch, for the order of the tabs.
+    pub modified: u64,
+    /// The file's size in bytes.
+    pub size: u64,
+    /// Where in the file the rest starts.
+    pub next: u64,
+}
+
+/// A piece of a file, read from an offset.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Part {
+    pub text: String,
+    pub next: u64,
+    pub size: u64,
     pub modified: u64,
 }
 
@@ -35,19 +55,42 @@ fn absolute(path: &str) -> Result<PathBuf, String> {
     }
 }
 
-fn read(path: &Path) -> Result<Note, String> {
-    let meta = std::fs::metadata(path).map_err(|e| format!("Could not open {}: {e}", path.display()))?;
-    if meta.len() > MAX_NOTE_BYTES {
+/// Up to `max` bytes from `offset`, ending on a whole character so the parts
+/// join back into exactly the file's text.
+fn read_part(path: &Path, offset: u64, max: u64) -> Result<Part, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let fail = |e: std::io::Error| format!("Could not read {}: {e}", path.display());
+    let mut file = std::fs::File::open(path).map_err(|e| format!("Could not open {}: {e}", path.display()))?;
+    let meta = file.metadata().map_err(fail)?;
+    let size = meta.len();
+    if size > MAX_NOTE_BYTES {
         return Err(format!("{} is too large to open as a note.", path.display()));
     }
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("Could not read {} as text: {e}", path.display()))?;
     let modified = meta
         .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_millis() as u64);
-    Ok(Note { path: path.to_string_lossy().into_owned(), text, modified })
+    file.seek(SeekFrom::Start(offset)).map_err(fail)?;
+    let mut bytes = Vec::with_capacity(max.min(size.saturating_sub(offset)) as usize);
+    file.take(max).read_to_end(&mut bytes).map_err(fail)?;
+    let at_end = offset + bytes.len() as u64 >= size;
+    let used = match std::str::from_utf8(&bytes) {
+        Ok(_) => bytes.len(),
+        // A character cut in two by the end of the part waits for the next.
+        Err(e) if e.error_len().is_none() && !at_end => e.valid_up_to(),
+        Err(_) => return Err(format!("Could not read {} as text: it is not UTF-8.", path.display())),
+    };
+    bytes.truncate(used);
+    let text = String::from_utf8(bytes).map_err(|_| format!("Could not read {} as text.", path.display()))?;
+    Ok(Part { text, next: offset + used as u64, size, modified })
+}
+
+/// Only the start of the file: a tab needs no more, and a large file's rest
+/// is fetched when it is opened.
+fn read(path: &Path) -> Result<Note, String> {
+    let head = read_part(path, 0, HEAD_BYTES)?;
+    Ok(Note { path: path.to_string_lossy().into_owned(), text: head.text, modified: head.modified, size: head.size, next: head.next })
 }
 
 fn list(folder: &str) -> Result<Vec<Note>, String> {
@@ -161,6 +204,14 @@ pub async fn notepad_list(folder: String, opened: Vec<String>) -> Result<Vec<Not
 #[tauri::command]
 pub async fn notepad_read(path: String) -> Result<Note, String> {
     off_thread(move || absolute(&path).and_then(|p| read(&p)))
+        .await
+        .unwrap_or_else(|| Err("That file could not be read.".into()))
+}
+
+/// The next piece of a file whose start came with the list.
+#[tauri::command]
+pub async fn notepad_read_part(path: String, offset: u64) -> Result<Part, String> {
+    off_thread(move || absolute(&path).and_then(|p| read_part(&p, offset, PART_BYTES)))
         .await
         .unwrap_or_else(|| Err("That file could not be read.".into()))
 }

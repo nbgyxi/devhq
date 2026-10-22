@@ -265,8 +265,20 @@ pub async fn claude_send(
 /// makes the chat and a terminal two views of one conversation rather than two
 /// conversations. The way out of anything the chat cannot do is the CLI itself:
 /// approving a command it wants to run, signing in, a slash command, plan mode.
+///
+/// Finding the CLI stats every folder on PATH, and one on a drive that has gone
+/// away can take seconds to answer, so the search happens off the window thread.
 #[tauri::command]
-pub fn claude_terminal_command(
+pub async fn claude_terminal_command(
+    session: Option<String>,
+    model: Option<String>,
+) -> Result<String, String> {
+    crate::off_thread(move || claude_terminal_command_now(session, model))
+        .await
+        .unwrap_or_else(|| Err("Looking for Claude Code did not finish.".into()))
+}
+
+fn claude_terminal_command_now(
     session: Option<String>,
     model: Option<String>,
 ) -> Result<String, String> {

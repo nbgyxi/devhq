@@ -399,6 +399,92 @@ pub async fn git_workspace(path: String) -> Result<Workspace, String> {
     .map_err(|_| "Could not read Git repository.".to_string())?
 }
 
+/// A fingerprint of everything [`git_workspace`] would show, for one `git`
+/// process instead of a dozen.
+///
+/// The workspace keeps its Git panel close to disk by checking every second
+/// or so, and a full read is status, two logs, remotes, stashes, branches and
+/// both diffs - a dozen processes, and the whole diff over IPC, on every tick
+/// whether anything moved or not. This is what the tick asks first; only a
+/// different answer is worth the full read.
+///
+/// Status covers the file list, branch and ahead/behind. A file that was
+/// already changed and is edited again leaves status saying exactly what it
+/// said, so the changed files' size and time go in too, and the repository's
+/// own bookkeeping files catch commits, staging, stashes, fetches, merges and
+/// rebases.
+#[tauri::command]
+pub async fn git_workspace_stamp(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::hash::{Hash, Hasher};
+        let dir = repo(&path)?;
+        let status = run_lossy(
+            "git",
+            &[
+                "status",
+                "--porcelain=v2",
+                "--branch",
+                "--untracked-files=normal",
+            ],
+            Some(&dir),
+        )
+        .ok_or_else(|| "Could not read repository.".to_string())?;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        status.hash(&mut hasher);
+        let mut seen = |path: &Path| match std::fs::metadata(path) {
+            Ok(meta) => (meta.len(), meta.modified().ok()).hash(&mut hasher),
+            Err(_) => 0u8.hash(&mut hasher),
+        };
+        for entry in status
+            .lines()
+            .filter_map(parse_status_entry)
+            .take(MAX_CHANGED_FILES)
+        {
+            seen(&dir.join(&entry.path));
+        }
+        let git = git_dir(&dir);
+        for name in [
+            "HEAD",
+            "index",
+            "config",
+            "packed-refs",
+            "FETCH_HEAD",
+            "ORIG_HEAD",
+            "MERGE_HEAD",
+            "logs/HEAD",
+            "refs/heads",
+            "refs/stash",
+            "rebase-merge",
+            "rebase-apply",
+        ] {
+            seen(&git.join(name));
+        }
+        Ok(format!("{:016x}", hasher.finish()))
+    })
+    .await
+    .map_err(|_| "Could not read Git repository.".to_string())?
+}
+
+/// Where the repository's own files are. `.git` is usually that folder, but in
+/// a linked worktree or a submodule it is a file naming the folder instead.
+fn git_dir(dir: &Path) -> std::path::PathBuf {
+    let dot = dir.join(".git");
+    if dot.is_file() {
+        if let Some(target) = std::fs::read_to_string(&dot)
+            .ok()
+            .and_then(|text| Some(text.trim().strip_prefix("gitdir:")?.trim().to_string()))
+        {
+            let target = std::path::PathBuf::from(target);
+            return if target.is_absolute() {
+                target
+            } else {
+                dir.join(target)
+            };
+        }
+    }
+    dot
+}
+
 #[tauri::command]
 pub async fn git_action(request: ActionRequest) -> Result<ActionResult, String> {
     tauri::async_runtime::spawn_blocking(move || {

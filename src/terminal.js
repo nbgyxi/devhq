@@ -258,6 +258,12 @@ function termEsc(s) {
   return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
 }
 
+/** Escaped for a double-quoted attribute - a link target is the program's
+ *  text, and nothing in it may close the attribute it is put in. */
+function termAttr(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
 /** Where column `col` begins, in whole pixels.
  *
  *  A cell is a fraction of a pixel wide, so a run placed by adding those
@@ -349,6 +355,32 @@ function wordEdge(text, col, dir) {
   return col;
 }
 
+/** How many characters a line editor's cursor crosses between two offsets in
+ *  `text`. Arrow keys and Delete move by character - a code point - so a
+ *  surrogate pair is one step. Offsets past the end are blanks, one each. */
+function charsBetween(text, a, b) {
+  const lo = Math.min(a, b);
+  const hi = Math.max(a, b);
+  const inside = [...text.slice(Math.min(lo, text.length), Math.min(hi, text.length))].length;
+  return inside + Math.max(0, hi - Math.max(lo, text.length));
+}
+
+const isHighSurrogate = (code) => code >= 0xd800 && code <= 0xdbff;
+const isLowSurrogate = (code) => code >= 0xdc00 && code <= 0xdfff;
+/** UTF-16 units of the character just before / at `col`, so a selection step
+ *  never lands between the halves of an emoji. */
+function charUnitsBefore(text, col) {
+  return col >= 2 && isLowSurrogate(text.charCodeAt(col - 1)) && isHighSurrogate(text.charCodeAt(col - 2)) ? 2 : 1;
+}
+function charUnitsAt(text, col) {
+  return isHighSurrogate(text.charCodeAt(col)) && isLowSurrogate(text.charCodeAt(col + 1)) ? 2 : 1;
+}
+
+/** One history row: its runs, and whether it wraps into the row after it. */
+function historyRowHtml(runs, wrap, cellW) {
+  return `<div${wrap ? ' data-wrap="1"' : ""}>${rowHtml(runs, cellW)}</div>`;
+}
+
 /** Renders one row's runs into HTML.
  *
  *  Every run is pinned to the column it starts at rather than being flowed
@@ -385,7 +417,11 @@ function rowHtml(runs, cellW) {
     if (run.a & ATTR.ITALIC) style.push("font-style:italic");
     if (run.a & ATTR.UNDERLINE) style.push("text-decoration:underline");
     if (run.a & ATTR.STRIKE) style.push("text-decoration:line-through");
-    out += `<span style="${style.join(";")}">${termEsc(run.t)}</span>`;
+    // An OSC 8 hyperlink says where it goes in `data-href`, and hovering
+    // shows that target: the text of such a link is whatever the program chose
+    // to print, so the address it really opens has to be visible somewhere.
+    const link = run.u ? ` data-href="${termAttr(run.u)}" title="${termAttr(run.u)}"` : "";
+    out += `<span data-x="${run.x}" data-w="${run.w}"${link} style="${style.join(";")}">${termEsc(run.t)}</span>`;
   }
   return out;
 }
@@ -423,7 +459,7 @@ function keySequence(e) {
     case "PageUp": return "\x1b[5~";
     case "PageDown": return "\x1b[6~";
     case "Insert": return "\x1b[2~";
-    case "Delete": return "\x1b[3~";
+    case "Delete": return ctrl ? "\x1b[3;5~" : "\x1b[3~";
     case "F1": return "\x1bOP";
     case "F2": return "\x1bOQ";
     case "F3": return "\x1bOR";
@@ -443,6 +479,10 @@ function keySequence(e) {
 }
 
 const TERM_PREFS_KEY = "wint.terminals.v1";
+
+/** How many rows one command line may be followed across, either way from the
+ *  cursor. Far more than anyone types; it only bounds a screen gone wrong. */
+const LINE_ROWS = 50;
 
 // 0.35.3 stopped maintaining a WinT-owned command log. Remove the old index
 // rather than leaving commands behind after the feature that wrote it is gone.
@@ -534,7 +574,7 @@ class TermView {
     // following paste event can still replace exactly what was selected.
     this.pendingPasteErase = "";
     /** Where the keys already sent will leave the shell's cursor, until the
-     *  screen catches up - see cursorCol. */
+     *  screen catches up - see editLine. */
     this.cursorTarget = null;
     this.cursorTargetAt = 0;
     // Alt+drag owns a rectangular selection. A browser Selection can only
@@ -603,6 +643,8 @@ class TermView {
      *  screen is redrawn when the measurement lands; the history has to be
      *  too, and this is what it is redrawn from. */
     this.historyRuns = [];
+    /** Beside `historyRuns`: which of those rows wrap into the next. */
+    this.historyWraps = [];
     this.historyCellW = 0;
 
     this.measure();
@@ -792,6 +834,14 @@ class TermView {
       else if (e.target.closest("[data-history-edit]")) this.useHistoryResult();
       else if (e.target.closest("[data-history-close]")) this.cancelHistorySearch();
     });
+    // Copying by any other route - the browser's menu, the execCommand
+    // fallback - joins wrapped rows the same way Ctrl+C does.
+    this.host.addEventListener("copy", (e) => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount || !this.host.contains(sel.anchorNode)) return;
+      e.preventDefault();
+      e.clipboardData.setData("text/plain", this.selectionText(sel));
+    });
     this.host.addEventListener("paste", (e) => {
       e.preventDefault();
       const text = (e.clipboardData || window.clipboardData).getData("text");
@@ -882,8 +932,8 @@ class TermView {
       if (e.shiftKey || e.altKey || e.metaKey || this.boxSelection) return;
       const sel = window.getSelection();
       if (sel && !sel.isCollapsed) return;
-      const col = this.editableColAt(e);
-      if (col !== null) this.moveCursorToCol(col);
+      const target = this.editableOffsetAt(e);
+      if (target) this.moveCursorToText(target.line, target.offset);
     });
     this.scroll.addEventListener("scroll", () => {
       // A resize pins scrollTop on purpose; that must not look like the user
@@ -936,23 +986,20 @@ class TermView {
    * command is already selected so the caller can expand to all output. */
   selectCurrentCommand(sel) {
     if (this.host.classList.contains("alt") || !this.cursorVisible) return false;
-    const row = this.rowEls[this.cy];
-    if (!row) return false;
-    const text = row.textContent || "";
-    const cursor = Math.min(this.cx, text.length);
-    const start = this.commandStart(text, cursor);
-    const end = text.length;
-    if (start === null || !text.slice(start, end).trim() || cursor < start || cursor > end) return false;
+    const line = this.editLine();
+    if (!line || line.start === null) return false;
+    // What was typed, not the grey suggestion after it - copying the command
+    // should copy the command. A command that wraps is selected whole.
+    const { start, end } = line;
+    if (!line.text.slice(start, end).trim() || line.onScreen < start) return false;
 
     const current = sel.rangeCount ? sel.getRangeAt(0) : null;
-    if (current && row.contains(current.startContainer) && row.contains(current.endContainer)) {
-      const selectedStart = this.colInRow(row, current.startContainer, current.startOffset);
-      const selectedEnd = this.colInRow(row, current.endContainer, current.endOffset);
-      if (selectedStart === start && selectedEnd === end) return false;
-    }
+    if (current && line.rows.some((row) => current.intersectsNode(row))
+      && this.lineOffset(line, current.startContainer, current.startOffset) === start
+      && this.lineOffset(line, current.endContainer, current.endOffset) === end) return false;
 
-    const [startNode, startOffset] = this.caretAt(row, start);
-    const [endNode, endOffset] = this.caretAt(row, end);
+    const [startNode, startOffset] = this.lineCaret(line, start);
+    const [endNode, endOffset] = this.lineCaret(line, end, true);
     const range = document.createRange();
     range.setStart(startNode, startOffset);
     range.setEnd(endNode, endOffset);
@@ -986,12 +1033,8 @@ class TermView {
    * for a completed interrupt. */
   isAtPrompt() {
     if (this.exited || this.host.classList.contains("alt") || !this.cursorVisible) return false;
-    const row = this.rowEls[this.cy];
-    if (!row) return false;
-    const text = row.textContent || "";
-    const cursor = Math.min(this.cx, text.length);
-    const start = this.commandStart(text, cursor);
-    return start !== null && !text.slice(start).trim();
+    const line = this.editLine();
+    return Boolean(line) && line.start !== null && !line.text.slice(line.start).trim();
   }
 
   commandName(commandLine) {
@@ -1066,27 +1109,13 @@ class TermView {
   /** The command being typed, read off the screen, or null when the cursor is
    *  not on a recognizable prompt.
    *
-   *  A command too long for one row carries on along the rows below the
-   *  prompt, each filled to the edge, and is followed here to the cursor's
-   *  row. PSReadLine's grey suggestion after the cursor is drawn dim and is
-   *  not part of what was typed, so it is left out. */
+   *  A command too long for one row is read along every row it wraps over -
+   *  see editLine. PSReadLine's grey suggestion after the cursor is drawn dim
+   *  and is not part of what was typed, so it is left out. */
   editableCommand() {
-    if (this.host.classList.contains("alt")) return null;
-    const cursorRow = this.rowEls[this.cy];
-    if (!cursorRow) return null;
-    for (let y = this.cy; y >= Math.max(0, this.cy - 20); y--) {
-      const row = this.rowEls[y];
-      const text = row.textContent || "";
-      const start = this.commandStart(text, y === this.cy ? Math.min(this.cx, text.length) : text.length);
-      // Only a row filled to the last column can run on into the row below.
-      if (y < this.cy && text.length < this.cols) return null;
-      if (start === null) continue;
-      let command = text.slice(start);
-      for (let below = y + 1; below <= this.cy; below++) command += this.rowEls[below].textContent || "";
-      const typed = command.length - this.typedTailTrim(cursorRow);
-      return command.slice(0, Math.max(0, typed)).trimEnd();
-    }
-    return null;
+    const line = this.editLine();
+    if (!line || line.start === null) return null;
+    return line.text.slice(line.start, Math.max(line.start, line.end)).trimEnd();
   }
 
   /** How many characters at the end of the cursor's row are a dim suggestion
@@ -1097,7 +1126,7 @@ class TermView {
     for (const span of [...row.children].reverse()) {
       if (span.style.opacity === "" || span.style.opacity === "1") break;
       const from = this.colInRow(row, span, 0);
-      if (from < Math.min(this.cx, text.length)) break;
+      if (from < Math.min(this.cellToText(row, this.cx), text.length)) break;
       cut = from;
     }
     return text.length - cut;
@@ -1145,11 +1174,30 @@ class TermView {
   linkUnder(at) {
     const row = at.target?.closest?.(".term-history > div, .term-screen > div");
     if (!row || !this.host.contains(row)) return null;
+    // A hyperlink the program printed (OSC 8) is what it says it is, whatever
+    // its text looks like, so it wins over guessing. It is every run on the
+    // row carrying the same target, side by side. Only web addresses open -
+    // the same rule as for any other link - so another scheme is not offered.
+    const span = at.target.closest?.("span[data-href]");
+    if (span && row.contains(span)) {
+      const url = span.dataset.href;
+      if (!/^https?:\/\//i.test(url)) return null;
+      const spans = [...row.children];
+      let first = spans.indexOf(span);
+      let last = first;
+      while (first > 0 && spans[first - 1].dataset.href === url) first--;
+      while (last < spans.length - 1 && spans[last + 1].dataset.href === url) last++;
+      const start = Number(spans[first].dataset.x);
+      const end = Number(spans[last].dataset.x) + Number(spans[last].dataset.w);
+      return { row, url, start, end };
+    }
     const box = row.getBoundingClientRect();
-    const col = Math.floor((at.clientX - box.left) / this.cellW);
-    if (col < 0) return null;
-    const found = linkAt(row.textContent || "", col);
-    return found && { ...found, row };
+    const cell = Math.floor((at.clientX - box.left) / this.cellW);
+    if (cell < 0) return null;
+    // A URL is found in the row's text, and drawn under its columns - which
+    // are not the same numbers once a wide glyph sits in front of it.
+    const found = linkAt(row.textContent || "", this.cellToText(row, cell));
+    return found && { ...found, row, start: this.textToCell(row, found.start), end: this.textToCell(row, found.end) };
   }
 
   /** Underlines the link a click would open, or takes the underline away. */
@@ -1308,12 +1356,12 @@ class TermView {
         if (col <= 0) {
           return index > 0 ? { index: index - 1, col: text(index - 1).length } : { index, col: 0 };
         }
-        return { index, col: ctrl ? wordEdge(line, col, -1) : col - 1 };
+        return { index, col: ctrl ? wordEdge(line, col, -1) : col - charUnitsBefore(line, col) };
       case "ArrowRight":
         if (col >= line.length) {
           return index < last ? { index: index + 1, col: 0 } : { index, col: line.length };
         }
-        return { index, col: ctrl ? wordEdge(line, col, 1) : col + 1 };
+        return { index, col: ctrl ? wordEdge(line, col, 1) : col + charUnitsAt(line, col) };
       // A terminal's paragraph is its line, so Ctrl adds nothing to up and down.
       case "ArrowUp":
         return { index: Math.max(0, index - 1), col };
@@ -1333,7 +1381,9 @@ class TermView {
         return { index, col: this.commandStart(line, Math.min(col, line.length)) ?? 0 };
       case "End":
         if (ctrl) return { index: last, col: text(last).length };
-        return { index, col: line.length };
+        // On the line being typed, End is the end of what was typed - the grey
+        // suggestion after it is not text yet.
+        return { index, col: rows[index] === this.rowEls[this.cy] ? Math.max(col, this.typedEnd(rows[index])) : line.length };
       default:
         return null;
     }
@@ -1349,9 +1399,10 @@ class TermView {
    *  one, the caret is dropped at the cursor - the place the user is looking. */
   anchorSelection(sel) {
     if (!sel.isCollapsed && sel.rangeCount && this.host.contains(sel.anchorNode) && this.host.contains(sel.focusNode)) return;
+    const line = this.editLine();
     const row = this.rowEls[this.cy];
-    if (!row) return;
-    const [node, offset] = this.caretAt(row, this.cursorCol());
+    if (!line && !row) return;
+    const [node, offset] = line ? this.lineCaret(line, line.cursor) : this.caretAt(row, this.cellToText(row, this.cx));
     sel.removeAllRanges();
     const range = document.createRange();
     range.setStart(node, offset);
@@ -1408,97 +1459,228 @@ class TermView {
    *  scrollback above it is output that has already happened, and a full-screen
    *  program owns its own keyboard - so everything else is left alone. */
   eraseSelectionSeq(clear = true) {
-    if (this.host.classList.contains("alt")) return "";
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || !sel.rangeCount) return "";
-    const row = this.rowEls[this.cy];
-    if (!row) return "";
+    const line = this.editLine();
+    if (!line || line.start === null) return "";
     const range = sel.getRangeAt(0);
     // A triple-click or a drag that runs off the end of the line ends on the
     // row below, and one started above begins in the output - only the part
-    // that lies on the line being edited is the shell's to remove.
-    if (!range.intersectsNode(row)) return "";
-    const text = row.textContent || "";
-    const start = row.contains(range.startContainer)
-      ? this.colInRow(row, range.startContainer, range.startOffset) : 0;
-    const end = row.contains(range.endContainer)
-      ? this.colInRow(row, range.endContainer, range.endOffset) : text.length;
-    if (end <= start) return "";
-    const cx = this.cursorCol();
-    const commandStart = this.commandStart(text, Math.min(cx, text.length));
-    if (commandStart === null) return "";
+    // that lies on the line being edited is the shell's to remove. That line
+    // can be several rows: a long command wraps, and the shell walks across
+    // the wrap like anywhere else.
+    if (!line.rows.some((row) => range.intersectsNode(row))) return "";
+    const start = this.lineOffset(line, range.startContainer, range.startOffset);
+    const end = this.lineOffset(line, range.endContainer, range.endOffset);
     // A mouse selection reaches for whole cells, so dragging to the end of the
     // line picks up the blanks after it and dragging left of the command picks
     // up the prompt. Clamping to the editable run keeps those drags working
-    // rather than silently pasting at the cursor instead.
-    const from = Math.max(start, commandStart);
-    const to = Math.min(end, text.trimEnd().length);
+    // rather than silently pasting at the cursor instead. PSReadLine's grey
+    // suggestion is not editable either: it is not in the line yet.
+    const from = Math.max(start, line.start);
+    const to = Math.min(end, line.end);
     if (to <= from) return "";
     if (clear) sel.removeAllRanges();
-    const dx = from - cx;
-    const walk = dx > 0 ? "\x1b[C".repeat(dx) : "\x1b[D".repeat(-dx);
-    return walk + "\x1b[3~".repeat(to - from);
+    // The shell's arrows and Delete move one character at a time, and a
+    // character is neither a column (日 is two) nor a UTF-16 unit (🙂 is two):
+    // counting either walked into the wrong text and split emoji in half.
+    const walk = (from > line.cursor ? "\x1b[C" : "\x1b[D").repeat(charsBetween(line.text, line.cursor, from));
+    return walk + "\x1b[3~".repeat(charsBetween(line.text, from, to));
   }
 
-  /** The editable column under a pointer, or null when the pointer is not on
-   *  the line being edited. Output above is finished text and a full-screen
-   *  program owns its own cursor, so a click there moves nothing. */
-  editableColAt(at) {
-    if (this.host.classList.contains("alt") || this.mouseMode || !this.cursorVisible) return null;
-    const row = this.rowEls[this.cy];
-    if (!row || !this.host.contains(row)) return null;
-    const box = row.getBoundingClientRect();
-    // The row, not the click target: clicking past the end of a short command
-    // lands on the screen rather than on any span, and still means that line.
-    if (at.clientY < box.top || at.clientY >= box.bottom) return null;
-    const text = row.textContent || "";
-    const start = this.commandStart(text, Math.min(this.cx, text.length));
-    if (start === null) return null;
-    const col = Math.round((at.clientX - box.left) / this.cellW);
-    return Math.max(start, Math.min(text.trimEnd().length, col));
-  }
-
-  /** Walks the shell cursor to a column. The shell owns the caret, so moving
-   *  it means sending the arrow presses that would have got there. */
-  moveCursorToCol(col) {
-    const dx = col - this.cursorCol();
-    if (!dx) return;
-    this.send((dx > 0 ? "\x1b[C" : "\x1b[D").repeat(Math.abs(dx)));
-  }
-
-  /** The column the shell's cursor is at once what has been sent arrives.
+  /** The line the shell is editing, as the shell sees it: the cursor's row
+   *  joined to the rows it soft-wraps from and into. A command longer than the
+   *  terminal is one line spread over several rows, and every edit made here -
+   *  a selection to replace, a click to move to - is a walk along that line,
+   *  which is how the shell's own arrows travel. The backend marks each row
+   *  that wraps (`wrap` on a row update), because the screen cannot say: a
+   *  wrap that falls on a typed space looks exactly like a line that ended.
    *
-   *  Moving the cursor or rubbing out a selection is a walk measured from the
-   *  cursor, and the cursor on screen trails the keys by a round trip. A click
-   *  followed at once by Delete or Ctrl+V - a double-click is exactly that -
-   *  would otherwise walk from where the cursor was and delete the wrong text.
-   *  The guess is trusted only briefly: a shell that refused a step never
-   *  answers with the column it was expected to reach. */
-  cursorCol() {
-    if (this.cursorTarget !== null && performance.now() - this.cursorTargetAt < 400) return this.cursorTarget;
-    return this.cx;
+   *  Offsets are into `text`, the rows' text end to end. `start` is where the
+   *  command begins after the prompt (null when no prompt is recognised), `end`
+   *  where what was typed ends, `onScreen` where the cursor is drawn, and
+   *  `cursor` where it is about to be.
+   *
+   *  The two cursors differ because the one on screen trails the keys by a
+   *  round trip. A click followed at once by Delete or Ctrl+V - a double-click
+   *  is exactly that - would otherwise walk from where the cursor was and
+   *  delete the wrong text. The guess is trusted only briefly: a shell that
+   *  refused a step never answers with the place it was expected to reach.
+   *
+   *  Null on a full-screen program's screen, which owns its own keyboard. */
+  editLine() {
+    if (this.host.classList.contains("alt")) return null;
+    const cy = this.cy;
+    if (!this.rowEls[cy]) return null;
+    const wraps = (y) => this.rowEls[y]?.dataset.wrap === "1";
+    let top = cy;
+    while (top > 0 && cy - top < LINE_ROWS && wraps(top - 1)) top--;
+    let bottom = cy;
+    while (bottom + 1 < this.rowEls.length && bottom - cy < LINE_ROWS && wraps(bottom)) bottom++;
+    const rows = this.rowEls.slice(top, bottom + 1);
+    const starts = [];
+    let text = "";
+    for (const row of rows) {
+      starts.push(text.length);
+      text += row.textContent || "";
+    }
+    const here = cy - top;
+    const onScreen = starts[here] + this.cellToText(rows[here], this.cx);
+    const fresh = this.cursorTarget !== null && performance.now() - this.cursorTargetAt < 400;
+    const last = rows.length - 1;
+    // The grey suggestion only ever follows the cursor, so only the cursor's
+    // row can hold one.
+    const end = starts[last] + (last === here
+      ? this.typedEnd(rows[last])
+      : (rows[last].textContent || "").trimEnd().length);
+    return {
+      rows, starts, text, onScreen, end,
+      cursor: fresh ? this.cursorTarget : onScreen,
+      start: this.commandStart(text, Math.min(onScreen, text.length)),
+    };
   }
 
-  /** Advances the expected cursor column over keys about to be written. Only
-   *  plain line editing is followed; anything else - Enter, history, a
-   *  program's own keys - hands the answer back to the screen. */
+  /** Where a DOM position falls in the edit line - its offset, or the start
+   *  or end of the line for a position before or after every row of it. */
+  lineOffset(line, node, offset) {
+    for (let i = 0; i < line.rows.length; i++) {
+      if (line.rows[i].contains(node)) return line.starts[i] + this.colInRow(line.rows[i], node, offset);
+    }
+    const first = document.createRange();
+    first.selectNode(line.rows[0]);
+    return first.comparePoint(node, offset) < 0 ? 0 : line.text.length;
+  }
+
+  /** The DOM position of an offset in the edit line. Where one row ends and
+   *  the next begins is either; `atEnd` takes the end of the first, so a
+   *  selection that stops there does not reach onto the row below. */
+  lineCaret(line, offset, atEnd = false) {
+    let i = line.rows.length - 1;
+    while (i > 0 && (offset < line.starts[i] || (atEnd && offset === line.starts[i]))) i--;
+    return this.caretAt(line.rows[i], offset - line.starts[i]);
+  }
+
+  /** Where every character of a drawn row sits on the grid.
+   *
+   *  A row's text and its columns part ways at the first double-width glyph:
+   *  日 is one UTF-16 unit and 🙂 two, but each covers two columns. The cursor
+   *  and a click are columns; a selection and `textContent` are text. Each run
+   *  carries the column it starts on and how many it covers (see rowHtml), so
+   *  the map is read straight off the row: a run of one glyph covers all of
+   *  its columns, any other run is one column per character. */
+  rowGlyphs(row) {
+    const glyphs = [];
+    let offset = 0;
+    let col = 0;
+    for (const span of row?.children || []) {
+      const chars = [...(span.textContent || "")];
+      const x = Number(span.dataset.x);
+      const w = Number(span.dataset.w);
+      if (span.dataset.x !== undefined && Number.isFinite(x)) col = x;
+      const each = chars.length === 1 && Number.isFinite(w) && w > 0 ? w : 1;
+      for (const ch of chars) {
+        glyphs.push({ offset, col, width: each, units: ch.length });
+        offset += ch.length;
+        col += each;
+      }
+    }
+    return { glyphs, length: offset, endCol: col };
+  }
+
+  /** The text offset grid column `cell` falls on. The blanks past the last
+   *  glyph are not in the text at all, so each of those counts as one. */
+  cellToText(row, cell) {
+    const { glyphs, length, endCol } = this.rowGlyphs(row);
+    if (cell >= endCol) return length + (cell - endCol);
+    for (const glyph of glyphs) if (cell < glyph.col + glyph.width) return glyph.offset;
+    return length;
+  }
+
+  /** The grid column a text offset on `row` starts at - the way back from
+   *  `cellToText`. */
+  textToCell(row, offset) {
+    const { glyphs, length, endCol } = this.rowGlyphs(row);
+    if (offset >= length) return endCol + (offset - length);
+    for (const glyph of glyphs) if (offset < glyph.offset + glyph.units) return glyph.col;
+    return endCol;
+  }
+
+  /** The text offset nearest a horizontal position in columns - the edge of
+   *  whichever character the point is closer to, so the right half of a wide
+   *  glyph lands after it, not before it. */
+  pointToText(row, cols) {
+    const { glyphs, length, endCol } = this.rowGlyphs(row);
+    if (cols >= endCol) return length + Math.round(cols - endCol);
+    for (const glyph of glyphs) {
+      if (cols < glyph.col + glyph.width) {
+        return cols - glyph.col > glyph.width / 2 ? glyph.offset + glyph.units : glyph.offset;
+      }
+    }
+    return length;
+  }
+
+  /** Where what was typed ends on `row`: the grey suggestion PSReadLine draws
+   *  after the cursor is not text anyone typed, so selecting, clicking and
+   *  replacing all stop short of it. */
+  typedEnd(row) {
+    const text = row?.textContent || "";
+    return text.slice(0, text.length - this.typedTailTrim(row)).trimEnd().length;
+  }
+
+  /** The place in the edit line under a pointer, or null when the pointer is
+   *  not on it. Output above is finished text and a full-screen program owns
+   *  its own cursor, so a click there moves nothing. */
+  editableOffsetAt(at) {
+    if (this.mouseMode || !this.cursorVisible) return null;
+    const line = this.editLine();
+    if (!line || line.start === null) return null;
+    for (let i = 0; i < line.rows.length; i++) {
+      // The row, not the click target: clicking past the end of a short
+      // command lands on the screen rather than on any span, and still means
+      // that line.
+      const box = line.rows[i].getBoundingClientRect();
+      if (at.clientY < box.top || at.clientY >= box.bottom) continue;
+      const offset = line.starts[i] + this.pointToText(line.rows[i], (at.clientX - box.left) / this.cellW);
+      // Stopping at the typed end matters twice over: past it is PSReadLine's
+      // grey suggestion, and the Right arrow that would walk into it accepts it.
+      return { line, offset: Math.max(line.start, Math.min(line.end, offset)) };
+    }
+    return null;
+  }
+
+  /** Walks the shell cursor to an offset in the edit line. The shell owns the
+   *  caret, so moving it means sending the arrow presses that would have got
+   *  there - one per character, whatever its width, across wraps alike. */
+  moveCursorToText(line, offset) {
+    const steps = charsBetween(line.text, line.cursor, offset);
+    if (!steps) return;
+    this.send((offset > line.cursor ? "\x1b[C" : "\x1b[D").repeat(steps));
+  }
+
+  /** Advances the expected cursor over keys about to be written, as an offset
+   *  in the edit line - an offset, not a column, so it follows a walk across a
+   *  wrap. Only plain line editing is followed; anything else - Enter,
+   *  history, a program's own keys - hands the answer back to the screen. */
   trackCursor(text) {
-    if (this.host.classList.contains("alt")) { this.cursorTarget = null; return; }
-    let col = this.cursorCol();
+    const line = this.editLine();
+    if (!line) { this.cursorTarget = null; return; }
+    const t = line.text;
+    let at = line.cursor;
+    const left = () => { at = at > t.length ? at - 1 : Math.max(0, at - charUnitsBefore(t, at)); };
     for (let i = 0; i < text.length;) {
       const rest = text.slice(i);
-      if (rest.startsWith("\x1b[C")) { col++; i += 3; continue; }
-      if (rest.startsWith("\x1b[D")) { col = Math.max(0, col - 1); i += 3; continue; }
+      if (rest.startsWith("\x1b[C")) { at += at < t.length ? charUnitsAt(t, at) : 1; i += 3; continue; }
+      if (rest.startsWith("\x1b[D")) { left(); i += 3; continue; }
       if (rest.startsWith("\x1b[3~")) { i += 4; continue; }
       if (rest.startsWith("\x1b[200~") || rest.startsWith("\x1b[201~")) { i += 6; continue; }
       const ch = text[i];
-      if (ch === "\x7f") { col = Math.max(0, col - 1); i++; continue; }
+      if (ch === "\x7f") { left(); i++; continue; }
       if (ch < " ") { this.cursorTarget = null; return; }
-      const code = text.codePointAt(i);
-      col += code > 0xffff ? 2 : 1;
-      i += code > 0xffff ? 2 : 1;
+      const units = text.codePointAt(i) > 0xffff ? 2 : 1;
+      at += units;
+      i += units;
     }
-    this.cursorTarget = col;
+    this.cursorTarget = at;
     this.cursorTargetAt = performance.now();
   }
 
@@ -1510,6 +1692,26 @@ class TermView {
     range.setStart(row, 0);
     range.setEnd(node, offset);
     return range.toString().length;
+  }
+
+  /** The text of a selection in this terminal, the way it reads: one line per
+   *  line, with a break only where a row really ended. The browser's own
+   *  `toString` breaks at every row, so a command long enough to wrap copied
+   *  as two lines - and pasted back, ran as two commands. */
+  selectionText(sel) {
+    const range = sel.getRangeAt(0);
+    const rows = this.rowList().filter((row) => range.intersectsNode(row));
+    if (!rows.length) return sel.toString();
+    let text = "";
+    rows.forEach((row, i) => {
+      const part = document.createRange();
+      part.selectNodeContents(row);
+      if (row.contains(range.startContainer)) part.setStart(range.startContainer, range.startOffset);
+      if (row.contains(range.endContainer)) part.setEnd(range.endContainer, range.endOffset);
+      text += part.toString();
+      if (i < rows.length - 1 && row.dataset.wrap !== "1") text += "\n";
+    });
+    return text;
   }
 
   /** Copies this terminal's selection, reporting whether there was one to copy.
@@ -1527,12 +1729,12 @@ class TermView {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
     if (!this.host.contains(sel.anchorNode) || !this.host.contains(sel.focusNode)) return false;
-    const text = sel.toString();
+    const text = this.selectionText(sel);
     if (!text) return false;
     if (navigator.clipboard?.writeText) {
       navigator.clipboard.writeText(text).then(() => {
         const current = window.getSelection();
-        if (current && current.toString() === text) current.removeAllRanges();
+        if (current?.rangeCount && this.selectionText(current) === text) current.removeAllRanges();
       }).catch(() => {});
     } else {
       if (document.execCommand("copy")) sel.removeAllRanges();
@@ -1548,7 +1750,7 @@ class TermView {
     if (!erase) return false;
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
-    const text = sel.toString();
+    const text = this.selectionText(sel);
     if (!text) return false;
     if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).catch(() => {});
     else if (!document.execCommand("copy")) return false;
@@ -1815,11 +2017,12 @@ class TermView {
     this.cols = snap.cols;
     this.rows = snap.rows;
     this.exited = !snap.info.alive;
-    this.history.innerHTML = snap.history.map((runs) => `<div>${rowHtml(runs, this.cellW)}</div>`).join("");
     this.historyRuns = snap.history.slice();
+    this.historyWraps = snap.history.map((_, i) => Boolean(snap.historyWrap?.[i]));
+    this.history.innerHTML = this.historyRuns.map((runs, i) => historyRowHtml(runs, this.historyWraps[i], this.cellW)).join("");
     this.historyCellW = this.cellW;
     this.buildScreen();
-    for (const row of snap.screen) this.paintRow(row.y, row.runs);
+    for (const row of snap.screen) this.paintRow(row.y, row.runs, row.wrap);
     this.moveCursor(snap.cx, snap.cy, snap.cursorVisible, snap.cursorStyle, snap.cursorChar);
     // An empty prompt is a line known exactly; anything already typed into it
     // before this view existed has to be read off the screen instead.
@@ -1837,9 +2040,13 @@ class TermView {
     this.rowEls = [...this.screen.children];
   }
 
-  paintRow(y, runs) {
+  paintRow(y, runs, wrap = false) {
     const el = this.rowEls[y];
     if (!el) return;
+    // Set even when the text is unchanged: a row stops wrapping when the
+    // command below it is shortened, and its own text need not change at all.
+    if (wrap) el.dataset.wrap = "1";
+    else delete el.dataset.wrap;
     // Shells redraw the line being edited on every cursor move. Rewriting the
     // row's DOM would drop a selection made on it, so the replace the user is
     // about to do with Delete or Ctrl+V would find nothing selected.
@@ -1860,26 +2067,34 @@ class TermView {
       // cannot settle back onto lines the shell already wiped.
       this.history.innerHTML = "";
       this.historyRuns = [];
+      this.historyWraps = [];
       this.releaseScroll();
     }
     if (payload.scrolled.length) {
       // Lines that fell off the top of the screen become history.
       const frag = document.createDocumentFragment();
-      for (const runs of payload.scrolled) {
+      const wraps = payload.scrolled.map((_, i) => Boolean(payload.scrolledWrap?.[i]));
+      payload.scrolled.forEach((runs, i) => {
         const div = document.createElement("div");
+        if (wraps[i]) div.dataset.wrap = "1";
         div.innerHTML = rowHtml(runs, this.cellW);
         frag.appendChild(div);
-      }
+      });
       this.history.appendChild(frag);
       this.historyRuns.push(...payload.scrolled);
+      this.historyWraps.push(...wraps);
       // Keep the DOM bounded; the session still holds the full scrollback.
       const excess = this.history.childElementCount - 3000;
       for (let i = 0; i < excess; i++) this.history.firstElementChild.remove();
-      if (excess > 0) this.historyRuns.splice(0, excess);
+      if (excess > 0) {
+        this.historyRuns.splice(0, excess);
+        this.historyWraps.splice(0, excess);
+      }
     }
-    for (const row of payload.rows) this.paintRow(row.y, row.runs);
-    if (payload.cx === this.cursorTarget) this.cursorTarget = null;
+    for (const row of payload.rows) this.paintRow(row.y, row.runs, row.wrap);
     this.moveCursor(payload.cx, payload.cy, payload.cursorVisible, payload.cursorStyle, payload.cursorChar);
+    // The screen has caught up with the keys sent, so it is the truth again.
+    if (this.cursorTarget !== null && this.editLine()?.onScreen === this.cursorTarget) this.cursorTarget = null;
     this.bracketedPaste = Boolean(payload.bracketedPaste);
     this.mouseMode = payload.mouseMode || 0;
     this.mouseSgr = Boolean(payload.mouseSgr);
@@ -2074,7 +2289,7 @@ class TermView {
     if (this.historyCellW === this.cellW || !this.historyRuns.length) return;
     this.historyCellW = this.cellW;
     this.history.innerHTML = this.historyRuns
-      .map((runs) => `<div>${rowHtml(runs, this.cellW)}</div>`)
+      .map((runs, i) => historyRowHtml(runs, this.historyWraps[i], this.cellW))
       .join("");
   }
 
@@ -2087,13 +2302,14 @@ class TermView {
     try {
       const snap = await term_invoke("term_attach", { id: this.id });
       if (snap.history.length !== this.historyRuns.length) {
-        this.history.innerHTML = snap.history
-          .map((runs) => `<div>${rowHtml(runs, this.cellW)}</div>`)
-          .join("");
         this.historyRuns = snap.history.slice();
+        this.historyWraps = snap.history.map((_, i) => Boolean(snap.historyWrap?.[i]));
+        this.history.innerHTML = this.historyRuns
+          .map((runs, i) => historyRowHtml(runs, this.historyWraps[i], this.cellW))
+          .join("");
         this.historyCellW = this.cellW;
       }
-      for (const row of snap.screen) this.paintRow(row.y, row.runs);
+      for (const row of snap.screen) this.paintRow(row.y, row.runs, row.wrap);
       this.moveCursor(snap.cx, snap.cy, snap.cursorVisible, snap.cursorStyle, snap.cursorChar);
       if (this.scrollHeld) {
         this.scroll.scrollTop = this.heldScrollTop;

@@ -1825,6 +1825,9 @@ html[dir="rtl"] .changelog-pop{right:auto;left:0;direction:rtl;text-align:right}
   border-bottom:1px solid var(--accent);
 }
 .term.linking,.term.linking .term-scroll{cursor:pointer}
+/* An OSC 8 hyperlink: marked as a link before Ctrl is held, as a terminal does,
+   since its text need not look like an address at all. */
+.term-history span[data-href],.term-screen span[data-href]{text-decoration:underline dotted;text-underline-offset:2px}
 
 .term.exited{opacity:.72}
 
@@ -5707,6 +5710,8 @@ body.projects-window #status-term-popout{display:none!important}
 .np-head .ms{font-size:16px}
 .np-head strong{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-size:12px;font-weight:500}
 .np-head small{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+.np-head-load{flex:0 0 auto;display:flex;align-items:center;gap:4px;font-size:11px;font-style:normal;color:var(--dim)}
+.np-head-load .ms{font-size:14px}
 .np-head-acts{flex:0 0 auto;display:flex;gap:2px;margin-right:-8px}
 .np-head-acts button{width:28px;height:28px;display:grid;place-items:center;border:0;border-radius:6px;background:none;color:var(--dim);cursor:pointer}
 .np-head-acts button:hover{background:var(--bg3);color:var(--text)}

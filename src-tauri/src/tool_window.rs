@@ -849,28 +849,53 @@ fn embedded_label_for(id: &str) -> String {
     format!("embedded-tool-{id}")
 }
 
-fn bridge_states() -> &'static Mutex<HashMap<String, serde_json::Value>> {
-    static STATES: OnceLock<Mutex<HashMap<String, serde_json::Value>>> = OnceLock::new();
+/// Held as JSON text, never as a `serde_json::Value`. A tool's state can be
+/// thousands of captured frames or a whole audit log, and as a tree of values
+/// that is several times its size in small allocations - kept for as long as
+/// the tool lives, and rebuilt every time the bridge saves.
+fn bridge_states() -> &'static Mutex<HashMap<String, String>> {
+    static STATES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
     STATES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Renderer-neutral handoff storage. Browser storage belongs to a WebView2
 /// environment and therefore cannot cross the isolation boundary.
+///
+/// The tool bridge saves on a timer and sends `json`, already stringified, so
+/// the payload crosses IPC as one string instead of a tree to rebuild; the
+/// one-off seeds from the shell send a small `state` object.
 #[tauri::command]
-pub fn tool_bridge_state_put(id: String, state: serde_json::Value) -> Result<(), String> {
+pub async fn tool_bridge_state_put(
+    id: String,
+    state: Option<serde_json::Value>,
+    json: Option<String>,
+) -> Result<(), String> {
+    let text = match (json, state) {
+        (Some(json), _) => {
+            serde_json::from_str::<serde::de::IgnoredAny>(&json)
+                .map_err(|_| "That tool state is not JSON.".to_string())?;
+            json
+        }
+        (None, Some(state)) => state.to_string(),
+        (None, None) => return Err("No tool state was sent.".into()),
+    };
     bridge_states()
         .lock()
         .map_err(|_| "Tool state is unavailable.".to_string())?
-        .insert(id, state);
+        .insert(id, text);
     Ok(())
 }
 
+/// Hands the stored text straight back as the JSON body, so the page gets the
+/// object it saved and nothing here parses it.
 #[tauri::command]
-pub fn tool_bridge_state_take(id: String) -> Result<Option<serde_json::Value>, String> {
-    Ok(bridge_states()
+pub async fn tool_bridge_state_take(id: String) -> Result<tauri::ipc::Response, String> {
+    let text = bridge_states()
         .lock()
         .map_err(|_| "Tool state is unavailable.".to_string())?
-        .remove(&id))
+        .remove(&id)
+        .unwrap_or_else(|| "null".into());
+    Ok(tauri::ipc::Response::new(text))
 }
 
 fn check_embedded_args(id: &str, session: &str) -> Result<(), String> {

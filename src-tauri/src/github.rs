@@ -24,7 +24,21 @@ fn command() -> Command {
 }
 
 #[tauri::command]
-pub fn github_status() -> GhStatus {
+pub async fn github_status() -> GhStatus {
+    crate::off_thread(github_status_now)
+        .await
+        .unwrap_or_else(|| GhStatus {
+            installed: false,
+            authenticated: false,
+            login: String::new(),
+            host: String::new(),
+            error: "Asking the GitHub CLI did not finish.".into(),
+        })
+}
+
+/// Spawns `gh` twice and the second one goes to the network, so this is never
+/// run on the window thread.
+pub fn github_status_now() -> GhStatus {
     let version = command().arg("--version").output();
     if version.is_err() {
         return GhStatus {

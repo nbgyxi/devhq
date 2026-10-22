@@ -44,8 +44,15 @@
   const current = () => st.notes.find((note) => note.path === st.selected) || null;
   const q = (selector) => st.host?.querySelector(selector);
 
+  /** A row from Rust carries only the start of a large file; `complete`
+   *  says whether `text` is the whole of it. */
+  const fromRow = (row) => ({ ...row, saved: true, dirty: false, complete: row.next >= row.size });
+  const mb = (bytes) => `${(bytes / 1048576).toFixed(1)} MB`;
+
   function title(note) {
-    const line = note.text.split(/\r?\n/).map((x) => x.trim()).find(Boolean);
+    // Only the start: splitting a whole large file into lines on every
+    // keystroke is what made big notes slow.
+    const line = note.text.slice(0, 4000).split(/\r?\n/).map((x) => x.trim()).find(Boolean);
     if (line) return line.length > 60 ? `${line.slice(0, 60)}…` : line;
     return isExternal(note) ? fileName(note.path) : "Untitled";
   }
@@ -146,8 +153,10 @@
       const unsaved = st.notes.filter((note) => !note.saved && !rows.some((row) => row.path === note.path));
       // A note typed in while the folder was being read is newer than the
       // copy just read, so the one in memory wins.
-      const typing = (row) => st.notes.find((note) => note.path === row.path && note.dirty);
-      st.notes = [...unsaved, ...rows.sort((a, b) => b.modified - a.modified).map((row) => typing(row) || { ...row, saved: true, dirty: false })];
+      // A note already read in full and unchanged on disk keeps its whole
+      // text rather than going back to just its start.
+      const kept = (row) => st.notes.find((note) => note.path === row.path && (note.dirty || (note.complete && note.modified === row.modified)));
+      st.notes = [...unsaved, ...rows.sort((a, b) => b.modified - a.modified).map((row) => kept(row) || fromRow(row))];
       st.opened = st.opened.filter((path) => st.notes.some((note) => samePath(note.path, path)));
       st.error = "";
     } catch (error) {
@@ -170,7 +179,7 @@
     const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}.${pad(d.getMinutes())}.${pad(d.getSeconds())}`;
     let path = `${folder()}\\Note ${stamp}.txt`;
     for (let n = 2; st.notes.some((note) => samePath(note.path, path)); n++) path = `${folder()}\\Note ${stamp} (${n}).txt`;
-    return { path, text: "", modified: Date.now(), saved: false, dirty: false };
+    return { path, text: "", modified: Date.now(), size: 0, next: 0, saved: false, dirty: false, complete: true };
   }
 
   // ---- saving ------------------------------------------------------------
@@ -196,6 +205,9 @@
     note.timer = 0;
     note.chain = (note.chain || Promise.resolve()).then(async () => {
       if (!note.dirty) return;
+      // Only part of the file is in memory, and writing that back would cut
+      // the rest off.
+      if (!note.complete) { note.dirty = false; return; }
       // A new note nobody has typed in yet is not worth a file.
       if (!note.saved && !note.text) { note.dirty = false; return; }
       const text = note.text;
@@ -286,7 +298,7 @@
       if (known) { last = known.path; continue; }
       try {
         const row = await invoke("notepad_read", { path });
-        const note = { ...row, saved: true, dirty: false };
+        const note = fromRow(row);
         st.notes.unshift(note);
         if (isExternal(note) && !st.opened.some((p) => samePath(p, note.path))) st.opened.push(note.path);
         last = note.path;
@@ -574,7 +586,8 @@ Right-click to rename or reveal">
     // The same three as the tab's right-click menu.
     const off = note.saved ? "" : " disabled";
     const reveal = note.saved ? "Reveal in File Explorer" : "Not saved yet - type something first";
-    head.innerHTML = `${icon(isExternal(note) ? "open_in_new" : "description")}<strong>${esc(fileName(note.path))}</strong><small title="${esc(parentOf(note.path))}">${esc(parentOf(note.path))}</small>
+    const loading = note.complete ? "" : `<em class="np-head-load" title="Read-only until the whole file is in">${icon("hourglass_top")}Reading ${esc(mb(note.next))} / ${esc(mb(note.size))}</em>`;
+    head.innerHTML = `${icon(isExternal(note) ? "open_in_new" : "description")}<strong>${esc(fileName(note.path))}</strong><small title="${esc(parentOf(note.path))}">${esc(parentOf(note.path))}</small>${loading}
       <span class="np-head-acts">
         <button type="button" data-np-act="rename" title="Rename" aria-label="Rename">${icon("edit")}</button>
         <button type="button" data-np-act="explorer" title="${reveal}" aria-label="Reveal in File Explorer"${off}>${icon("folder_open")}</button>
@@ -590,7 +603,63 @@ Right-click to rename or reveal">
     if (!text) return;
     const note = current();
     text.disabled = !note || st.loading;
+    // The start of a large file shows at once; it can be read and scrolled
+    // but not typed in until the rest is there.
+    text.readOnly = !!note && !note.complete;
     if (text.value !== (note?.text ?? "")) text.value = note?.text ?? "";
+    if (note && !note.complete) readRest(note);
+  }
+
+  /** Fetches the rest of a large file in pieces, with its progress in the
+   *  header and the status bar, then puts the whole text in the editor where
+   *  the caret and scroll were. */
+  function readRest(note) {
+    if (note.reading) return note.reading;
+    const key = `notepad-rest-${note.path}`;
+    const label = `Reading the rest of ${fileName(note.path)}`;
+    window.wintWork?.beginWork(key, label);
+    window.wintWork?.updateWork(key, `${mb(note.next)} / ${mb(note.size)}`);
+    note.reading = (async () => {
+      const parts = [note.text];
+      let { next, size, modified } = note;
+      try {
+        while (next < size) {
+          const part = await invoke("notepad_read_part", { path: note.path, offset: next });
+          // Changed on disk while it was being read: the start no longer
+          // belongs with the rest, so it starts over from the top.
+          if (part.size !== size || part.modified !== modified) {
+            parts.length = 0;
+            ({ size, modified } = part);
+            next = 0;
+            continue;
+          }
+          parts.push(part.text);
+          next = part.next;
+          note.next = next;
+          window.wintWork?.updateWork(key, `${mb(next)} / ${mb(size)}`);
+          if (note === current()) drawHead();
+        }
+        Object.assign(note, { text: parts.join(""), next, size, modified, complete: true });
+        st.error = "";
+      } catch (error) {
+        st.error = String(error);
+      } finally {
+        note.reading = null;
+        window.wintWork?.endWork(key);
+      }
+      drawStatus();
+      if (note !== current()) return;
+      drawHead();
+      const text = q("[data-np-text]");
+      if (!text || !note.complete) return;
+      const { selectionStart, selectionEnd, scrollTop, scrollLeft } = text;
+      text.value = note.text;
+      text.readOnly = false;
+      text.setSelectionRange(selectionStart, selectionEnd);
+      text.scrollTop = scrollTop;
+      text.scrollLeft = scrollLeft;
+    })();
+    return note.reading;
   }
 
   function drawSettings() {

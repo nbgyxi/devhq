@@ -6,7 +6,7 @@
 //! program emits and sends us a well-behaved diff, so the long tail of legacy
 //! terminal quirks never reaches this parser.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 /// Sentinel for "the terminal's default colour", distinct from any palette
 /// index or RGB value.
@@ -20,6 +20,21 @@ pub const ATTR_ITALIC: u8 = 4;
 pub const ATTR_UNDERLINE: u8 = 8;
 pub const ATTR_REVERSE: u8 = 16;
 pub const ATTR_STRIKE: u8 = 32;
+/// Set on a row's last cell when the text ran on past it into the row below -
+/// a soft wrap, as opposed to a line the program ended itself. A line editor
+/// treats the two rows as one line, so the front end has to as well, and the
+/// screen alone cannot say which it was: the wrap can fall on a blank.
+///
+/// It lives in the cell rather than beside the row so it travels with the row
+/// through every scroll and into the scrollback, and anything that rewrites or
+/// erases that cell takes it away - which is exactly when the row stops being
+/// a wrap. The pen never carries it, and nothing draws it.
+pub const ATTR_WRAPPED: u8 = 64;
+/// With [`ATTR_WRAPPED`]: the wrap happened because a double-width glyph did
+/// not fit in the last column, so that column is padding, not text.
+pub const ATTR_WRAP_PAD: u8 = 128;
+/// The bits that describe the row rather than how a cell is drawn.
+pub const ATTR_WRAP_BITS: u8 = ATTR_WRAPPED | ATTR_WRAP_PAD;
 
 /// Marks the second column of a double-width glyph. The glyph itself lives in
 /// the cell before it; this one exists only so every column of the row still
@@ -164,7 +179,22 @@ pub struct Cell {
     pub fg: u32,
     pub bg: u32,
     pub attr: u8,
+    /// The OSC 8 hyperlink this character belongs to, as an index into the
+    /// grid's link table ([`Grid::link`]); 0 for none. Sixteen bits fit in
+    /// what was padding, so a cell - and the whole scrollback - is no bigger
+    /// for carrying it.
+    pub link: u16,
 }
+
+/// How many distinct links one terminal remembers. Past this, new links show
+/// as plain text: a program printing endless distinct URLs must not be able to
+/// grow the table without bound. Plain URLs are still found by the front end.
+const LINKS_MAX: usize = 4096;
+/// The longest link target kept. Browsers stop around 2 KB in practice.
+const LINK_URL_MAX: usize = 2048;
+/// The most of one OSC string kept: an OSC 8 with its parameters and a
+/// longest-allowed target fits.
+const OSC_MAX: usize = LINK_URL_MAX + 512;
 
 #[cfg(test)]
 mod tests {
@@ -326,6 +356,44 @@ mod tests {
     }
 
     #[test]
+    fn a_cell_is_no_bigger_for_carrying_a_link() {
+        assert_eq!(std::mem::size_of::<super::Cell>(), 16);
+    }
+
+    #[test]
+    fn osc_8_links_the_text_printed_inside_it() {
+        let mut grid = Grid::new(40, 3);
+        grid.feed(b"see \x1b]8;id=7;https://example.com/p?q=1\x1b\\the docs\x1b]8;;\x1b\\ end");
+        let row = grid.row(0);
+        assert_eq!(row[3].link, 0);
+        let id = row[4].link;
+        assert_ne!(id, 0);
+        assert!(row[4..12].iter().all(|c| c.link == id));
+        assert_eq!(row[12].link, 0);
+        assert_eq!(grid.link(id), Some("https://example.com/p?q=1"));
+    }
+
+    #[test]
+    fn a_link_survives_a_style_reset_and_is_kept_by_target() {
+        let mut grid = Grid::new(40, 3);
+        // BEL-terminated, a reset in the middle, then the same target again.
+        grid.feed(b"\x1b]8;;https://a.example/\x07a\x1b[0mb\x1b]8;;\x07 \x1b]8;id=x;https://a.example/\x07c");
+        let row = grid.row(0);
+        assert_ne!(row[0].link, 0);
+        assert_eq!(row[1].link, row[0].link, "SGR 0 must not end the link");
+        assert_eq!(row[2].link, 0);
+        assert_eq!(row[3].link, row[0].link, "the same target is one entry");
+    }
+
+    #[test]
+    fn osc_strings_are_utf8() {
+        let mut grid = Grid::new(40, 3);
+        grid.feed("\x1b]0;bl\u{e5}b\u{e6}r\x07\x1b]8;;https://example.org/x\u{e6}\x07l".as_bytes());
+        assert_eq!(grid.title, "bl\u{e5}b\u{e6}r");
+        assert_eq!(grid.link(grid.row(0)[0].link), Some("https://example.org/x\u{e6}"));
+    }
+
+    #[test]
     fn erasing_the_line_cancels_a_pending_wrap() {
         let mut grid = Grid::new(8, 6);
         grid.feed(b"abcdefgh\x1b[K\x1b[1;1Hz");
@@ -343,6 +411,7 @@ impl Cell {
             fg: DEFAULT_COLOR,
             bg: pen.bg,
             attr: 0,
+            link: 0,
         }
     }
 }
@@ -354,6 +423,7 @@ impl Default for Cell {
             fg: DEFAULT_COLOR,
             bg: DEFAULT_COLOR,
             attr: 0,
+            link: 0,
         }
     }
 }
@@ -424,7 +494,14 @@ pub struct Grid {
     params: Vec<u32>,
     /// The `?` / `<` / `>` prefix of a private-mode sequence, or 0.
     private: u8,
-    osc: String,
+    /// The OSC string being collected, as bytes: it is UTF-8 - a title, a
+    /// folder, a link - and decoding it a byte at a time garbled anything
+    /// that was not ASCII.
+    osc: Vec<u8>,
+    /// OSC 8 targets, indexed by `Cell::link` - 1, and the reverse, so a link
+    /// a program prints again (or the pseudoconsole repaints) reuses its entry.
+    links: Vec<String>,
+    link_ids: HashMap<String, u16>,
     utf8_buf: Vec<u8>,
     utf8_need: usize,
 }
@@ -463,7 +540,9 @@ impl Grid {
             state: State::Ground,
             params: Vec::new(),
             private: 0,
-            osc: String::new(),
+            osc: Vec::new(),
+            links: Vec::new(),
+            link_ids: HashMap::new(),
             utf8_buf: Vec::new(),
             utf8_need: 0,
         }
@@ -677,15 +756,16 @@ impl Grid {
                 self.state = State::Esc;
             }
             _ => {
-                if self.osc.len() < 512 {
-                    self.osc.push(b as char);
+                if self.osc.len() < OSC_MAX {
+                    self.osc.push(b);
                 }
             }
         }
     }
 
     fn finish_osc(&mut self) {
-        let s = std::mem::take(&mut self.osc);
+        let bytes = std::mem::take(&mut self.osc);
+        let s = String::from_utf8_lossy(&bytes);
         if let Some((code, text)) = s.split_once(';') {
             match code {
                 "0" | "2" => self.title = text.to_string(),
@@ -704,9 +784,42 @@ impl Grid {
                         }
                     }
                 }
+                // `OSC 8 ; params ; target` starts a hyperlink - the text
+                // printed after it is the link - and an empty target ends it.
+                // The `id=` parameter only says which cells belong together;
+                // the pseudoconsole renumbers it anyway, so links are kept by
+                // their target.
+                "8" => {
+                    let target = text.split_once(';').map_or("", |(_, uri)| uri).trim();
+                    self.pen.link = self.intern_link(target);
+                }
                 _ => {}
             }
         }
+    }
+
+    /// The link-table entry for a target, added if new. 0 - no link - for an
+    /// empty target, one too long to be real, or a full table.
+    fn intern_link(&mut self, target: &str) -> u16 {
+        if target.is_empty() || target.len() > LINK_URL_MAX || target.chars().any(char::is_control) {
+            return 0;
+        }
+        if let Some(&id) = self.link_ids.get(target) {
+            return id;
+        }
+        if self.links.len() >= LINKS_MAX {
+            return 0;
+        }
+        self.links.push(target.to_string());
+        let id = self.links.len() as u16;
+        self.link_ids.insert(target.to_string(), id);
+        id
+    }
+
+    /// The target of the link a cell carries, if it carries one.
+    pub fn link(&self, id: u16) -> Option<&str> {
+        let index = usize::from(id).checked_sub(1)?;
+        self.links.get(index).map(String::as_str)
     }
 
     fn param(&self, i: usize, default: u32) -> u32 {
@@ -896,15 +1009,16 @@ impl Grid {
     }
 
     fn sgr(&mut self) {
+        let link = self.pen.link;
         if self.params.is_empty() {
-            self.pen = Cell::default();
+            self.pen = Cell { link, ..Cell::default() };
             return;
         }
         let mut i = 0;
         while i < self.params.len() {
             let p = self.params[i];
             match p {
-                0 => self.pen = Cell::default(),
+                0 => self.pen = Cell { link, ..Cell::default() },
                 1 => self.pen.attr |= ATTR_BOLD,
                 2 => self.pen.attr |= ATTR_DIM,
                 3 => self.pen.attr |= ATTR_ITALIC,
@@ -981,6 +1095,11 @@ impl Grid {
             return;
         }
         if self.wrap_pending {
+            let last = self.idx(self.cols - 1, self.cy);
+            self.cells[last].attr |= ATTR_WRAPPED;
+            // The row may have gone out already, before anyone knew it wraps.
+            let y = self.cy;
+            self.touch(y);
             self.cx = 0;
             self.linefeed();
             self.wrap_pending = false;
@@ -992,6 +1111,7 @@ impl Grid {
             let i = self.idx(self.cx, self.cy);
             self.split_wide(i);
             self.cells[i].ch = ' ';
+            self.cells[i].attr |= ATTR_WRAPPED | ATTR_WRAP_PAD;
             let y = self.cy;
             self.touch(y);
             self.cx = 0;
@@ -1004,6 +1124,7 @@ impl Grid {
             fg: self.pen.fg,
             bg: self.pen.bg,
             attr: self.pen.attr,
+            link: self.pen.link,
         };
         if w == 2 {
             self.split_wide(i + 1);
@@ -1012,6 +1133,7 @@ impl Grid {
                 fg: self.pen.fg,
                 bg: self.pen.bg,
                 attr: self.pen.attr,
+                link: self.pen.link,
             };
         }
         let y = self.cy;

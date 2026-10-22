@@ -935,28 +935,32 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let origin = std::panic::Location::caller();
-    // Leaked once per call site, never per call: the set of call sites is
-    // fixed at compile time, so this is a handful of short strings for the
-    // life of the process.
-    let origin: &'static str = Box::leak(
-        format!(
-            "{}:{}",
-            origin
-                .file()
-                .rsplit(['\\', '/'])
-                .next()
-                .unwrap_or(origin.file()),
-            origin.line()
-        )
-        .into_boxed_str(),
-    );
+    let origin = off_thread_origin(std::panic::Location::caller());
     async move {
         let job = health::job_started(origin);
         let done = tauri::async_runtime::spawn_blocking(work).await.ok();
         health::job_finished(job);
         done
     }
+}
+
+/// `file:line` for a call site, leaked once per call site and never per call:
+/// the set of call sites is fixed at compile time, so this is a handful of
+/// short strings for the life of the process. Formatting and leaking on every
+/// call instead - which is what this used to do - lost a few dozen bytes each
+/// time any command ran, for as long as the app stayed in the tray.
+fn off_thread_origin(at: &'static std::panic::Location<'static>) -> &'static str {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static ORIGINS: OnceLock<Mutex<HashMap<(&'static str, u32), &'static str>>> = OnceLock::new();
+    let mut origins = ORIGINS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    origins.entry((at.file(), at.line())).or_insert_with(|| {
+        let file = at.file().rsplit(['\\', '/']).next().unwrap_or(at.file());
+        Box::leak(format!("{file}:{}", at.line()).into_boxed_str())
+    })
 }
 
 /// The health log's tail, and what the app is doing right now.
@@ -1311,9 +1315,43 @@ async fn assistant_model_delete(app: AppHandle, model: String) -> Result<(), Str
         .unwrap_or_else(|| Err("The model deletion did not finish.".into()))
 }
 
+/// Starting a Cursor answer spawns its CLI before returning, and
+/// `CreateProcess` has no business on the window thread, so the whole start
+/// runs on a pool thread. The answer itself streams back as events either way.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-fn assistant_chat(
+async fn assistant_chat(
+    app: AppHandle,
+    request_id: String,
+    model: String,
+    question: String,
+    prompt: String,
+    project_context: String,
+    roots: Vec<String>,
+    areas: Vec<ai::RouteOption>,
+    think: bool,
+    tool_call_cap: usize,
+) -> Result<(), String> {
+    off_thread(move || {
+        assistant_chat_start(
+            app,
+            request_id,
+            model,
+            question,
+            prompt,
+            project_context,
+            roots,
+            areas,
+            think,
+            tool_call_cap,
+        )
+    })
+    .await
+    .unwrap_or_else(|| Err("The assistant could not be started.".into()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assistant_chat_start(
     app: AppHandle,
     request_id: String,
     model: String,
@@ -3143,9 +3181,12 @@ async fn clipboard_clear() -> Vec<clipboard::Clip> {
 /// The hold lives in the backend, not in the tool that started it: the tool
 /// window can close, or the tool can be swapped for another, and the machine
 /// stays awake until the timer runs out or somebody releases it.
+///
+/// Like the schedule, this waits on the keep-awake worker, so it waits on a
+/// pool thread.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-fn keep_awake_set(
+async fn keep_awake_set(
     system: bool,
     display: bool,
     away_mode: bool,
@@ -3154,15 +3195,19 @@ fn keep_awake_set(
     nudge_seconds: Option<u64>,
     reason: Option<String>,
 ) -> Result<windows_tools::KeepAwakeResult, String> {
-    windows_tools::keep_awake_set(
-        system,
-        display,
-        away_mode,
-        minutes.unwrap_or(0),
-        nudge.unwrap_or(false),
-        nudge_seconds.unwrap_or(120),
-        reason.unwrap_or_default(),
-    )
+    off_thread(move || {
+        windows_tools::keep_awake_set(
+            system,
+            display,
+            away_mode,
+            minutes.unwrap_or(0),
+            nudge.unwrap_or(false),
+            nudge_seconds.unwrap_or(120),
+            reason.unwrap_or_default(),
+        )
+    })
+    .await
+    .unwrap_or_else(|| Err("The keep-awake hold did not finish.".into()))
 }
 
 #[tauri::command]
@@ -3172,11 +3217,16 @@ fn keep_awake_status() -> windows_tools::KeepAwakeResult {
 
 /// The hours to hold the machine awake, from the tool or from settings. Both
 /// read and write the same one, because there is only one.
+///
+/// Waits for the keep-awake worker to store it, and that worker may be in the
+/// middle of its own tick, so the wait is on a pool thread.
 #[tauri::command]
-fn keep_awake_schedule_set(
+async fn keep_awake_schedule_set(
     schedule: windows_tools::KeepAwakeSchedule,
 ) -> Result<windows_tools::KeepAwakeResult, String> {
-    windows_tools::keep_awake_schedule_set(schedule)
+    off_thread(move || windows_tools::keep_awake_schedule_set(schedule))
+        .await
+        .unwrap_or_else(|| Err("Saving the keep-awake hours did not finish.".into()))
 }
 
 /* ------------------------------------------------------------- the network
@@ -3614,6 +3664,7 @@ pub fn run() {
             git_diff,
             git_pull,
             git::git_workspace,
+            git::git_workspace_stamp,
             git::git_action,
             todos,
             todo_excerpt,
@@ -3693,6 +3744,7 @@ pub fn run() {
             notepad::notepad_default_folder,
             notepad::notepad_list,
             notepad::notepad_read,
+            notepad::notepad_read_part,
             notepad::notepad_save,
             notepad::notepad_rename,
             notepad::notepad_delete,
@@ -4065,12 +4117,14 @@ pub fn run() {
         git_diff,
         git_pull,
         git::git_workspace,
+        git::git_workspace_stamp,
         git::git_action,
         todos,
         todo_excerpt,
         notepad::notepad_default_folder,
         notepad::notepad_list,
         notepad::notepad_read,
+        notepad::notepad_read_part,
         notepad::notepad_save,
         notepad::notepad_rename,
         notepad::notepad_delete,

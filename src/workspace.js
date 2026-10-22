@@ -1585,10 +1585,30 @@
 
   // Editors and agents change this folder without going through the workspace.
   // Keep Git and the top-level file overview close to disk automatically.
+  /** The tick asks Rust for a fingerprint first - one `git status` and a few
+   *  file times - and only a different answer pays for the full read, which is
+   *  a dozen git processes and the whole diff. A full read still happens every
+   *  so often regardless, so anything the fingerprint cannot see (a remote
+   *  renamed, a branch made in a subfolder of refs) is never stale for long. */
+  async function refreshGitIfChanged(panel) {
+    if (gitLoading || panel.working || panel.stamping) return;
+    const due = Date.now() - (panel.fullReadAt || 0) > 15000;
+    if (!due) {
+      panel.stamping = true;
+      let stamp = "";
+      try { stamp = await invoke("git_workspace_stamp", { path: projectPath }); } catch (_) { /* fall through to a full read */ }
+      finally { panel.stamping = false; }
+      if (stamp && stamp === panel.stamp) return;
+      panel.stamp = stamp;
+    }
+    panel.fullReadAt = Date.now();
+    loadGit(panel, { skipJobs: true });
+  }
+
   setInterval(() => {
     if (document.hidden) return;
     const git = panels.get("git");
-    if (git?.state) loadGit(git, { skipJobs: true });
+    if (git?.state) refreshGitIfChanged(git);
     const files = panels.get("files");
     if (files?.tree && !files.changedOnly) loadDir(files, files.tree, projectPath, 0, { silent: true });
   }, 1200);

@@ -16,8 +16,44 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.188.0",
+      title: "Links in terminals",
+      date: "2026-10-22",
+      changes: [
+        ["new", "Terminals: links that programs print as text - PowerShell's $PSStyle.FormatHyperlink, ls --hyperlink, compilers pointing at documentation - are links. They are underlined with dots, hovering shows the address they really go to, and Ctrl+click opens it. Only web addresses open, as for any other link."],
+        ["fix", "Terminals: window titles with letters such as æ, ø and å, or any other non-English text, are no longer garbled."],
+        ["fix", "Terminals: holding Ctrl over an address on a line with Chinese, Japanese or Korean text or emoji underlines the address itself, not the characters beside it."],
+      ],
+    },
+    {
+      version: "0.187.4",
+      title: "Lighter in the background, and exact terminal editing",
+      date: "2026-10-22",
+      changes: [
+        ["fix", "Terminals: typing or pasting over a selection replaces exactly what is selected when the line holds Chinese, Japanese or Korean text or emoji. It used to remove the wrong characters, and could cut an emoji in half."],
+        ["fix", "Terminals: a command too long for one row is edited as the one line it is. Typing or pasting over a selection, Ctrl+X, Ctrl+A and clicking to move the cursor all work on any row of it, where they used to work only on the row the cursor was on."],
+        ["fix", "Terminals: copying a command that wraps onto more rows copies it as one line - also after it has scrolled up - instead of breaking it where the window happened to wrap it, so pasting it back runs it whole."],
+        ["fix", "Terminals: Ctrl+Delete deletes the word to the right of the cursor, the way Ctrl+Backspace deletes the one to the left. It used to delete a single character."],
+        ["fix", "Terminals: selecting the command line with Shift+End or Ctrl+A, and clicking to place the cursor, stop at the end of what you typed. PowerShell's grey suggestion is no longer copied with the command, and a click on it no longer accepts it by accident."],
+        ["fix", "WinT no longer grows slowly in memory for as long as it stays open in the tray."],
+        ["better", "Workspaces check Git with one quick look every second, and only read everything again when something has changed. A big repository open in a workspace no longer keeps the processor busy."],
+        ["better", "Tools save their state only when it has changed. A packet capture or a long PC Detective log on screen no longer makes the whole window stutter every two seconds."],
+        ["better", "The window no longer waits while the GitHub sign-in is checked, while Claude Code is found to start in a terminal, while keep-awake is switched on or its hours saved, or while a Cursor answer starts."],
+      ],
+    },
+    {
+      version: "0.187.3",
+      title: "Large files open at once in Notepad",
+      date: "2026-10-20",
+      changes: [
+        ["better", "Notepad: a large text file opens at once. The start of it shows straight away and the rest is read in behind it, with how far it has got next to the file name; it can be scrolled while that happens and typed in once the whole file is there."],
+        ["better", "Notepad: files up to 64 MB open, where anything over 2 MB was refused before, and typing in a large note no longer lags."],
+      ],
+    },
+    {
       version: "0.187.2",
       title: "Print Screen works from anywhere",
+      buildChecksum: "1223fc8778656402a7c2ec4d2933aedc1123b717f834bc5438bff5808b8056c7",
       date: "2026-10-16",
       changes: [
         ["fix", "Screenshot: Print Screen now takes a screenshot whatever window is in front. Windows keeps a bare Print Screen for its own screen copy and Snipping Tool, so it only reached WinT while WinT had focus; WinT now catches the key before Windows does. Print Screen with Ctrl, Shift or Alt is caught the same way."],

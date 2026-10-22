@@ -622,6 +622,6 @@
     };
     filter.oninput = paint;
     await load();
-    setInterval(load, 4000);
+    setInterval(() => { if (!document.hidden) load(); }, 4000);
   }
 })();

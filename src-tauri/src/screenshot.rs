@@ -482,14 +482,25 @@ fn open_editor(app: &AppHandle, png: Vec<u8>, shot: &Shot) -> Result<(), String>
         }
         None => builder.center(),
     };
-    let window = builder.build().map_err(|e| e.to_string())?;
+    let forget = move || {
+        if let Ok(mut shots) = SHOTS.lock() {
+            if let Some(shots) = shots.as_mut() {
+                shots.remove(&id);
+            }
+        }
+    };
+    // The PNG is already stored; a window that never opens would otherwise
+    // hold it - a whole screen's worth of bytes - for the life of the app.
+    let window = match builder.build() {
+        Ok(window) => window,
+        Err(error) => {
+            forget();
+            return Err(error.to_string());
+        }
+    };
     window.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::Destroyed) {
-            if let Ok(mut shots) = SHOTS.lock() {
-                if let Some(shots) = shots.as_mut() {
-                    shots.remove(&id);
-                }
-            }
+            forget();
         }
     });
     let _ = window.set_focus();

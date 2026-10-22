@@ -23,7 +23,7 @@
     if (command.session !== session) return;
     let ok = true, error = "";
     try {
-      if (command.action === "persist") await persist();
+      if (command.action === "persist") await persist(true);
       // The shell now keeps the last few tools alive after you leave them, so
       // a tool can be running with nothing on screen. Suspend is what stops
       // that being a tool polling forever behind your back - destroying the
@@ -46,10 +46,22 @@
   const ready = responseListening.then(() => request("context")).then((value) => { context = value; return value; });
   const icon = (name) => `<span class="ms" aria-hidden="true">${name}</span>`;
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
-  async function persist() {
+  /** Saves only what changed since the last save. This runs every two seconds
+   *  for as long as the tool is on screen, and a tool sitting still - most of
+   *  the time - has nothing new to say; sending its whole state again anyway
+   *  (four thousand captured frames, a full audit log) was work for the shell's
+   *  window thread on every tick. Sent as one string, which crosses IPC far
+   *  cheaper than the object would. */
+  let persisted = "";
+  async function persist(force = false) {
     clearTimeout(persistTimer);
     const state = api?.exportState?.(id);
-    if (state !== undefined) await invoke("tool_bridge_state_put", { id, state }).catch(() => {});
+    if (state === undefined) return;
+    let json;
+    try { json = JSON.stringify(state); } catch (_) { return; }
+    if (json === undefined || (!force && json === persisted)) return;
+    persisted = json;
+    await invoke("tool_bridge_state_put", { id, json }).catch(() => { persisted = ""; });
   }
   function schedulePersist() { clearTimeout(persistTimer); persistTimer = setTimeout(persist, 250); }
   /** Awake means visible. Asleep, the tool stops its own automatic polling and

@@ -439,7 +439,7 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
             other => Err(format!("Unknown net usage action: {other}")),
         },
         "github" => match need(&args, 1, "GitHub action")?.as_str() {
-            "status" => emit(wint_lib::github::github_status(), pretty),
+            "status" => emit(wint_lib::github::github_status_now(), pretty),
             "api" => {
                 let body: Option<Value> =
                     args.get(4).map(|v| parsed(v.clone(), "body")).transpose()?;

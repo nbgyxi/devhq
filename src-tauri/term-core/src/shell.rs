@@ -104,7 +104,13 @@ pub fn find_command(name: &str) -> Option<PathBuf> {
 /// `.cmd` shim beside an `.exe` that may not exist, and which of the two is
 /// there is not something to guess at.
 pub fn find_program_on_path(names: &[&str]) -> Option<PathBuf> {
-    find_programs_on_path(names).into_iter().next()
+    // Stops at the first hit. Every candidate is a stat, and a PATH folder on
+    // a drive that has gone away can take seconds to answer one - there is no
+    // reason to keep asking once the answer is already in hand.
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+        .find(|path| path.is_file())
 }
 
 /// Every one of those names that is on PATH, in PATH order.

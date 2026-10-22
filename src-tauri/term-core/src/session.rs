@@ -20,7 +20,9 @@ use crate::conpty::{self, ConPty};
 use crate::history::{self, HistoryLog};
 use crate::scan::{row_text, scan_local_url, scan_port_conflict};
 use crate::shell;
-use crate::vt::{char_width, Cell, Grid, CONT, DEFAULT_COLOR};
+use crate::vt::{
+    char_width, Cell, Grid, ATTR_WRAPPED, ATTR_WRAP_BITS, ATTR_WRAP_PAD, CONT, DEFAULT_COLOR,
+};
 
 /// How much history an attaching view is handed. The session keeps more than
 /// this; the rest is simply older than anyone scrolls back to on open.
@@ -98,6 +100,10 @@ pub fn pid(id: &str) -> Result<u32, String> {
 /// run to be clipped to those columns, which is wanted for anything the
 /// terminal font might not have and wrong for plain text, where an italic can
 /// lean a pixel past its last column without hurting anyone.
+///
+/// `u` is the target of the OSC 8 hyperlink the run's text is, if it is one.
+/// A run never spans two links, so the target travels with the text it belongs
+/// to and no table of them has to be kept in step on the other side.
 #[derive(Serialize, Clone)]
 struct Run {
     t: String,
@@ -107,12 +113,35 @@ struct Run {
     x: usize,
     w: usize,
     c: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    u: String,
+    #[serde(skip)]
+    link: u16,
 }
 
 #[derive(Serialize, Clone)]
 struct RowUpdate {
     y: usize,
     runs: Vec<Run>,
+    /// The row's text runs on into the row below - see [`row_wraps`].
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    wrap: bool,
+}
+
+/// Whether a row soft-wrapped into the one below it, which is what lets the
+/// front end treat a long command spread over several rows as the one line
+/// the shell is editing.
+fn row_wraps(cells: &[Cell]) -> bool {
+    cells.last().is_some_and(|c| c.attr & ATTR_WRAPPED != 0)
+}
+
+fn row_update(grid: &Grid, y: usize) -> RowUpdate {
+    let cells = grid.row(y);
+    RowUpdate {
+        y,
+        runs: pack(cells, grid),
+        wrap: row_wraps(cells),
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -137,6 +166,9 @@ pub struct Snapshot {
     cols: usize,
     rows: usize,
     history: Vec<Vec<Run>>,
+    /// Which history rows wrap into the next, so a long command that has
+    /// scrolled up still copies as one line.
+    history_wrap: Vec<bool>,
     screen: Vec<RowUpdate>,
     cx: usize,
     cy: usize,
@@ -155,6 +187,8 @@ pub struct Update {
     id: String,
     rows: Vec<RowUpdate>,
     scrolled: Vec<Vec<Run>>,
+    /// Which of the scrolled rows wrap into the next - see [`row_wraps`].
+    scrolled_wrap: Vec<bool>,
     /// CSI 3 J wiped the session scrollback; the view must drop its history.
     clear_history: bool,
     cx: usize,
@@ -215,12 +249,23 @@ fn cursor_char(grid: &Grid) -> char {
 /// So runs also break where that damage would start: plain ASCII, which the
 /// terminal font always has, is kept apart from everything else, and a
 /// double-width glyph is a run of its own with exactly two columns to sit in.
-fn pack(cells: &[Cell]) -> Vec<Run> {
-    let end = cells
-        .iter()
-        .rposition(|c| c.ch != ' ' || c.bg != DEFAULT_COLOR || c.attr != 0)
-        .map(|i| i + 1)
-        .unwrap_or(0);
+fn pack(cells: &[Cell], grid: &Grid) -> Vec<Run> {
+    // A row that wraps keeps its blanks to the edge: they are spaces in the
+    // middle of a line that carries on below, and a space typed right where
+    // the line wraps is part of the command. Padding left by a wide glyph that
+    // did not fit is not.
+    let last = cells.last().map_or(0, |c| c.attr);
+    let end = if last & ATTR_WRAPPED != 0 && last & ATTR_WRAP_PAD == 0 {
+        cells.len()
+    } else {
+        cells
+            .iter()
+            .rposition(|c| {
+                c.ch != ' ' || c.bg != DEFAULT_COLOR || c.attr & !ATTR_WRAP_BITS != 0
+            })
+            .map(|i| i + 1)
+            .unwrap_or(0)
+    };
     let mut runs: Vec<Run> = Vec::new();
     // Whether the run being built can still take another character, and
     // whether that character would have to be plain to join it.
@@ -233,13 +278,16 @@ fn pack(cells: &[Cell]) -> Vec<Run> {
         }
         let w = char_width(cell.ch).max(1);
         let plain = cell.ch == ' ' || cell.ch.is_ascii_graphic();
+        // The wrap bits describe the row, not how this cell is drawn.
+        let attr = cell.attr & !ATTR_WRAP_BITS;
         let join = match (runs.last(), open) {
             (Some(run), Some(run_plain)) => {
                 w == 1
                     && run_plain == plain
                     && run.f == cell.fg
                     && run.b == cell.bg
-                    && run.a == cell.attr
+                    && run.a == attr
+                    && run.link == cell.link
                     && run.x + run.w == x
             }
             _ => false,
@@ -253,10 +301,12 @@ fn pack(cells: &[Cell]) -> Vec<Run> {
                 t: cell.ch.to_string(),
                 f: cell.fg,
                 b: cell.bg,
-                a: cell.attr,
+                a: attr,
                 x,
                 w,
                 c: !plain,
+                u: grid.link(cell.link).unwrap_or_default().to_string(),
+                link: cell.link,
             });
             // A double-width run is closed the moment it opens: it owns its
             // two columns and nothing else may share them.
@@ -531,7 +581,9 @@ fn spawn_reader(sink: Sink, session: Arc<Session>) {
                 let settled = grid.at_ground() && grid.cx == 0 && !grid.alt;
                 let reply = grid.take_reply();
                 let clear_history = grid.take_clear_history();
-                let scrolled = grid.take_scrolled().iter().map(|l| pack(l)).collect();
+                let scrolled_rows = grid.take_scrolled();
+                let scrolled_wrap = scrolled_rows.iter().map(|l| row_wraps(l)).collect();
+                let scrolled = scrolled_rows.iter().map(|l| pack(l, &grid)).collect();
                 // The rows that changed are scanned for a dev server's address
                 // on the way past. They are already in hand and already the
                 // right shape - one contiguous line of characters, whatever the
@@ -543,18 +595,13 @@ fn spawn_reader(sink: Sink, session: Arc<Session>) {
                 let taken = touched
                     .iter()
                     .find_map(|&y| scan_port_conflict(&row_text(grid.row(y))));
-                let rows = touched
-                    .into_iter()
-                    .map(|y| RowUpdate {
-                        y,
-                        runs: pack(grid.row(y)),
-                    })
-                    .collect();
+                let rows = touched.into_iter().map(|y| row_update(&grid, y)).collect();
                 (
                     Update {
                         id: session.id.clone(),
                         rows,
                         scrolled,
+                        scrolled_wrap,
                         clear_history,
                         cx: grid.cx,
                         cy: grid.cy,
@@ -653,23 +700,19 @@ pub fn attach(id: &str) -> Result<Snapshot, String> {
     // itself, and a std mutex is not reentrant.
     let info = session.info();
     let grid = session.grid.lock().unwrap();
-    let history: Vec<Vec<Run>> = grid
+    let kept = grid
         .scrollback
         .iter()
-        .skip(grid.scrollback.len().saturating_sub(ATTACH_HISTORY))
-        .map(|l| pack(l))
-        .collect();
-    let screen = (0..grid.rows)
-        .map(|y| RowUpdate {
-            y,
-            runs: pack(grid.row(y)),
-        })
-        .collect();
+        .skip(grid.scrollback.len().saturating_sub(ATTACH_HISTORY));
+    let history: Vec<Vec<Run>> = kept.clone().map(|l| pack(l, &grid)).collect();
+    let history_wrap: Vec<bool> = kept.map(|l| row_wraps(l)).collect();
+    let screen = (0..grid.rows).map(|y| row_update(&grid, y)).collect();
     Ok(Snapshot {
         info,
         cols: grid.cols,
         rows: grid.rows,
         history,
+        history_wrap,
         screen,
         cx: grid.cx,
         cy: grid.cy,
@@ -762,13 +805,13 @@ pub fn shutdown() {
 
 #[cfg(test)]
 mod tests {
-    use super::pack;
+    use super::{pack, row_wraps};
     use crate::vt::Grid;
 
     fn row_runs(cols: usize, bytes: &[u8]) -> Vec<(String, usize, usize, bool)> {
         let mut grid = Grid::new(cols, 3);
         grid.feed(bytes);
-        pack(grid.row(0))
+        pack(grid.row(0), &grid)
             .into_iter()
             .map(|r| (r.t, r.x, r.w, r.c))
             .collect()
@@ -815,5 +858,73 @@ mod tests {
         let runs = row_runs(20, b"ab[31mcd[0mef");
         let columns: Vec<(usize, usize)> = runs.iter().map(|r| (r.1, r.2)).collect();
         assert_eq!(columns, vec![(0, 2), (2, 2), (4, 2)]);
+    }
+
+    fn text(runs: &[super::Run]) -> String {
+        runs.iter().map(|r| r.t.as_str()).collect()
+    }
+
+    #[test]
+    fn a_link_is_a_run_of_its_own_carrying_its_target() {
+        let mut grid = Grid::new(40, 3);
+        grid.feed(b"see \x1b]8;;https://example.com/\x1b\\the docs\x1b]8;;\x1b\\ end");
+        let runs: Vec<(String, String)> = pack(grid.row(0), &grid)
+            .into_iter()
+            .map(|r| (r.t, r.u))
+            .collect();
+        assert_eq!(
+            runs,
+            vec![
+                ("see ".into(), String::new()),
+                ("the docs".into(), "https://example.com/".into()),
+                (" end".into(), String::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_soft_wrap_is_marked_and_keeps_the_space_it_fell_on() {
+        // Ten columns: "echo abcd" fills nine, the space lands in the last
+        // column and the line carries on below.
+        let mut grid = Grid::new(10, 3);
+        grid.feed(b"echo abcd efg");
+        assert!(row_wraps(grid.row(0)));
+        assert!(!row_wraps(grid.row(1)));
+        assert_eq!(text(&pack(grid.row(0), &grid)), "echo abcd ");
+        assert_eq!(text(&pack(grid.row(1), &grid)), "efg");
+        // The bit is the row's, never drawn as an attribute.
+        assert!(pack(grid.row(0), &grid).iter().all(|r| r.a == 0));
+    }
+
+    #[test]
+    fn a_line_ended_by_the_program_is_not_a_wrap() {
+        let mut grid = Grid::new(10, 3);
+        grid.feed(b"0123456789\r\nnext");
+        assert!(!row_wraps(grid.row(0)));
+    }
+
+    #[test]
+    fn erasing_the_row_takes_the_wrap_away() {
+        // How a line editor shortens a command that no longer needs two rows.
+        let mut grid = Grid::new(10, 3);
+        grid.feed(b"echo abcd efg\x1b[1;1H\x1b[2K");
+        assert!(!row_wraps(grid.row(0)));
+    }
+
+    #[test]
+    fn a_wide_glyph_that_did_not_fit_leaves_padding_not_text() {
+        let mut grid = Grid::new(10, 3);
+        grid.feed("echo abcd\u{65e5}".as_bytes());
+        assert!(row_wraps(grid.row(0)));
+        assert_eq!(text(&pack(grid.row(0), &grid)), "echo abcd");
+        assert_eq!(text(&pack(grid.row(1), &grid)), "\u{65e5}");
+    }
+
+    #[test]
+    fn the_wrap_survives_scrolling_into_the_scrollback() {
+        let mut grid = Grid::new(10, 2);
+        grid.feed(b"echo abcd efg\r\nmore\r\nlines");
+        let gone = grid.take_scrolled();
+        assert!(row_wraps(&gone[0]));
     }
 }
