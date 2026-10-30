@@ -725,11 +725,8 @@
 
   // Dragging the titlebar moves the window and nothing else. Releasing it over
   // WinT's terminal area used to dock the terminal back in, which was never
-  // reliable enough to aim at; the dock button beside it always was.
-  document.querySelector(".titlebar .drag").addEventListener("pointerdown", async (e) => {
-    if (e.button !== 0) return;
-    await win.startDragging();
-  });
+  // reliable enough to aim at; the dock button beside it always was. The drag
+  // itself, and double click to maximize, are in window-edge.js.
 
   let pending;
   new ResizeObserver(() => {

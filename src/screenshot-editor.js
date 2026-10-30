@@ -894,13 +894,7 @@
   $("#close").addEventListener("click", () => win.close());
   $("#min").addEventListener("click", () => win.minimize().catch(() => {}));
   $("#max").addEventListener("click", () => win.toggleMaximize().catch(() => {}));
-  const head = document.querySelector("[data-drag-region]");
-  head.addEventListener("pointerdown", (event) => {
-    if (event.button === 0 && !event.target.closest("button")) win.startDragging().catch(() => {});
-  });
-  head.addEventListener("dblclick", (event) => {
-    if (!event.target.closest("button")) win.toggleMaximize().catch(() => {});
-  });
+  // Dragging the header, and double clicking it to maximize: window-edge.js.
 
   document.addEventListener("keydown", (event) => {
     if (event.target.closest?.("textarea, input, select")) return;

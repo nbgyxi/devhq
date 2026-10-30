@@ -208,10 +208,9 @@ svg.ms,svg.ms rect,svg.ms path{fill:none;stroke:currentColor}
   height:var(--titlebar);flex:0 0 auto;display:flex;align-items:center;gap:10px;
   padding-left:12px;background:var(--bg1);border-bottom:1px solid var(--line);
 }
-.titlebar .drag{flex:1 1 0;min-width:0;height:100%;display:flex;align-items:center;gap:9px;-webkit-app-region:drag}
-/* Inside a native drag region the page never hears a click, so the corner
-   icon is cut out of it to receive the double click that closes the window. */
-.titlebar .brand-close{-webkit-app-region:no-drag;app-region:no-drag}
+.titlebar .drag{flex:1 1 0;min-width:0;height:100%;display:flex;align-items:center;gap:9px;-webkit-app-region:no-drag;app-region:no-drag}
+/* Not a native drag region: inside one the page never hears a click, and a
+   double click there did not maximize. window-edge.js drags and maximizes. */
 /* Search lives in the title bar, so the row that used to hold it is gone. The
    two drag halves either side keep the window grabbable and leave the field
    sitting near the middle of the bar. */

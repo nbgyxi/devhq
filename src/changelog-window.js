@@ -70,9 +70,6 @@
     releases.scrollTop = 0;
   }
   document.getElementById("close").addEventListener("click", close);
-  document.querySelector("[data-drag-region]").addEventListener("pointerdown", (event) => {
-    if (event.button === 0 && !event.target.closest("button")) win.startDragging().catch(() => {});
-  });
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
   window.addEventListener("focus", () => { releases.scrollTop = 0; });
   // The same safety net Search carries: if the window is on screen but was

@@ -78,3 +78,29 @@
     });
   }).catch(() => {});
 })();
+
+// Every frameless window's title bar - `.titlebar .drag`, or a header marked
+// `data-drag-region` - moves the window when dragged and maximizes or restores
+// it when double clicked, as a native caption does. It is one listener here
+// rather than one per page because a drag started on the first click swallows
+// the dblclick event, so each page that wired its own never heard the second
+// click. The second mousedown still arrives, counted in `detail`, and that is
+// what is read. Buttons, fields and the corner icon (double click closes) in
+// the bar keep their own clicks.
+(() => {
+  const win = window.__TAURI__?.window?.getCurrentWindow?.();
+  if (!win || typeof win.startDragging !== "function") return;
+  const BAR = ".titlebar .drag, [data-drag-region]";
+  const OWN_CLICKS = "button, a, input, select, textarea, [contenteditable], [data-maturity], .brand img, .brand-close";
+  document.addEventListener("mousedown", (event) => {
+    if (event.button !== 0 || !event.target.closest?.(BAR) || event.target.closest(OWN_CLICKS)) return;
+    if (event.detail === 2) {
+      event.preventDefault();
+      Promise.all([win.isResizable(), win.isMaximizable()])
+        .then(([resizable, maximizable]) => (resizable && maximizable ? win.toggleMaximize() : null))
+        .catch(() => {});
+      return;
+    }
+    if (event.detail === 1) win.startDragging().catch(() => {});
+  });
+})();

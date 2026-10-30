@@ -462,14 +462,8 @@
 
   /* --------------------------------------------------------- window chrome */
 
-  // The window has no native frame, so the title bar has to move it itself.
-  document.querySelector(".titlebar .drag")?.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || e.target.closest("button")) return;
-    win.startDragging().catch(() => {});
-  });
-  document.querySelector(".titlebar .drag")?.addEventListener("dblclick", async () => {
-    (await win.isMaximized()) ? win.unmaximize() : win.maximize();
-  });
+  // The window has no native frame; window-edge.js moves it from the title bar
+  // and maximizes it on a double click there.
 
   document.querySelectorAll("[data-win]").forEach((button) => {
     button.addEventListener("click", async () => {

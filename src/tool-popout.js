@@ -502,19 +502,11 @@
   };
   await applyOnTop();
 
-  // Drag the title bar to move the window. Nothing else: dropping a tool onto
-  // WinT used to dock it, which made an ordinary move look like the window had
-  // vanished. Docking is the dock button, and only the dock button.
-  document.querySelector(".titlebar .drag").addEventListener("pointerdown", async (e) => {
-    if (e.button !== 0) return;
-    // The maturity badge lives in the bar and is a button: a drag started here
-    // would swallow the click that opens what Alpha and Beta mean.
-    if (e.target.closest("[data-maturity]")) return;
-    // The icon in the corner is where the system menu lives in Windows, and a
-    // drag started there would swallow the double click that closes the window.
-    if (e.target.closest(".brand img")) return;
-    await win.startDragging();
-  });
+  // Dragging the title bar moves the window and double clicking it maximizes
+  // (window-edge.js, which leaves the maturity badge and corner icon their own
+  // clicks). Nothing else: dropping a tool onto WinT used to dock it, which
+  // made an ordinary move look like the window had vanished. Docking is the
+  // dock button, and only the dock button.
 
   // Double clicking that icon closes the window, the way double clicking a
   // Windows system menu always has.

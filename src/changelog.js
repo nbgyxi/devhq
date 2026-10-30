@@ -16,8 +16,17 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.188.1",
+      title: "Double click the title bar",
+      date: "2026-10-29",
+      changes: [
+        ["better", "Double clicking the title bar maximizes the window, and double clicking it again restores it - in the main window, every tool window, popped-out terminals, workspaces, the screenshot editor and the version history."],
+      ],
+    },
+    {
       version: "0.188.0",
       title: "Links in terminals",
+      buildChecksum: "0acf775a05245eaf0e7f42d156f75b72417edb0eceb95be1f2d9b682d99fec29",
       date: "2026-10-22",
       changes: [
         ["new", "Terminals: links that programs print as text - PowerShell's $PSStyle.FormatHyperlink, ls --hyperlink, compilers pointing at documentation - are links. They are underlined with dots, hovering shows the address they really go to, and Ctrl+click opens it. Only web addresses open, as for any other link."],
