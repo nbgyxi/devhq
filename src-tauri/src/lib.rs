@@ -354,18 +354,52 @@ fn wt_request_is_stale(path: &Path) -> bool {
 /// The compatibility queue belongs to this exact app process. Installed WinT
 /// and WinT Dev may run together, and both number terminals from the same
 /// starting point; a shared queue therefore cannot identify the owner safely.
-fn wt_queue_dir() -> Option<PathBuf> {
-    Some(
-        PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
-            .join("WinT")
-            .join("runtime")
-            .join(format!("requests-{}", std::process::id())),
-    )
+///
+/// This is the one definition: `term.rs` hands the same path to every shell as
+/// `WINT_WT_QUEUE`. It sits in the runtime folder, which for the Store build
+/// is the package's own (see `shells::runtime_root`) - a folder spelled out by
+/// hand here would be redirected for WinT and not for the shells writing to it.
+fn wt_queue_dir() -> PathBuf {
+    shells::runtime_root().join(format!("requests-{}", std::process::id()))
+}
+
+/// Queues and reply folders that earlier runs left behind. Each run makes its
+/// own pair, named for its process id, and nothing took them away again: one
+/// pair per launch, for good. Anything in them older than half a minute is
+/// worthless (see `wt_request_is_stale`) and goes; a folder still holding
+/// something newer may belong to a WinT that is running and is left alone.
+/// Taking away one that is merely empty costs nothing - the next `wt` sent
+/// there makes it again.
+fn sweep_old_wt_queues(queue: &Path) {
+    let Some(root) = queue.parent() else { return };
+    let pid = std::process::id();
+    let ours = [format!("requests-{pid}"), format!("replies-{pid}")];
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let queue_like = ["requests", "replies"]
+            .iter()
+            .any(|kind| name == *kind || name.starts_with(&format!("{kind}-")));
+        if !queue_like || ours.contains(&name) {
+            continue;
+        }
+        if let Ok(files) = std::fs::read_dir(entry.path()) {
+            for file in files.flatten() {
+                if wt_request_is_stale(&file.path()) {
+                    let _ = std::fs::remove_file(file.path());
+                }
+            }
+        }
+        let _ = std::fs::remove_dir(entry.path());
+    }
 }
 
 fn start_wt_request_queue(app: AppHandle) {
     std::thread::spawn(move || {
-        let Some(queue) = wt_queue_dir() else { return };
+        let queue = wt_queue_dir();
+        sweep_old_wt_queues(&queue);
         let _ = std::fs::create_dir_all(&queue);
         let mut reported = false;
         let mut passes: u32 = 0;
@@ -678,8 +712,11 @@ fn wt_request_arg(args: &[String]) -> Option<WtRequest> {
     (!request.actions.is_empty()).then_some(request)
 }
 
-fn wt_reply_dir() -> Option<PathBuf> {
-    Some(wt_queue_dir()?.with_file_name(format!("replies-{}", std::process::id())))
+/// Beside the queue, under the same process id: `requests-<pid>` is answered
+/// in `replies-<pid>`. The proxy works this name out from `WINT_WT_QUEUE`, so
+/// the two must keep that shape.
+fn wt_reply_dir() -> PathBuf {
+    wt_queue_dir().with_file_name(format!("replies-{}", std::process::id()))
 }
 
 /// What became of a `wt` command, written back for the proxy still holding the
@@ -698,7 +735,7 @@ async fn wt_report(token: String, ok: bool, message: String) -> Result<(), Strin
         return Err("That is not a wt request.".into());
     }
     off_thread(move || {
-        let replies = wt_reply_dir().ok_or("The local application-data folder is unavailable.")?;
+        let replies = wt_reply_dir();
         std::fs::create_dir_all(&replies).map_err(|e| e.to_string())?;
         let body = serde_json::json!({ "ok": ok, "message": message }).to_string();
         // Written aside and renamed, so the proxy never reads half an answer.
@@ -714,9 +751,7 @@ async fn wt_report(token: String, ok: bool, message: String) -> Result<(), Strin
 /// the proxy was killed. They are worthless after a few seconds and must not
 /// pile up in a folder WinT reads on a timer.
 fn sweep_wt_replies() {
-    let Some(replies) = wt_reply_dir() else {
-        return;
-    };
+    let replies = wt_reply_dir();
     let Ok(entries) = std::fs::read_dir(&replies) else {
         return;
     };

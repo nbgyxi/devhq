@@ -47,7 +47,12 @@ fn forward_to_wint(arguments: impl IntoIterator<Item = String>) -> Result<String
     // `wt` holds the prompt until WinT says what happened. The pane opens in
     // another process, so without this the shell gets its prompt straight back
     // and a pane that never started looks exactly like one that did.
-    let replies = queue.with_file_name("replies");
+    //
+    // WinT answers beside the queue under the same process id: a request in
+    // `requests-<pid>` is answered in `replies-<pid>`. Looking in a plain
+    // `replies` instead missed every answer, so `wt` sat out its full wait and
+    // then reported a failure for a pane that had opened.
+    let replies = queue.with_file_name(reply_folder_name(&queue));
     let reply = replies.join(&name);
     let taken_by = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let answer_by = std::time::Instant::now() + std::time::Duration::from_secs(20);
@@ -80,6 +85,19 @@ fn forward_to_wint(arguments: impl IntoIterator<Item = String>) -> Result<String
             return Err("WinT took this command but never reported what happened to it.".into());
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// `requests-<pid>` becomes `replies-<pid>`. The legacy shared `requests`
+/// folder had a plain `replies` beside it.
+fn reply_folder_name(queue: &std::path::Path) -> String {
+    let name = queue
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    match name.strip_prefix("requests") {
+        Some(pid) => format!("replies{pid}"),
+        None => "replies".into(),
     }
 }
 
@@ -479,5 +497,17 @@ fn main() {
     if let Err(error) = run(std::env::args().skip(1).collect()) {
         eprintln!("wint: {error}");
         std::process::exit(2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replies_sit_beside_the_queue_under_the_same_process_id() {
+        let runtime = Path::new("runtime");
+        assert_eq!(reply_folder_name(&runtime.join("requests-18776")), "replies-18776");
+        assert_eq!(reply_folder_name(&runtime.join("requests")), "replies");
     }
 }

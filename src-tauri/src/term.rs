@@ -166,7 +166,9 @@ pub async fn term_open(app: AppHandle, args: OpenArgs) -> Result<TermInfo, Strin
 fn term_open_sync(app: AppHandle, args: OpenArgs) -> Result<TermInfo, String> {
     know_managed_shells();
     let compat = wt_compat_dir(&app)?;
-    let wt_queue = compat.join(format!("requests-{}", std::process::id()));
+    // The very folder the queue thread in lib.rs reads - one definition, so the
+    // proxy can never be sent somewhere WinT is not listening.
+    let wt_queue = crate::wt_queue_dir();
     let app_exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let launch = Launch {
         env: vec![
@@ -361,8 +363,10 @@ pub async fn term_popout(
         // The dock this terminal is leaving knows the size it was showing at,
         // and that beats the remembered one: the window should be the panel it
         // was a moment ago, not the last terminal window somebody closed.
+        let mut asked = (saved_width, saved_height);
         if let Some((cols, rows)) = pair(dimensions) {
-            builder = builder.inner_size((cols * 9.0).max(400.0), (rows * 18.0).max(200.0));
+            asked = ((cols * 9.0).max(400.0), (rows * 18.0).max(200.0));
+            builder = builder.inner_size(asked.0, asked.1);
         }
         // Likewise the place: a terminal dragged out belongs under the pointer
         // that dropped it. Only a pop-out with nothing to say falls back to
@@ -377,6 +381,11 @@ pub async fn term_popout(
         builder
             .build()
             .and_then(|window| {
+                crate::window_geometry::settle_inner_size(
+                    &crate::window_geometry::window_of(&window),
+                    asked.0,
+                    asked.1,
+                );
                 if maximized.unwrap_or(placement.maximized) {
                     window.maximize()?;
                 }

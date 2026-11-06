@@ -16,6 +16,27 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.188.3",
+      title: "wt split-pane splits the terminal",
+      date: "2026-11-06",
+      changes: [
+        ["fix", "A `wt split-pane` run from a terminal in the Store build now splits that terminal, instead of opening a separate Windows Terminal window."],
+        ["fix", "`wt` commands return as soon as the pane has opened, instead of holding the prompt for 20 seconds and then reporting a failure. Scripts carry on to their next line, and a pane that really could not open now says why."],
+        ["better", "WinT clears away the empty `wt` request folders earlier runs left behind each time it starts."],
+      ],
+    },
+    {
+      version: "0.188.2",
+      title: "Files windows open in one place",
+      date: "2026-11-02",
+      changes: [
+        ["fix", "A Files window, opened from Torrents or anywhere else, opens at the size and place Files windows were last left, instead of somewhere new each time."],
+        ["better", "Opening another window of a tool while one is already up places it a step down and to the right, so it is clear there are two."],
+        ["new", "Ctrl+W closes a tool window. A terminal inside a tool keeps Ctrl+W for deleting a word."],
+        ["fix", "Windows no longer open a little taller each time - they come back at exactly the size they were left."],
+      ],
+    },
+    {
       version: "0.188.1",
       title: "Double click the title bar",
       date: "2026-10-29",

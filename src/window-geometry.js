@@ -34,6 +34,11 @@
     let timer = 0;
     let last = null;
     let stopped = false;
+    // Whether this window has been moved or resized since it opened. One that
+    // has not has nothing new to say, and saving it anyway is how a second
+    // window, cascaded off the remembered place, moved that place a step on
+    // every time it closed.
+    let changed = false;
 
     const save = async () => {
       if (stopped) return;
@@ -65,6 +70,7 @@
     };
 
     const queue = () => {
+      changed = true;
       clearTimeout(timer);
       timer = setTimeout(save, SETTLE);
     };
@@ -81,7 +87,7 @@
       // move may be sitting in the debounce.
       save: async () => {
         clearTimeout(timer);
-        await save();
+        if (changed) await save();
       },
       stop: () => {
         stopped = true;

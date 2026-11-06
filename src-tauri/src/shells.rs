@@ -99,8 +99,61 @@ static CANCEL: AtomicBool = AtomicBool::new(false);
 
 /// Where WinT keeps the programs it manages itself, next to the `wt.exe`
 /// proxy the terminal dock already installs there.
+///
+/// The Store build is packaged, and Windows quietly redirects a packaged app's
+/// writes under `%LOCALAPPDATA%` into the package's own folder. WinT went on
+/// finding its files where it had put them, but the shells it starts run
+/// outside the package and found the folder they were given on PATH empty -
+/// so `wt` fell through to Windows Terminal's own, and a split opened in a
+/// window of its own. Naming the package's folder outright is the same place
+/// on disk, so nothing moves: WinT and its shells now read the same files.
+/// An unpackaged WinT (`npm run dev`, a plain release build) is unaffected.
 pub fn runtime_root() -> PathBuf {
-    wint_term::shell::runtime_root()
+    static PACKAGED: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    let plain = wint_term::shell::runtime_root();
+    let packaged = PACKAGED.get_or_init(|| {
+        let local = PathBuf::from(std::env::var_os("LOCALAPPDATA")?);
+        package_folder(&plain, &local, &package_family_name()?)
+    });
+    packaged.clone().unwrap_or(plain)
+}
+
+/// Where Windows actually puts `plain` for a packaged app: anything under
+/// `%LOCALAPPDATA%` lands in `Packages\<family>\LocalCache\Local` instead.
+fn package_folder(plain: &Path, local: &Path, family: &str) -> Option<PathBuf> {
+    let rest = plain.strip_prefix(local).ok()?;
+    Some(
+        local
+            .join("Packages")
+            .join(family)
+            .join("LocalCache")
+            .join("Local")
+            .join(rest),
+    )
+}
+
+/// The package family this process runs as, or nothing when it is not
+/// packaged at all.
+fn package_family_name() -> Option<String> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentPackageFamilyName(length: *mut u32, name: *mut u16) -> i32;
+    }
+    const ERROR_INSUFFICIENT_BUFFER: i32 = 122;
+    let mut length = 0u32;
+    // Unpackaged, this answers APPMODEL_ERROR_NO_PACKAGE rather than a size.
+    if unsafe { GetCurrentPackageFamilyName(&mut length, std::ptr::null_mut()) }
+        != ERROR_INSUFFICIENT_BUFFER
+    {
+        return None;
+    }
+    let mut name = vec![0u16; length as usize];
+    if unsafe { GetCurrentPackageFamilyName(&mut length, name.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // The length counts the terminating null.
+    name.truncate(length.saturating_sub(1) as usize);
+    String::from_utf16(&name).ok().filter(|name| !name.is_empty())
 }
 
 /// Installs are kept under the pinned version, so bumping the pin lands beside
@@ -378,4 +431,25 @@ pub fn remove(profile: &str) -> Result<(), String> {
         return Ok(());
     }
     std::fs::remove_dir_all(&dir).map_err(|e| format!("It could not be removed: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_packaged_runtime_folder_is_named_where_windows_puts_it() {
+        let local = Path::new(r"C:\Users\nbr\AppData\Local");
+        assert_eq!(
+            package_folder(&local.join("WinT").join("runtime"), local, "WinT_abc123"),
+            Some(PathBuf::from(
+                r"C:\Users\nbr\AppData\Local\Packages\WinT_abc123\LocalCache\Local\WinT\runtime"
+            ))
+        );
+        // Outside %LOCALAPPDATA% nothing is redirected, so nothing is renamed.
+        assert_eq!(
+            package_folder(Path::new(r"D:\elsewhere"), local, "WinT_abc123"),
+            None
+        );
+    }
 }

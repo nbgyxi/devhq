@@ -815,6 +815,72 @@ pub(crate) fn popped_out_window(app: &AppHandle, id: &str) -> Option<tauri::Webv
         .map(|(_, window)| window)
 }
 
+/// One step of the cascade, in logical pixels: enough to show a title bar's
+/// worth of the window underneath, not so much that a few windows walk off
+/// the screen.
+const CASCADE_STEP: f64 = 32.0;
+
+/// A second window of a tool opens on the same remembered place as the
+/// first, and exactly on top of it would look like nothing happened. Each
+/// window already sitting there pushes the new one a step down and right, the
+/// way Windows cascades. A step that would leave the screen starts again from
+/// the top left of the work area, so a long run of windows stays reachable.
+fn cascade(app: &AppHandle, id: &str, placement: &mut crate::window_geometry::Placement) {
+    let Some(base) = placement.position else { return };
+    if placement.maximized {
+        return;
+    }
+    let exact = label_for(id, None);
+    let prefix = format!("{exact}-");
+    let taken: Vec<(i32, i32)> = app
+        .webview_windows()
+        .into_iter()
+        .filter(|(label, _)| label == &exact || label.starts_with(&prefix))
+        .filter_map(|(_, window)| window.outer_position().ok())
+        .map(|at| (at.x, at.y))
+        .collect();
+    if taken.is_empty() {
+        return;
+    }
+    let step = (CASCADE_STEP * placement.scale).round().max(1.0) as i32;
+    let near = |x: i32, y: i32| {
+        taken
+            .iter()
+            .any(|&(tx, ty)| (tx - x).abs() < step / 2 && (ty - y).abs() < step / 2)
+    };
+    let work = app
+        .available_monitors()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|monitor| *monitor.work_area())
+        .find(|work| {
+            base.x >= work.position.x
+                && base.y >= work.position.y
+                && i64::from(base.x) < i64::from(work.position.x) + i64::from(work.size.width)
+                && i64::from(base.y) < i64::from(work.position.y) + i64::from(work.size.height)
+        });
+    let (mut x, mut y) = (base.x, base.y);
+    // Bounded: a screen full of windows of one tool still opens the next one.
+    for _ in 0..24 {
+        if !near(x, y) {
+            break;
+        }
+        x += step;
+        y += step;
+        if let Some(work) = work {
+            let right = i64::from(work.position.x) + i64::from(work.size.width);
+            let bottom = i64::from(work.position.y) + i64::from(work.size.height);
+            if i64::from(x) + i64::from(placement.size.width) > right
+                || i64::from(y) + i64::from(placement.size.height) > bottom
+            {
+                x = work.position.x;
+                y = work.position.y;
+            }
+        }
+    }
+    placement.position = Some(tauri::PhysicalPosition::new(x, y));
+}
+
 /// Where a tool window's size and place are kept. Per tool, not per instance:
 /// what is being remembered is the shape this tool wants, and a second window
 /// of the same tool wants the same shape.
@@ -1287,17 +1353,18 @@ pub async fn tool_popout(
     // Stamp the theme onto <html> before any stylesheet paints — otherwise the
     // bundled dark default shows for a frame even when the opener asked for light.
     let init_theme = theme_script(if light { "light" } else { "dark" });
-    // Explorer keeps its own window size beside its column layout, from
-    // before there was a general store; everything else asks the store.
-    let saved = if id == "explorer" {
-        crate::window_geometry::Geometry::default()
-    } else {
+    // Every tool, Files included, opens where its windows were last left.
+    // Files used to skip the store and centre itself at whatever size its
+    // column layout last wrote, so it landed somewhere new every time.
+    let saved = {
         let app = app.clone();
         let key = geometry_key(&id);
         crate::off_thread(move || crate::window_geometry::load(&app, &key))
             .await
             .unwrap_or_default()
     };
+    // Files' layout still knows the size it was used at before the store
+    // existed; that is the size to start from until the store has one.
     let (default_width, default_height) = if id == "explorer" {
         let data_dir = app.path().app_data_dir().ok();
         off_thread(move || data_dir.map(|dir| crate::explorer::layout(&dir)))
@@ -1314,8 +1381,9 @@ pub async fn tool_popout(
     // has since gone opens on one that has not.
     let placement = {
         let app = app.clone();
+        let id = id.clone();
         crate::off_thread(move || {
-            crate::window_geometry::fit(
+            let mut placement = crate::window_geometry::fit(
                 &app,
                 saved,
                 crate::window_geometry::Defaults {
@@ -1327,7 +1395,9 @@ pub async fn tool_popout(
                 // Clicking a tool is asking to see it, whatever state the
                 // window was last left in.
                 false,
-            )
+            );
+            cascade(&app, &id, &mut placement);
+            placement
         })
         .await
         .ok_or("Could not work out where that window belongs.")?

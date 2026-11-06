@@ -516,6 +516,17 @@
     finishClose();
   });
 
+  // Ctrl+W closes the window, as it closes a tab or a window everywhere else.
+  // Same path as the close button, so a tool with work in hand still asks.
+  // A terminal keeps the key: there it deletes the word before the caret.
+  window.addEventListener("keydown", (e) => {
+    if (!e.ctrlKey || e.altKey || e.shiftKey || e.metaKey || e.key.toLowerCase() !== "w") return;
+    if (e.target instanceof Element && e.target.closest(".xterm")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!e.repeat) finishClose();
+  }, true);
+
   /** Compact Process Explorer for the pop-out. Full shelving/pins stay in main. */
   async function mountPorts(root) {
     root.innerHTML = `

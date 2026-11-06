@@ -133,6 +133,11 @@ pub async fn workspace_open(
         }
         match builder.build() {
             Ok(window) => {
+                crate::window_geometry::settle_inner_size(
+                    &crate::window_geometry::window_of(&window),
+                    width,
+                    height,
+                );
                 if placement.maximized {
                     let _ = window.maximize();
                 }

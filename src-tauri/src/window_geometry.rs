@@ -390,8 +390,32 @@ pub fn apply<R: tauri::Runtime>(window: &tauri::Window<R>, placement: &Placement
         let _ = window.set_position(position);
     }
     let _ = window.set_size(placement.size);
+    // A borderless window that has never been shown still has the frame of an
+    // ordinary one: its client area reads a title bar shorter than it will be.
+    // The first resize measures that stale frame and adds the title bar back,
+    // the real frame lands straight after, and the window comes up a title bar
+    // taller than it was left — every open, so windows kept growing. By now
+    // the frame is the real one, so asking again lands exactly.
+    if window.inner_size().is_ok_and(|now| now != placement.size) {
+        let _ = window.set_size(placement.size);
+    }
     if placement.maximized {
         let _ = window.maximize();
+    }
+}
+
+/// The same correction as in [`apply`], for a window that was built at a
+/// logical size and never handed a placement: a borderless window comes up a
+/// title bar taller than it was asked for, and a remembered size taken from it
+/// grows by that much on every open.
+pub fn settle_inner_size<R: tauri::Runtime>(window: &tauri::Window<R>, width: f64, height: f64) {
+    let Ok(scale) = window.scale_factor() else { return };
+    let want = PhysicalSize::new(
+        (width * scale).round().max(1.0) as u32,
+        (height * scale).round().max(1.0) as u32,
+    );
+    if window.inner_size().is_ok_and(|now| now != want) {
+        let _ = window.set_size(want);
     }
 }
 
