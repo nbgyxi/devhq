@@ -541,24 +541,25 @@ pub async fn screenshot_copy(request: tauri::ipc::Request<'_>) -> Result<(), Str
     .unwrap_or_else(|| Err("Copying the screenshot did not finish.".into()))
 }
 
-/// Save the edited image to Pictures\Screenshots and say where it went.
+/// Ask where to save the edited image with Save As, write it there, and say
+/// where it went - or `None` if the dialog was dismissed. It opens in
+/// Pictures\Screenshots until a screenshot has been saved somewhere else.
 #[tauri::command]
-pub async fn screenshot_save(request: tauri::ipc::Request<'_>) -> Result<String, String> {
+pub async fn screenshot_save(
+    window: tauri::WebviewWindow,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Option<String>, String> {
     let png = raw_body(&request)?;
+    let owner = window.hwnd().map(|hwnd| hwnd.0 as isize).unwrap_or(0);
     crate::off_thread(move || {
-        let folder = win::pictures_folder()?.join("Screenshots");
-        std::fs::create_dir_all(&folder)
-            .map_err(|e| format!("Could not create {}: {e}", folder.display()))?;
-        let stamp = win::local_stamp();
-        let mut path = folder.join(format!("WinT screenshot {stamp}.png"));
-        let mut n = 2;
-        while path.exists() {
-            path = folder.join(format!("WinT screenshot {stamp} ({n}).png"));
-            n += 1;
-        }
-        std::fs::write(&path, &png)
-            .map_err(|e| format!("Could not save {}: {e}", path.display()))?;
-        Ok(path.display().to_string())
+        // Only a starting point: without it the dialog still opens somewhere.
+        let folder = win::pictures_folder().ok().map(|pictures| {
+            let folder = pictures.join("Screenshots");
+            let _ = std::fs::create_dir_all(&folder);
+            folder.display().to_string()
+        });
+        let name = format!("WinT screenshot {}.png", win::local_stamp());
+        crate::picker::save_png_file(owner, folder, name, png)
     })
     .await
     .unwrap_or_else(|| Err("Saving the screenshot did not finish.".into()))

@@ -1,4 +1,4 @@
-//! Native common-item dialogs: choose a folder, or save a text file.
+//! Native common-item dialogs: choose a folder, or save a text or PNG file.
 //!
 //! The common item dialog runs its own modal message loop for as long as it is
 //! on screen, and that loop must never be the one drawing the WinT window
@@ -7,7 +7,7 @@
 //! the chosen path back. The main window keeps painting throughout; it is only
 //! disabled, the way any owned modal disables its owner.
 
-use windows::core::{HSTRING, PCWSTR};
+use windows::core::{GUID, HSTRING, PCWSTR};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
@@ -84,6 +84,24 @@ unsafe fn show(owner: isize, start: Option<String>) -> Result<Option<String>, St
     path.map(Some)
 }
 
+/// What a Save As dialog offers.
+struct SaveAs<'a> {
+    title: &'a str,
+    kind: &'a str,
+    pattern: &'a str,
+    extension: &'a str,
+    /// Whether "All files" is offered beside `kind`.
+    any_file: bool,
+    /// Where the dialog opens the first time; after that Windows remembers.
+    folder: Option<String>,
+    /// Gives this dialog its own remembered folder, apart from the others.
+    client: Option<GUID>,
+}
+
+/// Screenshots remember where the last one was saved, whatever Save As was
+/// used for in between.
+const SCREENSHOT_CLIENT: GUID = GUID::from_u128(0x6f1c_2a54_8d3e_4b7a_9c21_5e0b_7a44_d1f3);
+
 /// Shows Save As, writes UTF-8 text to the chosen path, and returns that path —
 /// or `None` if the dialog was dismissed.
 pub fn save_text_file(
@@ -91,10 +109,47 @@ pub fn save_text_file(
     default_name: String,
     text: String,
 ) -> Result<Option<String>, String> {
+    let spec = SaveAs {
+        title: "Save output",
+        kind: "Text files",
+        pattern: "*.txt",
+        extension: "txt",
+        any_file: true,
+        folder: None,
+        client: None,
+    };
+    save_file(owner, &spec, default_name, text.as_bytes())
+}
+
+/// Save As for a finished screenshot. `folder` is where it opens the first time.
+pub fn save_png_file(
+    owner: isize,
+    folder: Option<String>,
+    default_name: String,
+    png: Vec<u8>,
+) -> Result<Option<String>, String> {
+    let spec = SaveAs {
+        title: "Save screenshot",
+        kind: "PNG image",
+        pattern: "*.png",
+        extension: "png",
+        any_file: false,
+        folder,
+        client: Some(SCREENSHOT_CLIENT),
+    };
+    save_file(owner, &spec, default_name, &png)
+}
+
+fn save_file(
+    owner: isize,
+    spec: &SaveAs<'_>,
+    default_name: String,
+    bytes: &[u8],
+) -> Result<Option<String>, String> {
     unsafe {
         let entered =
             CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_ok();
-        let saved = show_save(owner, default_name, text);
+        let saved = show_save(owner, spec, default_name, bytes);
         if entered {
             CoUninitialize();
         }
@@ -118,8 +173,9 @@ fn sanitize_file_name(name: &str) -> String {
 
 unsafe fn show_save(
     owner: isize,
+    spec: &SaveAs<'_>,
     default_name: String,
-    text: String,
+    bytes: &[u8],
 ) -> Result<Option<String>, String> {
     let dialog: IFileSaveDialog = CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)
         .map_err(|e| format!("Could not open the save dialog: {e}"))?;
@@ -128,25 +184,39 @@ unsafe fn show_save(
     dialog
         .SetOptions(options | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_OVERWRITEPROMPT)
         .map_err(|e| format!("Could not open the save dialog: {e}"))?;
-    let _ = dialog.SetTitle(PCWSTR(HSTRING::from("Save output").as_ptr()));
+    let _ = dialog.SetTitle(PCWSTR(HSTRING::from(spec.title).as_ptr()));
+    // The client comes first: it decides which remembered folder applies.
+    if let Some(client) = &spec.client {
+        let _ = dialog.SetClientGuid(client);
+    }
+    // The default folder, not SetFolder, so that a folder the user has since
+    // saved to wins over it. One that does not resolve is not worth reporting.
+    if let Some(folder) = &spec.folder {
+        let path = HSTRING::from(folder.as_str());
+        if let Ok(item) =
+            SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(path.as_ptr()), None)
+        {
+            let _ = dialog.SetDefaultFolder(&item);
+        }
+    }
 
-    let filter_txt = HSTRING::from("Text files");
-    let filter_txt_spec = HSTRING::from("*.txt");
+    let filter_kind = HSTRING::from(spec.kind);
+    let filter_kind_spec = HSTRING::from(spec.pattern);
     let filter_all = HSTRING::from("All files");
     let filter_all_spec = HSTRING::from("*.*");
     let filters = [
         COMDLG_FILTERSPEC {
-            pszName: PCWSTR(filter_txt.as_ptr()),
-            pszSpec: PCWSTR(filter_txt_spec.as_ptr()),
+            pszName: PCWSTR(filter_kind.as_ptr()),
+            pszSpec: PCWSTR(filter_kind_spec.as_ptr()),
         },
         COMDLG_FILTERSPEC {
             pszName: PCWSTR(filter_all.as_ptr()),
             pszSpec: PCWSTR(filter_all_spec.as_ptr()),
         },
     ];
-    let _ = dialog.SetFileTypes(&filters);
+    let _ = dialog.SetFileTypes(&filters[..if spec.any_file { 2 } else { 1 }]);
     let _ = dialog.SetFileTypeIndex(1);
-    let _ = dialog.SetDefaultExtension(PCWSTR(HSTRING::from("txt").as_ptr()));
+    let _ = dialog.SetDefaultExtension(PCWSTR(HSTRING::from(spec.extension).as_ptr()));
 
     let name = HSTRING::from(sanitize_file_name(&default_name));
     let _ = dialog.SetFileName(PCWSTR(name.as_ptr()));
@@ -170,7 +240,7 @@ unsafe fn show_save(
         .map_err(|_| "That file has a name Windows could not hand over.".to_string())?;
     CoTaskMemFree(Some(wide.0 as *const core::ffi::c_void));
 
-    std::fs::write(&path, text.as_bytes()).map_err(|e| format!("Could not write the file: {e}"))?;
+    std::fs::write(&path, bytes).map_err(|e| format!("Could not write the file: {e}"))?;
     Ok(Some(path))
 }
 

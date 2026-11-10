@@ -359,7 +359,9 @@ pub fn icon(target: &str) -> Option<String> {
 pub fn launch(target: &str, args: &[String]) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
-    let mut command = if is_path(target) && target.to_ascii_lowercase().ends_with(".exe") {
+    const ERROR_NOT_SUPPORTED: i32 = 50;
+    let direct = is_path(target) && target.to_ascii_lowercase().ends_with(".exe");
+    let mut command = if direct {
         let mut command = std::process::Command::new(target);
         command.args(args);
         if let Some(dir) = std::path::Path::new(target).parent() {
@@ -375,9 +377,21 @@ pub fn launch(target: &str, args: &[String]) -> Result<(), String> {
         });
         command
     };
-    command
-        .creation_flags(DETACHED_PROCESS)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("Could not start it: {e}"))
+    match command.creation_flags(DETACHED_PROCESS).spawn() {
+        Ok(_) => Ok(()),
+        // Windows can refuse a program started from this process that it starts
+        // happily from anywhere else ("The request is not supported"). Explorer
+        // starts it from the shell instead. It takes no arguments for the
+        // program, so a pin that needs them still reports the refusal rather
+        // than opening the wrong browser profile.
+        Err(e) if direct && args.is_empty() && e.raw_os_error() == Some(ERROR_NOT_SUPPORTED) => {
+            std::process::Command::new("explorer.exe")
+                .arg(target)
+                .creation_flags(DETACHED_PROCESS)
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| format!("Could not start it: {e}"))
+        }
+        Err(e) => Err(format!("Could not start it: {e}")),
+    }
 }

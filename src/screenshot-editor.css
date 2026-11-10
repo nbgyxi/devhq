@@ -9,7 +9,9 @@
 .shot-spacer{flex:1}
 .shot-action{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 12px;border-radius:7px;font-size:12.5px}
 .shot-action .ms{font-size:16px}
-.shot-action#copy{background:var(--accent);border-color:var(--accent);color:#fff}
+/* Wide enough for "Copied", so Save does not move when the label changes. */
+.shot-action#copy{min-width:92px;justify-content:center;background:var(--accent);border-color:var(--accent);color:#fff;transition:background .12s,border-color .12s}
+.shot-action#copy.copied{background:var(--green);border-color:var(--green)}
 .shot-head .win-btns{margin-left:4px}
 .shot-head .win-btn.close:hover{background:#c42b1c;color:#fff}
 

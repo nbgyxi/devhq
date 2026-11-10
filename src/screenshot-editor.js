@@ -1,4 +1,4 @@
-// The screenshot editor: crop, arrows, circles, highlights and text over a
+// The screenshot editor: crop, arrows, circles, highlights, blur and text over a
 // shot taken with the Screenshot shortcut, then Copy or Save.
 //
 // Everything is kept in the picture's own pixels - the crop is a window onto
@@ -19,10 +19,12 @@
   const stage = $("#stage");
   const statusLine = $("#status");
   const measure = document.createElement("canvas").getContext("2d");
+  const blurLayer = document.createElement("canvas").getContext("2d");
 
   const COLORS = ["#ff3b30", "#ffd60a", "#30d158", "#0a84ff", "#ffffff", "#111111"];
   const STROKE = [3, 5, 8];
   const TEXT = [18, 28, 42];
+  const BLUR = [4, 8, 16];
   const FONTS = [
     ["Segoe UI", '"Segoe UI Variable", "Segoe UI", sans-serif'],
     ["Arial", "Arial, sans-serif"],
@@ -32,7 +34,7 @@
     ["Comic Sans MS", '"Comic Sans MS", cursive'],
     ["Impact", "Impact, sans-serif"],
   ];
-  const KEYS = { v: "select", c: "crop", a: "arrow", o: "ellipse", e: "ellipse", h: "highlight", t: "text" };
+  const KEYS = { v: "select", c: "crop", a: "arrow", o: "ellipse", e: "ellipse", h: "highlight", b: "blur", t: "text" };
   const CURSORS = { nw: "nwse-resize", se: "nwse-resize", ne: "nesw-resize", sw: "nesw-resize", n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize", p1: "crosshair", p2: "crosshair" };
 
   // Marks are sized for the screen they will be looked at on: a shot from a
@@ -180,6 +182,9 @@
         if (preset >= 0) size = preset;
       } else if (shape.type === "highlight") {
         colors.highlight = shape.color;
+      } else if (shape.type === "blur") {
+        const preset = BLUR.map(px).findIndex((radius) => Math.abs(radius - shape.radius) < 0.5);
+        if (preset >= 0) size = preset;
       } else if (shape.type === "text") {
         colors.stroke = shape.color;
         Object.assign(textStyle, pickStyle(shape));
@@ -262,8 +267,13 @@
   function syncButtons() {
     const shape = selected();
     const current = entry?.color || shape?.color || colors[colorKey()];
+    // A blur is made of the picture under it, so it has no colour to pick.
+    const colorless = shape ? shape.type === "blur" : tool === "blur";
     for (const button of document.querySelectorAll("[data-tool]")) button.classList.toggle("on", button.dataset.tool === tool);
-    for (const button of document.querySelectorAll("#colors [data-color]")) button.classList.toggle("on", button.dataset.color === current);
+    for (const button of document.querySelectorAll("#colors [data-color]")) {
+      button.classList.toggle("on", button.dataset.color === current);
+      button.disabled = colorless;
+    }
     for (const button of document.querySelectorAll("[data-size]")) button.classList.toggle("on", Number(button.dataset.size) === size);
     for (const button of document.querySelectorAll("[data-view]")) {
       button.classList.toggle("on", button.dataset.view === view);
@@ -341,6 +351,10 @@
       styleEntry();
     } else if (shape?.type === "arrow" || shape?.type === "ellipse") {
       shape.width = px(STROKE[size]);
+      commit();
+      render();
+    } else if (shape?.type === "blur") {
+      shape.radius = px(BLUR[size]);
       commit();
       render();
     } else if (shape?.type === "text") {
@@ -443,6 +457,36 @@
     });
   }
 
+  /** Blurs what is already on `g` inside the box, marks under it included.
+   *  The blur has to reach past the box or its edges would fade, and fading
+   *  would let the sharp picture show through - so the layer it is made from
+   *  is opaque all the way out, even where the box meets the picture's edge. */
+  function drawBlur(g, shape) {
+    if (!(shape.w > 0 && shape.h > 0)) return;
+    const { a: scale, e, f } = g.getTransform();
+    const left = Math.max(0, Math.floor(shape.x * scale + e));
+    const top = Math.max(0, Math.floor(shape.y * scale + f));
+    const right = Math.min(g.canvas.width, Math.ceil((shape.x + shape.w) * scale + e));
+    const bottom = Math.min(g.canvas.height, Math.ceil((shape.y + shape.h) * scale + f));
+    const w = right - left;
+    const h = bottom - top;
+    if (w <= 0 || h <= 0) return;
+    const sigma = shape.radius * scale;
+    const margin = Math.ceil(sigma * 3) + 2;
+    const layerW = w + margin * 2;
+    const layerH = h + margin * 2;
+    blurLayer.canvas.width = layerW;
+    blurLayer.canvas.height = layerH;
+    blurLayer.drawImage(g.canvas, left, top, w, h, 0, 0, layerW, layerH);
+    blurLayer.drawImage(g.canvas, left - margin, top - margin, layerW, layerH, 0, 0, layerW, layerH);
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.beginPath();
+    g.rect(left, top, w, h);
+    g.clip();
+    g.filter = `blur(${sigma}px)`;
+    g.drawImage(blurLayer.canvas, left - margin, top - margin);
+  }
+
   function drawShape(g, shape) {
     g.save();
     g.lineCap = "round";
@@ -478,6 +522,8 @@
       g.globalAlpha = 0.5;
       g.fillStyle = shape.color;
       g.fillRect(shape.x, shape.y, shape.w, shape.h);
+    } else if (shape.type === "blur") {
+      drawBlur(g, shape);
     } else if (shape.type === "text") {
       drawText(g, shape);
     }
@@ -706,6 +752,7 @@
     if (d.type === "arrow") Object.assign(d, { width, color });
     else if (d.type === "ellipse") Object.assign(d, rectOf(d), { width, color });
     else if (d.type === "highlight") Object.assign(d, rectOf(d), { color });
+    else if (d.type === "blur") Object.assign(d, rectOf({ ...d, square: false }), { radius: px(BLUR[size]) });
   }
 
   /** A new item comes out selected, so it can be nudged or resized at once. */
@@ -735,6 +782,8 @@
       add({ type: "arrow", x1: d.x1, y1: d.y1, x2: d.x2, y2: d.y2, width: d.width, color: d.color });
     } else if ((d.type === "ellipse" || d.type === "highlight") && r.w >= 4 && r.h >= 4) {
       add({ type: d.type, ...r, width: d.width, color: d.color });
+    } else if (d.type === "blur" && r.w >= 4 && r.h >= 4) {
+      add({ type: "blur", ...r, radius: d.radius });
     }
     render();
   }
@@ -849,6 +898,21 @@
     return new Uint8Array(await blob.arrayBuffer());
   }
 
+  /** The button says it worked, where the eye already is. */
+  let copiedTimer = 0;
+  function showCopied() {
+    const button = $("#copy");
+    button.classList.add("copied");
+    button.querySelector(".ms").textContent = "check";
+    button.querySelector(".label").textContent = "Copied";
+    clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => {
+      button.classList.remove("copied");
+      button.querySelector(".ms").textContent = "content_copy";
+      button.querySelector(".label").textContent = "Copy";
+    }, 1800);
+  }
+
   async function copy() {
     if (!image || busy) return;
     busy = true;
@@ -856,6 +920,7 @@
     try {
       await invoke("screenshot_copy", await exportPng());
       setStatus(`Copied to the clipboard - ${doc.crop.w} × ${doc.crop.h}`);
+      showCopied();
     } catch (error) {
       setStatus(`Could not copy: ${error}`, "error");
     } finally {
@@ -866,9 +931,13 @@
   async function save() {
     if (!image || busy) return;
     busy = true;
-    setStatus("Saving to Pictures\\Screenshots", "busy");
+    setStatus("Choosing where to save the screenshot", "busy");
     try {
       const path = await invoke("screenshot_save", await exportPng());
+      if (!path) {
+        setStatus("Not saved");
+        return;
+      }
       statusLine.className = "shot-status";
       statusLine.textContent = `Saved ${path} `;
       const link = document.createElement("a");
@@ -956,7 +1025,7 @@
       commit();
       $("#loading").hidden = true;
       fit();
-      setStatus("Select (V), Crop (C), Arrow (A), Circle (O), Highlight (H), Text (T) - click an item to move, resize or delete it - then Copy (Ctrl+C) or Save (Ctrl+S)");
+      setStatus("Select (V), Crop (C), Arrow (A), Circle (O), Highlight (H), Blur (B), Text (T) - click an item to move, resize or delete it - then Copy (Ctrl+C) or Save (Ctrl+S)");
     } catch (error) {
       $("#loading").textContent = "The screenshot could not be loaded.";
       setStatus(`Could not load the screenshot: ${error}`, "error");

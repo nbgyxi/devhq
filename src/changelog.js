@@ -16,8 +16,35 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.189.1",
+      title: "Save a screenshot where you choose",
+      buildChecksum: "4a4cc61e0d5456336c188ea774465f877f2f8f1abfb8a0184e56324004f29a2b",
+      date: "2026-11-10",
+      changes: [
+        ["better", "Save in the screenshot editor opens a Save As dialog, so you pick the folder and name. It starts in Pictures\\Screenshots, then remembers where you last saved one."],
+        ["better", "Copy in the screenshot editor turns green and says Copied once the picture is on the clipboard."],
+      ],
+    },
+    {
+      version: "0.189.0",
+      title: "Blur part of a screenshot",
+      date: "2026-11-10",
+      changes: [
+        ["new", "The screenshot editor has a Blur tool (B): drag over anything you want hidden, then move or resize the blurred area, or change its strength with the size buttons."],
+      ],
+    },
+    {
+      version: "0.188.4",
+      title: "Pinned apps start when Windows refuses",
+      date: "2026-11-09",
+      changes: [
+        ["fix", "A sidebar pin or search result that failed with \"The request is not supported\" is now started through Windows Explorer instead of stopping at that error."],
+      ],
+    },
+    {
       version: "0.188.3",
       title: "wt split-pane splits the terminal",
+      buildChecksum: "c2e4011b7385f888a144de9294347626ed3eff50e9fe97b70a62290406abbd5a",
       date: "2026-11-06",
       changes: [
         ["fix", "A `wt split-pane` run from a terminal in the Store build now splits that terminal, instead of opening a separate Windows Terminal window."],

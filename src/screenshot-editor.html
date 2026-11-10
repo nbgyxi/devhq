@@ -8,7 +8,7 @@
 <script src="error-log.js"></script><script src="window-edge.js"></script>
 <script>document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") === "light" ? "light" : "dark";</script>
 <link rel="stylesheet" href="styles.css?v=0.53.1" />
-<link rel="stylesheet" href="screenshot-editor.css?v=4" />
+<link rel="stylesheet" href="screenshot-editor.css?v=5" />
 </head>
 <body class="shot-window">
   <header class="shot-head" data-drag-region>
@@ -16,8 +16,8 @@
     <strong>Screenshot</strong>
     <span class="shot-size mono" id="size"></span>
     <span class="shot-spacer"></span>
-    <button class="btn shot-action" id="copy" type="button" title="Copy to the clipboard (Ctrl+C)"><span class="ms">content_copy</span>Copy</button>
-    <button class="btn shot-action" id="save" type="button" title="Save to Pictures\Screenshots (Ctrl+S)"><span class="ms">save</span>Save</button>
+    <button class="btn shot-action" id="copy" type="button" title="Copy to the clipboard (Ctrl+C)"><span class="ms">content_copy</span><span class="label">Copy</span></button>
+    <button class="btn shot-action" id="save" type="button" title="Save as - choose the folder and name (Ctrl+S)"><span class="ms">save</span>Save</button>
     <div class="win-btns">
       <button class="win-btn" id="min" type="button" title="Minimize"><span class="ms">remove</span></button>
       <button class="win-btn" id="max" type="button" title="Maximize"><span class="ms">crop_square</span></button>
@@ -31,15 +31,16 @@
       <button type="button" data-tool="arrow" title="Arrow (A)"><span class="ms">arrow_outward</span><span>Arrow</span></button>
       <button type="button" data-tool="ellipse" title="Circle - hold Shift for a perfect circle (O)"><span class="ms">circle</span><span>Circle</span></button>
       <button type="button" data-tool="highlight" title="Highlight (H)"><span class="ms">ink_highlighter</span><span>Highlight</span></button>
+      <button type="button" data-tool="blur" title="Blur - drag over the part to hide (B)"><span class="ms">blur_on</span><span>Blur</span></button>
       <button type="button" data-tool="text" title="Text (T)"><span class="ms">title</span><span>Text</span></button>
     </div>
     <span class="shot-sep"></span>
     <div class="shot-group shot-colors" id="colors"></div>
     <span class="shot-sep"></span>
     <div class="shot-group shot-sizes" id="sizes">
-      <button type="button" data-size="0" title="Thin"><i style="--d:5px"></i></button>
-      <button type="button" data-size="1" title="Medium"><i style="--d:9px"></i></button>
-      <button type="button" data-size="2" title="Thick"><i style="--d:13px"></i></button>
+      <button type="button" data-size="0" title="Thin line, light blur"><i style="--d:5px"></i></button>
+      <button type="button" data-size="1" title="Medium line and blur"><i style="--d:9px"></i></button>
+      <button type="button" data-size="2" title="Thick line, strong blur"><i style="--d:13px"></i></button>
     </div>
     <span class="shot-sep"></span>
     <div class="shot-group">
@@ -78,6 +79,6 @@
     <div class="shot-loading" id="loading"><span class="shot-skeleton"></span>Loading the screenshot</div>
   </main>
   <footer class="shot-status" id="status">Ready</footer>
-  <script src="screenshot-editor.js?v=4"></script>
+  <script src="screenshot-editor.js?v=6"></script>
 </body>
 </html>
