@@ -5136,7 +5136,14 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-magnet{flex:1;min-width:0;border:0;background:none;color:var(--text);font-size:12px;outline:none}
 .tr-magnet::placeholder{color:var(--dim2)}
 
-.tr-work{flex:1 1 auto;display:flex;align-items:stretch;gap:12px;min-height:0}
+.tr-work{flex:1 1 auto;display:flex;flex-direction:column;align-items:stretch;min-height:0}
+/* The splitter between the table and the detail pane under it. The visible
+   line is thin; the strip that takes the drag is the whole gap. */
+.tr-split{flex:none;position:relative;height:12px;cursor:row-resize;touch-action:none;outline:none}
+.tr-split[hidden]{display:none}
+.tr-split::after{content:"";position:absolute;left:50%;top:5px;width:44px;height:2px;margin-left:-22px;border-radius:2px;background:var(--line);transition:background .12s,width .12s,margin .12s}
+.tr-split:hover::after,.tr-split:focus-visible::after,.tr-split.on::after{width:96px;margin-left:-48px;background:var(--accent)}
+.tr-resizing-detail,.tr-resizing-detail *{cursor:row-resize!important;user-select:none!important}
 .tr-list{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow-x:auto;overflow-y:hidden}
 .tr-drop-overlay{position:absolute;z-index:50;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;border:2px dashed var(--accent);border-radius:12px;background:color-mix(in srgb,var(--bg) 88%,transparent);color:var(--text);pointer-events:none;backdrop-filter:blur(5px)}
 .tr-drop-overlay[hidden]{display:none}
@@ -5206,9 +5213,18 @@ body.projects-window #status-term-popout{display:none!important}
 @keyframes tr-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 @media(prefers-reduced-motion:reduce){.tr-skeleton{animation:none}}
 
-.tr-detail{flex:0 0 360px;min-width:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow:hidden}
+/* Height comes from the splitter (set inline); the torrent and its actions on
+   the left, its files filling the rest of the width. */
+.tr-detail{flex:none;height:300px;min-height:120px;min-width:0;display:flex;flex-direction:row;border:1px solid var(--line);border-radius:10px;background:var(--bg1);overflow:hidden}
 .tr-detail[hidden]{display:none}
+.tr-dside{flex:0 0 340px;min-width:0;min-height:0;display:flex;flex-direction:column;overflow-y:auto;border-right:1px solid var(--line);background:var(--bg2)}
+.tr-dside>.tr-dhead{border-bottom:0}
 .tr-dhead{flex:none;display:flex;flex-direction:column;gap:10px;min-width:0;padding:11px 12px;border-bottom:1px solid var(--line);background:var(--bg2)}
+.tr-dtop{display:flex;align-items:flex-start;gap:8px;min-width:0}
+.tr-dtop>.tr-dtitle{flex:1}
+.tr-dclose{flex:none;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;margin:-3px -4px 0 0;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dim);cursor:pointer}
+.tr-dclose:hover{background:var(--bg3);color:var(--text)}
+.tr-dclose .ms{font-size:17px}
 /* The full text of a torrent's error. This was a `title` tooltip, which is the
    one place text can be neither selected nor copied and will not hold still
    long enough to screenshot - exactly what someone needs from an error they
@@ -5246,8 +5262,8 @@ body.projects-window #status-term-popout{display:none!important}
 .tr-fname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
 .tr-fsize{color:var(--dim);font-variant-numeric:tabular-nums}
 /* Too narrow for two columns: the torrent goes back above its files. */
-@media(max-width:900px){.tr-work{flex-direction:column;max-height:none}
-.tr-scroll{min-height:160px;max-height:40vh}.tr-detail{flex:none}.tr-fscroll{min-height:140px;max-height:34vh}}
+@media(max-width:760px){.tr-detail{flex-direction:column}
+.tr-dside{flex:0 1 auto;max-height:50%;border-right:0;border-bottom:1px solid var(--line)}}
 
 .tr-note{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim2);font-size:10.5px}
 @media(max-width:760px){.tr-top-add{width:min(190px,25vw)}.tr-choose span{display:none}.tr-count{display:none}}
@@ -5736,3 +5752,4 @@ body.projects-window #status-term-popout{display:none!important}
 .np-main textarea{flex:1;min-height:0;resize:none;border:0;padding:18px 24px;background:var(--bg1);color:var(--text);line-height:1.6;outline:none}
 .np-main textarea::placeholder{color:var(--dim2)}
 .np-main textarea.nowrap{white-space:pre;overflow-x:auto}
+.health-pack-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px}.health-pack-status{color:var(--dim);font-size:12px;overflow-wrap:anywhere}.health-pack-status[data-tone=ok]{color:var(--green)}.health-pack-status[data-tone=bad]{color:var(--red)}

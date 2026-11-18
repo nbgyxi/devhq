@@ -277,7 +277,7 @@ pub async fn cursor_send(
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        running().lock().unwrap().insert(tab.clone(), child);
+        running().lock().unwrap_or_else(|e| e.into_inner()).insert(tab.clone(), child);
 
         let errors = std::thread::spawn(move || {
             let mut text = String::new();
@@ -468,7 +468,7 @@ fn is_session_id(value: &str) -> bool {
 #[tauri::command]
 pub async fn cursor_cancel(tab: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        if let Some(mut child) = running().lock().unwrap().remove(&tab) {
+        if let Some(mut child) = running().lock().unwrap_or_else(|e| e.into_inner()).remove(&tab) {
             let _ = child.kill();
             let _ = child.wait();
         }

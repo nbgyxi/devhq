@@ -2166,7 +2166,7 @@ pub fn drag_prepare(paths: &[String]) -> Result<DragItems, String> {
 /// `cancel_drag` are for: the first keeps a dead volume out of the drag, the
 /// second ends one that is already in the air.
 #[cfg(windows)]
-pub fn drag_run(items: DragItems) -> Result<&'static str, String> {
+pub fn drag_run(items: DragItems, copy_only: bool) -> Result<&'static str, String> {
     use windows::core::{implement, BOOL, HRESULT};
     use windows::Win32::Foundation::{
         DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, RPC_E_CHANGED_MODE, S_OK,
@@ -2238,7 +2238,11 @@ pub fn drag_run(items: DragItems) -> Result<&'static str, String> {
             DoDragDrop(
                 &data,
                 &source,
-                DROPEFFECT_COPY | DROPEFFECT_MOVE,
+                if copy_only {
+                    DROPEFFECT_COPY
+                } else {
+                    DROPEFFECT_COPY | DROPEFFECT_MOVE
+                },
                 &mut effect,
             )
         };

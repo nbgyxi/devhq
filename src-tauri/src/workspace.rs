@@ -333,7 +333,7 @@ fn report_url(app: &AppHandle, window: &str, url: &str) {
 /// over the same slot.
 fn watch_url(app: AppHandle, window: String) {
     let generation = {
-        let mut generations = watching().lock().unwrap();
+        let mut generations = watching().lock().unwrap_or_else(|e| e.into_inner());
         let next = generations.entry(window.clone()).or_insert(0);
         *next += 1;
         *next
@@ -343,7 +343,7 @@ fn watch_url(app: AppHandle, window: String) {
         let mut last = String::new();
         loop {
             std::thread::sleep(std::time::Duration::from_millis(250));
-            if watching().lock().unwrap().get(&window) != Some(&generation) {
+            if watching().lock().unwrap_or_else(|e| e.into_inner()).get(&window) != Some(&generation) {
                 return;
             }
             let Some(webview) = app.get_webview(&label) else {

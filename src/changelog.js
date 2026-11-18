@@ -16,6 +16,65 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.192.0",
+      title: "Torrent details under the table",
+      buildChecksum: "c4b13f62ec567a2a9b322781772a9da01df1e6172a582b76c72c6c121dbe160d",
+      date: "2026-11-18",
+      changes: [
+        ["better", "Torrents: the details of the selected torrent now sit under the table instead of beside it, so the table keeps its full width and the file list gets room to breathe."],
+        ["new", "Torrents: drag the splitter between the table and the details to resize them. The height is remembered; double-click the splitter to put it back."],
+        ["new", "Torrents: a close button on the details pane. Clicking a torrent opens it again."],
+      ],
+    },
+    {
+      version: "0.191.1",
+      title: "Sidebar no longer waits on the taskbar",
+      date: "2026-11-18",
+      changes: [
+        ["fix", "WinT no longer freezes for several seconds when Explorer is slow to answer. The docked sidebar now checks and re-hides the taskbar in the background, so the window keeps responding while Explorer is busy."],
+      ],
+    },
+    {
+      version: "0.191.0",
+      title: "Troubleshooting files",
+      buildChecksum: "32892ce2a18f4b1a711b54153b442fc6648f848bf999f493f381c061d62fba87",
+      date: "2026-11-18",
+      changes: [
+        ["new", "App health has a Collect troubleshooting files button. It packs WinT's health log, the crash reports and events Windows recorded for WinT, and a short description of the PC into one zip, then shows it selected in Explorer so it can be attached and sent."],
+        ["better", "User names, the PC's name, email addresses and anything that looks like a password are removed from those files first. Memory dumps are only listed, never included."],
+      ],
+    },
+    {
+      version: "0.190.0",
+      title: "WinT gets back up by itself",
+      date: "2026-11-18",
+      changes: [
+        ["fix", "A fault in one background task no longer closes the whole app. Only that task stops, and everything else keeps running."],
+        ["new", "If WinT does go down, it starts itself again. The status bar says so for a minute, and the cause is in the health log."],
+        ["new", "A window whose page crashed or stopped responding reloads itself instead of staying blank. A page that keeps crashing is left alone after three tries."],
+        ["new", "Restart WinT in the tray menu, for when something looks wrong but nothing has crashed."],
+        ["better", "If one part of the main window fails to draw, the rest of the window still updates."],
+      ],
+    },
+    {
+      version: "0.189.3",
+      title: "No more false ResizeObserver reports",
+      date: "2026-11-18",
+      changes: [
+        ["fix", "The sidebar clock no longer reflows during a resize notification, which could raise a \"ResizeObserver loop\" error while the rail was being resized."],
+        ["fix", "That harmless browser message is no longer sent as an issue report. It is kept in the health log as a note."],
+      ],
+    },
+    {
+      version: "0.189.2",
+      title: "Drag files out of Torrents",
+      date: "2026-11-11",
+      changes: [
+        ["new", "In Torrents, drag a downloaded file from a torrent's file list straight into a browser's upload box, Explorer, the desktop or any other program. Dragging one of several selected files takes them all."],
+        ["better", "A file dragged out of Torrents is always copied, never moved, so the torrent keeps seeding it."],
+      ],
+    },
+    {
       version: "0.189.1",
       title: "Save a screenshot where you choose",
       buildChecksum: "4a4cc61e0d5456336c188ea774465f877f2f8f1abfb8a0184e56324004f29a2b",

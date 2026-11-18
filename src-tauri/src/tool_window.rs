@@ -1176,7 +1176,7 @@ pub async fn tool_embedded_show(
             })
             .await;
         }
-        embedded_sessions().lock().unwrap().remove(&id);
+        embedded_sessions().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
     }
     if let Some(webview) = app.get_webview(&label) {
         webview
@@ -1244,7 +1244,7 @@ pub fn tools_set_language(app: AppHandle, language: String) -> Result<(), String
 /// Its WebView2 data directory remains, so persistent tool data survives.
 #[tauri::command]
 pub fn tool_embedded_destroy(app: AppHandle, id: String) -> Result<(), String> {
-    embedded_sessions().lock().unwrap().remove(&id);
+    embedded_sessions().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
     if let Some(webview) = app.get_webview(&embedded_label_for(&id)) {
         webview.close().map_err(|e| e.to_string())?;
     }

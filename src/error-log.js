@@ -153,6 +153,12 @@
       }
       return report("resource", `${event.target.tagName.toLowerCase()} failed to load: ${event.target.src || event.target.href || "?"}`);
     }
+    // Not a fault: the engine dropped a resize notification for one frame and
+    // delivers it on the next. It names no file and no line, so as a report it
+    // only cost a feedback mail nobody could act on. Kept in the log as a step.
+    if (/^ResizeObserver loop/.test(String(event.message))) {
+      return window.wintErrorLog?.note(String(event.message));
+    }
     const place = event.filename ? `${event.filename}:${event.lineno}:${event.colno}` : "";
     report("error", event.error ? describe(event.error) : String(event.message), place);
   }, true);

@@ -37,6 +37,11 @@
    *  round to it, so a column dragged to a new width just before the window
    *  closed came back at the old one. */
   const LAYOUT_KEY = "torrent-layout";
+  /** The detail pane's height until the splitter is dragged, and the least
+   *  either side of the splitter is allowed to shrink to. */
+  const DETAIL_HEIGHT = 300;
+  const DETAIL_MIN = 120;
+  const LIST_MIN = 120;
   const COLUMNS = [
     ["mark", "Mark", "48px"],
     ["name", "Name", "minmax(0,1fr)"], ["size", "Size", "80px"],
@@ -99,6 +104,8 @@
         // Only a table nobody has arranged yet falls back to the default sort;
         // one that was saved without a sort was sorted by nothing on purpose.
         st.columnSort = saved ? usableSort(layout.sort) : DEFAULT_SORT;
+        if (Number(layout.detailHeight) > 0) st.detailHeight = Number(layout.detailHeight);
+        applyDetailHeight();
         if (!saved) saveLayout();
         drawColumns();
         drawRows();
@@ -117,6 +124,7 @@
         hidden: ALL_COLUMN_IDS.filter((id) => !st.columns.includes(id)),
         widths: st.columnWidths,
         sort: st.columnSort,
+        detailHeight: st.detailHeight,
       },
     }).catch((error) => note(`The column layout could not be saved: ${error}`));
   }
@@ -252,6 +260,9 @@
     columns: DEFAULT_COLUMNS,
     columnWidths: {},
     columnSort: DEFAULT_SORT,
+    /** Height of the detail pane under the table, in pixels. Saved with the
+     *  column layout; the splitter between the two sets it. */
+    detailHeight: DETAIL_HEIGHT,
     /** Info hashes the user has ticked off in the list, and the ones unticked
      *  in this session — the latter so a slow read cannot bring one back. */
     marks: new Set(),
@@ -423,9 +434,11 @@
               <div class="tr-empty" data-tr-empty hidden></div>
             </div>
 
-            <!-- Beside the table, not under it: the contents of whichever
-                 torrent is selected. Hidden when nothing is, and the table
-                 takes the whole width back. -->
+            <!-- Under the table: the contents of whichever torrent is
+                 selected, at whatever height the splitter was last dragged
+                 to. Hidden when nothing is (or it was closed), and the table
+                 takes the whole height back. -->
+            <div class="tr-split" data-tr-split role="separator" aria-orientation="horizontal" aria-label="Resize the details" title="Drag to resize · double-click to reset" tabindex="0" hidden></div>
             <section class="tr-detail" data-tr-detail hidden></section>
           </div>
         </section>
@@ -442,6 +455,9 @@
     node.addEventListener("keydown", guarded(keydown));
     node.addEventListener("pointerdown", guarded(startColumnResize));
     node.addEventListener("pointerdown", guarded(startColumnReorder));
+    node.addEventListener("pointerdown", guarded(startDetailResize));
+    node.addEventListener("pointerdown", guarded(watchFileDrag));
+    node.addEventListener("pointermove", guarded(maybeFileDrag));
     node.addEventListener("contextmenu", (event) => {
       const file = event.target.closest("[data-tr-file]");
       if (file) {
@@ -457,6 +473,7 @@
       openMenu(event, row);
     });
     node.addEventListener("dblclick", (event) => {
+      if (event.target.closest("[data-tr-split]")) return void nudgeDetail(null);
       const file = event.target.closest("[data-tr-file]");
       if (!file || event.target.matches(".tr-fcheck")) return;
       event.preventDefault();
@@ -469,6 +486,7 @@
     }, true);
     node.querySelector("[data-tr-scroll]").addEventListener("scroll", () => drawRows(), { passive: true });
     watchSize(node.querySelector("[data-tr-scroll]"), drawRows);
+    watchSize(node.querySelector(".tr-work"), applyDetailHeight);
 
     // The tool window asks before it closes or docks while a remove is still
     // running; see `closeGuard`.
@@ -640,6 +658,8 @@
         const host = st.host;
         if (!host?.isConnected || !host.offsetParent) return;
         const overlay = host.querySelector("[data-tr-drop-overlay]");
+        // A file being dragged out of this very list is not a torrent arriving.
+        if (fileDragOut) { overlay.hidden = true; return; }
         if (payload.type === "enter" || payload.type === "over") {
           overlay.hidden = false;
           return;
@@ -1087,6 +1107,66 @@
     document.addEventListener("pointercancel", end, { once: true });
   }
 
+  /** Fits the saved height into the room there is now, so a height dragged
+   *  in a tall window still leaves the table some rows in a short one. */
+  function applyDetailHeight() {
+    const pane = st.host?.querySelector("[data-tr-detail]");
+    const work = st.host?.querySelector(".tr-work");
+    if (!pane || !work) return;
+    const room = work.clientHeight;
+    const most = room > 0 ? Math.max(DETAIL_MIN, room - LIST_MIN) : Infinity;
+    pane.style.height = `${Math.round(Math.max(DETAIL_MIN, Math.min(most, st.detailHeight)))}px`;
+  }
+
+  /** The splitter between the table and the detail pane. Dragging it up
+   *  gives the files more room; the height is saved when it is let go. */
+  function startDetailResize(event) {
+    const split = event.target.closest("[data-tr-split]");
+    if (!split || event.button !== 0) return;
+    event.preventDefault();
+    const pane = st.host.querySelector("[data-tr-detail]");
+    const startY = event.clientY;
+    const startHeight = pane.getBoundingClientRect().height;
+    document.body.classList.add("tr-resizing-detail");
+    split.classList.add("on");
+    const move = (next) => {
+      st.detailHeight = startHeight - (next.clientY - startY);
+      applyDetailHeight();
+    };
+    const end = () => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", end);
+      document.removeEventListener("pointercancel", end);
+      document.body.classList.remove("tr-resizing-detail");
+      split.classList.remove("on");
+      // What was actually drawn, not what the pointer asked for past a limit.
+      st.detailHeight = Math.round(pane.getBoundingClientRect().height);
+      saveLayout();
+    };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", end, { once: true });
+    document.addEventListener("pointercancel", end, { once: true });
+  }
+
+  /** Arrow keys on the focused splitter, and a double-click to put it back. */
+  function nudgeDetail(by) {
+    const pane = st.host.querySelector("[data-tr-detail]");
+    st.detailHeight = by == null ? DETAIL_HEIGHT : pane.getBoundingClientRect().height + by;
+    applyDetailHeight();
+    st.detailHeight = Math.round(pane.getBoundingClientRect().height);
+    saveLayout();
+  }
+
+  /** Shuts the detail pane by letting go of the selection; clicking a row
+   *  opens it again. */
+  function closeDetail() {
+    st.selectedIds.clear();
+    st.selected = null;
+    st.selectionAnchor = null;
+    drawRows();
+    drawDetail();
+  }
+
   function startColumnReorder(event) {
     const source = event.target.closest(".tr-head > [data-col]");
     if (!source || event.button !== 0 || event.target.closest("[data-tr-column-resize]")) return;
@@ -1514,7 +1594,9 @@ Click to open in Explorer` : "";
   function drawDetail() {
     const pane = st.host.querySelector("[data-tr-detail]");
     if (!pane) return;
+    const split = st.host.querySelector("[data-tr-split]");
     const row = (st.snap?.torrents || []).find((t) => t.id === st.selected);
+    if (split) split.hidden = !row;
     if (!row) {
       pane.hidden = true;
       pane.innerHTML = "";
@@ -1536,7 +1618,10 @@ Click to open in Explorer` : "";
 
     const pct = percent(row);
     const paused = row.state === "paused";
-    if (pane.hidden) pane.hidden = false;
+    if (pane.hidden) {
+      pane.hidden = false;
+      applyDetailHeight();
+    }
 
     // Built once. A snapshot arrives three times a second, and replacing this
     // markup each time would destroy and recreate the very buttons the pointer
@@ -1546,14 +1631,18 @@ Click to open in Explorer` : "";
     // older version of this renderer in the DOM. Rebuild when any required
     // control is absent; otherwise one missing node would throw on every
     // snapshot and make both refreshing and row selection appear dead.
-    if (!pane.querySelector("[data-tr-dhead]")) {
+    if (!pane.querySelector("[data-tr-dside]")) {
       // Two columns: what this torrent is and what you can do to it on the
       // left, its contents on the right. The file list is the part that wants
       // room and the part you read down, so it gets the width and its own
       // scroll rather than pushing the buttons off the top.
       pane.innerHTML = `
+        <div class="tr-dside" data-tr-dside>
         <div class="tr-dhead" data-tr-dhead>
-          <div class="tr-dtitle"><strong></strong><small></small></div>
+          <div class="tr-dtop">
+            <div class="tr-dtitle"><strong></strong><small></small></div>
+            <button type="button" class="tr-dclose" data-tr-dclose title="Close the details" aria-label="Close the details">${icon("close")}</button>
+          </div>
           <div class="tr-dactions">
             <button type="button" class="btn" data-tr-open>${icon("folder")}<span>Open folder</span></button>
             <button type="button" class="btn" data-tr-toggle><span class="ms" aria-hidden="true">pause</span><span>Pause</span></button>
@@ -1585,6 +1674,7 @@ Click to open in Explorer` : "";
             <button type="button" class="btn" data-tr-derror-copy>${icon("content_copy")}<span>Copy</span></button>
           </div>
           <pre data-tr-derror-text></pre>
+        </div>
         </div>
         <div class="tr-files" data-tr-files>
           <div class="tr-fhead" data-tr-fhead>
@@ -2640,6 +2730,11 @@ Click to open in Explorer` : "";
   }
 
   function keydown(event) {
+    if (event.target.matches("[data-tr-split]") && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+      event.preventDefault();
+      nudgeDetail((event.key === "ArrowUp" ? 1 : -1) * (event.shiftKey ? 80 : 20));
+      return;
+    }
     const row = event.target.closest("[data-tr-id]");
     if (row && event.target === row && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault();
@@ -2655,6 +2750,8 @@ Click to open in Explorer` : "";
 
   function click(event) {
     const t = event.target;
+
+    if (t.closest("[data-tr-dclose]")) return void closeDetail();
 
     const heading = t.closest(".tr-head > [data-col]");
     if (heading && !t.closest("[data-tr-column-resize]")) {
@@ -2869,6 +2966,8 @@ Click to open in Explorer` : "";
 
     const file = t.closest("[data-tr-file]");
     if (file) {
+      // The button coming up at the end of a drag-out is not a click on the row.
+      if (Date.now() - fileDragEnded < 400) return;
       const index = Number(file.dataset.trFile);
       if (t.matches(".tr-fcheck")) return toggleFile(index, t.checked);
       return selectFile(index, event);
@@ -3495,6 +3594,58 @@ Click to open in Explorer` : "";
       st.fileAnchor = index;
     }
     drawFiles();
+  }
+
+  /** Dragging a file row hands the real file to Windows, so it can be dropped
+   *  on a browser's upload box, Explorer, the desktop or any program that
+   *  takes files. The paths are looked up as soon as the button goes down, so
+   *  they are ready by the time the pointer has moved far enough to count as a
+   *  drag — the drag has to start while the button is still held. Dragging a
+   *  row that is part of a multi-selection takes the whole selection.
+   *
+   *  Only ever a copy: the torrent is still seeding from where the file is, and
+   *  Explorer would otherwise turn a drop on the same drive into a move. */
+  let fileDrag = null;
+  let fileDragEnded = 0;
+  let fileDragOut = false;
+  function watchFileDrag(event) {
+    fileDrag = null;
+    const row = event.target.closest("[data-tr-file]");
+    if (event.button !== 0 || !row || event.target.matches(".tr-fcheck") || st.selected == null) return;
+    const index = Number(row.dataset.trFile);
+    const indices = st.fileSelection.has(index) && st.fileSelection.size > 1 ? [...st.fileSelection] : [index];
+    const id = st.selected;
+    fileDrag = {
+      x: event.clientX,
+      y: event.clientY,
+      paths: Promise.all(indices.map((i) => invoke("torrent_file_path", { id, index: i }).catch(() => null))),
+    };
+  }
+  async function maybeFileDrag(event) {
+    if (!fileDrag) return;
+    if (!(event.buttons & 1)) { fileDrag = null; return; }
+    if (Math.hypot(event.clientX - fileDrag.x, event.clientY - fileDrag.y) < 6) return;
+    const pending = fileDrag.paths;
+    fileDrag = null;
+    const resolved = await pending;
+    const paths = resolved.filter((file) => file?.path && file.exists !== false).map((file) => file.path);
+    if (!paths.length) {
+      return note(resolved.length === 1 ? `${resolved[0]?.name || "That file"} has not been downloaded yet.` : "None of those files have been downloaded yet.");
+    }
+    const skipped = resolved.length - paths.length;
+    // Windows draws its own cursor and tells this window nothing until the drop
+    // lands, so the line says the drag was taken.
+    note(paths.length === 1 ? `Dragging ${resolved.find((f) => f?.path === paths[0])?.name || "file"}` : `Dragging ${paths.length} files${skipped ? ` (${skipped} not downloaded yet)` : ""}`);
+    fileDragOut = true;
+    try {
+      const effect = await invoke("explorer_drag_out", { paths, copyOnly: true });
+      note(effect === "none" ? "Nothing accepted the drop." : paths.length === 1 ? "File dropped." : `${paths.length} files dropped.`);
+    } catch (error) {
+      note(String(error));
+    } finally {
+      fileDragOut = false;
+      fileDragEnded = Date.now();
+    }
   }
 
   /** Opens a file with whatever Windows opens it with. Only makes sense once

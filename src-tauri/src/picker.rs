@@ -140,6 +140,28 @@ pub fn save_png_file(
     save_file(owner, &spec, default_name, &png)
 }
 
+/// Save As for the troubleshooting zip. It opens in Downloads the first time,
+/// which is where people look for a file they are about to attach somewhere.
+pub fn save_zip_file(
+    owner: isize,
+    folder: Option<String>,
+    default_name: String,
+    zip: Vec<u8>,
+) -> Result<Option<String>, String> {
+    let spec = SaveAs {
+        title: "Save troubleshooting files",
+        kind: "Zip archive",
+        pattern: "*.zip",
+        extension: "zip",
+        any_file: false,
+        folder,
+        client: Some(TROUBLESHOOT_CLIENT),
+    };
+    save_file(owner, &spec, default_name, &zip)
+}
+
+const TROUBLESHOOT_CLIENT: GUID = GUID::from_u128(0x2b7e_91c4_5a0d_4f63_8e19_c3d7_06a2_5b48);
+
 fn save_file(
     owner: isize,
     spec: &SaveAs<'_>,

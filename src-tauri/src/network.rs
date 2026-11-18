@@ -745,7 +745,7 @@ pub fn start(app: AppHandle, options: StartOptions) -> Result<Started, String> {
     let token = TOKEN.fetch_add(1, Ordering::SeqCst) + 1;
     RUNNING.store(true, Ordering::SeqCst);
     {
-        let mut session = session().lock().unwrap();
+        let mut session = session().lock().unwrap_or_else(|e| e.into_inner());
         session.child = Some(child);
         session.command = command.clone();
         session.unparsed = 0;
@@ -831,7 +831,7 @@ fn finish_block(
 ) {
     let parsed = parse_block(block);
     block.clear();
-    let mut session = session().lock().unwrap();
+    let mut session = session().lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut frame) = parsed else {
         session.unparsed += 1;
         return;
@@ -891,7 +891,7 @@ pub fn stop() -> Result<String, String> {
     RUNNING.store(false, Ordering::SeqCst);
     TOKEN.fetch_add(1, Ordering::SeqCst);
     {
-        let mut session = session().lock().unwrap();
+        let mut session = session().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(mut child) = session.child.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -899,14 +899,14 @@ pub fn stop() -> Result<String, String> {
     }
     let _ = pktmon_say(&["stop"]);
     clear_filters();
-    let kept = session().lock().unwrap().ring.len();
+    let kept = session().lock().unwrap_or_else(|e| e.into_inner()).ring.len();
     Ok(format!("{kept} frames held"))
 }
 
 /// Empties the ring without touching the capture. What has already been shown
 /// goes; what arrives next still arrives.
 pub fn clear() {
-    let mut session = session().lock().unwrap();
+    let mut session = session().lock().unwrap_or_else(|e| e.into_inner());
     session.ring.clear();
     session.held = 0;
     session.bytes_in = 0;
@@ -918,13 +918,13 @@ pub fn clear() {
 /// capture that was already running, so the page is never blank over a session
 /// that has been collecting for an hour.
 pub fn backlog(limit: usize) -> Vec<Frame> {
-    let session = session().lock().unwrap();
+    let session = session().lock().unwrap_or_else(|e| e.into_inner());
     let start = session.ring.len().saturating_sub(limit);
     session.ring[start..].to_vec()
 }
 
 pub fn rate() -> Rate {
-    let session = session().lock().unwrap();
+    let session = session().lock().unwrap_or_else(|e| e.into_inner());
     Rate {
         bytes_in: session.bytes_in,
         bytes_out: session.bytes_out,
@@ -936,7 +936,7 @@ pub fn rate() -> Rate {
 }
 
 pub fn command_line() -> String {
-    session().lock().unwrap().command.clone()
+    session().lock().unwrap_or_else(|e| e.into_inner()).command.clone()
 }
 
 /* ----------------------------------------------------------------- pcapng */
@@ -979,7 +979,7 @@ fn end_options(out: &mut Vec<u8>) {
 /// etl2pcap` because a real-time session has no .etl to convert: these are the
 /// bytes exactly as they were captured, and nothing is invented on the way out.
 pub fn export(path: Option<String>) -> Result<Exported, String> {
-    let frames = session().lock().unwrap().ring.clone();
+    let frames = session().lock().unwrap_or_else(|e| e.into_inner()).ring.clone();
     let with_bytes: Vec<&Frame> = frames.iter().filter(|f| !f.bytes.is_empty()).collect();
     if with_bytes.is_empty() {
         return Err(if frames.is_empty() {

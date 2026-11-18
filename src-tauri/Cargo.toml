@@ -84,7 +84,8 @@ windows = { version = "0.62", features = [
   "Win32_NetworkManagement_Ndis",
   "Win32_UI_WindowsAndMessaging",
   "Win32_UI_Accessibility",
-  "Win32_System_Variant"
+  "Win32_System_Variant",
+  "Win32_System_Recovery"
 ] }
 webview2-com = "0.39.1"
 # `#[implement]` for the drag source handed to Windows when files are dragged out.
@@ -99,7 +100,10 @@ tauri-plugin-global-shortcut = "2"
 codegen-units = 1
 lto = true
 opt-level = "s"
-panic = "abort"
+# Unwind, not abort: a panic in a command or a background thread ends that
+# thread and nothing else (`off_thread` hands its caller `None`). With abort,
+# any panic anywhere took the whole app down. See `recovery.rs`.
+panic = "unwind"
 strip = true
 
 # Debug builds are never shipped and never stepped through in a debugger —

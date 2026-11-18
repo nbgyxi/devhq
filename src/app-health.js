@@ -18,7 +18,73 @@
 
   const st = { report: null, filter: "all", drawn: "" };
   let root = null;
+  let body = null;
   let timer = 0;
+
+  // Troubleshooting files. The panel is built once and only its text changes,
+  // so the once-a-second redraw of the log below never replaces the button
+  // while it is being pressed.
+  const pack = { busy: false, phase: "", result: "", tone: "" };
+  let packNode = null;
+  let unlistenPhase = null;
+  const engine = () => {
+    const found = /Edg\/([\d.]+)/.exec(navigator.userAgent) || /Chrome\/([\d.]+)/.exec(navigator.userAgent);
+    return found ? `WebView2 ${found[1]}` : "";
+  };
+
+  function packMarkup() {
+    return `
+      <div class="health-now health-pack">
+        <strong>Troubleshooting files</strong>
+        <small>One zip to send to the developer when WinT crashes, freezes or misbehaves: WinT's health log, the crash reports and events Windows recorded for it, and a short description of this PC. User names, the PC's name, email addresses and anything that looks like a password are taken out first.</small>
+        <div class="health-pack-row">
+          <button class="btn" data-health-pack>${icon("folder_zip")}<span data-health-pack-label>Collect troubleshooting files</span></button>
+          <span class="health-pack-status" data-health-pack-status role="status"></span>
+        </div>
+      </div>`;
+  }
+
+  function paintPack() {
+    if (!packNode?.isConnected) return;
+    const button = packNode.querySelector("[data-health-pack]");
+    const label = packNode.querySelector("[data-health-pack-label]");
+    const status = packNode.querySelector("[data-health-pack-status]");
+    button.disabled = pack.busy;
+    label.textContent = pack.busy ? "Collecting…" : "Collect troubleshooting files";
+    status.textContent = pack.busy ? pack.phase : pack.result;
+    status.dataset.tone = pack.busy ? "" : pack.tone;
+  }
+
+  async function collect() {
+    if (pack.busy) return;
+    pack.busy = true;
+    pack.phase = "Starting";
+    paintPack();
+    window.wintWork?.beginWork("health:pack", "Collecting troubleshooting files");
+    try {
+      unlistenPhase ??= await window.__TAURI__.event.listen("troubleshoot:phase", (event) => {
+        if (!pack.busy) return;
+        pack.phase = String(event.payload || "");
+        window.wintWork?.updateWork("health:pack", pack.phase);
+        paintPack();
+      });
+      const saved = await invoke("troubleshoot_collect", { webview: engine() });
+      if (saved) {
+        pack.result = `Saved as ${saved}. Explorer has it selected, ready to attach.`;
+        pack.tone = "ok";
+      } else {
+        pack.result = "Not saved: Save As was closed.";
+        pack.tone = "";
+      }
+    } catch (error) {
+      pack.result = `Could not collect them: ${error}`;
+      pack.tone = "bad";
+    } finally {
+      pack.busy = false;
+      window.wintWork?.endWork("health:pack");
+      paintPack();
+    }
+  }
 
   // Lines are `HH:MM:SS.mmmZ kind text`. The kinds worth colouring are the
   // ones that mean something went wrong.
@@ -27,6 +93,7 @@
     PANIC: { tone: "bad", what: "a panic" },
     slow: { tone: "warn", what: "work that took its time" },
     recovered: { tone: "ok", what: "the window came back" },
+    recovery: { tone: "warn", what: "WinT reloading or restarting itself" },
     start: { tone: "", what: "a session started" },
     ui: { tone: "", what: "a note from the window" },
   };
@@ -46,10 +113,10 @@
   }
 
   function draw() {
-    if (!root?.isConnected) return;
+    if (!body?.isConnected) return;
     const report = st.report;
     if (!report) {
-      root.innerHTML = '<div class="win-empty">Reading the health log…</div>';
+      body.innerHTML = '<div class="win-empty">Reading the health log…</div>';
       return;
     }
     const lines = report.lines.filter((line) => st.filter === "all" || kindOf(line) === st.filter);
@@ -66,7 +133,7 @@
         }).join("")
       : `<div class="win-empty">Nothing of that kind has been recorded.</div>`;
 
-    root.innerHTML = `
+    body.innerHTML = `
       <div class="win-status" data-tone="${report.lines.some((l) => ["PANIC", "STUCK"].includes(kindOf(l))) ? "warn" : "ok"}">
         ${esc(summary(report.lines))} · this session has been running ${minutes < 1 ? "less than a minute" : `${minutes} minute${minutes === 1 ? "" : "s"}`}
       </div>
@@ -93,7 +160,7 @@
       st.report = await invoke("health_report");
       draw();
     } catch (error) {
-      if (root?.isConnected) root.innerHTML = `<div class="win-empty">${esc(String(error))}</div>`;
+      if (body?.isConnected) body.innerHTML = `<div class="win-empty">${esc(String(error))}</div>`;
     }
   }
 
@@ -101,6 +168,7 @@
     if (event.target.closest("[data-health-reveal]")) {
       invoke("health_reveal").catch(() => {});
     }
+    if (event.target.closest("[data-health-pack]")) collect();
   }
 
   function change(event) {
@@ -116,6 +184,11 @@
     root = node;
     root.onclick = click;
     root.onchange = change;
+    root.innerHTML = `${packMarkup()}<div data-health-body></div>`;
+    packNode = root.querySelector(".health-pack");
+    body = root.querySelector("[data-health-body]");
+    st.drawn = "";
+    paintPack();
     draw();
     load();
     clearInterval(timer);

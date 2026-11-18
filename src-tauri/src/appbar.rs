@@ -5,10 +5,13 @@
 //! Windows shrinks the work area, so maximizing an application stops at the
 //! sidebar instead of disappearing under it.
 //!
-//! Every call here is a handful of user32/shell32 messages, which is why they
-//! are allowed on the main thread: they cost microseconds and none of them
-//! touch the disk, the network or another process. The one expensive step,
-//! building the webview, goes off-thread like every other window in the app.
+//! Docking and placing the bar are a handful of user32/shell32 messages made on
+//! the main thread, because the subclass and the appbar belong to the thread
+//! that owns the window. Every `SHAppBarMessage` is still a blocking round trip
+//! into Explorer, though, so anything that recurs on a timer or a shell
+//! notification — reading or setting the taskbar's auto-hide state — runs on a
+//! thread of its own. Building the webview goes off-thread like every other
+//! window in the app.
 //!
 //! Two things must always be undone, or they outlive the process and leave a
 //! broken desktop behind until the user logs out: the reserved work area
@@ -456,8 +459,43 @@ unsafe fn set_taskbar_state(value: u32) {
     shell(ABM_SETSTATE, "SHAppBarMessage ABM_SETSTATE", &mut data);
 }
 
+/// Make sure the real taskbar is auto-hidden, from a thread of its own.
+///
+/// Reading and setting the taskbar's state are `SHAppBarMessage` round trips
+/// into Explorer with no timeout, and neither needs our window: the taskbar
+/// is addressed, not the appbar. They were made from the drawing thread on
+/// every `ABN_STATECHANGE`, every unlock and every two-second re-check, so a
+/// moment of Explorer being busy froze the rail for as long as Explorer took
+/// (7.9 s in one health log, stuck in `ABM_GETSTATE`).
+///
+/// Only one check runs at a time: if Explorer is hung, the re-checks that
+/// follow are dropped rather than piling up threads behind it.
+fn reassert_auto_hide() {
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    if RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("wint-taskbar-state".into())
+        .spawn(|| {
+            // Docking may have ended, or the setting changed, while this
+            // thread was starting. Undocking puts the taskbar back on the
+            // window thread; hiding it again behind that would undo it.
+            if HOST.load(Ordering::SeqCst) != 0 && HIDE_TASKBAR.load(Ordering::SeqCst) {
+                unsafe { auto_hide_taskbar() };
+            }
+            RUNNING.store(false, Ordering::SeqCst);
+        });
+    if spawned.is_err() {
+        RUNNING.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Ask the real taskbar to auto-hide, remembering what it was so undocking can
 /// put it back. A taskbar that is already auto-hidden is left alone.
+///
+/// Blocks on Explorer: never call this from the drawing thread — go through
+/// `reassert_auto_hide`.
 unsafe fn auto_hide_taskbar() {
     let now = taskbar_state();
     if now & ABS_AUTOHIDE != 0 {
@@ -617,7 +655,9 @@ unsafe fn show_tray_windows() {
 /// strip it used to occupy reserved and empty — and the windows themselves
 /// when the user asked for the complete hide.
 unsafe fn hide_taskbar_now(hwnd: HWND) {
-    auto_hide_taskbar();
+    // Off-thread: this also runs when a restarted Explorer announces itself,
+    // which is exactly when it is slowest to answer.
+    reassert_auto_hide();
     if HIDE_COMPLETELY.load(Ordering::SeqCst) {
         hide_tray_windows();
         // After hiding, not before: the hook would otherwise hear our own
@@ -635,9 +675,7 @@ unsafe fn ensure_taskbar_hidden(hwnd: HWND) {
     if !HIDE_TASKBAR.load(Ordering::SeqCst) {
         return;
     }
-    if taskbar_state() & ABS_AUTOHIDE == 0 {
-        auto_hide_taskbar();
-    }
+    reassert_auto_hide();
     // Explorer shows its taskbar windows again after an unlock even when
     // nothing cleared auto-hide, so this is checked on its own.
     if HIDE_COMPLETELY.load(Ordering::SeqCst) {
@@ -1122,7 +1160,8 @@ fn apply(edge: Option<String>, width: Option<u32>) {
 
 #[tauri::command]
 pub async fn sidebar_state() -> SidebarState {
-    state()
+    // `state` asks Explorer for the taskbar's state, which can take seconds.
+    off_thread(state).await.unwrap_or_default()
 }
 
 /// Draw a cheap, click-through outline at the width a sidebar drag would use.
@@ -1243,7 +1282,7 @@ pub async fn sidebar_open(
     })
     .await?;
     window.show().map_err(|e| e.to_string())?;
-    Ok(changed(&app))
+    Ok(changed(&app).await)
 }
 
 /// Change the edge, the width or the taskbar setting of a sidebar that is
@@ -1281,7 +1320,7 @@ pub async fn sidebar_configure(
             .await?;
         }
     }
-    Ok(changed(&app))
+    Ok(changed(&app).await)
 }
 
 /// Give the work area back, put the taskbar the way we found it, and close the
@@ -1299,15 +1338,27 @@ pub async fn sidebar_close(app: AppHandle) -> Result<SidebarState, String> {
     } else {
         teardown();
     }
-    Ok(changed(&app))
+    Ok(changed(&app).await)
 }
 
 /// Tell every page what the sidebar looks like now. The rail and the Docked
 /// Sidebar tool page can each change it, and each must follow what the other
 /// did without asking.
-fn changed(app: &AppHandle) -> SidebarState {
+///
+/// Hiding the taskbar is no longer done on the window thread, so it may still
+/// be under way. It is done here as well, and waited for, so what this reports
+/// is the taskbar after the change rather than before it. Asking twice is
+/// harmless: a taskbar already auto-hidden is left alone.
+async fn changed(app: &AppHandle) -> SidebarState {
     use tauri::Emitter;
-    let now = state();
+    let now = off_thread(|| {
+        if HOST.load(Ordering::SeqCst) != 0 && HIDE_TASKBAR.load(Ordering::SeqCst) {
+            unsafe { auto_hide_taskbar() };
+        }
+        state()
+    })
+    .await
+    .unwrap_or_default();
     remember_geometry(now.edge.clone(), now.width);
     let _ = app.emit("sidebar:state", now.clone());
     now

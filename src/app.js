@@ -3282,6 +3282,16 @@ function renderVersionButton() {
  *  package then hashes this exe on a second trip - disk work - so What's new
  *  can name the current release's checksum. Dev builds skip that entirely. */
 function loadAppVersion() {
+  // A WinT that came back after a crash says so in the idle line for a minute,
+  // rather than reappearing as if nothing had happened.
+  invoke("app_recovered")
+    .then((recovered) => {
+      if (!recovered) return;
+      state.recoveredNote = "WinT restarted itself after a crash. The cause is in the health log.";
+      markDirty("activity");
+      setTimeout(() => { state.recoveredNote = ""; markDirty("activity"); }, 60000);
+    })
+    .catch(() => {});
   invoke("app_version")
     .then((version) => {
       state.appVersion = String(version);
@@ -5645,44 +5655,56 @@ function schedule() {
   });
 }
 
+/** Draws one region and keeps going if it throws. A render that throws used
+ *  to end the whole flush: every region after it stayed stale, and because
+ *  `dirty` had already been cleared nothing would ever draw them again. The
+ *  fault is still reported - just not at the price of the rest of the window. */
+function drawSafely(region, draw) {
+  try {
+    draw();
+  } catch (error) {
+    window.wintErrorLog?.report(`render ${region}`, error);
+  }
+}
+
 function flushRender() {
   const regions = new Set(dirty);
   const cards = new Set(dirtyCards);
   dirty.clear();
   dirtyCards.clear();
 
-  if (regions.has("grid")) renderGrid();
-  else for (const path of cards) patchCard(path);
+  if (regions.has("grid")) drawSafely("grid", renderGrid);
+  else for (const path of cards) drawSafely("card", () => patchCard(path));
 
-  if (regions.has("toolbar")) renderToolbar();
-  if (regions.has("activity")) renderActivity();
-  if (regions.has("filters")) renderFilters();
-  if (regions.has("banner")) renderBanner();
+  if (regions.has("toolbar")) drawSafely("toolbar", renderToolbar);
+  if (regions.has("activity")) drawSafely("activity", renderActivity);
+  if (regions.has("filters")) drawSafely("filters", renderFilters);
+  if (regions.has("banner")) drawSafely("banner", renderBanner);
   if (regions.has("summary")) {
-    renderSummary();
+    drawSafely("summary", renderSummary);
     // The idle line says the same things the summary does, so it is stale
     // exactly when the summary is.
-    if (!work.size) renderActivity();
+    if (!work.size) drawSafely("activity", renderActivity);
   }
-  if (regions.has("detail")) renderDetail();
-  if (regions.has("settings")) renderSettings();
-  if (regions.has("ports")) renderPorts();
-  if (regions.has("dns")) window.wintDns?.render();
-  if (regions.has("hosts")) window.wintHosts?.render();
-  if (regions.has("network")) window.wintNetwork?.render();
-  if (regions.has("path-ping")) window.wintPathPing?.render();
-  if (regions.has("explorer")) window.wintExplorer?.render();
-  if (regions.has("disk-space")) window.wintDiskSpace?.render();
+  if (regions.has("detail")) drawSafely("detail", renderDetail);
+  if (regions.has("settings")) drawSafely("settings", renderSettings);
+  if (regions.has("ports")) drawSafely("ports", renderPorts);
+  if (regions.has("dns")) drawSafely("dns", () => window.wintDns?.render());
+  if (regions.has("hosts")) drawSafely("hosts", () => window.wintHosts?.render());
+  if (regions.has("network")) drawSafely("network", () => window.wintNetwork?.render());
+  if (regions.has("path-ping")) drawSafely("path-ping", () => window.wintPathPing?.render());
+  if (regions.has("explorer")) drawSafely("explorer", () => window.wintExplorer?.render());
+  if (regions.has("disk-space")) drawSafely("disk-space", () => window.wintDiskSpace?.render());
   if (regions.has("tools")) {
-    window.wintUtilTools?.render();
-    syncToolHeads();
+    drawSafely("tools", () => window.wintUtilTools?.render());
+    drawSafely("tool heads", syncToolHeads);
   }
-  if (regions.has("pins")) renderPins();
+  if (regions.has("pins")) drawSafely("pins", renderPins);
   // Home repeats a little of everything - the scan, pins, favorites - so it
   // follows those regions while it is on screen. It only rewrites the
   // sections whose markup actually changed.
   if (state.activeView === "overview" && ["home", "grid", "summary", "pins", "toolbar"].some((region) => regions.has(region))) {
-    window.wintHome?.render();
+    drawSafely("home", () => window.wintHome?.render());
   }
 }
 
@@ -6031,6 +6053,7 @@ function renderProgress() {
 
 /** What the app has to say for itself when it is not doing anything. */
 function idleDetail() {
+  if (state.recoveredNote) return state.recoveredNote;
   if (state.activeView === "overview" && window.wintHome) return window.wintHome.idleDetail();
   return "";
 }

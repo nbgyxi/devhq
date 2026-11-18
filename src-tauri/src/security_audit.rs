@@ -808,12 +808,12 @@ pub async fn audit_begin(elevated: bool, stamp: String) -> Result<AuditStart, St
         let already = crate::dns::is_elevated();
         // Scanning again with the same rights keeps the administrator session,
         // so a second scan does not mean a second Windows prompt.
-        let running = broker().lock().unwrap().is_some();
+        let running = broker().lock().unwrap_or_else(|e| e.into_inner()).is_some();
         if !elevated || already {
             stop_broker();
         } else if !running {
             let started = start_broker(&dir)?;
-            *broker().lock().unwrap() = Some(started);
+            *broker().lock().unwrap_or_else(|e| e.into_inner()) = Some(started);
         }
         Ok(AuditStart {
             dir: dir.to_string_lossy().into_owned(),
@@ -837,7 +837,7 @@ pub async fn audit_end() {
 }
 
 fn stop_broker() {
-    broker().lock().unwrap().take();
+    broker().lock().unwrap_or_else(|e| e.into_inner()).take();
 }
 
 #[derive(Clone, Serialize)]
@@ -894,7 +894,7 @@ pub async fn audit_turn(
         } else {
             prompt
         };
-        let elevated = broker().lock().unwrap().is_some();
+        let elevated = broker().lock().unwrap_or_else(|e| e.into_inner()).is_some();
         if elevated {
             run_elevated(app, run, line, prompt, dir)
         } else {
@@ -980,7 +980,7 @@ pub async fn audit_cancel() {
 }
 
 fn cancel_now() {
-    if let Some(child) = direct().lock().unwrap().as_mut() {
+    if let Some(child) = direct().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         // `cmd.exe` is the child; the agent is its child. The tree has to go.
         let _ = Command::new("taskkill.exe")
             .args(["/T", "/F", "/PID", &child.id().to_string()])
@@ -988,7 +988,7 @@ fn cancel_now() {
             .output();
         let _ = child.kill();
     }
-    if let Some(broker) = broker().lock().unwrap().as_mut() {
+    if let Some(broker) = broker().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         let _ = broker.requests.write_all(b"cancel\n");
     }
 }
@@ -1026,7 +1026,7 @@ fn run_direct(
     }
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    *direct().lock().unwrap() = Some(child);
+    *direct().lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
 
     std::thread::spawn(move || {
         let errors = std::thread::spawn(move || {
@@ -1075,7 +1075,7 @@ fn run_elevated(
     dir: String,
 ) -> Result<(), String> {
     let (mut replies, mut requests) = {
-        let mut guard = broker().lock().unwrap();
+        let mut guard = broker().lock().unwrap_or_else(|e| e.into_inner());
         let broker = guard
             .as_mut()
             .ok_or("The administrator session has ended.")?;
@@ -1137,7 +1137,7 @@ fn run_elevated(
         }
         match ended {
             Some((code, error)) => {
-                if let Some(broker) = broker().lock().unwrap().as_mut() {
+                if let Some(broker) = broker().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
                     broker.replies = Some(replies);
                 }
                 let _ = app.emit("audit:end", TurnEnd { run, code, error });

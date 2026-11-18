@@ -52,6 +52,7 @@ mod path_ping;
 mod picker;
 pub mod procs;
 mod recent;
+mod recovery;
 #[cfg(windows)]
 mod reg;
 #[cfg(windows)]
@@ -68,6 +69,8 @@ mod term;
 mod time_tracker;
 pub mod todo;
 mod tool_window;
+#[cfg(windows)]
+mod troubleshoot;
 mod torrent;
 mod torrent_assoc;
 mod torrent_pace;
@@ -1017,6 +1020,38 @@ async fn health_reveal() -> Result<(), String> {
     .unwrap_or_else(|| Err("Could not open Explorer.".into()))
 }
 
+/// Packs the health log, what Windows recorded about WinT's crashes and a
+/// description of this PC into one zip, then asks where to save it. Each step
+/// is announced as `troubleshoot:phase` so the page can name it. Returns the
+/// saved path, or `None` when Save As was dismissed.
+#[cfg(windows)]
+#[tauri::command]
+async fn troubleshoot_collect(
+    app: AppHandle,
+    window: tauri::Window,
+    webview: String,
+) -> Result<Option<String>, String> {
+    let owner = window.hwnd().map(|hwnd| hwnd.0 as isize).unwrap_or(0);
+    let version = app.package_info().version.to_string();
+    off_thread(move || {
+        let announce = |text: &str| {
+            let _ = app.emit("troubleshoot:phase", text);
+        };
+        let zip = troubleshoot::collect(&version, &webview, troubleshoot::Phase(&announce))?;
+        announce("Choosing where to save it");
+        let downloads = std::env::var_os("USERPROFILE")
+            .map(|home| std::path::PathBuf::from(home).join("Downloads").display().to_string());
+        let saved = picker::save_zip_file(owner, downloads, troubleshoot::default_name(&version), zip)?;
+        if let Some(path) = &saved {
+            health::record("troubleshoot", "troubleshooting files saved");
+            let _ = startup::reveal(path);
+        }
+        Ok(saved)
+    })
+    .await
+    .unwrap_or_else(|| Err("Collecting the troubleshooting files failed.".into()))
+}
+
 /// A line from the front end, so what the window was doing sits in the same
 /// log as what the backend was doing when it stopped answering.
 #[tauri::command]
@@ -1539,6 +1574,13 @@ struct ScanDone {
 #[tauri::command]
 fn app_version(app: AppHandle) -> String {
     app.package_info().version.to_string()
+}
+
+/// True when this WinT was started to replace one that crashed, so the status
+/// bar can say so instead of the app reappearing without a word.
+#[tauri::command]
+fn app_recovered() -> bool {
+    recovery::recovered()
 }
 
 /// True only for binaries built by `package-msix.ps1`, which sets
@@ -2631,7 +2673,15 @@ async fn explorer_clipboard_get() -> Result<Option<explorer::Clip>, String> {
 /// window keeps drawing while the drag is in the air; this command itself only
 /// waits for the answer, off the window's thread like every other one.
 #[tauri::command]
-async fn explorer_drag_out(app: AppHandle, paths: Vec<String>) -> Result<String, String> {
+async fn explorer_drag_out(
+    app: AppHandle,
+    paths: Vec<String>,
+    copy_only: Option<bool>,
+) -> Result<String, String> {
+    // `copy_only` is for files something else still needs where they are, such
+    // as a torrent that is seeding them: Explorer turns a same-drive drop into
+    // a move unless the source says a copy is all it offers.
+    let copy_only = copy_only.unwrap_or(false);
     #[cfg(windows)]
     {
         // Everything that touches the disk happens here, off the window's
@@ -2643,7 +2693,7 @@ async fn explorer_drag_out(app: AppHandle, paths: Vec<String>) -> Result<String,
             .unwrap_or_else(|| Err("The drag could not be prepared.".into()))?;
         let (tx, rx) = std::sync::mpsc::channel();
         app.run_on_main_thread(move || {
-            let _ = tx.send(explorer::drag_run(items));
+            let _ = tx.send(explorer::drag_run(items, copy_only));
         })
         .map_err(|e| e.to_string())?;
         off_thread(move || {
@@ -2656,7 +2706,7 @@ async fn explorer_drag_out(app: AppHandle, paths: Vec<String>) -> Result<String,
     }
     #[cfg(not(windows))]
     {
-        let _ = (app, paths);
+        let _ = (app, paths, copy_only);
         Err("Dragging files out is only available on Windows.".into())
     }
 }
@@ -3367,6 +3417,9 @@ pub fn run() {
     // WinT already running - unelevated - and exit, which is the one thing it
     // exists not to do. See `term::admin_request`.
     let argv = std::env::args().collect::<Vec<_>>();
+    // A WinT started to replace one that crashed waits for that one to be
+    // gone before anything below asks for the single-instance lock.
+    recovery::before_start(&argv);
     let admin = term::admin_request(&argv);
     let is_admin = admin.is_some();
     // Windows opens a link by starting a whole new WinT with the URL on its
@@ -3404,6 +3457,9 @@ pub fn run() {
         }))
     };
     let builder = builder
+        // Every webview, whichever module builds it, gets its renderer
+        // watched and is reloaded when that renderer dies.
+        .plugin(recovery::plugin())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -3446,6 +3502,13 @@ pub fn run() {
             // the window.
             health::start(&app.package_info().version.to_string());
             health::watch(app.handle().clone());
+            // And the way back up: a relaunch from a fatal panic, and Windows
+            // asked to restart WinT after a crash it did not see coming. The
+            // one-shot administrator terminal is meant to end, so it is not
+            // brought back.
+            if admin.is_none() {
+                recovery::start();
+            }
 
             // A run that hid the taskbar and then died without undocking left
             // it hidden. Put it back before anything else can dock again.
@@ -3528,8 +3591,10 @@ pub fn run() {
             }
 
             let open = MenuItem::with_id(app, "tray-open", "Open WinT", true, None::<&str>)?;
+            let restart =
+                MenuItem::with_id(app, "tray-restart", "Restart WinT", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &restart, &quit])?;
             let mut tray = TrayIconBuilder::with_id("wint-tray")
                 .tooltip("WinT")
                 .menu(&menu)
@@ -3538,6 +3603,8 @@ pub fn run() {
                     let id = event.id().as_ref();
                     if id == "tray-open" {
                         show_main_window(app);
+                    } else if id == "tray-restart" {
+                        recovery::restart(app);
                     } else if id == "tray-quit" {
                         // Follow the normal close path so terminal and network
                         // sessions are cleaned up before the process exits.
@@ -3656,6 +3723,7 @@ pub fn run() {
             ai_agent_verify,
             ai_agent_signin,
             app_version,
+            app_recovered,
             feedback_submit,
             feedback_configured,
             project_run_command,
@@ -3922,6 +3990,7 @@ pub fn run() {
             media_control::media_audio_mute,
             health_report,
             health_reveal,
+            troubleshoot_collect,
             health_note,
             ui_error,
             startup_entries,
@@ -4110,6 +4179,7 @@ pub fn run() {
         ai_agent_verify,
         ai_agent_signin,
         app_version,
+        app_recovered,
         feedback_submit,
         feedback_configured,
         project_run_command,

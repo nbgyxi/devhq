@@ -268,7 +268,7 @@ pub async fn codex_send(
         // invocation inserted; otherwise the old cleanup steals and waits on
         // the new turn, leaving process ownership out of sync.
         let own_child = {
-            let mut running = running().lock().unwrap();
+            let mut running = running().lock().unwrap_or_else(|e| e.into_inner());
             if running
                 .get(&tab)
                 .is_some_and(|entry| entry.generation == generation)
@@ -367,7 +367,7 @@ fn is_session_id(value: &str) -> bool {
 #[tauri::command]
 pub async fn codex_cancel(tab: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        if let Some(mut entry) = running().lock().unwrap().remove(&tab) {
+        if let Some(mut entry) = running().lock().unwrap_or_else(|e| e.into_inner()).remove(&tab) {
             let _ = entry.child.kill();
             let _ = entry.child.wait();
         }

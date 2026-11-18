@@ -1410,7 +1410,19 @@
   paintClock();
   // The rail is resized by dragging its grip, which changes nothing this page
   // draws - but it changes what fits on a line.
-  new ResizeObserver(fitClock).observe(document.body);
+  // Only a change of width can change what fits, and the refit waits for the
+  // next frame: fitClock reflows the rail itself, and doing that inside the
+  // observer's own delivery is what makes the engine throw "ResizeObserver
+  // loop completed with undelivered notifications".
+  let fitWidth = -1;
+  let fitQueued = false;
+  new ResizeObserver((entries) => {
+    const width = Math.round(entries[entries.length - 1].contentRect.width);
+    if (width === fitWidth || fitQueued) return;
+    fitWidth = width;
+    fitQueued = true;
+    requestAnimationFrame(() => { fitQueued = false; fitClock(); });
+  }).observe(document.body);
   // Ticked every second, painted only when the minute turns: waking up often
   // enough that the rail is never a minute behind costs nothing, and the paint
   // is skipped when the text has not changed.
