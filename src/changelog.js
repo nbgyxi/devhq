@@ -16,6 +16,65 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.194.0",
+      title: "Reports on favorites, and a summary on top",
+      date: "2026-11-22",
+      changes: [
+        ["new", "Projects: an agent can now put a summary report at the top of Projects, in rich HTML with headings, lists, tables and colours. It shows what needs you first, what changed and what is fine. Fold it away, drag it taller, or hide it until the next report arrives. Claude sets it with the new set_report tool, a script with `wint cockpit report`, and an agent that only writes files with `report.html` in the cockpit folder."],
+        ["new", "Projects: the report is shown safely. No script in it ever runs, it cannot reach WinT, and it loads nothing from the internet except pictures."],
+        ["better", "Agents now report only on your favorite projects. Star a project to include it. The others are left out of what agents see, and any attempt to update one is refused."],
+        ["fix", "Projects: the favorite star is back on the cards."],
+      ],
+    },
+    {
+      version: "0.193.3",
+      title: "Simpler project cards",
+      date: "2026-11-22",
+      changes: [
+        ["better", "Projects: cards now show only the project's name, what agents have reported about it, and the Workspace, Code and Terminal buttons. The old cards, with branch, changes, tech and the last commit, are still there under the new Details view, next to Cards and Table."],
+      ],
+    },
+    {
+      version: "0.193.2",
+      title: "Claude Desktop finds WinT's tools",
+      date: "2026-11-22",
+      changes: [
+        ["fix", "Connect Claude Desktop: Claude could show no WinT tools at all. If the `wint` command had been installed before, it stayed at that old version, which does not know `wint mcp`. WinT now updates the `wint` command when you connect and whenever Projects opens, even while Claude Desktop is using it."],
+        ["fix", "Connect Claude Desktop: current versions of Claude Desktop keep their settings in a new folder (`%LOCALAPPDATA%\\Claude-Data`), so WinT was writing to the old one, which Claude no longer reads. WinT now finds the folder Claude really uses."],
+      ],
+    },
+    {
+      version: "0.193.1",
+      title: "Connect Claude Desktop in one click",
+      date: "2026-11-22",
+      changes: [
+        ["better", "Connect agents: a Connect Claude Desktop button now does the whole setup. You no longer edit a config file. WinT installs the `wint` command if it is missing and adds itself to Claude Desktop's settings, leaving the rest of them as they were and keeping a backup. It finds the settings whether Claude Desktop came from claude.ai or from the Microsoft Store, and then tells you to restart Claude and what to ask it."],
+        ["new", "`wint connect claude` does the same from a terminal."],
+      ],
+    },
+    {
+      version: "0.193.0",
+      title: "Projects is a status cockpit",
+      date: "2026-11-22",
+      changes: [
+        ["new", "Projects: every project now has a status (Incident, Attention, Healthy or No report), and a line along the top says how many need you and which one to start with. Chips beside it show only the projects in one state."],
+        ["new", "Projects: cards show what agents have reported about a project. That is a one-line summary, up to four KPIs, the newest notes, the next thing to do, and who reported it and when. Cards change by themselves the moment a report arrives, and the status bar says who updated which project."],
+        ["new", "Projects: a project's own page has a Status section with everything reported about it. You can dismiss one note or clear the lot."],
+        ["new", "Connect agents: Claude Desktop can read and update your projects over MCP with `wint mcp`. A Grok bot or any script can do the same with new `wint cockpit` commands (list, set, note, kpi, apply, clear), and an agent that can only write files can write plain JSON. The Connect agents button gives you the setup to copy and a prompt to hand the agent."],
+        ["better", "Projects: a new Status sort puts the projects that need you first. It is now the default sort, and the table has a Cockpit column. Both are switched on once for existing setups, and after that whatever you choose is kept."],
+        ["better", "Projects: a merge conflict or a branch behind its upstream shows as Attention even when no agent has reported."],
+      ],
+    },
+    {
+      version: "0.192.1",
+      title: "Link Router's chooser no longer freezes",
+      date: "2026-11-21",
+      changes: [
+        ["fix", "Link Router: the \"Open link with\" window could sometimes freeze and ignore every click. This happened when the app you clicked the link in was still busy. WinT tied itself to that app to come to the front, so it had to wait until that app was done. It no longer does that: the app that started the link now gives WinT permission to come to the front."],
+        ["fix", "Link Router: the arrow keys, Enter, the number keys and Esc now work in the chooser as soon as it appears, with no click on it first."],
+      ],
+    },
+    {
       version: "0.192.0",
       title: "Torrent details under the table",
       buildChecksum: "c4b13f62ec567a2a9b322781772a9da01df1e6172a582b76c72c6c121dbe160d",

@@ -118,6 +118,21 @@ pub fn runtime_root() -> PathBuf {
     packaged.clone().unwrap_or(plain)
 }
 
+/// True for the Store build, whose writes under AppData Windows redirects.
+pub(crate) fn is_packaged() -> bool {
+    package_family_name().is_some()
+}
+
+/// Where a file WinT wrote under `%LOCALAPPDATA%` really is, for a program
+/// outside the package to be pointed at. Unchanged for an unpackaged WinT.
+pub(crate) fn seen_from_outside(plain: &Path) -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .zip(package_family_name())
+        .and_then(|(local, family)| package_folder(plain, &local, &family))
+        .unwrap_or_else(|| plain.to_path_buf())
+}
+
 /// Where Windows actually puts `plain` for a packaged app: anything under
 /// `%LOCALAPPDATA%` lands in `Packages\<family>\LocalCache\Local` instead.
 fn package_folder(plain: &Path, local: &Path, family: &str) -> Option<PathBuf> {

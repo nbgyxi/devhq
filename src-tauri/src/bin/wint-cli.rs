@@ -172,8 +172,23 @@ Network and DNS
   netusage sample                      Which processes are using the line
   netusage watch [MINUTES]             Measure per-app TCP bytes (needs admin)
 
+Projects cockpit (what agents report about each project; see `wint help cockpit`)
+  cockpit list [--status S]           The favorite projects, worst status first
+  cockpit get PROJECT                 One project's status, KPIs and notes
+  cockpit set PROJECT [--status S] [--summary TEXT] [--next TEXT] [--by NAME]
+  cockpit note PROJECT KIND TEXT [--source SRC] [--by NAME]
+  cockpit unnote PROJECT NOTE_ID      Remove one note
+  cockpit kpi PROJECT LABEL VALUE [--tone good|warn|bad] [--by NAME]
+  cockpit apply PROJECT JSON|-        Apply an update object (- reads stdin)
+  cockpit clear PROJECT               Remove everything observed about it
+  cockpit report FILE|- [--title T] [--by NAME]  Show an HTML summary above the cards
+  cockpit report-clear                Remove the summary report
+  cockpit dir                         Print the folder the cockpit lives in
+  mcp                                 Serve the cockpit over MCP on stdio
+  connect claude                      Add this wint to Claude Desktop's config
+
 GitHub and app
-  github status                       Check gh authentication
+  github status                      Check gh authentication
   github api METHOD ENDPOINT [JSON]   Call an allow-listed GitHub API endpoint
   root                                Print the default code root
   version                             Print the CLI version
@@ -200,6 +215,145 @@ fn parsed<T: serde::de::DeserializeOwned>(value: String, name: &str) -> Result<T
     serde_json::from_str(&value).map_err(|e| format!("Invalid {name} JSON: {e}"))
 }
 
+const COCKPIT_HELP: &str = r#"WinT Projects cockpit
+
+WinT's Projects view shows, on each project's card, what agents have observed:
+a status (healthy, attention, incident, unknown), a one-line summary, the next
+thing to do, up to 8 KPIs and a list of notes. Only the projects starred as
+favorites in WinT get reports: `list` shows those, and the rest are refused.
+Any agent can write them:
+
+  wint cockpit set devhq --status attention --summary "CI red since 09:10" --by Grok
+  wint cockpit note devhq Risk "feat/x has 4 unmerged commits, 19 days old" --source GitHub --by Grok
+  wint cockpit kpi devhq "Open PRs" 3 --tone warn
+  echo {"next":"Review PR #212","addNotes":[{"kind":"Waiting","text":"..."}]} | wint cockpit apply devhq -
+
+Sending the same note (same kind and text) again updates it instead of adding
+a copy, so a bot can rerun safely. --by defaults to $WINT_AGENT, then "CLI".
+
+For Claude Desktop, add to %APPDATA%\Claude\claude_desktop_config.json:
+
+  { "mcpServers": { "wint": { "command": "<path to this wint.exe>", "args": ["mcp"] } } }
+
+The data is plain JSON in `wint cockpit dir`; README.md there describes it.
+"#;
+
+type Flags = Vec<(String, String)>;
+
+/// `--name value` pairs after the positional arguments. A flag given twice
+/// keeps both, in order.
+fn flags(args: &[String]) -> Result<(Vec<String>, Flags), String> {
+    let mut positional = Vec::new();
+    let mut named = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if let Some(name) = args[i].strip_prefix("--") {
+            let value = args
+                .get(i + 1)
+                .cloned()
+                .ok_or_else(|| format!("--{name} needs a value."))?;
+            named.push((name.to_string(), value));
+            i += 2;
+        } else {
+            positional.push(args[i].clone());
+            i += 1;
+        }
+    }
+    Ok((positional, named))
+}
+
+fn flag<'a>(named: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    named.iter().rev().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
+}
+
+fn cockpit(args: &[String], pretty: bool) -> Result<(), String> {
+    use wint_lib::cockpit;
+    let action = need(args, 1, "cockpit action")?;
+    let (pos, named) = flags(&args[2..])?;
+    let agent = flag(&named, "by")
+        .map(str::to_string)
+        .or_else(|| std::env::var("WINT_AGENT").ok().filter(|v| !v.trim().is_empty()))
+        .unwrap_or_else(|| "CLI".into());
+    let project = || need(&pos, 0, "project");
+    match action.as_str() {
+        "help" => {
+            print!("{COCKPIT_HELP}");
+            Ok(())
+        }
+        "dir" => emit(json!({ "dir": cockpit::dir()?.display().to_string() }), pretty),
+        "list" => emit(cockpit::overview(flag(&named, "status")), pretty),
+        "get" => emit(cockpit::project(&project()?)?, pretty),
+        "set" => {
+            let mut update = serde_json::Map::new();
+            for name in ["status", "summary", "next"] {
+                if let Some(value) = flag(&named, name) {
+                    update.insert(name.into(), json!(value));
+                }
+            }
+            emit(cockpit::apply_as_agent(&project()?, &Value::Object(update), &agent)?, pretty)
+        }
+        "note" => {
+            let note = json!({
+                "kind": need(&pos, 1, "note kind (Risk, Next, Waiting...)")?,
+                "text": need(&pos, 2, "note text")?,
+                "source": flag(&named, "source").unwrap_or(""),
+            });
+            emit(cockpit::apply_as_agent(&project()?, &json!({ "addNotes": [note] }), &agent)?, pretty)
+        }
+        "unnote" => emit(
+            cockpit::apply_as_agent(&project()?, &json!({ "removeNotes": [need(&pos, 1, "note id")?] }), &agent)?,
+            pretty,
+        ),
+        "kpi" => {
+            let name = project()?;
+            let label = need(&pos, 1, "KPI label")?;
+            let value = need(&pos, 2, "KPI value")?;
+            // One KPI changes; the rest are carried over in their order.
+            let mut kpis: Vec<Value> = cockpit::read(&cockpit::resolve(&name)?.key)
+                .map(|o| o.kpis.into_iter().map(|k| json!(k)).collect())
+                .unwrap_or_default();
+            let fresh = json!({ "label": label, "value": value, "tone": flag(&named, "tone").unwrap_or("") });
+            match kpis.iter_mut().find(|k| k["label"].as_str().is_some_and(|l| l.eq_ignore_ascii_case(&label))) {
+                Some(existing) => *existing = fresh,
+                None => kpis.push(fresh),
+            }
+            emit(cockpit::apply_as_agent(&name, &json!({ "kpis": kpis }), &agent)?, pretty)
+        }
+        "apply" => {
+            let source = need(&pos, 1, "update JSON (or - to read stdin)")?;
+            let text = if source == "-" {
+                let mut text = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+                    .map_err(|e| format!("Could not read stdin: {e}"))?;
+                text
+            } else {
+                source
+            };
+            let update: Value = parsed(text.trim_start_matches('\u{feff}').to_string(), "update")?;
+            emit(cockpit::apply_as_agent(&project()?, &update, &agent)?, pretty)
+        }
+        "report" => {
+            let source = need(&pos, 0, "report file (or - to read stdin, or --clear)")?;
+            let html = if source == "-" {
+                let mut text = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+                    .map_err(|e| format!("Could not read stdin: {e}"))?;
+                text
+            } else {
+                std::fs::read_to_string(&source).map_err(|e| format!("Could not read {source}: {e}"))?
+            };
+            let report = cockpit::set_report(&html, flag(&named, "title").unwrap_or(""), &agent)?;
+            emit(json!({ "shown": true, "title": report.title, "bytes": report.html.len() }), pretty)
+        }
+        "report-clear" => emit(json!({ "cleared": cockpit::clear_report()? }), pretty),
+        "clear" => {
+            let name = project()?;
+            emit(json!({ "cleared": cockpit::clear_as_agent(&name)?, "project": name }), pretty)
+        }
+        other => Err(format!("Unknown cockpit action: {other}. Run `wint help cockpit`.")),
+    }
+}
+
 fn emit<T: Serialize>(value: T, pretty: bool) -> Result<(), String> {
     let text = if pretty {
         serde_json::to_string_pretty(&value)
@@ -217,9 +371,24 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
     let command = args.first().map(String::as_str).unwrap_or("help");
     match command {
         "help" | "-h" | "--help" => {
-            print!("{HELP}");
+            if args.get(1).map(String::as_str) == Some("cockpit") {
+                print!("{COCKPIT_HELP}");
+            } else {
+                print!("{HELP}");
+            }
             Ok(())
         }
+        "cockpit" => cockpit(&args, pretty),
+        "mcp" => wint_lib::cockpit_mcp::serve(),
+        "connect" => match need(&args, 1, "what to connect (claude)")?.as_str() {
+            "claude" => {
+                let me = std::env::current_exe().map_err(|e| e.to_string())?;
+                let state = wint_lib::cockpit::connect_claude(&me)?;
+                eprintln!("Connected. Quit Claude Desktop completely (tray icon → Quit) and open it again.");
+                emit(state, pretty)
+            }
+            other => Err(format!("Cannot connect {other}. Only `wint connect claude` exists.")),
+        },
         "version" | "-V" | "--version" => {
             println!("{}", env!("CARGO_PKG_VERSION"));
             Ok(())

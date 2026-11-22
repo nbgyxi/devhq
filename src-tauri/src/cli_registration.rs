@@ -124,10 +124,65 @@ pub fn install(app: AppHandle) -> Result<CliStatus, String> {
     let dir = install_dir()?;
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
-    std::fs::copy(&source, dir.join("wint.exe"))
-        .map_err(|e| format!("Could not install the CLI: {e}"))?;
+    replace(&source, &dir.join("wint.exe"))?;
     set_user_path(&dir, true)?;
     status()
+}
+
+/// Puts the CLI this build ships with over an older installed copy. True
+/// when it had to.
+///
+/// The installed `wint.exe` is a copy, so it stays at whatever version was
+/// current when somebody clicked Install. Claude Desktop starts that copy for
+/// `wint mcp`, and a copy from before the command existed just exits - the
+/// tools never appear and nothing says why.
+pub fn refresh(app: &AppHandle) -> Result<bool, String> {
+    let exe = install_dir()?.join("wint.exe");
+    if !exe.is_file() {
+        return Ok(false);
+    }
+    let source = bundled_cli(app)?;
+    if same_contents(&source, &exe) {
+        return Ok(false);
+    }
+    replace(&source, &exe)?;
+    Ok(true)
+}
+
+fn same_contents(a: &Path, b: &Path) -> bool {
+    let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else {
+        return false;
+    };
+    ma.len() == mb.len() && std::fs::read(a).ok() == std::fs::read(b).ok()
+}
+
+/// Copies `source` over `target`, even while `target` is running. Windows
+/// refuses to overwrite a running exe - and Claude Desktop keeps `wint mcp`
+/// running - but it does allow renaming one, so the old copy is moved aside
+/// and deleted once nothing has it open any more.
+fn replace(source: &Path, target: &Path) -> Result<(), String> {
+    if let Some(dir) = target.parent() {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().starts_with("wint.old-") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+    if std::fs::copy(source, target).is_ok() {
+        return Ok(());
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let aside = target.with_file_name(format!("wint.old-{stamp}.exe"));
+    std::fs::rename(target, &aside)
+        .and_then(|_| std::fs::copy(source, target).map(|_| ()))
+        .map_err(|e| format!("Could not update the wint command: {e}"))?;
+    let _ = std::fs::remove_file(&aside);
+    Ok(())
 }
 
 pub fn uninstall() -> Result<CliStatus, String> {

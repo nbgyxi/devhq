@@ -12,6 +12,8 @@ mod browser_tabs;
 mod claude;
 mod chkdsk;
 mod cli_registration;
+pub mod cockpit;
+pub mod cockpit_mcp;
 pub mod clipboard;
 #[cfg(windows)]
 mod codex;
@@ -2969,6 +2971,161 @@ async fn todo_excerpt(path: String, file: String, line: u32) -> Result<todo::Exc
     .unwrap_or_else(|| Err("Could not read the file.".into()))
 }
 
+/* --------------------------------------------- the Projects cockpit store */
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CockpitList {
+    dir: String,
+    observations: Vec<cockpit::Observation>,
+    report: Option<cockpit::Report>,
+}
+
+fn cockpit_snapshot() -> CockpitList {
+    CockpitList {
+        dir: cockpit::dir().map(|d| d.display().to_string()).unwrap_or_default(),
+        observations: cockpit::read_all(),
+        report: cockpit::read_report(),
+    }
+}
+
+/// Everything agents have observed about the projects, as it stands now.
+#[tauri::command]
+async fn cockpit_list() -> CockpitList {
+    off_thread(cockpit_snapshot).await.unwrap_or(CockpitList {
+        dir: String::new(),
+        observations: Vec::new(),
+        report: None,
+    })
+}
+
+/// Follows the cockpit folder and sends `cockpit:changed` to every window
+/// whenever an agent writes to it. Started once; later calls are free.
+///
+/// A burst of writes (temp file, rename, lock) becomes one read: the first
+/// event arms a short wait and everything during it rides along.
+#[tauri::command]
+async fn cockpit_watch(app: AppHandle) -> Result<(), String> {
+    use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+    use std::sync::OnceLock;
+    static WATCHER: OnceLock<Mutex<Option<RecommendedWatcher>>> = OnceLock::new();
+    static PENDING: AtomicBool = AtomicBool::new(false);
+    off_thread(move || {
+        // Agents reach the cockpit through the installed `wint.exe`, which an
+        // update of WinT leaves at its old version. Bring it up to date while
+        // we are here - Projects opening is the moment the cockpit matters.
+        if let Err(error) = cli_registration::refresh(&app) {
+            health::record("cockpit", format!("Could not refresh the wint command: {error}"));
+        }
+        let held = WATCHER.get_or_init(|| Mutex::new(None));
+        let mut held = held.lock().map_err(|_| "The cockpit watcher is unavailable.".to_string())?;
+        if held.is_some() {
+            return Ok(());
+        }
+        let folder = cockpit::projects_dir()?;
+        std::fs::create_dir_all(&folder)
+            .map_err(|e| format!("Could not create {}: {e}", folder.display()))?;
+        let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+            if result.is_err() || PENDING.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            let app = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                PENDING.store(false, Ordering::SeqCst);
+                let _ = app.emit("cockpit:changed", cockpit_snapshot());
+            });
+        })
+        .map_err(|e| e.to_string())?;
+        // The whole cockpit folder: the report sits beside `projects`.
+        let root = cockpit::dir()?;
+        watcher
+            .watch(&root, RecursiveMode::Recursive)
+            .map_err(|e| format!("The cockpit folder cannot be watched. {e}"))?;
+        *held = Some(watcher);
+        Ok(())
+    })
+    .await
+    .unwrap_or_else(|| Err("Could not start watching the cockpit folder.".into()))
+}
+
+/// The front end's list of projects, written where agents can read it.
+#[tauri::command]
+async fn cockpit_publish_index(
+    roots: Vec<String>,
+    projects: Vec<cockpit::IndexEntry>,
+) -> Result<(), String> {
+    off_thread(move || cockpit::write_index(roots, projects))
+        .await
+        .unwrap_or_else(|| Err("Could not write the project index.".into()))
+}
+
+/// A change made from WinT itself: dismissing a note, clearing a project.
+#[tauri::command]
+async fn cockpit_update(
+    project: String,
+    update: serde_json::Value,
+) -> Result<cockpit::Observation, String> {
+    off_thread(move || cockpit::apply(&project, &update, "You"))
+        .await
+        .unwrap_or_else(|| Err("Could not update the project.".into()))
+}
+
+#[tauri::command]
+async fn cockpit_clear(project: String) -> Result<bool, String> {
+    off_thread(move || cockpit::clear(&project))
+        .await
+        .unwrap_or_else(|| Err("Could not clear the project.".into()))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CockpitConnect {
+    dir: String,
+    cli_path: String,
+    cli_installed: bool,
+    cli_on_path: bool,
+    claude: cockpit::ClaudeDesktop,
+}
+
+fn cockpit_connect_snapshot() -> Result<CockpitConnect, String> {
+    let cli = cli_registration::status()?;
+    let cli_path = shells::seen_from_outside(Path::new(&cli.path));
+    Ok(CockpitConnect {
+        dir: cockpit::dir()?.display().to_string(),
+        claude: cockpit::claude_status(&cli_path),
+        cli_path: cli_path.display().to_string(),
+        cli_installed: cli.installed,
+        cli_on_path: cli.on_path,
+    })
+}
+
+/// What the "Connect agents" panel needs to write its snippets.
+#[tauri::command]
+async fn cockpit_connect_info() -> Result<CockpitConnect, String> {
+    off_thread(cockpit_connect_snapshot)
+        .await
+        .unwrap_or_else(|| Err("Could not read how agents connect.".into()))
+}
+
+/// The one-click route: install the `wint` command if it is missing, then
+/// add it to Claude Desktop's config.
+#[tauri::command]
+async fn cockpit_connect_claude(app: AppHandle) -> Result<CockpitConnect, String> {
+    off_thread(move || {
+        if cli_registration::status()?.installed {
+            cli_registration::refresh(&app)?;
+        } else {
+            cli_registration::install(app)?;
+        }
+        let cli = cli_registration::status()?;
+        cockpit::connect_claude(&shells::seen_from_outside(Path::new(&cli.path)))?;
+        cockpit_connect_snapshot()
+    })
+    .await
+    .unwrap_or_else(|| Err("Could not connect Claude Desktop.".into()))
+}
+
 #[tauri::command]
 async fn port_list() -> Vec<procs::ProcessEntry> {
     off_thread(procs::port_list).await.unwrap_or_default()
@@ -3443,6 +3600,19 @@ pub fn run() {
             let _ = windows::Win32::System::Console::FreeConsole();
         }
     }
+    // This copy was started by the app the link was clicked in, so it holds
+    // the right to take the foreground. It is about to hand the link over and
+    // exit, so it passes that right on, and the WinT already running can put
+    // the chooser in front without attaching to that app's input queue (see
+    // `tool_window::foreground_chooser_window`).
+    #[cfg(windows)]
+    if carries_url && !is_admin {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+                windows::Win32::UI::WindowsAndMessaging::ASFW_ANY,
+            );
+        }
+    }
     let builder = tauri::Builder::default()
         .manage(PendingTool::default())
         .manage(PendingTorrents::default())
@@ -3771,6 +3941,13 @@ pub fn run() {
             git::git_action,
             todos,
             todo_excerpt,
+            cockpit_list,
+            cockpit_watch,
+            cockpit_publish_index,
+            cockpit_update,
+            cockpit_clear,
+            cockpit_connect_info,
+            cockpit_connect_claude,
             port_list,
             port_kill,
             port_sample,
@@ -4226,6 +4403,13 @@ pub fn run() {
         git::git_action,
         todos,
         todo_excerpt,
+        cockpit_list,
+        cockpit_watch,
+        cockpit_publish_index,
+        cockpit_update,
+        cockpit_clear,
+        cockpit_connect_info,
+        cockpit_connect_claude,
         notepad::notepad_default_folder,
         notepad::notepad_list,
         notepad::notepad_read,

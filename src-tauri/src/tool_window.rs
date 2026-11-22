@@ -410,12 +410,57 @@ pub(crate) fn browser_ask_open(app: &AppHandle, url: &str) -> Result<(), String>
     let _ = window.emit("browser-ask:url", url.to_string());
     #[cfg(windows)]
     {
-        foreground_search_window(&window)
+        foreground_chooser_window(&window)
     }
     #[cfg(not(windows))]
     {
         focus_search_window(&window)
     }
+}
+
+/// Bring the chooser forward without borrowing anybody's input queue.
+///
+/// `foreground_search_window` attaches to the foreground thread to get round
+/// the foreground lock. For the chooser that thread belongs to the app the
+/// link was clicked in, and that app is often busy right then, waiting
+/// for the launch it just made to return. Attaching to a thread that is not
+/// pumping ties WinT's window thread to it, and the chooser (all of WinT, in
+/// fact) stopped answering until that app came back. Attaching is not needed
+/// here: the short-lived WinT that forwarded the link was started by the
+/// foreground app, and it hands that right on (`AllowSetForegroundWindow` in
+/// `lib.rs::run`), so a plain `SetForegroundWindow` is allowed.
+///
+/// This runs on the link's own thread, never the one that draws, so
+/// `with_webview` (which waits on that thread) is safe. That call is what gives
+/// the page keyboard focus, so arrows, Enter and Esc work without a click.
+#[cfg(windows)]
+fn foreground_chooser_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetForegroundWindow, SetWindowPos, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    };
+    let _ = window.unminimize();
+    window.show().map_err(|e| e.to_string())?;
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        );
+        let _ = SetForegroundWindow(hwnd);
+    }
+    let _ = window.set_focus();
+    let _ = window.with_webview(|platform| unsafe {
+        use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC;
+        let _ = platform
+            .controller()
+            .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+    });
+    Ok(())
 }
 
 /// The chooser hides rather than closes: the next link reuses this webview.

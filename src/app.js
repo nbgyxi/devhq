@@ -27,7 +27,7 @@ const PROJECTS_WINDOW = document.documentElement.dataset.projectsWindow === "tru
  *  must never undo what was changed there since. */
 const PROJECTS_WINDOW_PREFS = [
   "roots", "sort", "filters", "techFilter", "compactTechOverview", "viewMode", "tableSortKey",
-  "tableSortDirection", "tableColumns", "tableColumnWidths", "favorites",
+  "tableSortDirection", "tableColumns", "tableColumnWidths", "favorites", "cockpitIntroduced",
 ];
 /** Present only while a remembered destination is being restored. If the
  * renderer dies before it can clear this flag, the next launch ignores that
@@ -84,8 +84,16 @@ const state = {
   durationMs: 0,
   scannedAt: 0,
   search: "",
-  sort: "activity",
+  sort: "status",
   filters: new Set(),
+  /** key -> what agents reported about that project. See the cockpit block. */
+  cockpit: new Map(),
+  cockpitDir: "",
+  cockpitLoaded: false,
+  /** The summary report an agent wrote, shown above the cards, or null. */
+  cockpitReport: null,
+  /** One cockpit status to show, or "" for all of them. */
+  cockpitStatus: "",
   techFilter: "",
   language: "system",
   languageChosen: false,
@@ -113,7 +121,7 @@ const state = {
   viewMode: "cards",
   tableSortKey: "project",
   tableSortDirection: 1,
-  tableColumns: ["version", "lang", "runtime", "framework", "ui", "data", "status", "actions"],
+  tableColumns: ["cockpit", "version", "lang", "runtime", "framework", "ui", "data", "status", "actions"],
   tableColumnMenuOpen: false,
   tableColumnWidths: {},
   settingsSection: "general",
@@ -534,10 +542,17 @@ function loadPrefs() {
     applyAnalytics();
     if (["dark", "light"].includes(p.theme)) state.theme = p.theme;
     if (["app", "dark", "light"].includes(p.workspaceTheme)) state.workspaceTheme = p.workspaceTheme;
-    if (["cards", "table"].includes(p.viewMode)) state.viewMode = p.viewMode;
+    if (["cards", "details", "table"].includes(p.viewMode)) state.viewMode = p.viewMode;
     if (typeof p.tableSortKey === "string") state.tableSortKey = p.tableSortKey;
     if (p.tableSortDirection === -1) state.tableSortDirection = -1;
     if (Array.isArray(p.tableColumns)) state.tableColumns = p.tableColumns.filter((column) => typeof column === "string");
+    // Projects became a status cockpit. Somebody who had chosen a sort and a
+    // set of columns before that existed is shown it once - worst first, with
+    // its column - and whatever they pick after that is kept.
+    if (Object.keys(p).length && p.cockpitIntroduced !== true) {
+      state.sort = "status";
+      if (!state.tableColumns.includes("cockpit")) state.tableColumns = ["cockpit", ...state.tableColumns];
+    }
     if (p.tableColumnWidths && typeof p.tableColumnWidths === "object") {
       state.tableColumnWidths = Object.fromEntries(Object.entries(p.tableColumnWidths)
         .filter(([, width]) => Number.isFinite(width) && width >= 70 && width <= 800));
@@ -619,6 +634,7 @@ function savePrefs() {
         tableSortDirection: state.tableSortDirection,
         tableColumns: state.tableColumns,
         tableColumnWidths: state.tableColumnWidths,
+        cockpitIntroduced: true,
         portTab: state.portTab,
         portSortKey: state.portSortKey,
         portSortDirection: state.portSortDirection,
@@ -1147,6 +1163,260 @@ const FILTERS = {
   },
 };
 
+/* ------------------------------------------------------------- cockpit
+ *
+ * What agents outside WinT - Claude Desktop over MCP, a Grok bot through the
+ * `wint cockpit` CLI, anything that can write a JSON file - have reported
+ * about each project: a status, a one-line summary, the next step, KPIs and
+ * notes. The backend keeps them in `%USERPROFILE%\.wint\cockpit` and sends
+ * `cockpit:changed` whenever that folder changes, so cards fill in live. */
+
+const COCKPIT_STATUS = {
+  incident: { label: "Incident", rank: 0 },
+  attention: { label: "Attention", rank: 1 },
+  healthy: { label: "Healthy", rank: 2 },
+  unknown: { label: "No report", rank: 3 },
+};
+let cockpitStarted = false;
+
+/** The file a project's observations live in. Mirrors `cockpit::key` in Rust;
+ *  the two must agree or a card never finds what was written about it. */
+function cockpitKey(name) {
+  const lower = String(name || "").trim().toLowerCase();
+  let key = lower.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!key) {
+    key = [...new TextEncoder().encode(lower)].slice(0, 24)
+      .map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  return (key || "project").slice(0, 80);
+}
+
+function cockpitFor(p) {
+  // Screenshot mode must not put real notes about real work on screen.
+  if (demoOn()) return null;
+  return state.cockpit.get(cockpitKey(p.realName ?? p.name)) || null;
+}
+
+/** A project as the cockpit draws it. An agent's status wins; without one,
+ *  git still has something to say about a conflict or a branch left behind. */
+function cockpitView(p) {
+  const o = cockpitFor(p);
+  const view = {
+    status: "unknown",
+    summary: o?.summary || "",
+    next: o?.next || "",
+    kpis: o?.kpis || [],
+    notes: o?.notes || [],
+    updatedAt: o?.updatedAt || 0,
+    updatedBy: o?.updatedBy || "",
+    observed: !!o,
+    fromGit: false,
+  };
+  if (o && COCKPIT_STATUS[o.status] && o.status !== "unknown") {
+    view.status = o.status;
+    return view;
+  }
+  const g = p.git;
+  if (g?.conflicted) {
+    view.status = "attention";
+    view.fromGit = true;
+    view.summary ||= `${g.conflicted} file${g.conflicted === 1 ? "" : "s"} in a merge conflict`;
+  } else if (g?.behind) {
+    view.status = "attention";
+    view.fromGit = true;
+    view.summary ||= `${g.behind} commit${g.behind === 1 ? "" : "s"} behind ${g.upstream || "upstream"}`;
+  }
+  return view;
+}
+
+function cockpitRank(p) {
+  return COCKPIT_STATUS[cockpitView(p).status]?.rank ?? 3;
+}
+
+function cockpitAgo(ms) {
+  return ms ? ago(Math.floor(ms / 1000)) : "";
+}
+
+function cockpitTone(tone) {
+  return tone === "bad" ? "red" : tone === "warn" ? "amber" : tone === "good" ? "green" : "";
+}
+
+function cockpitPill(status, extra = "") {
+  const meta = COCKPIT_STATUS[status] || COCKPIT_STATUS.unknown;
+  return `<span class="cockpit-pill ${status}${extra}"><i></i>${esc(meta.label)}</span>`;
+}
+
+/* The summary report an agent wrote, above the cards.
+ *
+ * It is HTML from outside WinT, and this window can run commands, so it is
+ * drawn in an iframe with an empty `sandbox`: no scripts, an opaque origin
+ * with no way to the window around it, no forms, no popups, and a CSP that
+ * loads nothing but https images. WinT's colours are handed in as the same
+ * variables the app uses, so the report can follow light and dark mode. */
+
+const REPORT_UI_KEY = "wint.cockpitReport.v1";
+
+/** Per-viewer conveniences only: collapsed, hidden until the next report,
+ *  height. Losing them costs nothing. */
+function reportUi() {
+  try {
+    return JSON.parse(localStorage.getItem(REPORT_UI_KEY) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveReportUi(patch) {
+  try {
+    localStorage.setItem(REPORT_UI_KEY, JSON.stringify({ ...reportUi(), ...patch }));
+  } catch { /* storage off - the panel just forgets */ }
+}
+
+function reportDocument(html) {
+  const cs = getComputedStyle(document.documentElement);
+  const vars = ["text", "dim", "dim2", "accent", "red", "amber", "green", "bg", "bg1", "bg2", "bg3", "line"]
+    .map((name) => `--${name}:${cs.getPropertyValue(`--${name}`).trim()}`).join(";");
+  const scheme = state.theme === "light" ? "light" : "dark";
+  return `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: https:; style-src 'unsafe-inline'; font-src data:">
+<style>
+:root{${vars};color-scheme:${scheme}}
+html,body{margin:0;background:var(--bg1);color:var(--text);font:13px/1.55 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}
+body{padding:12px 16px 16px}
+h1,h2,h3,h4{margin:.9em 0 .35em;line-height:1.25}h1{font-size:18px}h2{font-size:15px}h3,h4{font-size:13.5px}
+body>:first-child{margin-top:0}
+p{margin:.45em 0}ul,ol{margin:.45em 0;padding-left:1.3em}li{margin:.15em 0}
+a{color:var(--accent)}
+code{font-family:"Cascadia Mono",Consolas,monospace;font-size:12px;background:var(--bg3);padding:1px 4px;border-radius:4px}
+table{border-collapse:collapse;margin:.5em 0;font-variant-numeric:tabular-nums}
+th,td{border-bottom:1px solid var(--line);padding:5px 14px 5px 0;text-align:left;vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12px}
+hr{border:0;border-top:1px solid var(--line);margin:1em 0}img{max-width:100%}
+</style></head><body>${html}</body></html>`;
+}
+
+let reportResize = null;
+
+function renderCockpitReport() {
+  const host = el["cockpit-report"];
+  if (!host) return;
+  const report = demoOn() ? null : state.cockpitReport;
+  const ui = reportUi();
+  const show = !!report && ui.hidden !== report.updatedAt;
+  const collapsed = ui.collapsed === true;
+  // The frame is only rebuilt when what it shows changed. Rebuilding it on
+  // every summary redraw would reload it and lose its scroll position.
+  const stamp = show ? `${report.updatedAt}|${state.theme}|${collapsed ? 1 : 0}` : "";
+  if (host.dataset.stamp === stamp) return;
+  host.dataset.stamp = stamp;
+  reportResize?.disconnect();
+  reportResize = null;
+  if (!show) {
+    host.hidden = true;
+    host.innerHTML = "";
+    return;
+  }
+  host.hidden = false;
+  const when = new Date(report.updatedAt).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  const by = [report.updatedBy, when].filter(Boolean).join(" · ");
+  const height = Math.min(Math.max(Number(ui.height) || 240, 90), 900);
+  host.innerHTML = `<section class="cockpit-report${collapsed ? " collapsed" : ""}">
+    <header>
+      <button type="button" class="cockpit-report-toggle" data-report-toggle aria-expanded="${!collapsed}" title="${collapsed ? "Show the report" : "Fold the report away"}">
+        ${icon(collapsed ? "chevron_right" : "expand_more")}${icon("summarize")}<b>${esc(report.title || "Summary report")}</b></button>
+      <small>${esc(by)}</small>
+      <button type="button" class="cockpit-report-hide" data-report-hide title="Hide this report until a new one arrives">${icon("close")}</button>
+    </header>
+    ${collapsed ? "" : `<div class="cockpit-report-frame" style="height:${height}px"><iframe sandbox="" referrerpolicy="no-referrer" title="${esc(report.title || "Summary report")}"></iframe></div>`}
+  </section>`;
+  const frame = host.querySelector("iframe");
+  if (frame) frame.srcdoc = reportDocument(report.html);
+  const box = host.querySelector(".cockpit-report-frame");
+  if (box && "ResizeObserver" in window) {
+    let timer = 0;
+    reportResize = new ResizeObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(() => saveReportUi({ height: Math.round(box.getBoundingClientRect().height) }), 300);
+    });
+    reportResize.observe(box);
+  }
+}
+
+// The report's colours are WinT's, handed in when it is drawn; a theme
+// switch has to draw it again.
+new MutationObserver(() => {
+  if (el["cockpit-report"]) {
+    el["cockpit-report"].dataset.stamp = "";
+    markDirty("summary");
+  }
+}).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+function applyCockpit(payload) {
+  if (payload?.dir) state.cockpitDir = payload.dir;
+  state.cockpitReport = payload?.report || null;
+  state.cockpit = new Map((payload?.observations || []).map((o) => [o.key, o]));
+  state.cockpitLoaded = true;
+  markDirty("grid", "summary", "filters", "detail");
+}
+
+/** Read once, then follow the folder. Started with the first scan, because
+ *  Projects does no disk work until somebody opens it. */
+async function startCockpit() {
+  if (cockpitStarted) return;
+  cockpitStarted = true;
+  beginWork("cockpit", "Reading what agents reported about your projects");
+  try {
+    applyCockpit(await invoke("cockpit_list"));
+  } catch (error) {
+    console.warn("Could not read the cockpit", error);
+  } finally {
+    endWork("cockpit");
+  }
+  invoke("cockpit_watch").catch((error) => console.warn("Could not watch the cockpit folder", error));
+}
+
+/** An agent wrote something. Redraw, and say who and what in the status bar
+ *  for a moment so a card changing by itself is never a mystery. */
+function cockpitChanged(payload) {
+  const before = state.cockpit;
+  applyCockpit(payload);
+  let latest = null;
+  for (const o of state.cockpit.values()) {
+    const old = before.get(o.key);
+    if (old && old.updatedAt === o.updatedAt) continue;
+    if (!latest || o.updatedAt > latest.updatedAt) latest = o;
+  }
+  if (!latest || demoOn()) return;
+  beginWork("cockpit-changed", `${latest.updatedBy || "An agent"} updated ${latest.project || latest.key}`);
+  setTimeout(() => endWork("cockpit-changed"), 2600);
+}
+
+/** The project list, written where agents can read it: `index.json` beside the
+ *  observations. Real names and paths only, never the screenshot stand-ins. */
+function publishCockpitIndex() {
+  const projects = state.projects.filter((p) => !p.pending && !p.stopped).map((p) => ({
+    name: p.realName ?? p.name,
+    path: p.path,
+    group: p.realGroup ?? p.group ?? "",
+    description: p.description || "",
+    branch: p.git?.branch || "",
+    changed: changeCount(p),
+    ahead: p.git?.ahead || 0,
+    behind: p.git?.behind || 0,
+    running: p.running.length,
+    ports: p.ports.filter((n) => Number.isInteger(n) && n > 0 && n < 65536),
+    lastCommit: p.git?.lastCommit?.subject || "",
+    lastCommitAt: p.git?.lastCommit?.timestamp || 0,
+    tech: p.tech.map((t) => t.name),
+    favorite: state.favorites.has(p.path),
+  }));
+  if (!projects.length) return;
+  beginWork("cockpit-index", "Sharing the project list with agents", `${projects.length} projects`);
+  invoke("cockpit_publish_index", { roots: [...state.roots], projects })
+    .catch((error) => console.warn("Could not publish the project index", error))
+    .finally(() => endWork("cockpit-index"));
+}
+
 function matchesSearch(p, terms) {
   if (!terms.length) return true;
   const hay = [
@@ -1187,6 +1457,7 @@ function matchesFilters(p) {
     if (!any) return false;
   }
   if (state.techFilter && !p.tech.some((t) => t.name === state.techFilter)) return false;
+  if (state.cockpitStatus && cockpitView(p).status !== state.cockpitStatus) return false;
   return true;
 }
 
@@ -1195,6 +1466,7 @@ function visibleProjects() {
   const list = state.projects.filter((p) => matchesFilters(p) && matchesSearch(p, terms));
 
   const sorters = {
+    status: (a, b) => cockpitRank(a) - cockpitRank(b) || activity(b) - activity(a),
     name: (a, b) => a.name.localeCompare(b.name),
     activity: (a, b) => activity(b) - activity(a),
     changes: (a, b) => changeCount(b) - changeCount(a) || a.name.localeCompare(b.name),
@@ -1347,6 +1619,7 @@ function rescan() {
   state.durationMs = 0;
   const scanLabel = demoRootsLabel(state.roots) || state.roots.join(", ") || "nothing";
   beginWork("scan", `Starting scan of ${scanLabel}`);
+  startCockpit();
   markDirty("toolbar", "grid", "summary", "banner", "filters");
   savePrefs();
   invoke("scan", { roots: state.roots }).catch((err) => {
@@ -1463,10 +1736,17 @@ function listenScan() {
     // One reordering pass at the end, so the list settles into the chosen sort
     // instead of shuffling under the pointer while results stream in.
     markDirty("toolbar", "grid", "summary", "filters", "banner", "detail");
-    // A finished scan (not stopped mid-way) is what a quick restart can reuse.
-    if (!p.cancelled) saveScanCache();
+    // A finished scan (not stopped mid-way) is what a quick restart can reuse,
+    // and what agents are told about.
+    if (!p.cancelled) {
+      saveScanCache();
+      publishCockpitIndex();
+    }
     syncGlobalHotkeys();
   });
+
+  // An agent wrote to the cockpit folder.
+  on("cockpit:changed", (event) => cockpitChanged(event.payload));
 
   return Promise.all(registered);
 }
@@ -1555,6 +1835,7 @@ function restoreScanCache(cache) {
   state.byPath = new Map(state.projects.map((project) => [project.path, project]));
   const when = new Date(cache.completedAt || cache.scannedAt).toLocaleTimeString();
   beginWork("scan-cache", "Restored last scan", `from ${when}`);
+  startCockpit();
   setTimeout(() => endWork("scan-cache"), 2200);
   markDirty("toolbar", "grid", "summary", "filters", "banner", "detail", "activity");
   syncGlobalHotkeys();
@@ -3145,6 +3426,8 @@ function toggleFavorite(path) {
   setTimeout(() => endWork("favorite"), 1200);
   markDirty("filters", "grid");
   if (state.selectedPath === path) markDirty("detail");
+  // Agents report on starred projects only, so they must hear about it.
+  publishCockpitIndex();
 }
 
 async function killPortProcess(key, tree) {
@@ -5052,13 +5335,51 @@ function cardActions(p) {
   </div>`;
 }
 
+/** The card Projects opens with: the name, what has been observed about the
+ *  project, and the three buttons. Git, tech and the last commit are one
+ *  click away in Details or on the project's own page. */
+function compactCardView(p) {
+  if (p.pending) {
+    return `<article class="card compact skeleton${p.stopped ? " stopped" : ""}" data-path="${esc(p.path)}">
+      <div class="card-top"><div class="card-name">${esc(p.name)}</div></div>
+      <div class="sk sk-line" style="width:72%"></div>
+      <div class="card-actions"><span class="sk sk-pill" style="width:64px"></span><span class="sk sk-pill" style="width:64px"></span><span class="sk sk-pill" style="width:78px"></span></div>
+    </article>`;
+  }
+  const c = cockpitView(p);
+  const classes = ["card", "compact"];
+  if (c.status === "incident" || c.status === "attention") classes.push(`cockpit-${c.status}`);
+  const starred = isFavorite(p.path);
+  const fav = `<button class="card-fav${starred ? " on" : ""}" data-act="favorite" title="${
+    starred ? "Remove from favorites. Agents stop reporting on it." : "Add to favorites. Agents report on favorites only."
+  }" aria-pressed="${starred}">${icon(starred ? "star" : "star_border")}</button>`;
+  return `<article class="${classes.join(" ")}" data-path="${esc(p.path)}">
+    <div class="card-top">
+      <div class="card-name">${esc(p.name)}</div>
+      <div class="card-top-end">${c.status !== "unknown" ? cockpitPill(c.status) : ""}${fav}</div>
+    </div>
+    ${cardCockpit(c) || `<div class="cockpit-none">${starred ? "No report yet" : "Not a favorite, so agents do not report on it"}</div>`}
+    ${cockpitNextLine(c)}
+    ${cardActions(p)}
+  </article>`;
+}
+
+function cockpitNextLine(c) {
+  return c.next
+    ? `<div class="cockpit-next" title="${esc(c.next)}"><b>Next</b><span>${esc(c.next)}</span></div>`
+    : "";
+}
+
 function cardView(p) {
+  if (state.viewMode !== "details") return compactCardView(p);
   if (p.pending) return skeletonView(p);
 
   const g = p.git;
   const classes = ["card"];
   if (changeCount(p) > 0) classes.push("dirty");
   if (p.running.length) classes.push("running");
+  const cockpit = cockpitView(p);
+  if (cockpit.status === "incident" || cockpit.status === "attention") classes.push(`cockpit-${cockpit.status}`);
 
   const tags = p.tech
     .slice(0, 5)
@@ -5134,14 +5455,37 @@ function cardView(p) {
       <div class="card-name">${esc(p.name)}${
         p.version ? `<span class="card-ver">v${esc(p.version)}</span>` : ""
       }</div>
-      <div class="card-top-end">${live}${fav}</div>
+      <div class="card-top-end">${cockpit.status !== "unknown" ? cockpitPill(cockpit.status) : ""}${live}${fav}</div>
     </div>
+    ${cardCockpit(cockpit)}
     ${!state.compactTechOverview && p.tech.length ? `<div class="tags">${tags}${more}</div>` : ""}
     ${!state.compactTechOverview && p.description ? `<div class="desc">${esc(p.description)}</div>` : ""}
     <div class="stats">${stats.join("")}</div>
     ${commit}
+    ${cockpitNextLine(cockpit)}
     ${cardActions(p)}
   </article>`;
+}
+
+/** The part of a card agents wrote: the summary, up to four KPIs and the two
+ *  newest notes. Nothing at all when nobody has reported, so an unreviewed
+ *  project looks exactly as it always did. */
+function cardCockpit(c) {
+  if (!c.summary && !c.kpis.length && !c.notes.length) return "";
+  const summary = c.summary
+    ? `<div class="cockpit-summary ${c.status}" title="${esc(c.summary)}">${esc(c.summary)}</div>`
+    : "";
+  const kpis = c.kpis.length
+    ? `<div class="cockpit-kpis">${c.kpis.slice(0, 4).map((k) => `<span class="cockpit-kpi" title="${esc(`${k.label}: ${k.value}`)}"><small>${esc(k.label)}</small><b class="${cockpitTone(k.tone)}">${esc(k.value)}</b></span>`).join("")}</div>`
+    : "";
+  const shown = c.notes.slice(0, 2);
+  const notes = shown.length
+    ? `<div class="cockpit-notes">${shown.map((n) => `<div class="cockpit-note" title="${esc(n.text)}"><b>${esc(n.kind)}</b><span>${esc(n.text)}</span></div>`).join("")}${
+        c.notes.length > shown.length ? `<div class="cockpit-more">+${c.notes.length - shown.length} more</div>` : ""
+      }</div>`
+    : "";
+  const by = c.observed ? [c.updatedBy, cockpitAgo(c.updatedAt)].filter(Boolean).join(" · ") : "from git";
+  return `${summary}${kpis}${notes}${by ? `<div class="cockpit-by">${icon(c.observed ? "smart_toy" : "account_tree")}${esc(by)}</div>` : ""}`;
 }
 
 const TABLE_TECH_COLUMNS = [
@@ -5152,6 +5496,7 @@ const TABLE_TECH_COLUMNS = [
 
 function tableColumnOptions() {
   return [
+    ["cockpit", "Cockpit status"],
     ["version", "Project version"],
     ...TABLE_TECH_COLUMNS,
     ["status", "Status"],
@@ -5185,8 +5530,9 @@ function tableTechCell(tech) {
 function tableRowView(p) {
   const techColumns = TABLE_TECH_COLUMNS.filter(([kind]) => state.tableColumns.includes(kind));
   const trailingColumns = Number(state.tableColumns.includes("status")) + 1;
+  const showCockpit = state.tableColumns.includes("cockpit");
   if (p.pending) {
-    const extraColumns = Number(state.tableColumns.includes("version")) + techColumns.length + trailingColumns;
+    const extraColumns = Number(showCockpit) + Number(state.tableColumns.includes("version")) + techColumns.length + trailingColumns;
     return `<tr class="project-row pending" data-path="${esc(p.path)}"><td><strong>${esc(
       p.name
     )}</strong><small>Reading project…</small></td>${extraColumns
@@ -5205,6 +5551,7 @@ function tableRowView(p) {
   const starred = isFavorite(p.path);
   return `<tr class="project-row" data-path="${esc(p.path)}">
     <td><strong title="${esc(p.name)}">${esc(p.name)}</strong><small title="${esc(demoPath(p))}">${esc(demoPath(p))}</small></td>
+    ${showCockpit ? tableCockpitCell(p) : ""}
     ${state.tableColumns.includes("version") ? `<td class="project-version">${p.version ? esc(p.version) : "—"}</td>` : ""}
     ${technologyCells}
     ${state.tableColumns.includes("status") ? `<td class="table-status-cell" title="${esc(statusTitle)}"><div class="table-status-list">${statuses.join("")}</div></td>` : ""}
@@ -5219,8 +5566,19 @@ function tableRowView(p) {
   </tr>`;
 }
 
+function tableCockpitCell(p) {
+  const c = cockpitView(p);
+  const line = c.summary || c.next;
+  if (c.status === "unknown" && !line) return '<td class="table-cockpit-cell"><span class="table-muted">—</span></td>';
+  const full = [COCKPIT_STATUS[c.status].label, c.summary, c.next && `Next: ${c.next}`].filter(Boolean).join(" · ");
+  return `<td class="table-cockpit-cell" title="${esc(full)}"><div class="table-cockpit">${
+    c.status !== "unknown" ? cockpitPill(c.status) : ""
+  }${line ? `<span class="table-cockpit-line">${esc(line)}</span>` : ""}</div></td>`;
+}
+
 function tableSortValue(project, key) {
   if (key === "project") return project.name;
+  if (key === "cockpit") return cockpitRank(project) * 1e12 - activity(project);
   if (key === "version") return project.version || null;
   if (key === "status") return project.running.length * 100000 + changeCount(project);
   if (key.startsWith("tech:")) {
@@ -5249,6 +5607,7 @@ function sortTableProjects(projects) {
 function visibleTableColumnKeys() {
   return [
     "project",
+    ...(state.tableColumns.includes("cockpit") ? ["cockpit"] : []),
     ...(state.tableColumns.includes("version") ? ["version"] : []),
     ...TABLE_TECH_COLUMNS.filter(([kind]) => state.tableColumns.includes(kind)).map(([kind]) => `tech:${kind}`),
     ...(state.tableColumns.includes("status") ? ["status"] : []),
@@ -5257,7 +5616,7 @@ function visibleTableColumnKeys() {
 }
 
 function tableColumnWidth(key) {
-  const defaults = { project: 240, version: 105, status: 130, actions: 112 };
+  const defaults = { project: 240, cockpit: 320, version: 105, status: 130, actions: 112 };
   return state.tableColumnWidths[key] || defaults[key] || 140;
 }
 
@@ -5474,6 +5833,254 @@ function todoSection() {
   return head(`<div class="todolist">${rows}</div>${tail}`, note);
 }
 
+/** Everything agents reported about the open project, each note with a way
+ *  to dismiss it. */
+function cockpitSection(p) {
+  const c = cockpitView(p);
+  if (!c.observed && c.status === "unknown") {
+    return `<section class="section cockpit-detail"><h3>Status</h3>
+      <p class="cockpit-empty">No agent has reported on this project yet.
+        <button type="button" class="cockpit-brief-link" data-cockpit-connect>Connect agents</button></p></section>`;
+  }
+  const by = c.observed
+    ? [c.updatedBy && `by ${c.updatedBy}`, cockpitAgo(c.updatedAt)].filter(Boolean).join(" · ")
+    : "from git";
+  const kpis = c.kpis.length
+    ? `<div class="cockpit-kpi-grid">${c.kpis.map((k) => `<div><small>${esc(k.label)}</small><b class="${cockpitTone(k.tone)}">${esc(k.value)}</b></div>`).join("")}</div>`
+    : "";
+  const notes = c.notes.length
+    ? `<div class="cockpit-note-list">${c.notes.map((n) => `<div class="cockpit-note-row">
+        <b class="cockpit-note-kind">${esc(n.kind)}</b>
+        <span class="cockpit-note-text">${esc(n.text)}<small>${esc([n.source, n.by, cockpitAgo(n.at)].filter(Boolean).join(" · "))}</small></span>
+        <button type="button" class="cockpit-note-drop" data-cockpit-drop="${esc(n.id)}" title="Dismiss this note">${icon("close")}</button>
+      </div>`).join("")}</div>`
+    : "";
+  return `<section class="section cockpit-detail">
+    <h3>Status ${cockpitPill(c.status)}<small class="cockpit-detail-by">${esc(by)}</small></h3>
+    ${c.summary ? `<p class="cockpit-detail-summary">${esc(c.summary)}</p>` : ""}
+    ${c.next ? `<p class="cockpit-detail-next"><b>Next</b>${esc(c.next)}</p>` : ""}
+    ${kpis}
+    ${notes}
+    ${c.observed ? `<div class="cockpit-detail-actions">
+      <button type="button" class="btn small" data-cockpit-clear>${icon("delete_sweep")}Clear what agents reported</button>
+      <button type="button" class="btn small" data-cockpit-connect>${icon("hub")}Connect agents</button></div>` : ""}
+  </section>`;
+}
+
+/** Dismissing a note shows at once. The file is then rewritten, and the
+ *  watcher's own read confirms it - or puts the note back if that failed. */
+async function dropCockpitNote(p, id) {
+  const key = cockpitKey(p.realName ?? p.name);
+  const current = state.cockpit.get(key);
+  if (current) {
+    state.cockpit.set(key, { ...current, notes: current.notes.filter((n) => n.id !== id) });
+    markDirty("grid", "detail", "summary");
+  }
+  beginWork("cockpit-edit", "Dismissing a note", p.name);
+  try {
+    const saved = await invoke("cockpit_update", { project: p.realName ?? p.name, update: { removeNotes: [id] } });
+    if (saved?.key) state.cockpit.set(saved.key, saved);
+  } catch (error) {
+    if (current) state.cockpit.set(key, current);
+    state.error = `Could not dismiss the note: ${error}`;
+    markDirty("banner");
+  } finally {
+    endWork("cockpit-edit");
+    markDirty("grid", "detail", "summary");
+  }
+}
+
+async function clearCockpit(p) {
+  const ok = await appConfirm({
+    title: `Clear what agents reported about ${p.name}?`,
+    message: "Its status, summary, next step, KPIs and every note are removed. Agents can report again at any time.",
+    confirmLabel: "Clear",
+    tone: "danger",
+    icon: "delete_sweep",
+  });
+  if (ok !== true) return;
+  const key = cockpitKey(p.realName ?? p.name);
+  const current = state.cockpit.get(key);
+  state.cockpit.delete(key);
+  markDirty("grid", "detail", "summary", "filters");
+  beginWork("cockpit-edit", "Clearing what agents reported", p.name);
+  try {
+    await invoke("cockpit_clear", { project: p.realName ?? p.name });
+  } catch (error) {
+    if (current) state.cockpit.set(key, current);
+    state.error = `Could not clear ${p.name}: ${error}`;
+    markDirty("banner", "grid", "detail", "summary");
+  } finally {
+    endWork("cockpit-edit");
+  }
+}
+
+const COCKPIT_PROMPT_MCP = `You can see and update my development projects through the "wint" tools.
+Call list_projects - it returns only the projects I starred as favorites - then go through those one at a time. Do not report on any other project. For each, look at what you can reach (its git state from list_projects, GitHub issues, pull requests and CI, email, anything else you have access to) and call update_project with:
+- status: healthy, attention or incident
+- summary: one line on how it is doing
+- next: the single next thing I should do there
+- kpis: up to four short numbers worth watching
+- add_notes: short, specific observations with a kind (Risk, Waiting, Branch, Promise, Next) and a source
+When you have been through them all, call set_report with a short summary in rich HTML: what needs me first, what changed, what is fine. A heading, a few lines and a small table work well; use WinT's colours (var(--red), var(--amber), var(--green), var(--dim)) so it fits the app.
+Keep everything short. Only write observations - never change the projects themselves.`;
+
+const COCKPIT_PROMPT_CLI = `My favorite projects are listed by running: wint cockpit list
+Report on those only - never on any other project. For each one, work out how it is doing from what you can reach (git state from the list, GitHub, CI, email), then report with:
+  wint cockpit set <project> --status healthy|attention|incident --summary "<one line>" --next "<next step>" --by Grok
+  wint cockpit note <project> <Kind> "<observation>" --source <where> --by Grok
+  wint cockpit kpi <project> "<label>" "<value>" --tone good|warn|bad --by Grok
+Kinds: Risk, Waiting, Branch, Promise, Next. Sending the same note again updates it, so rerunning is safe.
+Finally write a short HTML summary (what needs me first, what changed, what is fine) to a file and show it above my projects with:
+  wint cockpit report summary.html --title "<title>" --by Grok Only report - never change the projects themselves.`;
+
+let cockpitConnectLayer = null;
+
+/** How to let Claude Desktop, a Grok bot or a script report on the projects.
+ *  Everything it shows can be copied; nothing it says has to be retyped. */
+async function openCockpitConnect() {
+  if (cockpitConnectLayer) return;
+  const layer = document.createElement("div");
+  layer.className = "confirm-layer";
+  layer.innerHTML = `<section class="confirm-card cockpit-connect" role="dialog" aria-modal="true" aria-labelledby="cockpit-connect-title">
+    <header><h2 id="cockpit-connect-title">${icon("hub")}Connect agents</h2>
+      <button type="button" class="win-btn" data-connect-close title="Close">${icon("close")}</button></header>
+    <div class="cockpit-connect-body"><p class="cockpit-brief-dim">${icon("progress_activity")}Reading how agents connect…</p></div>
+  </section>`;
+  document.body.appendChild(layer);
+  coverEmbeddedTool();
+  cockpitConnectLayer = layer;
+  const texts = new Map();
+  const close = () => {
+    if (!cockpitConnectLayer) return;
+    cockpitConnectLayer = null;
+    layer.remove();
+    uncoverEmbeddedTool();
+    document.removeEventListener("keydown", onKey, true);
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
+
+  const block = (id, label, text) => {
+    texts.set(id, text);
+    return `<div class="cockpit-code"><div class="cockpit-code-head"><span>${esc(label)}</span>
+      <button type="button" class="btn small" data-connect-copy="${id}">${icon("content_copy")}Copy</button></div>
+      <pre>${esc(text)}</pre></div>`;
+  };
+
+  const draw = (info, error = "") => {
+    const body = layer.querySelector(".cockpit-connect-body");
+    if (!body) return;
+    if (!info) {
+      body.innerHTML = `<p class="cockpit-connect-error">${icon("error")}${esc(error || "Could not read how agents connect.")}</p>`;
+      return;
+    }
+    const mcp = JSON.stringify({ mcpServers: { wint: { command: info.cliPath, args: ["mcp"] } } }, null, 2);
+    const cli = info.cliOnPath ? "wint" : `"${info.cliPath}"`;
+    const examples = [
+      `${cli} cockpit list`,
+      `${cli} cockpit set devhq --status attention --summary "CI red since 09:10" --next "Fix the flaky test" --by Grok`,
+      `${cli} cockpit note devhq Risk "feat/x has 4 unmerged commits, 19 days old" --source GitHub --by Grok`,
+      `${cli} cockpit kpi devhq "Open PRs" 3 --tone warn --by Grok`,
+    ].join("\n");
+    const cliState = info.cliInstalled
+      ? `<span class="cockpit-ok">${icon("check_circle")}The <code>wint</code> command is installed${info.cliOnPath ? " and on your PATH" : ""}.</span>`
+      : `<span class="cockpit-warn">${icon("warning")}The <code>wint</code> command is not installed yet. The commands below need it.</span>
+         <button type="button" class="btn small primary" data-connect-install>${icon("download")}Install the wint command</button>`;
+    const claude = info.claude || {};
+    const claudeCard = claude.connected
+      ? `<div class="cockpit-claude done">
+          <span class="cockpit-ok">${icon("check_circle")}<b>Claude Desktop is connected.</b></span>
+          <p>If you have just connected it, quit Claude Desktop completely (right-click its tray icon → Quit) and open it again.
+            Then start a new chat and paste this:</p>
+          ${block("prompt-mcp", "Ask Claude", COCKPIT_PROMPT_MCP)}
+        </div>`
+      : claude.installed
+        ? `<div class="cockpit-claude">
+            <p><b>One click and Claude Desktop can read and update your projects.</b> WinT adds itself to Claude Desktop's settings${
+              info.cliInstalled ? "" : " and installs the <code>wint</code> command it needs"}. Nothing else in those settings changes, and the old file is kept as a backup.</p>
+            <button type="button" class="btn primary" data-connect-claude>${icon("link")}Connect Claude Desktop</button>
+            <div class="cockpit-claude-result" aria-live="polite"></div>
+          </div>`
+        : `<div class="cockpit-claude">
+            <span class="cockpit-warn">${icon("warning")}Claude Desktop is not installed for this Windows user.</span>
+            <p>Install it from claude.ai/download, open it once, then come back here and connect it with one click.</p>
+          </div>`;
+    body.innerHTML = `
+      <h3 class="first">${icon("smart_toy")}Claude Desktop</h3>
+      ${claudeCard}
+      <details class="cockpit-manual"><summary>Set it up by hand instead</summary>
+        <p>Add this to Claude Desktop's config (Settings → Developer → Edit Config), then restart Claude Desktop.</p>
+        ${block("mcp", "claude_desktop_config.json", mcp)}
+      </details>
+      <h3>${icon("terminal")}A Grok bot, or any script that can run a command</h3>
+      <div class="cockpit-connect-cli">${cliState}</div>
+      <p>The same through the CLI. A bot that speaks MCP can use the Claude Desktop setup instead.</p>
+      ${block("cli", "Commands", examples)}
+      ${block("prompt-cli", "Instructions for the bot", COCKPIT_PROMPT_CLI)}
+      <h3>${icon("description")}An agent that can only write files</h3>
+      <p>It writes <code>projects\\&lt;project&gt;.json</code> in this folder, and reads <code>index.json</code> to see which projects exist and which are favorites, the only ones to report on. <code>README.md</code> there describes the format.</p>
+      ${block("dir", "Folder", info.dir)}`;
+  };
+
+  const connectClaude = async (button) => {
+    const result = layer.querySelector(".cockpit-claude-result");
+    button.disabled = true;
+    button.innerHTML = `${icon("progress_activity")}Connecting…`;
+    beginWork("claude-connect", "Adding WinT to Claude Desktop's settings");
+    try {
+      draw(await invoke("cockpit_connect_claude"));
+    } catch (error) {
+      button.disabled = false;
+      button.innerHTML = `${icon("link")}Try again`;
+      if (result) result.innerHTML = `<span class="cockpit-connect-error">${icon("error")}${esc(String(error))}</span>`;
+    } finally {
+      endWork("claude-connect");
+    }
+  };
+
+  layer.addEventListener("click", async (e) => {
+    if (e.target === layer || e.target.closest("[data-connect-close]")) return close();
+    const copy = e.target.closest("[data-connect-copy]");
+    if (copy) {
+      window.wintCopy?.copy(texts.get(copy.dataset.connectCopy) || "", copy).catch(() => {});
+      return;
+    }
+    const claudeButton = e.target.closest("[data-connect-claude]");
+    if (claudeButton) return connectClaude(claudeButton);
+    const install = e.target.closest("[data-connect-install]");
+    if (install) {
+      install.disabled = true;
+      beginWork("cli-install", "Installing the wint command");
+      try {
+        await invoke("cli_install");
+        draw(await invoke("cockpit_connect_info"));
+      } catch (error) {
+        install.disabled = false;
+        install.insertAdjacentHTML("afterend", `<span class="cockpit-connect-error">${esc(String(error))}</span>`);
+      } finally {
+        endWork("cli-install");
+      }
+    }
+  });
+
+  beginWork("cockpit-connect", "Reading how agents connect");
+  try {
+    draw(await invoke("cockpit_connect_info"));
+  } catch (error) {
+    draw(null, String(error));
+  } finally {
+    endWork("cockpit-connect");
+  }
+  layer.querySelector("[data-connect-close]")?.focus();
+}
+
 function detailView(p, replayEntrance = true) {
   const g = p.git;
   const kv = [];
@@ -5595,6 +6202,7 @@ function detailView(p, replayEntrance = true) {
     <div class="detail-body${g ? "" : " solo"}">
       <div class="dcol dcol-info">
         ${loading}
+        ${cockpitSection(p)}
         <section class="section"><h3>Overview</h3><dl class="kv">${kv
           .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`)
           .join("")}</dl></section>
@@ -5754,12 +6362,14 @@ function mountShell() {
       <span class="tool-plate">${icon("folder_copy")}</span>
       <span class="tool-title">
         <strong>Projects</strong>
-        <small>git status, running dev servers and detected tech for every project</small>
+        <small>a status cockpit: what needs you, what agents report, git and running servers for every project</small>
       </span>
       <button class="tool-popout" type="button" data-popout-tool="projects"></button>
       <button class="tool-pin" type="button" data-pin-tool="projects"></button>
       <button class="tool-close" type="button" data-open-tool="overview" title="Back home">${icon("close")}</button>
     </header>
+    <div class="cockpit-bar" id="cockpit-bar"></div>
+    <div class="cockpit-report-host" id="cockpit-report" hidden></div>
     <div class="summary" id="summary">
       <div class="summary-stats" id="summary-stats"></div>
       <div class="roots summary-roots" id="roots">
@@ -5776,6 +6386,7 @@ function mountShell() {
       </div>
       <button class="btn primary summary-rescan" id="rescan">${icon("refresh")}<span class="label">Rescan</span></button>
       <div class="sort-buttons summary-sort" id="sort-buttons" aria-label="Sort projects">
+        <button data-sort="status" title="Projects that need you first">Status</button>
         <button data-sort="activity" title="Sort by recent activity">Recent</button>
         <button data-sort="name" title="Sort by project name">Name</button>
         <button data-sort="changes" title="Sort by most changes">Changes</button>
@@ -5783,7 +6394,8 @@ function mountShell() {
         <button data-sort="tech" title="Sort by technology">Tech</button>
       </div>
       <div class="sort-buttons view-buttons summary-view" id="view-buttons" aria-label="Project view">
-        <button data-view="cards">Cards</button>
+        <button data-view="cards" title="Name, what agents report, and the three buttons">Cards</button>
+        <button data-view="details" title="Cards with git state, tech and the last commit as well">Details</button>
         <button data-view="table">Table</button>
       </div>
     </div>
@@ -5920,7 +6532,7 @@ function mountShell() {
     "brand-sub", "loadbar", "roots-btn", "roots-label", "roots-pop", "roots-list",
     "rescan", "title-home", "search-input", "search-kbd", "search-menu", "tech-picker", "tech-filter", "tech-filter-label",
     "tech-menu", "tech-menu-input", "tech-menu-list", "tech-clear", "sort-buttons", "view-buttons", "activity", "filters", "filter-chips",
-    "banner-host", "summary", "summary-stats", "scroll", "grid", "home-host", "projects-host", "ports-host", "dns-host", "hosts-host", "network-host", "path-ping-host", "explorer-host", "disk-space-host", "github-host", "git-host", "tools-host", "windows-tools-host", "isolated-tool-host", "isolated-tool-slot", "port-filter-input", "port-pins", "port-tabs", "port-sort", "port-live", "ports-list", "ports-detail", "ports-dialogs", "detail-host", "settings-host", "open-settings", "toggle-theme",
+    "banner-host", "summary", "summary-stats", "cockpit-bar", "cockpit-report", "scroll", "grid", "home-host", "projects-host", "ports-host", "dns-host", "hosts-host", "network-host", "path-ping-host", "explorer-host", "disk-space-host", "github-host", "git-host", "tools-host", "windows-tools-host", "isolated-tool-host", "isolated-tool-slot", "port-filter-input", "port-pins", "port-tabs", "port-sort", "port-live", "ports-list", "ports-detail", "ports-dialogs", "detail-host", "settings-host", "open-settings", "toggle-theme",
     "status-term", "status-term-popout", "status-progress", "status-version", "changelog-pop",
     "status-feedback-wrap", "status-feedback",
     "status-pins-wrap", "status-pins", "pins-pop", "pins-panel",
@@ -6235,7 +6847,7 @@ function renderFilters() {
   el["filter-chips"].innerHTML =
     chips +
     hint +
-    (state.filters.size || state.techFilter || state.search
+    (state.filters.size || state.techFilter || state.search || state.cockpitStatus
       ? `<span class="chip-sep"></span><button class="chip" id="clear">${icon(
           "backspace"
         )}Clear</button>`
@@ -6267,6 +6879,49 @@ function renderSummary() {
       "unpushed"
     )}</b> unpushed</span>
     <span class="summary-tail">${tail}</span>`;
+  renderCockpitBar(settled);
+}
+
+/** The line along the top of Projects: what needs you, how many projects are
+ *  in each state, who reported last, and the door for connecting agents. */
+function renderCockpitBar(settled) {
+  const host = el["cockpit-bar"];
+  if (!host) return;
+  const views = settled.map((p) => [p, cockpitView(p)]);
+  const count = (status) => views.filter(([, c]) => c.status === status).length;
+  const urgent = views
+    .filter(([, c]) => c.status === "incident" || c.status === "attention")
+    .sort(([a, ca], [b, cb]) => COCKPIT_STATUS[ca.status].rank - COCKPIT_STATUS[cb.status].rank || activity(b) - activity(a));
+  const observed = views.filter(([, c]) => c.observed);
+  const latest = observed.reduce((best, [, c]) => (!best || c.updatedAt > best.updatedAt ? c : best), null);
+
+  let brief;
+  if (!state.cockpitLoaded && cockpitStarted) {
+    brief = `<span class="cockpit-brief-dim">Reading what agents reported…</span>`;
+  } else if (urgent.length) {
+    const [first, c] = urgent[0];
+    const what = c.summary || c.next || COCKPIT_STATUS[c.status].label;
+    brief = `<b>${urgent.length} project${urgent.length === 1 ? " needs" : "s need"} you.</b> Start with
+      <button type="button" class="cockpit-brief-link" data-cockpit-open="${esc(first.path)}">${esc(first.name)}</button>: ${esc(what)}`;
+  } else if (observed.length) {
+    brief = `<b>Nothing needs you.</b> ${count("healthy")} healthy, ${count("unknown")} without a report.`;
+  } else {
+    brief = `<span class="cockpit-brief-dim">No agent has reported on these projects yet. Connect Claude Desktop or a Grok bot and they fill in status, KPIs and notes here.</span>`;
+  }
+
+  const chip = (status, label, n) => `<button type="button" class="chip cockpit-chip${state.cockpitStatus === status ? " on" : ""}" data-cockpit-status="${status}">${
+    status ? `<i class="cockpit-dot ${status}"></i>` : ""}${esc(label)}<span class="n">${n}</span></button>`;
+  const chips = [
+    chip("", "All", settled.length),
+    ...["incident", "attention", "healthy", "unknown"].map((s) => chip(s, COCKPIT_STATUS[s].label, count(s))),
+  ].join("");
+  const by = latest && !demoOn()
+    ? `<span class="cockpit-latest" title="Last report">${icon("smart_toy")}${esc(latest.updatedBy || "An agent")} · ${esc(cockpitAgo(latest.updatedAt))}</span>`
+    : "";
+  renderCockpitReport();
+  host.innerHTML = `<div class="cockpit-brief">${brief}</div>
+    <div class="cockpit-bar-end"><div class="cockpit-chips">${chips}</div>${by}
+      <button type="button" class="btn small" data-cockpit-connect title="Let Claude Desktop, a Grok bot or a script report on your projects">${icon("hub")}Connect agents</button></div>`;
 }
 
 function renderGrid() {
@@ -6289,7 +6944,7 @@ function renderGrid() {
       ? `<div class="project-table-wrap"><table class="project-table" style="width:${visibleTableColumnKeys()
           .reduce((sum, key) => sum + tableColumnWidth(key), 0)}px"><colgroup>${visibleTableColumnKeys()
           .map((key) => `<col data-table-col="${key}" style="width:${tableColumnWidth(key)}px" />`).join("")}</colgroup><thead><tr>
-          ${tableHeader("project", "Project")}${state.tableColumns.includes("version") ? tableHeader("version", "Version") : ""}${TABLE_TECH_COLUMNS
+          ${tableHeader("project", "Project")}${state.tableColumns.includes("cockpit") ? tableHeader("cockpit", "Cockpit") : ""}${state.tableColumns.includes("version") ? tableHeader("version", "Version") : ""}${TABLE_TECH_COLUMNS
             .filter(([kind]) => state.tableColumns.includes(kind))
             .map(([kind, label]) => tableHeader(`tech:${kind}`, label)).join("")}${
               state.tableColumns.includes("status") ? tableHeader("status", "Status") : ""
@@ -7780,10 +8435,40 @@ function wireShell() {
       state.filters.clear();
       state.techFilter = "";
       state.search = "";
+      state.cockpitStatus = "";
       el["search-input"].value = "";
       savePrefs();
-      markDirty("filters", "toolbar", "grid");
+      markDirty("filters", "toolbar", "grid", "summary");
     }
+  };
+
+  el["cockpit-report"].onclick = (e) => {
+    const report = state.cockpitReport;
+    if (!report) return;
+    if (e.target.closest("[data-report-toggle]")) {
+      saveReportUi({ collapsed: reportUi().collapsed !== true });
+    } else if (e.target.closest("[data-report-hide]")) {
+      saveReportUi({ hidden: report.updatedAt });
+    } else {
+      return;
+    }
+    renderCockpitReport();
+  };
+
+  el["cockpit-bar"].onclick = (e) => {
+    const status = e.target.closest("[data-cockpit-status]");
+    if (status) {
+      const next = status.dataset.cockpitStatus;
+      state.cockpitStatus = state.cockpitStatus === next ? "" : next;
+      return markDirty("grid", "summary", "filters");
+    }
+    const open = e.target.closest("[data-cockpit-open]");
+    if (open) {
+      const project = state.byPath.get(open.dataset.cockpitOpen);
+      if (project) openDetail(project);
+      return;
+    }
+    if (e.target.closest("[data-cockpit-connect]")) openCockpitConnect();
   };
 
   document.querySelector(".titlebar").onclick = (e) => {
@@ -7883,6 +8568,18 @@ function wireShell() {
     const todo = e.target.closest("[data-todo-file]");
     if (todo) {
       return toggleTodoSource(todo.dataset.todoFile, Number(todo.dataset.todoLine));
+    }
+    if (e.target.closest("[data-cockpit-connect]")) return openCockpitConnect();
+    const drop = e.target.closest("[data-cockpit-drop]");
+    if (drop) {
+      const p = selectedProject();
+      if (p) dropCockpitNote(p, drop.dataset.cockpitDrop);
+      return;
+    }
+    if (e.target.closest("[data-cockpit-clear]")) {
+      const p = selectedProject();
+      if (p) clearCockpit(p);
+      return;
     }
     const file = e.target.closest("[data-file]");
     if (file) {
