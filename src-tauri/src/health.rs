@@ -38,6 +38,9 @@ const SLOW_MS: u128 = 2_000;
 /// How often a stuck window is reported again while it stays stuck.
 const STILL_STUCK: Duration = Duration::from_secs(5);
 const MAX_BYTES: u64 = 512 * 1024;
+/// How long a drag may hold the window before it is cancelled. Under the five
+/// seconds after which Windows offers to close a window that is not answering.
+const DRAG_CANCEL_AFTER: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
 struct Job {
@@ -596,9 +599,31 @@ pub fn watch(app: tauri::AppHandle) {
                 // wait was over, and left no line at all — the one kind of
                 // freeze most worth having a line for.
                 let deadline = asked + Duration::from_secs(10);
+                let mut drag_cancelled = false;
                 loop {
                     if answered.load(Ordering::SeqCst) || Instant::now() >= deadline {
                         break;
+                    }
+                    // A drag stuck in another program (a browser that does not
+                    // answer its drop handler, seen in Windows' own hang
+                    // report as AppHangXProcB1 on msedge.exe) is cancelled
+                    // here, ahead of the reporting cadence below: at five
+                    // seconds Windows marks the window Not Responding and a
+                    // click on its ghost ends WinT, so the drag has to be over
+                    // before then. Once per episode; the reports below repeat
+                    // it if the drag walks straight into another stuck call.
+                    if !drag_cancelled
+                        && asked.elapsed() >= DRAG_CANCEL_AFTER
+                        && crate::explorer::cancel_drag()
+                    {
+                        drag_cancelled = true;
+                        record(
+                            "drag",
+                            format!(
+                                "a drag was stuck in another program for {} ms — cancelled it",
+                                asked.elapsed().as_millis()
+                            ),
+                        );
                     }
                     if asked.elapsed() >= Duration::from_millis(STUCK_MS) {
                         let first = stuck_since.is_none();
@@ -626,12 +651,11 @@ pub fn watch(app: tauri::AppHandle) {
                             // The one wedge this thread can do something about
                             // rather than only write down. A drag holds the
                             // window's thread for as long as the drop target
-                            // takes, and a drop target waiting on a drive that
-                            // has stopped answering holds it indefinitely.
-                            // Asking the drag to stop lands on its next turn
-                            // through the loop, so the window comes back as
-                            // soon as the call it is in returns instead of
-                            // being handed into the rest of the drag.
+                            // takes, and a drop target in another program that
+                            // stops answering holds it indefinitely. This
+                            // aborts the call the drag is waiting in and ends
+                            // the drag, so the window comes back within a
+                            // report or two instead of when the user kills it.
                             if !first && crate::explorer::cancel_drag() {
                                 record(
                                     "drag",

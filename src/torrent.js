@@ -1807,12 +1807,18 @@ Click to open in Explorer` : "";
 
     if (st.fileOrder.length !== files.length) orderFiles();
     pane.querySelector("[data-tr-fspacer]").style.height = `${files.length * FILE_ROW}px`;
-    const first = Math.max(0, Math.floor(scroll.scrollTop / FILE_ROW) - OVERSCAN);
     const visible = Math.ceil(scroll.clientHeight / FILE_ROW) + OVERSCAN * 2;
+    // The scroll position can still belong to a longer list (another torrent,
+    // or one before its files were filtered), which puts `first` past the end.
+    // Clamped, so the rows drawn are the last ones rather than a negative count.
+    const first = Math.min(
+      Math.max(0, Math.floor(scroll.scrollTop / FILE_ROW) - OVERSCAN),
+      Math.max(0, files.length - visible),
+    );
     const last = Math.min(files.length, first + visible);
     box.style.transform = `translateY(${first * FILE_ROW}px)`;
 
-    const wanted = last - first;
+    const wanted = Math.max(0, last - first);
     pool(box, wanted, fileElement, "file");
     for (let i = 0; i < wanted; i++) {
       // The row's place in the list and the file's place in the torrent are

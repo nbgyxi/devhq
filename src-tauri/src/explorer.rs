@@ -2222,8 +2222,19 @@ pub fn drag_run(items: DragItems, copy_only: bool) -> Result<&'static str, Strin
     // Marks the drag as in the air for `cancel_drag`, and clears both flags
     // however this returns.
     DRAG_CANCEL.store(false, Ordering::SeqCst);
+    DRAG_THREAD.store(
+        unsafe { windows::Win32::System::Threading::GetCurrentThreadId() },
+        Ordering::SeqCst,
+    );
+    // While the drag is in the air, every hover over another program's window
+    // is a COM call into that program, and this thread waits for the answer.
+    // A program that never answers holds the window until it is killed — the
+    // mouse button going up is never seen, because the wait does not read
+    // input. Turning on call cancellation lets `cancel_drag` abort that one
+    // call from the watchdog's thread; without it CoCancelCall does nothing.
+    let cancellable = unsafe { windows::Win32::System::Com::CoEnableCallCancellation(None) }.is_ok();
     DRAG_IN_FLIGHT.store(true, Ordering::SeqCst);
-    let _in_flight = DragInFlight;
+    let _in_flight = DragInFlight { cancellable };
     let result = (|| {
         let array =
             unsafe { SHCreateShellItemArrayFromIDLists(&items.pidls) }.map_err(|e| e.to_string())?;
@@ -2254,8 +2265,8 @@ pub fn drag_run(items: DragItems, copy_only: bool) -> Result<&'static str, Strin
         }
         if DRAG_CANCEL.load(Ordering::SeqCst) {
             return Err(
-                "The drag was stopped because the window had stopped answering — the drive it \
-                 came from may not be responding."
+                "The drag was stopped: the program under the mouse stopped answering, and \
+                 WinT would have frozen waiting for it. Try dropping somewhere else."
                     .into(),
             );
         }
@@ -2279,14 +2290,24 @@ pub fn drag_run(items: DragItems, copy_only: bool) -> Result<&'static str, Strin
 static DRAG_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 #[cfg(windows)]
 static DRAG_CANCEL: AtomicBool = AtomicBool::new(false);
+/// The thread the drag runs on, for `CoCancelCall`.
+#[cfg(windows)]
+static DRAG_THREAD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 #[cfg(windows)]
-struct DragInFlight;
+struct DragInFlight {
+    /// Whether `CoEnableCallCancellation` took, so it is undone exactly once.
+    cancellable: bool,
+}
 
 #[cfg(windows)]
 impl Drop for DragInFlight {
     fn drop(&mut self) {
         DRAG_IN_FLIGHT.store(false, Ordering::SeqCst);
+        if self.cancellable {
+            // Runs on the drag's own thread, which is where it was enabled.
+            let _ = unsafe { windows::Win32::System::Com::CoDisableCallCancellation(None) };
+        }
     }
 }
 
@@ -2294,18 +2315,28 @@ impl Drop for DragInFlight {
 /// whether there was one, so the caller can say what it did.
 ///
 /// This is the watchdog's lever: a drag holds the thread that draws the
-/// window, and a drop target blocked on a drive that has stopped answering
-/// holds it for as long as the drive takes. The flag is read by
-/// `QueryContinueDrag`, so it lands on the drag loop's next turn — which is
-/// after the blocking call returns, not during it. It cannot unwedge a window
-/// mid-call, and it does stop that window being handed straight back into the
-/// next leg of the same drag.
+/// window, and a drop target in another program that never answers holds it
+/// for as long as that program takes — which, seen in the health log, can be
+/// until the user kills WinT. Two levers, in order:
+///
+/// - The flag is read by `QueryContinueDrag`, so the drag ends on the loop's
+///   next turn instead of walking into the next drop target.
+/// - `CoCancelCall` aborts the cross-process call the drag thread is waiting
+///   in right now, which is what gives the loop that next turn. The drop
+///   target's answer is simply never waited for; DoDragDrop treats the failed
+///   call as a target that refused, and the flag ends it from there.
 #[cfg(windows)]
 pub fn cancel_drag() -> bool {
     if !DRAG_IN_FLIGHT.load(Ordering::SeqCst) {
         return false;
     }
     DRAG_CANCEL.store(true, Ordering::SeqCst);
+    let thread = DRAG_THREAD.load(Ordering::SeqCst);
+    if thread != 0 {
+        // Fails harmlessly (CO_E_CANCEL_DISABLED, or no call pending) when the
+        // drag is stuck somewhere that is not a COM call.
+        let _ = unsafe { windows::Win32::System::Com::CoCancelCall(thread, 0) };
+    }
     true
 }
 

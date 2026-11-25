@@ -16,6 +16,15 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.194.1",
+      title: "Dragging out of Torrents no longer freezes WinT",
+      date: "2026-11-24",
+      changes: [
+        ["fix", "Torrents: dragging files out could freeze WinT for minutes, until it had to be closed, when the program under the mouse stopped answering (a browser that will not take the drop, for one). WinT now stops waiting for that program and ends the drag within three seconds, before Windows marks it Not Responding, and says why."],
+        ["fix", "Torrents: the file list no longer comes up empty after switching from a torrent with many files, scrolled down, to one with fewer."],
+      ],
+    },
+    {
       version: "0.194.0",
       title: "Reports on favorites, and a summary on top",
       date: "2026-11-22",
