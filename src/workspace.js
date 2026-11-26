@@ -405,8 +405,12 @@
       const move = (ev) => {
         const dx = ev.clientX - start.x;
         const dy = ev.clientY - start.y;
-        if (which === "left") layout.size.left = Math.max(160, Math.min(640, start.left + dx));
-        else if (which === "right") layout.size.right = Math.max(220, Math.min(760, start.right - dx));
+        // No fixed limits on width: a column can be as narrow or as wide as
+        // the window allows. The only floor is enough to keep the divider
+        // grabbable, and the only ceiling is the window itself.
+        const room = window.innerWidth - 24;
+        if (which === "left") layout.size.left = Math.max(40, Math.min(room, start.left + dx));
+        else if (which === "right") layout.size.right = Math.max(40, Math.min(room, start.right - dx));
         else if (which === "bottom") {
           // How far it can grow depends on where it is hanging from: the whole
           // window at the foot, or just the center column when it is under the
@@ -703,12 +707,17 @@
         <div class="ws-preview" hidden>
           <header>
             <strong></strong><span class="ws-preview-dot" hidden title="Unsaved changes"></span><small></small>
+            <span class="ws-seg ws-preview-views" role="group" aria-label="What to show" hidden>
+              <button type="button" data-preview="view-diff" title="The file with what changed since your last save marked">Changes</button>
+              <button type="button" data-preview="view-file" title="The file as it is now, editable">File</button>
+            </span>
             <button type="button" class="ws-mini" data-preview="save" title="Save" hidden>${icon("save")}</button>
             <button type="button" class="ws-mini" data-preview="reveal" title="Reveal in Explorer">${icon("folder_open")}</button>
             <button type="button" class="ws-mini" data-preview="vscode" title="Open in VS Code">${icon("code")}</button>
             <button type="button" class="ws-mini" data-preview="close" title="Close">${icon("close")}</button>
           </header>
           <div class="ws-preview-code"><div class="ws-preview-gutter"></div><pre spellcheck="false"></pre></div>
+          <div class="ws-preview-diff" hidden></div>
           <div class="ws-preview-image" hidden><img alt="" /></div>
         </div>`;
       panel.hole = body.querySelector(".ws-browser-hole");
@@ -869,6 +878,10 @@
         const action = e.target.closest("[data-preview]")?.dataset.preview;
         if (!action) return;
         if (action === "save") return savePreview();
+        if (action === "view-diff" || action === "view-file") {
+          if (action === "view-diff") await settlePreviewEdit();
+          return setPreviewView(action === "view-diff" ? "diff" : "file");
+        }
         if (action === "close") {
           await settlePreviewEdit();
           panel.previewOpen = false;
@@ -917,6 +930,10 @@
     pre.contentEditable = "false";
 
     if (window.wintHighlight?.isImage(name)) {
+      panel.previewChange = null;
+      panel.previewView = "file";
+      panel.preview.querySelector(".ws-preview-views").hidden = true;
+      panel.preview.querySelector(".ws-preview-diff").hidden = true;
       codeEl.hidden = true;
       imageEl.hidden = false;
       img.removeAttribute("src");
@@ -937,20 +954,117 @@
     codeEl.hidden = false;
     gutter.textContent = "";
     pre.textContent = "Reading…";
+    // A changed file opens on what changed; anything else opens as the file.
+    panel.previewChange = changedFileAt(path);
+    panel.preview.querySelector(".ws-preview-views").hidden = !panel.previewChange;
+    if (panel.previewChange) setPreviewView("diff");
+    else setPreviewView("file", { quiet: true });
     try {
       const text = await busy(`Reading ${name}`, () => invoke("workspace_read_file", { path }));
+      if (panel.previewPath !== path) return;
       const lines = text.split("\n");
       gutter.textContent = lines.map((_, i) => i + 1).join("\n");
       pre.innerHTML = window.wintHighlight ? window.wintHighlight.html(text, name) : esc(text);
       panel.previewOriginal = text;
       pre.contentEditable = "true";
-      say(`Showing ${name}`);
+      if (!panel.previewChange) say(`Showing ${name}`);
     } catch (err) {
       gutter.textContent = "";
       pre.textContent = String(err);
       say(String(err));
     }
   };
+
+  const samePath = (a, b) => String(a).replace(/\//g, "\\").toLowerCase() === String(b).replace(/\//g, "\\").toLowerCase();
+  const changedFileAt = (path) => changedFiles.find((file) => samePath(file.full, path)) || null;
+
+  /** Reads a unified diff that carries the whole file as context into rows:
+   *  every line of the file, the removed ones included, each marked. */
+  const parseFileDiff = (diff) => {
+    const rows = [];
+    let inHunk = false;
+    let oldNo = 0;
+    let newNo = 0;
+    for (const line of diff.split("\n")) {
+      const hunk = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (hunk) {
+        // With the whole file as context there is one hunk; should git ever
+        // split it, the gap is said rather than silently closed.
+        if (inHunk) rows.push({ sign: "gap" });
+        inHunk = true;
+        oldNo = Number(hunk[1]);
+        newNo = Number(hunk[2]);
+        continue;
+      }
+      if (!inHunk || line.startsWith("\\")) continue;
+      const sign = line[0];
+      const text = line.slice(1).replace(/\r$/, "");
+      if (sign === "+") rows.push({ sign, text, newNo: newNo++ });
+      else if (sign === "-") rows.push({ sign, text, oldNo: oldNo++ });
+      else if (sign === " ") rows.push({ sign, text, oldNo: oldNo++, newNo: newNo++ });
+    }
+    return rows;
+  };
+
+  const diffRowsHtml = (rows, name) => {
+    const paint = (text) => window.wintHighlight ? window.wintHighlight.html(text, name) : esc(text);
+    return rows.map((row) => row.sign === "gap"
+      ? `<div class="ws-diff-row gap"><span></span><span></span><span></span><code>…</code></div>`
+      : `<div class="ws-diff-row ${row.sign === "+" ? "add" : row.sign === "-" ? "del" : "same"}"><span>${
+          row.oldNo ?? ""}</span><span>${row.newNo ?? ""}</span><span class="ws-diff-sign">${
+          row.sign === " " ? "" : row.sign === "-" ? "−" : "+"}</span><code>${paint(row.text) || " "}</code></div>`).join("");
+  };
+
+  /** Switches the preview between the marked-up changes and the editable file.
+   *  The changes are read fresh each time, so an edit saved in the file view
+   *  is in them the moment you switch back. */
+  async function setPreviewView(view, { quiet = false } = {}) {
+    const panel = panels.get("browser");
+    if (!panel?.preview) return;
+    const diffEl = panel.preview.querySelector(".ws-preview-diff");
+    const codeEl = panel.preview.querySelector(".ws-preview-code");
+    panel.previewView = view;
+    for (const button of panel.preview.querySelectorAll(".ws-preview-views button")) {
+      const on = button.dataset.preview === `view-${view}`;
+      button.classList.toggle("on", on);
+      button.setAttribute("aria-pressed", String(on));
+    }
+    diffEl.hidden = view !== "diff";
+    codeEl.hidden = view === "diff";
+    if (view !== "diff") { if (!quiet) say(`Showing ${panel.previewName}`); return; }
+    const path = panel.previewPath;
+    const name = panel.previewName;
+    const change = panel.previewChange || changedFileAt(path);
+    diffEl.innerHTML = `<div class="ws-diff-note">${icon("difference")}Reading what changed in ${esc(name)}…</div>`;
+    try {
+      let rows;
+      if (change?.status === "untracked") {
+        const text = await busy(`Reading ${name}`, () => invoke("workspace_read_file", { path }));
+        rows = text.replace(/\n$/, "").split("\n").map((line, i) => ({ sign: "+", text: line.replace(/\r$/, ""), newNo: i + 1 }));
+      } else {
+        const diff = await busy(`Comparing ${name} with your last save`, () =>
+          invoke("git_file_diff", { path: projectPath, file: change?.path || name }));
+        rows = parseFileDiff(diff);
+      }
+      if (panel.previewPath !== path || panel.previewView !== "diff") return;
+      const added = rows.filter((r) => r.sign === "+").length;
+      const removed = rows.filter((r) => r.sign === "-").length;
+      if (!added && !removed) {
+        diffEl.innerHTML = `<div class="ws-diff-note">${icon("check_circle")}No line changes to show in ${esc(name)} - it may be binary, renamed, or only its mode changed.</div>`;
+        say(`No line changes in ${name}`);
+        return;
+      }
+      diffEl.innerHTML = `<div class="ws-diff-summary"><b class="add">+${added.toLocaleString()}</b><b class="del">−${
+        removed.toLocaleString()}</b><span>since your last save</span></div><div class="ws-diff-rows">${diffRowsHtml(rows, name)}</div>`;
+      // Open on the first change rather than on line one of a long file.
+      diffEl.querySelector(".ws-diff-row.add,.ws-diff-row.del")?.scrollIntoView({ block: "center" });
+      say(`Showing what changed in ${name}: +${added} −${removed}`);
+    } catch (err) {
+      if (panel.previewPath !== path) return;
+      diffEl.innerHTML = `<div class="ws-diff-note">${icon("error")}${esc(String(err))}</div>`;
+      say(String(err));
+    }
+  }
 
   /* --------------------------------------------------------- panel: files */
 
@@ -959,7 +1073,9 @@
    *  git panel because that is what already asks; held here because the file
    *  panel is what shows it. */
   let changedFiles = [];
+  let changedKnown = false;
   const publishChanged = (changed) => {
+    changedKnown = true;
     changedFiles = changed.map((file) => ({
       ...file,
       full: `${projectPath.replace(/[\\/]+$/, "")}\\${file.path.replace(/\//g, "\\")}`,
@@ -994,7 +1110,9 @@
       body.innerHTML = `<div class="ws-tree" data-depth="0"></div>`;
       panel.tree = body.querySelector(".ws-tree");
       panel.open = new Set();
-      panel.changedOnly = false;
+      // Changed is where the files panel opens: what you have touched is what
+      // you came to look at. All is one click away.
+      panel.changedOnly = true;
       renderFilesTools(panel);
       panel.tools.addEventListener("click", (e) => {
         const action = e.target.closest("[data-files]")?.dataset.files;
@@ -1029,7 +1147,10 @@
         }
         showPreview(row.dataset.path, row.dataset.name);
       });
-      loadDir(panel, panel.tree, projectPath, 0);
+      // Until git has answered, say so rather than claim nothing changed.
+      if (changedKnown) renderChangedOnly(panel);
+      else panel.tree.innerHTML = `<div class="ws-tree-note">Checking what changed…</div>`;
+      refreshGit();
     },
   });
 
@@ -1037,7 +1158,11 @@
    *  panel needs the answer, and neither is guaranteed to be on screen. */
   const refreshGit = () => {
     const git = panels.get("git");
-    if (git?.state) loadGit(git);
+    if (git?.state) return loadGit(git);
+    // Save & upload is not on screen to ask, so the file panel asks itself.
+    busy("Checking what changed", () => invoke("git_workspace", { path: projectPath }))
+      .then((data) => publishChanged(data?.info?.changed || []))
+      .catch(() => publishChanged([]));
   };
 
   /** The changed files, in the same tree shape as everything else - only the
@@ -1234,7 +1359,9 @@
 
   let gitLoading = false;
   async function loadGit(panel, options = {}) {
-    if (gitLoading || panel.working) return;
+    // `settling` is the save or upload itself asking for the new state before
+    // it lets go of its buttons, so the panel changes shape once, not twice.
+    if (gitLoading || (panel.working && !options.settling)) return;
     gitLoading = true;
     try {
       const data = await busy("Checking what changed", () => invoke("git_workspace", { path: projectPath }));
@@ -1510,42 +1637,53 @@
 
   async function gitAct(panel, action, label) {
     if (panel.working) return;
-    setGitOperation(panel, true, label, "working", action);
+    setGitOperation(panel, true, label, action);
+    let ok = false;
     try {
       const result = await busy(label, () => invoke("git_action", { request: { path: projectPath, action, value: "", amend: false } }));
+      ok = result.ok;
       say(result.ok ? result.output?.trim().split("\n").pop() || "Done" : String(result.output));
       if (!result.ok) gitNote(panel, result.output || `${label} failed.`);
-      setGitOperation(panel, false, result.ok ? `${label} complete` : `${label} failed`, result.ok ? "done" : "error", action);
     } catch (err) {
       say(String(err));
       gitNote(panel, String(err));
-      setGitOperation(panel, false, `${label} failed`, "error", action);
     }
-    await loadGit(panel);
+    await loadGit(panel, { settling: true });
+    setGitOperation(panel, false, ok ? `${label} complete` : `${label} failed`, action);
   }
 
-  function setGitOperation(panel, working, text, kind = "working", action = "") {
+  /** Shows the work in the button that started it - spinner and what it is
+   *  doing, in the same place, at the same width - rather than in a row that
+   *  appears above the buttons and pushes them down, then vanishes and pulls
+   *  them back up. The button keeps the width it had when pressed, so a longer
+   *  label cannot nudge its neighbours either. */
+  function setGitOperation(panel, working, text, action = "") {
     panel.working = working;
+    panel.body.classList.toggle("ws-git-busy", working);
     const actionButton = action ? panel.body.querySelector(`button[data-git="${action}"]`) : null;
     if (actionButton) {
       actionButton.dataset.idleHtml ||= actionButton.innerHTML;
-      const activeLabels = { save: "Saving", push: "Uploading", pull: "Getting changes" };
+      if (working) actionButton.style.minWidth = `${actionButton.getBoundingClientRect().width}px`;
+      else actionButton.style.minWidth = "";
+      const short = { save: "Saving", push: "Uploading", pull: "Getting" }[action] || text;
       actionButton.innerHTML = working
-        ? `${icon("progress_activity")}<span>${activeLabels[action] || text}…</span>`
+        ? `${icon("progress_activity")}<span>${esc(short)}…</span>`
         : actionButton.dataset.idleHtml;
       actionButton.classList.toggle("working", working);
+      if (working) actionButton.title = text;
     }
     for (const control of panel.form.querySelectorAll("button,input")) control.disabled = working;
     for (const button of panel.body.querySelectorAll("button[data-git]")) button.disabled = working;
-    panel.operation.hidden = !text;
-    panel.operation.className = `ws-git-operation ${kind}`;
-    panel.operation.innerHTML = text ? `${icon(working ? "progress_activity" : kind === "error" ? "error" : "check_circle")}<span>${esc(text)}${working ? "…" : ""}</span>` : "";
-    clearTimeout(panel.operationTimer);
-    if (!working && kind === "done") panel.operationTimer = setTimeout(() => {
-      panel.operation.hidden = true;
-      syncGitHeight(panel);
-    }, 3000);
-    syncGitHeight(panel);
+    // The status bar says how it went; the panel already shows the result
+    // (the saved list, the Upload button, or a note when it failed).
+    panel.operation.hidden = true;
+    if (!working && text) say(text);
+  }
+
+  /** The label of the button doing the work, updated in place as it goes. */
+  function setGitProgress(panel, action, text) {
+    const span = panel.body.querySelector(`button[data-git="${action}"].working span`);
+    if (span) span.textContent = `${text}…`;
   }
 
   /** Stage everything, commit it, and say plainly that it is not uploaded yet
@@ -1557,24 +1695,28 @@
     const changed = panel.data?.info?.changed || [];
     if (!changed.length) return say("There is nothing to save");
     if (panel.working) return;
-    setGitOperation(panel, true, `Saving ${changed.length} file${changed.length === 1 ? "" : "s"}`, "working", "save");
+    setGitOperation(panel, true, "Saving", "save");
+    let ok = false;
     try {
       await busy(`Saving ${changed.length} file${changed.length === 1 ? "" : "s"}`, async () => {
-        for (const file of changed) {
-          await invoke("git_action", { request: { path: projectPath, action: "stage", value: file.path, amend: false } });
+        for (let i = 0; i < changed.length; i++) {
+          if (changed.length > 1) setGitProgress(panel, "save", `Saving ${i + 1} / ${changed.length}`);
+          await invoke("git_action", { request: { path: projectPath, action: "stage", value: changed[i].path, amend: false } });
         }
+        setGitProgress(panel, "save", "Recording");
         const result = await invoke("git_action", { request: { path: projectPath, action: "commit", value: message, amend: false } });
         if (!result.ok) throw new Error(result.output);
       });
       input.value = "";
-      say("Saved on this computer. Not uploaded yet — press Upload when you're ready.");
-      setGitOperation(panel, false, "Save complete — ready to upload", "done", "save");
+      ok = true;
     } catch (err) {
-      say(String(err));
       gitNote(panel, String(err));
-      setGitOperation(panel, false, "Save failed", "error", "save");
     }
-    await loadGit(panel);
+    setGitProgress(panel, "save", "Checking");
+    await loadGit(panel, { settling: true });
+    setGitOperation(panel, false, ok
+      ? "Saved on this computer. Not uploaded yet — press Upload when you're ready."
+      : "Save failed", "save");
   }
 
   // Editors and agents change this folder without going through the workspace.
@@ -2115,6 +2257,12 @@
       terminalCmd: "gemini_terminal_command",
       sessionsCmd: "gemini_sessions",
       transcriptCmd: "gemini_transcript",
+      models: [
+        { id: "", label: "Antigravity default", note: "Use your Antigravity setting" },
+        { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", note: "Deeper reasoning" },
+        { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", note: "Fast responses" },
+      ],
+      defaultModel: "",
       mintSession: false,
       installHint: `WinT doesn't ship it and holds no key for it. You install Antigravity CLI and sign in as
            yourself; this panel gives it somewhere to talk.`,
@@ -2162,6 +2310,27 @@
     return spec.localModel;
   };
 
+  /** The model last picked for each kind of agent, so a new tab starts on the
+   *  one you chose last time rather than the built-in default. Kept through
+   *  ui_state (durable, written on the change) with a localStorage copy so the
+   *  first tab of a window can read it before the durable one has answered. */
+  const LAST_MODEL_KEY = "workspace-agent-last-model";
+  let lastModels = {};
+  try { lastModels = JSON.parse(localStorage.getItem(`wint.${LAST_MODEL_KEY}`) || "{}") || {}; } catch { lastModels = {}; }
+  const lastModelsReady = invoke("ui_state_get", { key: LAST_MODEL_KEY })
+    .then((saved) => { if (saved && typeof saved === "object") lastModels = { ...lastModels, ...saved }; })
+    .catch(() => {});
+  const rememberModel = (kind, model) => {
+    lastModels = { ...lastModels, [kind]: model };
+    try { localStorage.setItem(`wint.${LAST_MODEL_KEY}`, JSON.stringify(lastModels)); } catch {}
+    invoke("ui_state_set", { key: LAST_MODEL_KEY, value: lastModels }).catch(() => {});
+  };
+  const preferredModel = (kind) => {
+    const remembered = lastModels[kind];
+    return typeof remembered === "string" && AGENTS[kind].models?.some((item) => item.id === remembered)
+      ? remembered : AGENTS[kind].defaultModel || "";
+  };
+
   const freshAgentState = (kind) => {
     const cached = readStatusCache(kind);
     const status = cached === null ? null : cached;
@@ -2172,7 +2341,7 @@
       streaming: null,
       status,
       needsSignIn: kind === "cursor" && Boolean(status?.installed && !status?.signedIn),
-      model: AGENTS[kind].defaultModel || "",
+      model: preferredModel(kind),
     };
   };
 
@@ -2222,12 +2391,14 @@
     if (turn.role === "you") {
       // A pasted file is a wall between the question above it and the answer
       // below, so anything this long is folded down to its opening lines.
-      const body = `<div class="ws-turn-body">${esc(turn.text)}</div>`;
+      const body = turn.text ? `<div class="ws-turn-body">${esc(turn.text)}</div>` : "";
       const lines = turn.text.split("\n").length;
+      const clips = turn.attachments?.length
+        ? `<div class="ws-clips sent">${turn.attachments.map((a) => clipHtml(a)).join("")}</div>` : "";
       return `<div class="ws-turn you">${
         isLong(turn.text, 12, 900)
           ? clampHtml(key, tab, body, `Show all ${lines} lines`, "Show less")
-          : body}</div>`;
+          : body}${clips}</div>`;
     }
     if (turn.role === "error") {
       return `<div class="ws-turn error">${icon("error")}<span>${esc(turn.text)}</span></div>`;
@@ -2247,7 +2418,7 @@
       if (!turn.text.trim()) return turn.tokens ? `<div class="ws-steps">${toolHtml(turn, key, tab)}</div>` : "";
       const body = `<div class="ws-turn-body">${markdown(turn.text)}</div>`;
       return `<div class="ws-turn thought">${icon("neurology")}${
-        isLong(turn.text, 6, 400) ? clampHtml(key, tab, body, "Show the whole thought", "Show less") : body}</div>`;
+        isLong(turn.text, 2, 180) ? clampHtml(key, tab, body, "Show the whole thought", "Show less") : body}</div>`;
     }
     const text = revealed(turn);
     if (!text) return "";
@@ -2263,18 +2434,19 @@
     const lines = turn.change;
     if (!lines?.length) return "";
     const open = tab.openChanges?.has(key);
-    // Unopened, only the lines that actually changed are worth the room -
-    // context lines are there to read the change by, not to preview it.
-    const preview = lines.filter((line) => line.sign !== " ").slice(0, 3);
-    const shown = open ? lines : preview;
-    const rest = lines.length - shown.length;
-    const body = shown.map((line) => `<code class="${
+    // Folded, an edit is only its size - "+4 −2" - on one line a click opens.
+    // The lines themselves are there for whoever wants them, but a log that
+    // previews every edit reads as a diff, not as a conversation.
+    const added = lines.filter((line) => line.sign === "+").length;
+    const removed = lines.filter((line) => line.sign === "-").length;
+    if (!open) {
+      return `<div class="ws-step-change folded"><button type="button" class="ws-steps-more" data-change="${esc(key)}">${
+        icon("unfold_more")}<b class="add">+${added.toLocaleString()}</b><b class="del">−${removed.toLocaleString()}</b></button></div>`;
+    }
+    const body = lines.map((line) => `<code class="${
       line.sign === "+" ? "add" : line.sign === "-" ? "del" : "same"}">${esc(`${line.sign} ${line.text}`)}</code>`).join("");
-    const more = rest > 0 || open
-      ? `<button type="button" class="ws-steps-more" data-change="${esc(key)}">${icon(open ? "unfold_less" : "unfold_more")}${
-          open ? "Show less" : `and ${rest.toLocaleString()} more line${rest === 1 ? "" : "s"}`}</button>`
-      : "";
-    return `<div class="ws-step-change">${body}${more}</div>`;
+    return `<div class="ws-step-change">${body}<button type="button" class="ws-steps-more" data-change="${esc(key)}">${
+      icon("unfold_less")}Show less</button></div>`;
   }
 
   /** One step: what it is doing, and - once it is over - how it went. A step
@@ -2290,7 +2462,9 @@
     const mark = turn.state === "run"
       ? '<span class="ws-step-run"></span>'
       : turn.state === "err" ? icon("error") : turn.state === "ok" ? icon("check") : "";
-    const detail = turn.detail ? `<em class="ws-step-detail">${esc(turn.detail)}</em>` : "";
+    // The detail (a path, a command line) is worth its room while the step is
+    // running or when it failed; once it is done the step's name says enough.
+    const detail = turn.detail && turn.state !== "ok" ? `<em class="ws-step-detail">${esc(turn.detail)}</em>` : "";
     const line = `<div class="ws-turn tool${state}">${icon(turn.icon || "build")}<span class="ws-step-what">${
       esc(turn.text)}</span>${detail}${mark}</div>`;
     const change = changeHtml(turn, key, tab);
@@ -2307,7 +2481,9 @@
     // into the fold and shown the moment the run is opened - and the one
     // happening right now is on the line below the log anyway.
     const tools = steps.filter((step) => step.turn.role === "tool");
-    const shown = open || !tools.length ? steps : tools.slice(-3);
+    // Folded to the single latest step: what it is doing now. Silent thinking
+    // with no tools around it folds the same way.
+    const shown = open ? steps : (tools.length ? tools : steps).slice(-1);
     const folded = steps.length - shown.length;
     const more = folded > 0 || open
       ? `<button type="button" class="ws-steps-more" data-steps="${key}">${icon("expand_more")}${
@@ -2803,10 +2979,73 @@
   /** Sends what is in the box. A message submitted during a running turn
    *  replaces that turn immediately: these CLIs consume one closed stdin per
    *  turn, so interruption plus a resumed turn is their live follow-up path. */
+  /* ------------------------------------------------------ chat attachments */
+
+  const clipSize = (bytes) => bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1e3))} KB`;
+  const clipHtml = (a, index) => `<span class="ws-clip" title="${esc(a.path || a.name)}">${icon(a.kind === "image" ? "image" : "description")}<span class="ws-clip-name">${
+    esc(a.name)}</span><span class="ws-clip-size">${a.pending ? "saving…" : clipSize(a.size || 0)}</span>${
+    index === undefined || a.pending ? "" : `<button type="button" data-clip-remove="${index}" title="Remove">${icon("close")}</button>`}</span>`;
+
+  function renderAttachments(tab) {
+    if (!tab.clips) return;
+    tab.clips.hidden = !tab.attachments.length;
+    tab.clips.innerHTML = tab.attachments.map((a, i) => clipHtml(a, i)).join("");
+  }
+
+  const toBase64 = (blob) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+
+  /** An image that arrived as bytes - pasted, or dragged out of a web page -
+   *  written to disk so the agent has a path to read. */
+  async function attachBlob(tab, blob) {
+    const ext = (blob.type.split("/")[1] || "png").replace("jpeg", "jpg").replace(/[^a-z0-9]/gi, "");
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    const name = blob.name && blob.name !== "image.png" ? blob.name : `pasted-${stamp}.${ext}`;
+    const pending = { name, kind: "image", size: blob.size, pending: true };
+    tab.attachments.push(pending);
+    renderAttachments(tab);
+    try {
+      const data = await toBase64(blob);
+      const saved = await busy(`Attaching ${name}`, () => invoke("workspace_attach_bytes", { name, data }));
+      tab.attachments[tab.attachments.indexOf(pending)] = saved;
+      say(`Attached ${saved.name}`);
+    } catch (err) {
+      tab.attachments = tab.attachments.filter((a) => a !== pending);
+      say(String(err));
+    }
+    renderAttachments(tab);
+  }
+
+  /** Files dropped from Explorer are already on disk and are used in place. */
+  async function attachPaths(tab, paths) {
+    for (const path of paths) {
+      try {
+        const vetted = await busy(`Attaching ${path.split(/[\\/]/).pop()}`, () => invoke("workspace_attach_path", { path }));
+        if (!tab.attachments.some((a) => a.path === vetted.path)) tab.attachments.push(vetted);
+        say(`Attached ${vetted.name}`);
+      } catch (err) {
+        say(String(err));
+      }
+      renderAttachments(tab);
+    }
+    tab.input.focus();
+  }
+
   async function sendToAgent(panel, tab) {
     const spec = AGENTS[tab.kind];
-    const text = tab.input.value.trim();
-    if (!spec || !text) return;
+    const typed = tab.input.value.trim();
+    if (tab.attachments?.some((a) => a.pending)) return say("Wait for the attachment to finish saving");
+    const attached = [...(tab.attachments || [])];
+    if (!spec || (!typed && !attached.length)) return;
+    // Every one of these CLIs reads a path it is handed, so an attachment
+    // travels as its path in the prompt - see workspace.rs.
+    const text = attached.length
+      ? `${typed || "Look at the attached file."}\n\nAttached:\n${attached.map((a) => `- ${a.path}`).join("\n")}`
+      : typed;
     if (agentOverlay.session?.tabId === tab.id) {
       say(`Close the ${spec.label} terminal before continuing the same conversation here`);
       return;
@@ -2814,12 +3053,14 @@
     const replacing = isAgentBusy(tab);
     const replacedRun = tab.runId || tab.id;
     tab.input.value = "";
+    tab.attachments = [];
+    renderAttachments(tab);
     growAgentInput(tab);
     if (replacing) {
       endAgentTurn(tab);
       tab.turns.push({ role: "tool", icon: "stop_circle", text: "Interrupted by your next message", state: "err" });
     }
-    tab.turns.push({ role: "you", text });
+    tab.turns.push({ role: "you", text: typed, attachments: attached.map(({ name, kind, size }) => ({ name, kind, size })) });
 
     tab.startedAt = Date.now();
     tab.running = true;
@@ -3234,6 +3475,7 @@
           <span>${icon("neurology")}<strong>Model</strong><small></small></span>
           <select aria-label="Model for this session">${(AGENTS[kind].models || []).map((item) => `<option value="${esc(item.id)}">${esc(item.label)} — ${esc(item.note)}</option>`).join("")}</select>
         </label>
+        <div class="ws-clips" hidden></div>
         <div class="ws-chat-row">
           <textarea rows="1" placeholder="" spellcheck="false"></textarea>
           <button type="submit" class="ws-chat-send" title="Send (Enter)">${icon("send")}</button>
@@ -3248,7 +3490,27 @@
     tab.input = el.querySelector("textarea");
     tab.modelPicker = el.querySelector(".ws-agent-model");
     tab.modelSelect = tab.modelPicker.querySelector("select");
+    tab.clips = el.querySelector(".ws-clips");
+    tab.attachments = [];
     panel.views.appendChild(el);
+
+    // Ctrl+V of an image (a screenshot, an image copied in a browser) becomes
+    // an attachment; a paste of text stays text in the box as it always was.
+    tab.input.addEventListener("paste", (e) => {
+      const images = [...(e.clipboardData?.items || [])]
+        .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+        .map((item) => item.getAsFile()).filter(Boolean);
+      if (!images.length) return;
+      e.preventDefault();
+      for (const file of images) attachBlob(tab, file);
+    });
+    tab.clips.addEventListener("click", (e) => {
+      const remove = e.target.closest("[data-clip-remove]");
+      if (!remove) return;
+      tab.attachments.splice(Number(remove.dataset.clipRemove), 1);
+      renderAttachments(tab);
+      tab.input.focus();
+    });
 
     tab.input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); tab.ask.requestSubmit(); }
@@ -3257,6 +3519,7 @@
     tab.modelSelect.addEventListener("change", () => {
       if (tab.started || !AGENTS[tab.kind].models?.some((item) => item.id === tab.modelSelect.value)) return;
       tab.model = tab.modelSelect.value;
+      rememberModel(tab.kind, tab.model);
       saveAgentTabs(panel);
       renderAgentTab(panel, tab);
     });
@@ -3319,6 +3582,17 @@
     saveAgentTabs(panel);
     renderAgentTab(panel, tab);
     checkAgent(panel, tab).catch(() => {});
+    // A new tab made before the remembered model had been read from disk takes
+    // it up once it has - unless you have already picked one, or sent.
+    if (!model && !started) {
+      const initial = tab.model;
+      lastModelsReady.then(() => {
+        if (tab.started || tab.model !== initial || !panel.tabs.has(tab.id)) return;
+        tab.model = preferredModel(kind);
+        renderAgentTab(panel, tab);
+        saveAgentTabs(panel);
+      });
+    }
     return tab;
   }
 
@@ -3622,7 +3896,7 @@
         divider.setPointerCapture(down.pointerId);
         const move = (e) => {
           const rect = panel.views.getBoundingClientRect();
-          panel.splitRatio = Math.min(0.75, Math.max(0.25, (e.clientX - rect.left) / rect.width));
+          panel.splitRatio = Math.min(0.95, Math.max(0.05, (e.clientX - rect.left) / rect.width));
           syncAgentPaneLayout(panel);
         };
         const up = () => {
@@ -3635,11 +3909,43 @@
       });
 
       const saved = loadAgentTabs();
-      if (saved) {
-        panel.splitRatio = Math.min(0.75, Math.max(0.25, saved.splitRatio || 0.5));
-        for (const t of saved.tabs) {
-          if (!AGENTS[t.kind]) continue;
-          createAgentTab(panel, t.kind, { pane: t.pane === 1 ? 1 : 0, id: t.id, session: t.session, started: Boolean(t.started), title: t.title || "", turns: t.kind === "qwen" ? (t.turns || []) : [], mode: t.mode, model: t.model, activate: false });
+      // Files dragged in from Explorer (or images dragged off a web page,
+      // which WebView2 hands over as files) arrive as Tauri drag-drop events
+      // with physical coordinates, not as HTML drops. They attach to the
+      // conversation under the pointer.
+      const dropTab = (position) => {
+        if (!position || !panel.el?.isConnected || !panel.el.offsetParent) return null;
+        const scale = window.devicePixelRatio || 1;
+        const hit = document.elementFromPoint(position.x / scale, position.y / scale);
+        if (!hit || !panel.el.contains(hit)) return null;
+        const conv = hit.closest(".ws-agent-conv");
+        const under = conv && [...panel.tabs.values()].find((t) => t.el === conv);
+        const tab = under || panel.tabs.get(panel.active);
+        return tab?.status?.installed ? tab : null;
+      };
+      window.__TAURI__.webview?.getCurrentWebview?.()?.onDragDropEvent?.(({ payload }) => {
+        const tab = dropTab(payload.position);
+        panel.el.classList.toggle("ws-clip-over", Boolean(tab) && (payload.type === "enter" || payload.type === "over"));
+        if (payload.type !== "drop" || !tab || !payload.paths?.length) return;
+        attachPaths(tab, payload.paths);
+      })?.catch?.(() => {});
+
+      // Only conversations that actually happened come back, and they come
+      // back with what was said in them: a tab restored as an empty pane is a
+      // conversation you cannot see, and a tab nothing was ever asked in is
+      // not worth restoring at all.
+      const worthRestoring = (t) => {
+        const spec = AGENTS[t.kind];
+        if (!spec) return false;
+        if (spec.localHistory) return Boolean(t.turns?.length);
+        return Boolean(t.started && t.session && spec.transcriptCmd);
+      };
+      const restorable = saved ? saved.tabs.filter(worthRestoring) : [];
+      if (restorable.length) {
+        panel.splitRatio = Math.min(0.95, Math.max(0.05, saved.splitRatio || 0.5));
+        for (const t of restorable) {
+          const tab = createAgentTab(panel, t.kind, { pane: t.pane === 1 ? 1 : 0, id: t.id, session: t.session, started: Boolean(t.started), title: t.title || "", turns: t.kind === "qwen" ? (t.turns || []) : [], mode: t.mode, model: t.model, activate: false });
+          if (!AGENTS[t.kind].localHistory) loadAgentSession(panel, tab, t.session, t.title || "").catch(() => {});
         }
         // Restoring with activate:false only sets paneActive for whichever
         // tab happened to land first overall - make sure a split's second
@@ -3651,7 +3957,9 @@
         }
         setActiveAgentTab(panel, saved.active && panel.tabs.has(saved.active) ? saved.active : panel.tabs.keys().next().value, { focus: false });
       } else {
-        createAgentTab(panel, "claude");
+        // One fresh tab to type in, of the kind you were using last.
+        const kind = saved?.tabs?.find((t) => AGENTS[t.kind])?.kind || "claude";
+        createAgentTab(panel, kind);
       }
     },
   });

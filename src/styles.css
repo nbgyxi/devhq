@@ -3608,10 +3608,10 @@ body.workspace.ws-no-center.ws-no-left.ws-no-right #ws-grid{grid-template-column
 /* With Save & upload underneath it, the file list takes the whole column bar
    that panel's own height - there is nothing a taller Save & upload would
    show, and the divider between the two has nothing left to decide. */
-.ws-col.ws-git-fixed{grid-template-rows:minmax(0,1fr) auto var(--ws-git-h)}
+.ws-col.ws-git-fixed{grid-template-rows:minmax(0,1fr) auto var(--ws-git-h); transition:grid-template-rows .18s ease}
 /* Same, mirrored, for the rare layout where Save & upload has been dragged
    above the other panel instead of below it. */
-.ws-col.ws-git-fixed-top{grid-template-rows:var(--ws-git-h) auto minmax(0,1fr)}
+.ws-col.ws-git-fixed-top{grid-template-rows:var(--ws-git-h) auto minmax(0,1fr); transition:grid-template-rows .18s ease}
 .ws-right-col{display:grid; grid-template-rows:minmax(0,var(--ws-right-split)) auto minmax(0,1fr); min-width:0; overflow:hidden}
 
 .ws-slot{display:flex; min-width:0; min-height:0; overflow:hidden; background:var(--bg1); border:1px solid var(--line); border-radius:8px; margin:4px}
@@ -3717,6 +3717,30 @@ body.workspace>#ws-bottom-dock{grid-row:3}
   border-right:1px solid var(--line); background:var(--bg1); color:var(--dim2);
   font:inherit; text-align:right; white-space:pre; user-select:none}
 .ws-preview pre{flex:1; margin:0; padding:10px 12px; font:inherit; white-space:pre; user-select:text}
+.ws-seg[hidden],.ws-preview-diff[hidden]{display:none}
+/* The file as one column with what changed marked in place: added lines green,
+   removed lines red, everything else as it is. Old and new line numbers sit
+   side by side, so a removed line still says where it was. */
+.ws-preview-diff{flex:1; min-height:0; overflow:auto; font:12px/1.5 ui-monospace,'Cascadia Mono',Consolas,monospace; tab-size:2}
+.ws-diff-summary{position:sticky; top:0; z-index:2; display:flex; align-items:center; gap:8px; padding:5px 10px;
+  border-bottom:1px solid var(--line); background:var(--bg1); font:11px system-ui,sans-serif; color:var(--dim)}
+.ws-diff-summary b.add{color:var(--green)} .ws-diff-summary b.del{color:var(--red)}
+.ws-diff-rows{display:inline-block; min-width:100%; padding:4px 0 10px}
+.ws-diff-row{display:grid; grid-template-columns:auto auto 18px max-content; min-width:100%}
+.ws-diff-row>span{position:sticky; z-index:1; background:var(--bg1); color:var(--dim2); text-align:right;
+  padding:0 6px; min-width:3.2em; user-select:none}
+.ws-diff-row>span:nth-child(1){left:0}
+.ws-diff-row>span:nth-child(2){left:3.2em; border-right:1px solid var(--line)}
+.ws-diff-row>.ws-diff-sign{position:static; min-width:0; text-align:center; padding:0; background:none}
+.ws-diff-row code{white-space:pre; padding:0 12px 0 2px; background:none; font:inherit}
+.ws-diff-row.add{background:color-mix(in srgb,var(--green) 16%,transparent)}
+.ws-diff-row.del{background:color-mix(in srgb,var(--red) 16%,transparent)}
+.ws-diff-row.add>.ws-diff-sign{color:var(--green)} .ws-diff-row.del>.ws-diff-sign{color:var(--red)}
+.ws-diff-row.add>span:not(.ws-diff-sign){background:color-mix(in srgb,var(--green) 22%,var(--bg1))}
+.ws-diff-row.del>span:not(.ws-diff-sign){background:color-mix(in srgb,var(--red) 22%,var(--bg1))}
+
+.ws-diff-row.gap code{color:var(--dim2)}
+.ws-diff-note{display:flex; align-items:center; gap:6px; padding:12px; color:var(--dim); font:12px system-ui,sans-serif}
 /* Flex rather than grid to centre it: an auto-sized grid row is not a length
    the image's max-height can be a percentage of, so a tall picture overflowed
    the panel and scrolled instead of being sized down to fit it. */
@@ -5904,4 +5928,9 @@ body.projects-window #status-term-popout{display:none!important}
 .cockpit-report-hide:hover{background:var(--bg3);color:var(--text)}
 .cockpit-report-hide .ms{font-size:17px}
 .cockpit-report-frame{resize:vertical;overflow:hidden;min-height:90px;max-height:70vh}
-.cockpit-report-frame iframe{display:block;width:100%;height:100%;border:0;background:var(--bg1)}
+.cockpit-report-frame iframe{display:block;width:100%;height:100%;border:0;background:var(--bg1)}body.workspace.ws-resizing .ws-col{transition:none}
+.ws-step-change.folded{margin-top:-1px}
+.ws-step-change.folded .ws-steps-more{margin:0 0 0 -3px; font-size:10.5px; gap:4px}
+.ws-step-change.folded b{font-weight:600; font-family:ui-monospace,'Cascadia Mono',Consolas,monospace}
+.ws-step-change.folded b.add{color:var(--green)} .ws-step-change.folded b.del{color:var(--red)}
+.ws-turn.thought .ws-clamp{-webkit-line-clamp:2}

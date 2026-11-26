@@ -1369,9 +1369,15 @@ async fn changed(app: &AppHandle) -> SidebarState {
 /// queues to an app that is stalled while restoring can stall the sidebar's
 /// drawing thread as well.
 unsafe fn bring_forward(hwnd: HWND) -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+        VK_MENU,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, GetForegroundWindow, IsIconic, SetForegroundWindow, ShowWindowAsync,
-        SW_RESTORE, SW_SHOW,
+        BringWindowToTop, GetForegroundWindow, GetWindowLongW, IsIconic, SetForegroundWindow,
+        SetWindowPos, ShowWindowAsync, SwitchToThisWindow, GWL_EXSTYLE, HWND_NOTOPMOST,
+        HWND_TOPMOST, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE,
+        SW_SHOW, WS_EX_TOPMOST,
     };
     // A tray-hidden target can be busy or hung while restoring. Never attach
     // its input queue to ours: that makes its wait the sidebar's wait too and
@@ -1385,7 +1391,53 @@ unsafe fn bring_forward(hwnd: HWND) -> bool {
         },
     );
     let _ = BringWindowToTop(hwnd);
-    SetForegroundWindow(hwnd).as_bool() || GetForegroundWindow() == hwnd
+    let mut forward = SetForegroundWindow(hwnd).as_bool() && GetForegroundWindow() == hwnd;
+
+    // Windows refuses the foreground to a process that did not receive the
+    // last input — and the rail's click lands in WebView2's own process, so
+    // the sidebar often does not count. Refused, it activates the window
+    // *behind* the others, or only flashes its taskbar button. A bare Alt tap
+    // makes this process the last to receive input, which is what the
+    // foreground lock asks for (the same thing PowerToys does).
+    if !forward {
+        let key = |flags: KEYBD_EVENT_FLAGS| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_MENU,
+                    wScan: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let tap = [key(KEYBD_EVENT_FLAGS(0)), key(KEYEVENTF_KEYUP)];
+        let _ = SendInput(&tap, std::mem::size_of::<INPUT>() as i32);
+        let _ = BringWindowToTop(hwnd);
+        forward = SetForegroundWindow(hwnd).as_bool() && GetForegroundWindow() == hwnd;
+    }
+
+    // A window running as administrator ignores restore and z-order requests
+    // from a normal process (UIPI), so it stays minimized or underneath. The
+    // shell's own Alt+Tab switch is carried out by Windows itself, restores a
+    // minimized window, and works on elevated windows too.
+    if !forward || IsIconic(hwnd).as_bool() {
+        SwitchToThisWindow(hwnd, true);
+        forward = GetForegroundWindow() == hwnd;
+    }
+
+    // Active is not the same as on top: a window can take the focus and still
+    // be drawn under the one it replaced. Lift it through the topmost band and
+    // straight back, which leaves it first among ordinary windows. Async, so a
+    // target that is hung cannot hold this thread; skipped for a window that
+    // is pinned on top already, so its pin is not taken away.
+    if GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0 == 0 {
+        let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS;
+        let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, flags);
+        let _ = SetWindowPos(hwnd, Some(HWND_NOTOPMOST), 0, 0, 0, 0, flags);
+    }
+    forward
 }
 
 /// The last window other than the sidebar that had the foreground. Clicking

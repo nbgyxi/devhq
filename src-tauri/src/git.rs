@@ -264,6 +264,47 @@ fn repo(path: &str) -> Result<std::path::PathBuf, String> {
     Ok(dir)
 }
 
+/// One file, compared with its last saved version, as a unified diff that
+/// carries the whole file as context - so the preview can show every line and
+/// colour the ones that changed. `file` is relative to the repository. An
+/// untracked file has nothing to compare with and comes back empty; the front
+/// end shows it as all new.
+#[tauri::command]
+pub async fn git_file_diff(path: String, file: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = repo(&path)?;
+        let file = file.replace('\\', "/");
+        let args = |base: &'static str| {
+            vec![
+                "diff".to_string(),
+                base.to_string(),
+                "--no-color".to_string(),
+                "--no-ext-diff".to_string(),
+                "-U1000000".to_string(),
+                "--".to_string(),
+                file.clone(),
+            ]
+        };
+        // Against HEAD covers staged and unstaged together. A repository with
+        // no commits yet has no HEAD, so it falls back to the index.
+        let has_head = run_lossy("git", &["rev-parse", "--verify", "-q", "HEAD"], Some(&dir))
+            .is_some_and(|s| !s.trim().is_empty());
+        let a = if has_head { args("HEAD") } else { args("--cached") };
+        let refs: Vec<&str> = a.iter().map(String::as_str).collect();
+        let mut diff = run_lossy("git", &refs, Some(&dir)).unwrap_or_default();
+        if diff.len() > 4_000_000 {
+            let mut end = 4_000_000;
+            while !diff.is_char_boundary(end) {
+                end -= 1;
+            }
+            diff.truncate(end);
+        }
+        Ok(diff)
+    })
+    .await
+    .map_err(|_| "Could not read the file's changes.".to_string())?
+}
+
 #[tauri::command]
 pub async fn git_workspace(path: String) -> Result<Workspace, String> {
     tauri::async_runtime::spawn_blocking(move || {

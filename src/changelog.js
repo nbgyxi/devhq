@@ -16,6 +16,30 @@
 window.wintChangelog = (() => {
   const releases = [
     {
+      version: "0.195.0",
+      title: "Workspace: see what changed, paste images into chat",
+      date: "2026-11-26",
+      changes: [
+        ["new", "Workspace: a changed file opens on its changes - the whole file with added lines in green and removed lines in red. Switch to File to edit it."],
+        ["new", "Workspace: paste an image into an AI chat with Ctrl+V, or drag files and images from Explorer onto the chat, to attach them to your next message."],
+        ["better", "Workspace: the Files panel opens on Changed, so the files you have touched are what you see first."],
+        ["better", "Workspace: AI chat is more compact. A run of steps folds to the latest one, an edit shows only its size (+4 −2) until you open it, and long thoughts fold to two lines."],
+        ["better", "Workspace: Save and Upload show their progress inside the button you pressed (Saving 3 / 12…) and the panel changes shape once, smoothly, instead of the buttons jumping up and down."],
+        ["better", "Workspace: a new AI chat starts on the model you picked last time, and the model can be changed until you send the first message. Antigravity now has a model picker too."],
+        ["better", "Workspace: reopening a workspace brings its chats back with their history, and no longer restores chats that were never used."],
+        ["better", "Workspace: panels can be dragged to any width - no more fixed minimum or maximum."],
+      ],
+    },
+    {
+      version: "0.194.2",
+      title: "Sidebar clicks bring windows to the front",
+      date: "2026-11-26",
+      changes: [
+        ["fix", "Sidebar: clicking a window sometimes made it active but left it underneath another window. It now comes to the front every time."],
+        ["fix", "Sidebar: windows running as administrator now come forward, and restore when minimized, when clicked on the rail."],
+      ],
+    },
+    {
       version: "0.194.1",
       title: "Dragging out of Torrents no longer freezes WinT",
       date: "2026-11-24",
